@@ -1,0 +1,5 @@
+types {
+  application/json  json;
+  text/html         html;
+  text/plain        txt;
+}
