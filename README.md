@@ -96,7 +96,7 @@ Modèle de configuration (exemple)
   "enabled": true,
   "version": "2026-01-25.1",
   "config": {
-    "owuiEndpoint": "https://<INTERNAL_DOMAIN>/api/",
+    "owuiEndpoint": "https://<Url-service>/api/",
     "owuiModel": "self-hosted.llama-3.3-70b",
     "featureFlags": {
       "meetingCapture": true,
