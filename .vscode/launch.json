@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug FastAPI (module)",
+            "type": "python",
+            "request": "launch",
+            "module": "app.main",
+            "justMyCode": true,
+            "env": {
+                "RELOAD": "true",
+                "DM_APP_ENV": "dev",
+                "DM_CONFIG_ENABLED": "true"
+            }
+        }
+    ]
+}

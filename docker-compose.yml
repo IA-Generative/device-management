@@ -1,0 +1,26 @@
+services:
+  device-management:
+    build: .
+    ports:
+      - "8088:8088"
+    environment:
+      DM_APP_ENV: "dev"
+      DM_CONFIG_ENABLED: "true"
+      DM_ENROLL_URL: "/enroll"
+      DM_ALLOW_ORIGINS: "*"
+      DM_MAX_BODY_SIZE_MB: "10"
+
+      # Local enroll storage
+      DM_STORE_ENROLL_LOCALLY: "true"
+      DM_ENROLL_DIR: "/data/enroll"
+
+      # Optional S3 (uncomment + set values)
+      # DM_STORE_ENROLL_S3: "true"
+      # DM_S3_BUCKET: "my-bucket"
+      # DM_S3_PREFIX_ENROLL: "enroll/"
+      # DM_S3_PREFIX_BINARIES: "binaries/"
+      # DM_BINARIES_MODE: "presign"
+      # DM_PRESIGN_TTL_SECONDS: "300"
+      # AWS_REGION: "eu-west-3"
+    volumes:
+      - ./data:/data

@@ -1,0 +1,82 @@
+############################
+# macOS
+############################
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+# Thumbnails
+._*
+
+# Spotlight / Time Machine
+.Spotlight-V100
+.Trashes
+.TimeMachine
+
+############################
+# Python
+############################
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Logs
+*.log
+
+############################
+# FastAPI / Uvicorn
+############################
+# Reload / runtime artifacts
+*.pid
+
+############################
+# VS Code
+############################
+.vscode/*
+!.vscode/launch.json
+!.vscode/extensions.json
+
+############################
+# Docker
+############################
+# Local volumes / data
+data/
+*.tar
+*.tar.gz
+
+############################
+# Environment & secrets
+############################
+.env
+.env.*
+!.env.example
+
+############################
+# Misc
+############################
+.idea/
