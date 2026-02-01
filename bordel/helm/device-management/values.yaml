@@ -1,0 +1,97 @@
+replicaCount: 1
+
+image:
+  repository: device-management
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8088
+
+ingress:
+  enabled: false
+  className: "mirai-nginx"
+  # New single-host syntax (preferred)
+  host: bootstrap.mirai.cpin.numerique-interieur.com
+  path: /
+  pathType: ImplementationSpecific
+  service:
+    name: ""
+    port: 8088
+  tls:
+    enabled: false
+    secretName: ""
+  # Legacy multi-host syntax (still supported)
+  hosts:
+    - host: dm.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tlsList: []
+
+# Non-secret environment variables
+env:
+  PUBLIC_BASE_URL: https://server.com
+  DM_APP_ENV: prod
+  DM_CONFIG_ENABLED: "true"
+  DM_ENROLL_URL: /enroll
+  DM_ALLOW_ORIGINS: "*"
+  DM_MAX_BODY_SIZE_MB: "10"
+  DM_STORE_ENROLL_LOCALLY: "true"
+  DM_ENROLL_DIR: /data/enroll
+  DM_STORE_ENROLL_S3: "false"
+  DM_S3_PREFIX_ENROLL: enroll/
+  DM_S3_PREFIX_BINARIES: binaries/
+  DM_BINARIES_MODE: presign
+  DM_PRESIGN_TTL_SECONDS: "300"
+  AWS_REGION: ""
+
+# Secrets (stringData). Leave empty to skip creating a Secret.
+secrets: {}
+
+# Reference an existing Secret for env injection.
+existingSecretName: ""
+
+config:
+  enabled: true
+  mountPath: /app/config/config.json
+  configJson: |-
+    {
+      "enabled": true,
+      "updateUrl": "${PUBLIC_BASE_URL}/mirai/update.json",
+      "config": {
+        "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
+        "owuiModel": "self-hosted.llama-3.3-70b",
+        "authHeaderName": "Authorization",
+        "authHeaderPrefix": "Bearer ",
+        "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails...",
+        "systemPromptFormal": "Tu es un assistant professionnel qui répond en français...",
+        "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement...",
+        "promptPositive": "Réponds brièvement et positivement au message suivant.",
+        "promptNegative": "Réponds brièvement et négativement (de façon polie) au message suivant.",
+        "promptThanks": "Remercie brièvement l'expéditeur du message suivant.",
+        "promptNeutral": "Réponds brièvement, de manière neutre, et propose d'attendre si nécessaire.",
+        "promptRewrite": "Reformule en français clair et fluide le texte sélectionné...",
+        "dailySummarySystemPrompt": "Tu es un assistant spécialisé dans la synthèse de messagerie...",
+        "dailySummaryUserPrompt": "Analyse cette liste de ${messageCount} messages non lus...",
+        "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
+        "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
+        "telemetryEndpoint": "https://traces.server.com/v1/traces",
+        "telemetrySel": "salt_value",
+        "telemetryAuthorizationType": "Basic",
+        "telemetryKey": "${TELEMETRY_KEY}"
+        "telemetrySel": "${TELEMETRY_SALT}"
+      }
+    }
+
+persistence:
+  enabled: true
+  type: emptyDir # emptyDir or pvc
+  mountPath: /data
+  size: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClass: ""
+
+resources: {}

@@ -1,5 +1,15 @@
+import os
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+
+
+def _default_database_url() -> str:
+    if os.getenv("DATABASE_URL"):
+        return os.getenv("DATABASE_URL", "")
+    if os.getenv("RELOAD", "").lower() == "true":
+        return "postgresql://dev:dev@localhost:5432/bootstrap"
+    return ""
 
 
 class Settings(BaseSettings):
@@ -27,6 +37,11 @@ class Settings(BaseSettings):
     s3_prefix_binaries: str = Field(default="binaries/")
     binaries_mode: str = Field(default="presign")  # "presign" or "proxy"
     presign_ttl_seconds: int = Field(default=300)
+    s3_endpoint_url: str | None = Field(default=None)
+    aws_region: str | None = Field(default=None)
+
+    # Database (optional, used by local tooling)
+    database_url: str = Field(default_factory=_default_database_url)
 
 
 settings = Settings()

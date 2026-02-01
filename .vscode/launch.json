@@ -9,7 +9,8 @@
             "justMyCode": true,
             "env": {
                 "RELOAD": "true",
-                "DM_APP_ENV": "dev",
+                "DM_PORT": "8088",
+                "DM_APP_ENV": "prod",
                 "DM_CONFIG_ENABLED": "true"
             }
         }

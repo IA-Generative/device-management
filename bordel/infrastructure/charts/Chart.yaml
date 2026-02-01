@@ -1,0 +1,10 @@
+apiVersion: v2
+name: s3-upload-content-app
+description: A Helm chart for deploying the S3 upload content app
+version: 0.1.0
+appVersion: "1.0"
+
+dependencies:
+- name: nginx
+  repository: https://charts.bitnami.com/bitnami/
+  version: ~18

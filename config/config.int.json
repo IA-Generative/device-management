@@ -1,0 +1,29 @@
+{
+  "enabled": true,
+  "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+  "lastVersion": "0.2.3-int",
+  "config": {
+    "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
+    "owuiModel": "${{MODELNAME2}}",
+    "tokenOWUI": "${{TOKENMODEL1}}",
+    "authHeaderName": "Authorization",
+    "authHeaderPrefix": "Bearer ",
+    "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails...",
+    "systemPromptFormal": "Tu es un assistant professionnel qui répond en français...",
+    "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement...",
+    "promptPositive": "Réponds brièvement et positivement au message suivant.",
+    "promptNegative": "Réponds brièvement et négativement (de façon polie) au message suivant.",
+    "promptThanks": "Remercie brièvement l'expéditeur du message suivant.",
+    "promptNeutral": "Réponds brièvement, de manière neutre, et propose d'attendre si nécessaire.",
+    "promptRewrite": "Reformule en français clair et fluide le texte sélectionné...",
+    "dailySummarySystemPrompt": "Tu es un assistant spécialisé dans la synthèse de messagerie...",
+    "dailySummaryUserPrompt": "Analyse cette liste de ${messageCount} messages non lus...",
+    "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
+    "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
+    "telemetryEndpoint": "https://traces.server.com/v1/traces",
+    "telemetrySel": "${{TELEMETRY_SALT}}",
+    "telemetryAuthorizationType": "Basic",
+    "telemetryKey": "${{TELEMETRY_KEY}}",
+    "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
+  }
+}

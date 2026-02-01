@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "helper.fullname" . }}
+  labels: {{- (include "helper.labels" (dict "root" . "componentName" "matomo")) | nindent 4 }}
+spec:
+  type: {{ .Values.matomo.service.type | default "ClusterIP" }}
+  ports:
+  - port: {{ .Values.matomo.service.port | default 80 }}
+    targetPort: {{ .Values.matomo.containerPortName | default .Values.matomo.containerPort | default 8080 }}
+    protocol: {{ .Values.matomo.service.protocol | default "TCP" }}
+    {{- if eq .Values.matomo.service.type "NodePort" }}
+    nodePort: {{ .Values.matomo.service.nodePort }}
+    {{- end }}
+    name: {{ .Values.matomo.service.portName | default "http" }}
+  {{- if .Values.matomo.service.extraPorts -}}
+  {{- toYaml .Values.matomo.service.extraPorts | nindent 2 -}}
+  {{- end }}
+  selector: {{- include "helper.selectorLabels" (dict "root" . "componentName" "matomo") | nindent 4 }}

@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "device-management.fullname" . }}
+  labels:
+    {{- include "device-management.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "device-management.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "device-management.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8088
+          env:
+{{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+{{- end }}
+{{- if or .Values.secrets .Values.existingSecretName }}
+          envFrom:
+{{- if .Values.secrets }}
+            - secretRef:
+                name: {{ include "device-management.fullname" . }}-secret
+{{- end }}
+{{- if .Values.existingSecretName }}
+            - secretRef:
+                name: {{ .Values.existingSecretName }}
+{{- end }}
+{{- end }}
+{{- if or .Values.persistence.enabled .Values.config.enabled }}
+          volumeMounts:
+{{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+{{- end }}
+{{- if .Values.config.enabled }}
+            - name: config
+              mountPath: {{ .Values.config.mountPath }}
+              subPath: config.json
+{{- end }}
+{{- end }}
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+      volumes:
+{{- if .Values.persistence.enabled }}
+        - name: data
+{{- if eq .Values.persistence.type "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ include "device-management.fullname" . }}-pvc
+{{- else }}
+          emptyDir: {}
+{{- end }}
+{{- end }}
+{{- if .Values.config.enabled }}
+        - name: config
+          configMap:
+            name: {{ include "device-management.fullname" . }}-config
+{{- end }}
