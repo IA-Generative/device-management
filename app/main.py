@@ -203,9 +203,61 @@ def _wait_for_db(db_url: str, timeout_seconds: int = 30, interval_seconds: float
 
 def _extract_identity(request: Request, body_obj: dict | None = None) -> tuple[str, str, str]:
     email = request.headers.get("X-User-Email") or (body_obj or {}).get("email") or "unknown@local"
-    client_uuid = request.headers.get("X-Client-UUID") or (body_obj or {}).get("client_uuid") or "00000000-0000-0000-0000-000000000000"
+    client_uuid = (
+        request.headers.get("X-Client-UUID")
+        or (body_obj or {}).get("client_uuid")
+        or (body_obj or {}).get("plugin_uuid")
+        or "00000000-0000-0000-0000-000000000000"
+    )
     fingerprint = request.headers.get("X-Encryption-Key-Fingerprint") or (body_obj or {}).get("encryption_key_fingerprint") or "unknown"
     return email, client_uuid, fingerprint
+
+
+def _validate_enroll_payload(body_obj: dict) -> list[str]:
+    missing: list[str] = []
+    for field in ("device_name", "plugin_uuid", "email"):
+        val = body_obj.get(field)
+        if not isinstance(val, str) or not val.strip():
+            missing.append(field)
+    return missing
+
+
+def _upsert_provisioning(*, email: str, client_uuid: str, device_name: str, encryption_key: str) -> None:
+    if psycopg2 is None:
+        return
+    db_url = _db_url_bootstrap()
+    if not db_url:
+        return
+    conn = psycopg2.connect(db_url)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO provisioning (email, device_name, client_uuid, status, encryption_key, comments)
+                    VALUES (%s, %s, %s, 'ENROLLED', %s, %s)
+                    """,
+                    (email, device_name, client_uuid, encryption_key, "enroll"),
+                )
+            except psycopg2.Error as exc:
+                if getattr(exc, "pgcode", None) != "23505":
+                    raise
+                cur.execute(
+                    """
+                    UPDATE provisioning
+                    SET email = %s,
+                        device_name = %s,
+                        status = 'ENROLLED',
+                        encryption_key = %s,
+                        updated_at = now()
+                    WHERE client_uuid = %s
+                      AND status IN ('PENDING', 'ENROLLED')
+                    """,
+                    (email, device_name, encryption_key, client_uuid),
+                )
+    finally:
+        conn.close()
 
 
 def _log_device_connection(
@@ -242,18 +294,33 @@ def _log_device_connection(
         conn.close()
 
 
-def _load_config_template(profile: str) -> dict:
+DEVICE_ALLOWLIST = {"matisse", "libreoffice", "chrome", "edge", "firefox", "misc"}
+
+
+def _load_config_template(profile: str, device: str | None = None) -> dict:
     """Load a config template JSON from `config/`.
 
-    Resolution order:
+    Resolution order (device-specific first when provided):
+    - config/<device>/config.<profile>.json
+    - config/<device>/config.json
     - config/config.<profile>.json
     - config/config.json
     """
     base = os.path.join(_repo_root(), "config")
-    candidates = [
-        os.path.join(base, f"config.{profile}.json"),
-        os.path.join(base, "config.json"),
-    ]
+    candidates = []
+    if device:
+        candidates.extend(
+            [
+                os.path.join(base, device, f"config.{profile}.json"),
+                os.path.join(base, device, "config.json"),
+            ]
+        )
+    candidates.extend(
+        [
+            os.path.join(base, f"config.{profile}.json"),
+            os.path.join(base, "config.json"),
+        ]
+    )
     for p in candidates:
         if os.path.isfile(p):
             with open(p, "r", encoding="utf-8") as f:
@@ -378,7 +445,7 @@ def healthz():
 
 
 @app.get("/config/config.json")
-def get_config(profile: str | None = None):
+def get_config(profile: str | None = None, device: str | None = None):
     """Return remote-config JSON.
 
     The response is loaded from a static template file under `exemple/` and supports
@@ -391,9 +458,12 @@ def get_config(profile: str | None = None):
     prof = (profile or os.getenv("DM_CONFIG_PROFILE", "prod")).strip().lower()
     if prof not in ("dev", "prod", "int", "llama", "gptoss"):
         return JSONResponse(status_code=400, content={"ok": False, "error": "profile must be 'dev' or 'prod' or 'int' "})
+    dev = (device or "").strip().lower()
+    if dev and dev not in DEVICE_ALLOWLIST:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "device is not supported"})
 
     try:
-        cfg = _load_config_template(prof)
+        cfg = _load_config_template(prof, dev or None)
     except FileNotFoundError as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -421,6 +491,11 @@ def get_config(profile: str | None = None):
     return JSONResponse(content=cfg, headers={"Cache-Control": "no-store"})
 
 
+@app.get("/config/{device}/config.json")
+def get_device_config(device: str, profile: str | None = None):
+    return get_config(profile=profile, device=device)
+
+
 @app.api_route("/enroll", methods=["POST", "PUT", "OPTIONS"])
 async def enroll(request: Request):
     if request.method == "OPTIONS":
@@ -436,6 +511,21 @@ async def enroll(request: Request):
         body_obj = json.loads(body.decode("utf-8"))
     except Exception:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Body is not valid JSON"})
+    if not isinstance(body_obj, dict):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Body must be a JSON object"})
+
+    missing = _validate_enroll_payload(body_obj)
+    if missing:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "Missing required fields: " + ", ".join(missing),
+            },
+        )
+    device_name = str(body_obj.get("device_name", "")).strip()
+    plugin_uuid = str(body_obj.get("plugin_uuid", "")).strip()
+    email = str(body_obj.get("email", "")).strip()
 
     epoch_ms = int(time.time() * 1000)
     rid = uuid.uuid4().hex
@@ -471,6 +561,18 @@ async def enroll(request: Request):
 
     try:
         email, client_uuid, fingerprint = _extract_identity(request, body_obj=body_obj)
+        if plugin_uuid:
+            client_uuid = plugin_uuid
+        encryption_key = fingerprint if fingerprint and fingerprint != "unknown" else "unknown"
+        try:
+            _upsert_provisioning(
+                email=email,
+                client_uuid=client_uuid,
+                device_name=device_name,
+                encryption_key=encryption_key,
+            )
+        except Exception:
+            logger.exception("Failed to upsert provisioning")
         _log_device_connection(
             action="ENROLL",
             email=email,
@@ -571,25 +673,32 @@ def _startup_db_init() -> None:
     base_url = _db_url()
     if not base_url:
         return
+    admin_url: str | None = None
     try:
         admin_url = _admin_db_url(base_url)
-        if not admin_url:
-            raise RuntimeError("No admin database URL available")
-        admin_url = _with_db(admin_url, "postgres")
-        _wait_for_db(admin_url, timeout_seconds=30, interval_seconds=1.0)
-        try:
-            _ensure_dev_role(admin_url)
-        except psycopg2.Error:
-            logger.warning("Skipping dev role creation/alter (insufficient privilege)")
-        _ensure_database_exists(admin_url, "bootstrap")
+        if admin_url:
+            admin_url = _with_db(admin_url, "postgres")
+            _wait_for_db(admin_url, timeout_seconds=30, interval_seconds=1.0)
+            try:
+                _ensure_dev_role(admin_url)
+            except psycopg2.Error:
+                logger.warning("Skipping dev role creation/alter (insufficient privilege)")
+            _ensure_database_exists(admin_url, "bootstrap")
+        else:
+            logger.warning("No admin database URL available; schema will use app DB credentials only.")
     except Exception:
         logger.exception("Failed to ensure database bootstrap exists")
     try:
         bootstrap_url = _db_url_bootstrap()
-        if bootstrap_url and admin_url:
-            admin_bootstrap_url = _with_db(admin_url, "bootstrap")
+        admin_bootstrap_url = _with_db(admin_url, "bootstrap") if admin_url else None
+        if admin_bootstrap_url:
             _wait_for_db(admin_bootstrap_url, timeout_seconds=30, interval_seconds=1.0)
             _apply_schema(admin_bootstrap_url)
             _ensure_dev_privileges(admin_bootstrap_url)
+        elif bootstrap_url:
+            _wait_for_db(bootstrap_url, timeout_seconds=30, interval_seconds=1.0)
+            _apply_schema(bootstrap_url)
+        else:
+            logger.warning("No bootstrap database URL available; skipping schema apply.")
     except Exception:
         logger.exception("Failed to apply DB schema")
