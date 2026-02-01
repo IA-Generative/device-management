@@ -6,6 +6,7 @@ This document is for developers operating the Device Management service in local
 The service exposes:
 - `/healthz` for dependency checks (S3 + DB) with `application/problem+json`.
 - `/config/config.json` (and `?profile=dev|prod|int`) for client configuration.
+- `/config/<device>/config.json` for device-specific configuration (device: matisse, libreoffice, chrome, edge, firefox, misc).
 - `/binaries/{path}` to serve binaries from S3:
   - `presign` mode: 302 redirect to a presigned S3 URL.
   - `proxy` mode: the API streams the object directly.
@@ -43,6 +44,10 @@ Configuration is templated and read from `config/`:
 - `config/config.json` (prod)
 - `config/config.dev.json` (dev)
 - `config/config.int.json` (int)
+Device overrides:
+- `config/<device>/config.json`
+- `config/<device>/config.dev.json`
+- `config/<device>/config.int.json`
 
 Placeholders:
 - `${{VARNAME}}` or `${VARNAME}` are replaced by env values at runtime.
@@ -50,6 +55,7 @@ Placeholders:
 Profiles:
 - `DM_CONFIG_PROFILE=prod|dev|int` (default: prod)
 - `GET /config/config.json?profile=dev|prod|int`
+- `GET /config/<device>/config.json?profile=dev|prod|int`
 
 ## Environment Variables (Core)
 Set in `infra-minimal/.env` and `infra-minimal/.env.secrets`, and in Kubernetes `bootstrap-secret.yaml`.

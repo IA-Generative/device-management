@@ -18,6 +18,8 @@ This document is for developers integrating with the Device Management API.
 ```
 GET /config/config.json
 GET /config/config.json?profile=dev|prod|int
+GET /config/<device>/config.json
+GET /config/<device>/config.json?profile=dev|prod|int
 ```
 Response contains client settings such as:
 - `updateUrl`
