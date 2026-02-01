@@ -128,3 +128,11 @@ secrets:
   TELEMETRY_SALT: "super-secret"
   TELEMETRY_KEY: "super-secret-key"
 ```
+
+## TODO (Cloud Pi Native)
+
+- Porter l'ensemble des manifestes Kubernetes en **chart Helm** (un seul point d’entrée, valeurs centralisées, profils par environnement).
+- Externaliser les secrets dans un **vault d’environnement** conforme au cadre **Cloud Pi Native** (www.cloud-pi-native.fr) :
+  - éviter les secrets en clair dans Git,
+  - définir une politique de rotation et d’accès (moindre privilège),
+  - injecter les secrets via des mécanismes natifs (external-secrets / CSI / vault provider).
