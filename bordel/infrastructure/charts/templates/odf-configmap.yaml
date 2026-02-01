@@ -1,0 +1,11 @@
+{{ if .Values.global.createsecretmaps }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.app.name }}-config
+  namespace: {{ .Values.global.namespace }} 
+data:
+  S3_FOLDER: "{{ .Values.app.s3Directory }}"
+  S3_SKIP_VERIFY: "{{ .Values.app.s3SkipVerify }}"
+  S3_WEBHOOK:  "{{ .Values.app.s3Webhook }}"
+{{ end }}

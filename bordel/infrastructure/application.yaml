@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: s3-upload-content-app
+  namespace: odfclient
+spec:
+  project: s3-upload-content-project
+  source:
+    repoURL: 'https://github.com/etiquet/post-write-2-s3/infrastructure/charts'
+    targetRevision: HEAD
+    path: charts/s3-upload-content-app
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: odfclient
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

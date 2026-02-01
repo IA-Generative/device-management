@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: device-management-config
+  namespace: bootstrap
+data:
+  config.json: |
+    {
+      "enabled": true,
+      "updateUrl": "${{PUBLIC_BASE_URL}}/binaries/matisse/evolution.png",
+      "lastVersion": "0.2.3",
+      "config": {
+        "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
+        "owuiModel": "${{MODELNAME1}}",
+        "owuiModel2": "${{MODELNAME2}}",
+        "owuiModel3": "${{MODELNAME3}}",
+        "tokenOWUI": "${{TOKENMODEL1}}",
+        "authHeaderName": "Authorization",
+        "authHeaderPrefix": "Bearer ",
+        "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails clairs, concis et professionnels. Ton rôle est de rédiger une réponse adaptée au contenu de l'email reçu. Contraintes : - Utilise un ton poli, professionnel et adapté au contexte. - Si l'email contient une demande précise, réponds directement en apportant la solution ou la réponse attendue. - Si l'email contient plusieurs questions, réponds point par point. - Si l'email est ambigu, formule une réponse neutre et propose de clarifier. - Garde la réponse brève (5 à 10 lignes maximum), mais suffisamment complète. - Ne répète pas mot pour mot le texte de l'expéditeur, reformule. - Termine par une formule de politesse adaptée mais ne signe pas les réponses. Format de sortie : rédige uniquement le texte de l'email de réponse, sans balises supplémentaires.",
+        "systemPromptFormal": "Tu es un assistant professionnel qui répond en français dans un registre formel (vouvoiement). Utilise un ton clair, courtois et institutionnel. Contraintes : - Emploie systématiquement le vouvoiement (vous, votre, vos). - Sois précis et factuel. - Si l'email contient plusieurs points, réponds point par point. - Si une information manque, propose poliment de la préciser. - Conclus par une formule de politesse adaptée au contexte. Format : rédige uniquement le texte de l'email de réponse, sans balises supplémentaires.",
+        "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement (tu/ton/ta/tes) pour rester aligné avec le message source.",
+        "promptPositive": "Réponds brièvement et positivement au message suivant.",
+        "promptNegative": "Réponds brièvement et négativement (de façon polie) au message suivant.",
+        "promptThanks": "Remercie brièvement l'expéditeur du message suivant.",
+        "promptNeutral": "Réponds brièvement, de manière neutre, et propose d'attendre si nécessaire.",
+        "promptRewrite": "Reformule en français clair et fluide le texte sélectionné, sans en changer le sens. Corrige les coquilles et améliore la lisibilité.",
+        "dailySummarySystemPrompt": "Tu es un assistant spécialisé dans la synthèse de messagerie...",
+        "dailySummaryUserPrompt": "Analyse cette liste de ${messageCount} messages non lus...",
+        "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
+        "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
+        "telemetryEndpoint": "${{TELEMETRY_URL}}",
+        "telemetrySel": "${{TELEMETRY_SALT}}",
+        "telemetryAuthorizationType": "${{TELEMETRY_AUTHTYPE}}",
+        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "customExternalHandlers":"[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
+      }
+    }

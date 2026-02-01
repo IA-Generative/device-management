@@ -1,0 +1,75 @@
+{{ if .Values.global.createsecretmaps }}
+{{ if .Values.nginx.existingServerBlockConfigmap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.nginx.existingServerBlockConfigmap }}
+  namespace: {{ .Values.global.namespace }} 
+data:
+  server-block.conf: |-
+    # Define the variable based on the X-Forwarded-For or  $http_x_forwarded_for $http_x_forwarded_for
+    # you may need to tweak the filter condition regarding your environment and witch header to look for...
+    # Mounted as a config map to easy the jon
+    # Ip's are Eric's + Olympic system
+   
+    map $http_x_original_forwarded_for $allow_proxy_pass {
+        default 0;
+        "~*82\.64\.241\.24" 1;
+        "~*8\.211\.49\.213" 1;
+        "~*8\.211\.33\.110" 1;
+        "~*8\.208\.22\.83" 1;
+        "~*8\.208\.25\.51" 1;
+    }
+
+    upstream backend {
+    server {{ .Values.app.name }};
+    }
+
+    log_format mylog '$remote_addr - [$time_local] '
+        '"$request" $status $body_bytes_sent '
+        '"$http_referer" "$http_user_agent" "$content_type" "$http_X-Api-Key" "$http_Origin" "$http_x_forwarded_for" "$http_x_original_forwarded_for" '
+        '"$request_body" ' ;
+
+    server {
+    listen 0.0.0.0:8080;
+    server_name _;
+
+    location /ODFClient {
+
+        if ($request_method = GET) {
+        return 200 'get-gnam style!';
+        }
+
+        if ($request_method != POST) {
+        return 405;
+        }
+
+        #if ($allow_proxy_pass = 0) {
+        #    return 666 '666 !'; 
+        #}
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_pass_request_headers      on;
+        access_log  /dev/stdout mylog;
+        proxy_pass http://backend ;  
+            
+    }
+
+    location /api/ODFClient {
+
+        if ($request_method = POST) {
+            access_log  /dev/stdout mylog;
+            return 200 'success!';
+        }
+
+    }
+
+    location /success {
+        return 200 'post received!';
+    }
+
+    }
+{{- end }}
+{{- end }} 
