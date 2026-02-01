@@ -32,7 +32,7 @@
     "http://localhost:28451/callback",
     "http://localhost:28452/callback"
   ],
-  "systemPrompt": "Tu es un assistant spécialisé dans la rédaction de documents le contenu doit est concis et professionnels. Ton rôle est d'assister le redacteur pour disposer d'une redaction impecable   Ne répète pas mot pour mot le texte, reformule. Pas de caracteres spéciaux. Uniquement en texte seul",
+  "systemPrompt": "Tu es un assistant spécialisé dans la rédaction de documents le contenu doit est concis et professionnels. Ton rôle est d'assister le redacteur pour disposer d'une redaction impecable   Ne répète pas mot pour mot le texte, reformule. Uniquement en texte seul et en français",
   "model": "achanger-model",
   "api_type": "chat",
   "is_openwebui": true,
