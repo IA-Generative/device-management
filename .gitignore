@@ -75,6 +75,11 @@ data/
 .env
 .env.*
 !.env.example
+!.env.secrets.example
+!infra-minimal/.env.example
+!infra-minimal/.env.secrets.example
+infra-minimal/bootstrap-secret.yaml
+!infra-minimal/bootstrap-secret-example.yaml
 
 ############################
 # Misc
