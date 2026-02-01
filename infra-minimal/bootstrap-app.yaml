@@ -23,6 +23,7 @@ spec:
       containers:
         - name: device-management
           image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.0.1
+          imagePullPolicy: Always
           ports:
             - containerPort: 3001
           env:
@@ -174,15 +175,8 @@ spec:
           volumeMounts:
             - name: enroll-data
               mountPath: /data/enroll
-            - name: config-prod
-              mountPath: /app/config/config.json
-              subPath: config.json
-            - name: config-dev
-              mountPath: /app/config/config.dev.json
-              subPath: config.dev.json
-            - name: config-int
-              mountPath: /app/config/config.int.json
-              subPath: config.int.json
+            - name: config-all
+              mountPath: /app/config
           readinessProbe:
             httpGet:
               path: /healthz
@@ -198,30 +192,60 @@ spec:
       volumes:
         - name: enroll-data
           emptyDir: {}
-        - name: config-prod
-          configMap:
-            name: device-management-config
-            items:
-              - key: config.json
-                path: config.json
-        - name: config-dev
-          configMap:
-            name: device-management-config-dev
-            items:
-              - key: config.dev.json
-                path: config.dev.json
-        - name: config-int
-          configMap:
-            name: device-management-config-int
-            items:
-              - key: config.int.json
-                path: config.int.json
-        - name: config-int
-          configMap:
-            name: device-management-config-int
-            items:
-              - key: config.int.json
-                path: config.int.json     
+        - name: config-all
+          projected:
+            sources:
+              - configMap:
+                  name: device-management-config
+                  items:
+                    - key: config.json
+                      path: config.json
+                    - key: matisse-config.json
+                      path: matisse/config.json
+                    - key: libreoffice-config.json
+                      path: libreoffice/config.json
+                    - key: chrome-config.json
+                      path: chrome/config.json
+                    - key: edge-config.json
+                      path: edge/config.json
+                    - key: firefox-config.json
+                      path: firefox/config.json
+                    - key: misc-config.json
+                      path: misc/config.json
+              - configMap:
+                  name: device-management-config-dev
+                  items:
+                    - key: config.dev.json
+                      path: config.dev.json
+                    - key: matisse-config.dev.json
+                      path: matisse/config.dev.json
+                    - key: libreoffice-config.dev.json
+                      path: libreoffice/config.dev.json
+                    - key: chrome-config.dev.json
+                      path: chrome/config.dev.json
+                    - key: edge-config.dev.json
+                      path: edge/config.dev.json
+                    - key: firefox-config.dev.json
+                      path: firefox/config.dev.json
+                    - key: misc-config.dev.json
+                      path: misc/config.dev.json
+              - configMap:
+                  name: device-management-config-int
+                  items:
+                    - key: config.int.json
+                      path: config.int.json
+                    - key: matisse-config.int.json
+                      path: matisse/config.int.json
+                    - key: libreoffice-config.int.json
+                      path: libreoffice/config.int.json
+                    - key: chrome-config.int.json
+                      path: chrome/config.int.json
+                    - key: edge-config.int.json
+                      path: edge/config.int.json
+                    - key: firefox-config.int.json
+                      path: firefox/config.int.json
+                    - key: misc-config.int.json
+                      path: misc/config.int.json
                            
 ---
 apiVersion: v1

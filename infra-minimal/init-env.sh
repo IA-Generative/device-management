@@ -19,6 +19,11 @@ DM_ALLOW_ORIGINS=*
 DM_MAX_BODY_SIZE_MB=10
 DM_PORT=3001
 
+# Keycloak (local)
+KEYCLOAK_ISSUER_URL=http://localhost:8080/realms/bootstrap
+KEYCLOAK_REALM=bootstrap
+KEYCLOAK_CLIENT_ID=device-management-plugin
+
 # Local enroll storage
 DM_STORE_ENROLL_LOCALLY=true
 DM_ENROLL_DIR=/data/enroll

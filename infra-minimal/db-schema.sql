@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS provisioning (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   email citext NOT NULL,
+  device_name text NOT NULL,
   client_uuid UUID NOT NULL,
   status provisioning_status NOT NULL,
   encryption_key text NOT NULL,
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS provisioning (
 
 COMMENT ON TABLE provisioning IS 'Enrollment/provisioning records for devices.';
 COMMENT ON COLUMN provisioning.email IS 'User email (citext for case-insensitive matching).';
+COMMENT ON COLUMN provisioning.device_name IS 'Human-readable device/plugin name.';
 COMMENT ON COLUMN provisioning.client_uuid IS 'Device/client UUID (logical device identity).';
 COMMENT ON COLUMN provisioning.status IS 'Provisioning lifecycle status.';
 COMMENT ON COLUMN provisioning.encryption_key IS 'Store only safe material (encrypted key/envelope/KMS key id).';
@@ -76,9 +78,14 @@ $$;
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_provisioning_email ON provisioning (email);
+CREATE INDEX IF NOT EXISTS idx_provisioning_device_name ON provisioning (device_name);
 CREATE INDEX IF NOT EXISTS idx_provisioning_client_uuid ON provisioning (client_uuid);
 CREATE INDEX IF NOT EXISTS idx_provisioning_status ON provisioning (status);
 CREATE INDEX IF NOT EXISTS idx_provisioning_updated_at ON provisioning (updated_at DESC);
+
+-- Backfill/compat: add new columns for existing deployments
+ALTER TABLE provisioning
+  ADD COLUMN IF NOT EXISTS device_name text;
 
 -- One active provisioning per device (PENDING or ENROLLED)
 CREATE UNIQUE INDEX IF NOT EXISTS uq_provisioning_active_client
