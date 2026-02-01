@@ -2,9 +2,14 @@
 
 Remplacement de l'implémentation Nginx/Lua par une API FastAPI.
 
+## Documentation
+- `developer-readme.md` : guide opératoire (dev/infra)
+- `consumer-readme.md` : intégration client (PKCE, endpoints, cURL)
+
 ## Endpoints
 
 - `GET /config/config.json` : retourne la configuration (dynamique via variables d'environnement)
+- `GET /config/<device>/config.json` : configuration spécifique par device (matisse, libreoffice, chrome, edge, firefox, misc)
 - `POST|PUT /enroll` : enregistre un payload JSON (stockage local et/ou S3)
 - `GET /healthz` : retourne l'état de santé (200 si OK, 412 si prerequis manquants)
 - `GET /binaries/{path}` : sert des binaires stockés dans S3
@@ -46,6 +51,29 @@ L'app utilise les mécanismes standards (IAM role, `AWS_REGION`, `AWS_ACCESS_KEY
 
 - Docker Compose : `.env` + `.env.secrets`
 - Kubernetes : Helm (`values.yaml` → `env:` et `secrets:`)
+
+## TODO (Enrollment)
+
+Objectif : sécuriser l’enrôlement via **PKCE**, permettre un **provisioning silencieux** (refresh token) et la **récupération sécurisée des paramètres** dans les applications.
+
+### 1) Authentification PKCE (client public)
+- Créer un client Keycloak **public** avec PKCE obligatoire.
+- Interdire ROPC (Direct Access Grants).
+- URL de redirection stricte (localhost + port autorisé).
+
+### 2) Enrôlement applicatif
+- Le plugin récupère le token via PKCE.
+- Vérifie le champ `email` du token (et `email_verified` si dispo).
+- Stocke le refresh token dans le coffre du système (Keychain/SecretService/Windows CredMan).
+
+### 3) Provisioning silencieux
+- Renouveler le `access_token` via `refresh_token` sans interaction utilisateur.
+- Si refresh échoue → forcer re-auth.
+
+### 4) Paramètres et configuration
+- Récupérer la config via `/config/<device>/config.json`.
+- Utiliser `dm_bootstrap_url` pour pointer vers la source (prod vs dev).
+- Conserver les secrets côté serveur (pas dans le plugin).
 
 ## Lancer en local
 
