@@ -353,12 +353,10 @@ def _substitute_env(obj):
 
 def _apply_overrides(cfg: dict) -> dict:
     """Apply targeted overrides from env (e.g., telemetrySel)."""
-    # Keep existing structure but allow overriding config.telemetrySel from env.
+    # Keep existing structure but allow overriding telemetrySel from env (top-level).
     telemetry_salt = os.getenv("DM_TELEMETRY_SALT") or os.getenv("TELEMETRY_SALT")
     if telemetry_salt:
-        cfg.setdefault("config", {})
-        if isinstance(cfg["config"], dict):
-            cfg["config"]["telemetrySel"] = telemetry_salt
+        cfg["telemetrySel"] = telemetry_salt
     return cfg
 
 
