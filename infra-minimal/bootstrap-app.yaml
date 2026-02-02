@@ -97,6 +97,31 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: TOKENMODEL1
+            - name: KEYCLOAK_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_ISSUER_URL
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_REALM
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_CLIENT_ID
+            - name: KEYCLOAK_REDIRECT_URI
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_REDIRECT_URI
+            - name: KEYCLOAK_ALLOWED_REDIRECT_URI
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_ALLOWED_REDIRECT_URI
             - name: TELEMETRY_SALT
               valueFrom:
                 secretKeyRef:
