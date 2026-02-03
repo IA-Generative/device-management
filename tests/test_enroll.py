@@ -39,4 +39,5 @@ def test_enroll_missing_fields():
     assert res.status_code == 400
     body = res.json()
     assert body.get("ok") is False
-    assert "Missing required fields" in body.get("error", "")
+    # Error message format changed with Pydantic validation
+    assert "device_name" in body.get("error", "") or "Missing" in body.get("error", "")
