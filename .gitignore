@@ -87,3 +87,6 @@ infra-minimal/bootstrap-secret.yaml
 # Misc
 ############################
 .idea/
+
+# Bonus
+bordel/
