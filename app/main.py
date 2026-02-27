@@ -6,7 +6,7 @@ import os
 import re
 import time
 import uuid
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote_plus
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
@@ -18,9 +18,6 @@ try:
     import psycopg2  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover
     psycopg2 = None  # type: ignore
-
-if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.environ:
-    os.environ["DATABASE_URL"] = "postgresql://dev:dev@localhost:5432/bootstrap"
 
 from .settings import settings
 from .s3 import s3_client
@@ -61,57 +58,30 @@ SCHEMA_SQL_PATH = os.path.join(os.path.dirname(__file__), "db-schema.sql")
 
 
 def _db_url() -> str | None:
-    return os.getenv("DATABASE_URL") or settings.database_url or None
-
-
-def _db_url_bootstrap() -> str | None:
-    base = _db_url()
-    if not base:
+    """URL de connexion app : PSQL_USER / PSQL_PASSWORD / PSQL_HOST / PSQL_PORT / PSQL_DATABASE."""
+    if not all([settings.psql_host, settings.psql_database, settings.psql_user]):
         return None
-    return _with_db(base, "bootstrap")
+    user = quote_plus(settings.psql_user)
+    password = quote_plus(settings.psql_password or "")
+    port = settings.psql_port
+    return f"postgresql://{user}:{password}@{settings.psql_host}:{port}/{settings.psql_database}"
 
 
-def _with_db(url: str, db_name: str) -> str:
-    parsed = urlparse(url)
-    path = f"/{db_name}"
-    return urlunparse(parsed._replace(path=path))
+def _admin_db_url(db_name: str = "postgres") -> str | None:
+    """URL de connexion admin : PSQL_ADMIN_USER / PSQL_ADMIN_PASSWORD / PSQL_HOST / PSQL_PORT."""
+    if not all([settings.psql_host, settings.psql_admin_user]):
+        return None
+    user = quote_plus(settings.psql_admin_user)
+    password = quote_plus(settings.psql_admin_password or "")
+    port = settings.psql_port
+    return f"postgresql://{user}:{password}@{settings.psql_host}:{port}/{db_name}"
 
 
-def _admin_db_url(base_url: str) -> str | None:
-    explicit = os.getenv("DATABASE_ADMIN_URL") or os.getenv("DM_DATABASE_ADMIN_URL")
-    if explicit:
-        return explicit
-
-    parsed = urlparse(base_url)
-    admin_user = (
-        os.getenv("DB_ADMIN_USER")
-        or os.getenv("POSTGRES_ADMIN_USER")
-        or os.getenv("POSTGRES_USER")
-        or "postgres"
-    )
-    admin_password = (
-        os.getenv("DB_ADMIN_PASSWORD")
-        or os.getenv("POSTGRES_ADMIN_PASSWORD")
-        or os.getenv("POSTGRES_PASSWORD")
-    )
-
-    if admin_password:
-        netloc = f"{admin_user}:{admin_password}@{parsed.hostname}"
-    else:
-        netloc = f"{admin_user}@{parsed.hostname}"
-
-    if parsed.port:
-        netloc = f"{netloc}:{parsed.port}"
-
-    return urlunparse(parsed._replace(netloc=netloc))
-
-
-def _ensure_database_exists(db_url: str, db_name: str = "bootstrap") -> None:
+def _ensure_database_exists(admin_url: str, db_name: str) -> None:
     if psycopg2 is None:
         raise RuntimeError(
             "psycopg2 is not installed. Install it with: pip install psycopg2-binary (dev) or psycopg2 (prod)."
         )
-    admin_url = _with_db(db_url, "postgres")
     conn = psycopg2.connect(admin_url)
     conn.autocommit = True
     try:
@@ -149,7 +119,7 @@ def _ensure_dev_privileges(admin_bootstrap_url: str) -> None:
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            cur.execute("GRANT CONNECT ON DATABASE bootstrap TO dev")
+            cur.execute(f'GRANT CONNECT ON DATABASE "{settings.psql_database}" TO dev')
             cur.execute("GRANT USAGE ON SCHEMA public TO dev")
             cur.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO dev")
             cur.execute("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO dev")
@@ -225,7 +195,7 @@ def _validate_enroll_payload(body_obj: dict) -> list[str]:
 def _upsert_provisioning(*, email: str, client_uuid: str, device_name: str, encryption_key: str) -> None:
     if psycopg2 is None:
         return
-    db_url = _db_url_bootstrap()
+    db_url = _db_url()
     if not db_url:
         return
     conn = psycopg2.connect(db_url)
@@ -274,7 +244,7 @@ def _log_device_connection(
     if psycopg2 is None:
         # DB logging is optional; if psycopg2 isn't installed, just skip.
         return
-    db_url = _db_url_bootstrap()
+    db_url = _db_url()
     if not db_url:
         return
     conn = psycopg2.connect(db_url)
@@ -390,10 +360,10 @@ def healthz():
     else:
         checks["s3"] = {"status": "skipped"}
 
-    db_url = _db_url_bootstrap() or _db_url()
+    db_url = _db_url()
     if not db_url:
         errors.append("Database URL is not configured.")
-        checks["db"] = {"status": "error", "detail": "DATABASE_URL missing"}
+        checks["db"] = {"status": "error", "detail": "PSQL_HOST / PSQL_DATABASE / PSQL_USER missing"}
     elif psycopg2 is None:
         errors.append("psycopg2 is not installed; cannot verify DB connection.")
         checks["db"] = {"status": "error", "detail": "psycopg2 missing"}
@@ -664,35 +634,33 @@ def _startup_db_init() -> None:
     if psycopg2 is None:
         logger.warning("psycopg2 not installed; skipping DB bootstrap/schema init")
         return
-    base_url = _db_url()
-    if not base_url:
+    if not _db_url():
         return
-    admin_url: str | None = None
+    admin_postgres_url = _admin_db_url("postgres")
     try:
-        admin_url = _admin_db_url(base_url)
-        if admin_url:
-            admin_url = _with_db(admin_url, "postgres")
-            _wait_for_db(admin_url, timeout_seconds=30, interval_seconds=1.0)
+        if admin_postgres_url:
+            _wait_for_db(admin_postgres_url, timeout_seconds=30, interval_seconds=1.0)
             try:
-                _ensure_dev_role(admin_url)
+                _ensure_dev_role(admin_postgres_url)
             except psycopg2.Error:
                 logger.warning("Skipping dev role creation/alter (insufficient privilege)")
-            _ensure_database_exists(admin_url, "bootstrap")
+            if settings.psql_database:
+                _ensure_database_exists(admin_postgres_url, settings.psql_database)
         else:
-            logger.warning("No admin database URL available; schema will use app DB credentials only.")
+            logger.warning("No admin URL (PSQL_ADMIN_USER / PSQL_ADMIN_PASSWORD); schema will use app credentials only.")
     except Exception:
-        logger.exception("Failed to ensure database bootstrap exists")
+        logger.exception("Failed to ensure database exists")
     try:
-        bootstrap_url = _db_url_bootstrap()
-        admin_bootstrap_url = _with_db(admin_url, "bootstrap") if admin_url else None
-        if admin_bootstrap_url:
-            _wait_for_db(admin_bootstrap_url, timeout_seconds=30, interval_seconds=1.0)
-            _apply_schema(admin_bootstrap_url)
-            _ensure_dev_privileges(admin_bootstrap_url)
-        elif bootstrap_url:
-            _wait_for_db(bootstrap_url, timeout_seconds=30, interval_seconds=1.0)
-            _apply_schema(bootstrap_url)
+        admin_app_url = _admin_db_url(settings.psql_database or "postgres")
+        app_url = _db_url()
+        if admin_app_url and settings.psql_database:
+            _wait_for_db(admin_app_url, timeout_seconds=30, interval_seconds=1.0)
+            _apply_schema(admin_app_url)
+            _ensure_dev_privileges(admin_app_url)
+        elif app_url:
+            _wait_for_db(app_url, timeout_seconds=30, interval_seconds=1.0)
+            _apply_schema(app_url)
         else:
-            logger.warning("No bootstrap database URL available; skipping schema apply.")
+            logger.warning("No database URL available; skipping schema apply.")
     except Exception:
         logger.exception("Failed to apply DB schema")

@@ -1,15 +1,5 @@
-import os
-
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
-
-
-def _default_database_url() -> str:
-    if os.getenv("DATABASE_URL"):
-        return os.getenv("DATABASE_URL", "")
-    if os.getenv("RELOAD", "").lower() == "true":
-        return "postgresql://dev:dev@localhost:5432/bootstrap"
-    return ""
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -40,8 +30,14 @@ class Settings(BaseSettings):
     s3_endpoint_url: str | None = Field(default=None)
     aws_region: str | None = Field(default=None)
 
-    # Database (optional, used by local tooling)
-    database_url: str = Field(default_factory=_default_database_url)
+    # PostgreSQL (strictement PSQL_*)
+    psql_host: str | None = Field(default=None, validation_alias="PSQL_HOST")
+    psql_port: int = Field(default=5432, validation_alias="PSQL_PORT")
+    psql_database: str | None = Field(default=None, validation_alias="PSQL_DATABASE")
+    psql_user: str | None = Field(default=None, validation_alias="PSQL_USER")
+    psql_password: str | None = Field(default=None, validation_alias="PSQL_PASSWORD")
+    psql_admin_user: str | None = Field(default=None, validation_alias="PSQL_ADMIN_USER")
+    psql_admin_password: str | None = Field(default=None, validation_alias="PSQL_ADMIN_PASSWORD")
 
 
 settings = Settings()
