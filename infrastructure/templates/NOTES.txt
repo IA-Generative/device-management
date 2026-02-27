@@ -1,0 +1,10 @@
+1. Device Management API est déployé.
+2. Health check : {{ if .Values.ingress.enabled }}https://{{ .Values.ingress.host }}/healthz{{ else }}http://device-management:{{ .Values.app.service.port }}/healthz (depuis le cluster){{ end }}
+3. Config : /config/config.json?profile={{ .Values.app.env.DM_CONFIG_PROFILE | default "prod" }}
+4. Enroll : POST /enroll
+
+{{- if .Values.cnpg.enabled }}
+
+PostgreSQL (CNPG) : cluster {{ .Values.cnpg.fullnameOverride }}, service {{ .Values.cnpg.fullnameOverride }}-rw.
+Le secret {{ .Values.app.secretName }} doit contenir la clé "database-url" (URL complète) ou être un basic-auth complété par un mécanisme externe.
+{{- end }}

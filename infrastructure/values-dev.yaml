@@ -1,0 +1,110 @@
+imagePullSecrets:
+  - name: registry-pull-secret
+
+app:
+  image:
+    repository: harbor.sdid.cpin.numerique-interieur.com/device-management/device-management
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  service:
+    port: 3001
+  env:
+    PUBLIC_BASE_URL: https://device-management.sdid-app-hp.cpin.numerique-interieur.gouv.fr
+    DM_APP_ENV: dev
+    DM_CONFIG_ENABLED: "true"
+    DM_CONFIG_PROFILE: dev
+    DM_ENROLL_URL: /enroll
+    DM_ALLOW_ORIGINS: "*"
+    DM_MAX_BODY_SIZE_MB: "10"
+    DM_PORT: "3001"
+    DM_STORE_ENROLL_LOCALLY: "false"
+    DM_ENROLL_DIR: /data/enroll
+    DM_STORE_ENROLL_S3: "false"
+    DM_S3_PREFIX_ENROLL: enroll/
+    DM_S3_PREFIX_BINARIES: binaries/
+    DM_BINARIES_MODE: presign
+    DM_PRESIGN_TTL_SECONDS: "300"
+    DM_S3_BUCKET: "bucket"
+    DM_S3_ENDPOINT_URL: "https://s3.example.com"
+    MODELNAME1: "model1"
+    MODELNAME2: "model2"
+    MODELNAME3: "model3"
+    KEYCLOAK_ISSUER_URL: "https://keycloak.example.com"
+    KEYCLOAK_REALM: "realm"
+    KEYCLOAK_CLIENT_ID: "client-id"
+    KEYCLOAK_REDIRECT_URI: "https://device-management.example.com/callback"
+    KEYCLOAK_ALLOWED_REDIRECT_URI: "https://device-management.example.com/callback"
+    AWS_REGION: "region"
+    PSQL_HOST: "postgres"
+    PSQL_PORT: "5432"
+    PSQL_DATABASE: "bootstrap"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 400m
+      memory: 512Mi
+  persistence:
+    enabled: true
+    size: 1Gi
+
+# Config : hérite des valeurs par défaut (prod minimal). Contenu complet : -f values-config.yaml
+config:
+  enabled: true
+  prod: true
+  dev: true
+  int: true
+
+ingress:
+  enabled: true
+  className: nginx
+  host: device-management.sdid-app-hp.cpin.numerique-interieur.gouv.fr
+  annotations: {}
+  tls:
+   - secretName: device-management-preprod-tls
+     hosts:
+       - device-management.sdid-app-hp.cpin.numerique-interieur.gouv.fr
+
+vault:
+  enabled: true
+  vaultAuthRef: vault-auth
+  refreshAfter: 1h
+  type: kv-v2
+  mount: device-management
+  pathApp: pre-prod/psql-user
+  pathAdmin: pre-prod/psql-admin
+  pathConfig: pre-prod/config
+  secretName: device-management-config
+
+cnpg:
+  enabled: true
+  fullnameOverride: device-management-pg-cluster
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.7
+  dbName: bootstrap
+  credentials:
+    username: dev
+    existingSecrets:
+      enabled: true
+      app:
+        secretName: device-management-db-appuser
+      postgres:
+        secretName: device-management-db-superuser
+  mode: primary
+  instances: 1
+  enableSuperuserAccess: true
+  pvcSize:
+    data: 2Gi
+    wal: 1Gi
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  monitoring:
+    enabled: true
+  backup:
+    enabled: false

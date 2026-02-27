@@ -1,25 +1,27 @@
+{{- if .Values.config.dev }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: device-management-config-dev
-  namespace: bootstrap
+  name: {{ include "device-management.name" . }}-config-dev
+  labels:
+    {{- include "device-management.labels" . | nindent 4 }}
 data:
   config.dev.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/binaries/matisse/evolution.png",
+      "updateUrl": "{{ `$` }}{{ `{{` }}PUBLIC_BASE_URL{{ `}}` }}/binaries/matisse/evolution.png",
       "lastVersion": "0.2.3",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
-        "owuiModel": "${{MODELNAME1}}",
-        "owuiModel2": "${{MODELNAME2}}",
-        "owuiModel3": "${{MODELNAME3}}",
-        "tokenOWUI": "${{TOKENMODEL1}}",
+        "owuiModel": "{{ `$` }}{{ `{{` }}MODELNAME1{{ `}}` }}",
+        "owuiModel2": "{{ `$` }}{{ `{{` }}MODELNAME2{{ `}}` }}",
+        "owuiModel3": "{{ `$` }}{{ `{{` }}MODELNAME3{{ `}}` }}",
+        "tokenOWUI": "{{ `$` }}{{ `{{` }}TOKENMODEL1{{ `}}` }}",
         "authHeaderName": "Authorization",
         "authHeaderPrefix": "Bearer ",
-        "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
-        "keycloakRealm": "${{KEYCLOAK_REALM}}",
-        "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+        "keycloakIssuerUrl": "{{ `$` }}{{ `{{` }}KEYCLOAK_ISSUER_URL{{ `}}` }}",
+        "keycloakRealm": "{{ `$` }}{{ `{{` }}KEYCLOAK_REALM{{ `}}` }}",
+        "keycloakClientId": "{{ `$` }}{{ `{{` }}KEYCLOAK_CLIENT_ID{{ `}}` }}",
         "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails clairs, concis et professionnels. Ton rôle est de rédiger une réponse adaptée au contenu de l'email reçu. Contraintes : - Utilise un ton poli, professionnel et adapté au contexte. - Si l'email contient une demande précise, réponds directement en apportant la solution ou la réponse attendue. - Si l'email contient plusieurs questions, réponds point par point. - Si l'email est ambigu, formule une réponse neutre et propose de clarifier. - Garde la réponse brève (5 à 10 lignes maximum), mais suffisamment complète. - Ne répète pas mot pour mot le texte de l'expéditeur, reformule. - Termine par une formule de politesse adaptée mais ne signe pas les réponses. Format de sortie : rédige uniquement le texte de l'email de réponse, sans balises supplémentaires.",
         "systemPromptFormal": "Tu es un assistant professionnel qui répond en français dans un registre formel (vouvoiement). Utilise un ton clair, courtois et institutionnel. Contraintes : - Emploie systématiquement le vouvoiement (vous, votre, vos). - Sois précis et factuel. - Si l'email contient plusieurs points, réponds point par point. - Si une information manque, propose poliment de la préciser. - Conclus par une formule de politesse adaptée au contexte. Format : rédige uniquement le texte de l'email de réponse, sans balises supplémentaires.",
         "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement (tu/ton/ta/tes) pour rester aligné avec le message source.",
@@ -33,9 +35,9 @@ data:
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
         "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
-        "telemetrySel": "${{TELEMETRY_SALT}}",
+        "telemetrySel": "{{ `$` }}{{ `{{` }}TELEMETRY_SALT{{ `}}` }}",
         "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryKey": "{{ `$` }}{{ `{{` }}TELEMETRY_KEY{{ `}}` }}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]",
         "bootstrap_url": "http://localhost:3001/"
       }
@@ -43,20 +45,20 @@ data:
   matisse-config.dev.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "{{ `$` }}{{ `{{` }}PUBLIC_BASE_URL{{ `}}` }}/mirai/update.json",
       "lastVersion": "0.2.3-dev",
       "environment": "dev",
       "config": {
         "llm_base_urls": "https://openwebui.fake-domain.name/api/",
-        "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
-        "llm_api_tokens": "${{LLM_API_TOKEN}}",
+        "llm_default_models": "{{ `$` }}{{ `{{` }}DEFAULT_MODEL_NAME{{ `}}` }}",
+        "llm_api_tokens": "{{ `$` }}{{ `{{` }}LLM_API_TOKEN{{ `}}` }}",
         "authHeaderName": "Authorization",
         "authHeaderPrefix": "Bearer ",
-        "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
-        "keycloakRealm": "${{KEYCLOAK_REALM}}",
-        "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
-        "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
-        "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
+        "keycloakIssuerUrl": "{{ `$` }}{{ `{{` }}KEYCLOAK_ISSUER_URL{{ `}}` }}",
+        "keycloakRealm": "{{ `$` }}{{ `{{` }}KEYCLOAK_REALM{{ `}}` }}",
+        "keycloakClientId": "{{ `$` }}{{ `{{` }}KEYCLOAK_CLIENT_ID{{ `}}` }}",
+        "keycloak_redirect_uri": "{{ `$` }}{{ `{{` }}KEYCLOAK_REDIRECT_URI{{ `}}` }}",
+        "keycloak_allowed_redirect_uri": "{{ `$` }}{{ `{{` }}KEYCLOAK_ALLOWED_REDIRECT_URI{{ `}}` }}",
         "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails...",
         "systemPromptFormal": "Tu es un assistant professionnel qui répond en français...",
         "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement...",
@@ -70,9 +72,9 @@ data:
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
         "telemetryEndpoint": "https://traces.server.com/v1/traces",
-        "telemetrySel": "${{TELEMETRY_SALT}}",
+        "telemetrySel": "{{ `$` }}{{ `{{` }}TELEMETRY_SALT{{ `}}` }}",
         "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryKey": "{{ `$` }}{{ `{{` }}TELEMETRY_KEY{{ `}}` }}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
       "bootstrap_url": "http://localhost:3001/"
@@ -85,15 +87,15 @@ data:
       "updateUrl": "https://bootstrap.fake-domain.name/binaries/libreoffice/mirai.oxt",
       "config": {
         "llm_base_urls": "https://openwebui.fake-domain.name/api/",
-        "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
-        "llm_api_tokens": "${{LLM_API_TOKEN}}",
+        "llm_default_models": "{{ `$` }}{{ `{{` }}DEFAULT_MODEL_NAME{{ `}}` }}",
+        "llm_api_tokens": "{{ `$` }}{{ `{{` }}LLM_API_TOKEN{{ `}}` }}",
         "authHeaderName": "Authorization",
         "authHeaderPrefix": "Bearer ",
-        "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
-        "keycloakRealm": "${{KEYCLOAK_REALM}}",
-        "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
-        "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
-        "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
+        "keycloakIssuerUrl": "{{ `$` }}{{ `{{` }}KEYCLOAK_ISSUER_URL{{ `}}` }}",
+        "keycloakRealm": "{{ `$` }}{{ `{{` }}KEYCLOAK_REALM{{ `}}` }}",
+        "keycloakClientId": "{{ `$` }}{{ `{{` }}KEYCLOAK_CLIENT_ID{{ `}}` }}",
+        "keycloak_redirect_uri": "{{ `$` }}{{ `{{` }}KEYCLOAK_REDIRECT_URI{{ `}}` }}",
+        "keycloak_allowed_redirect_uri": "{{ `$` }}{{ `{{` }}KEYCLOAK_ALLOWED_REDIRECT_URI{{ `}}` }}",
         "systemPrompt": "Tu es un assistant spécialisé dans la rédaction de documents le contenu doit est concis et professionnels. Ton rôle est d'assister le redacteur pour disposer d'une redaction impecable   Ne répète pas mot pour mot le texte, reformule. Uniquement en texte seul et en français",
         "model": "achanger-model",
         "api_type": "chat",
@@ -117,27 +119,27 @@ data:
         "enrolled": false,
         "telemetryEnabled": true,
         "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
-        "telemetrySel": "${{TELEMETRY_SALT}}",
+        "telemetrySel": "{{ `$` }}{{ `{{` }}TELEMETRY_SALT{{ `}}` }}",
         "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}"
+        "telemetryKey": "{{ `$` }}{{ `{{` }}TELEMETRY_KEY{{ `}}` }}"
       }
     }
   chrome-config.dev.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "{{ `$` }}{{ `{{` }}PUBLIC_BASE_URL{{ `}}` }}/mirai/update.json",
       "lastVersion": "0.2.3-dev",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
-        "owuiModel": "${{MODELNAME1}}",
-        "owuiModel2": "${{MODELNAME2}}",
-        "owuiModel3": "${{MODELNAME3}}",
-        "tokenOWUI": "${{TOKENMODEL1}}",
+        "owuiModel": "{{ `$` }}{{ `{{` }}MODELNAME1{{ `}}` }}",
+        "owuiModel2": "{{ `$` }}{{ `{{` }}MODELNAME2{{ `}}` }}",
+        "owuiModel3": "{{ `$` }}{{ `{{` }}MODELNAME3{{ `}}` }}",
+        "tokenOWUI": "{{ `$` }}{{ `{{` }}TOKENMODEL1{{ `}}` }}",
         "authHeaderName": "Authorization",
         "authHeaderPrefix": "Bearer ",
-        "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
-        "keycloakRealm": "${{KEYCLOAK_REALM}}",
-        "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+        "keycloakIssuerUrl": "{{ `$` }}{{ `{{` }}KEYCLOAK_ISSUER_URL{{ `}}` }}",
+        "keycloakRealm": "{{ `$` }}{{ `{{` }}KEYCLOAK_REALM{{ `}}` }}",
+        "keycloakClientId": "{{ `$` }}{{ `{{` }}KEYCLOAK_CLIENT_ID{{ `}}` }}",
         "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails...",
         "systemPromptFormal": "Tu es un assistant professionnel qui répond en français...",
         "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement...",
@@ -151,9 +153,9 @@ data:
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
         "telemetryEndpoint": "https://traces.server.com/v1/traces",
-        "telemetrySel": "${{TELEMETRY_SALT}}",
+        "telemetrySel": "{{ `$` }}{{ `{{` }}TELEMETRY_SALT{{ `}}` }}",
         "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryKey": "{{ `$` }}{{ `{{` }}TELEMETRY_KEY{{ `}}` }}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
       "bootstrap_url": "http://localhost:3001/"
@@ -161,19 +163,19 @@ data:
   edge-config.dev.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "{{ `$` }}{{ `{{` }}PUBLIC_BASE_URL{{ `}}` }}/mirai/update.json",
       "lastVersion": "0.2.3-dev",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
-        "owuiModel": "${{MODELNAME1}}",
-        "owuiModel2": "${{MODELNAME2}}",
-        "owuiModel3": "${{MODELNAME3}}",
-        "tokenOWUI": "${{TOKENMODEL1}}",
+        "owuiModel": "{{ `$` }}{{ `{{` }}MODELNAME1{{ `}}` }}",
+        "owuiModel2": "{{ `$` }}{{ `{{` }}MODELNAME2{{ `}}` }}",
+        "owuiModel3": "{{ `$` }}{{ `{{` }}MODELNAME3{{ `}}` }}",
+        "tokenOWUI": "{{ `$` }}{{ `{{` }}TOKENMODEL1{{ `}}` }}",
         "authHeaderName": "Authorization",
         "authHeaderPrefix": "Bearer ",
-        "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
-        "keycloakRealm": "${{KEYCLOAK_REALM}}",
-        "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+        "keycloakIssuerUrl": "{{ `$` }}{{ `{{` }}KEYCLOAK_ISSUER_URL{{ `}}` }}",
+        "keycloakRealm": "{{ `$` }}{{ `{{` }}KEYCLOAK_REALM{{ `}}` }}",
+        "keycloakClientId": "{{ `$` }}{{ `{{` }}KEYCLOAK_CLIENT_ID{{ `}}` }}",
         "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails...",
         "systemPromptFormal": "Tu es un assistant professionnel qui répond en français...",
         "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement...",
@@ -187,9 +189,9 @@ data:
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
         "telemetryEndpoint": "https://traces.server.com/v1/traces",
-        "telemetrySel": "${{TELEMETRY_SALT}}",
+        "telemetrySel": "{{ `$` }}{{ `{{` }}TELEMETRY_SALT{{ `}}` }}",
         "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryKey": "{{ `$` }}{{ `{{` }}TELEMETRY_KEY{{ `}}` }}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
       "bootstrap_url": "http://localhost:3001/"
@@ -197,19 +199,19 @@ data:
   firefox-config.dev.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "{{ `$` }}{{ `{{` }}PUBLIC_BASE_URL{{ `}}` }}/mirai/update.json",
       "lastVersion": "0.2.3-dev",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
-        "owuiModel": "${{MODELNAME1}}",
-        "owuiModel2": "${{MODELNAME2}}",
-        "owuiModel3": "${{MODELNAME3}}",
-        "tokenOWUI": "${{TOKENMODEL1}}",
+        "owuiModel": "{{ `$` }}{{ `{{` }}MODELNAME1{{ `}}` }}",
+        "owuiModel2": "{{ `$` }}{{ `{{` }}MODELNAME2{{ `}}` }}",
+        "owuiModel3": "{{ `$` }}{{ `{{` }}MODELNAME3{{ `}}` }}",
+        "tokenOWUI": "{{ `$` }}{{ `{{` }}TOKENMODEL1{{ `}}` }}",
         "authHeaderName": "Authorization",
         "authHeaderPrefix": "Bearer ",
-        "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
-        "keycloakRealm": "${{KEYCLOAK_REALM}}",
-        "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+        "keycloakIssuerUrl": "{{ `$` }}{{ `{{` }}KEYCLOAK_ISSUER_URL{{ `}}` }}",
+        "keycloakRealm": "{{ `$` }}{{ `{{` }}KEYCLOAK_REALM{{ `}}` }}",
+        "keycloakClientId": "{{ `$` }}{{ `{{` }}KEYCLOAK_CLIENT_ID{{ `}}` }}",
         "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails...",
         "systemPromptFormal": "Tu es un assistant professionnel qui répond en français...",
         "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement...",
@@ -223,9 +225,9 @@ data:
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
         "telemetryEndpoint": "https://traces.server.com/v1/traces",
-        "telemetrySel": "${{TELEMETRY_SALT}}",
+        "telemetrySel": "{{ `$` }}{{ `{{` }}TELEMETRY_SALT{{ `}}` }}",
         "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryKey": "{{ `$` }}{{ `{{` }}TELEMETRY_KEY{{ `}}` }}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
       "bootstrap_url": "http://localhost:3001/"
@@ -233,19 +235,19 @@ data:
   misc-config.dev.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "{{ `$` }}{{ `{{` }}PUBLIC_BASE_URL{{ `}}` }}/mirai/update.json",
       "lastVersion": "0.2.3-dev",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
-        "owuiModel": "${{MODELNAME1}}",
-        "owuiModel2": "${{MODELNAME2}}",
-        "owuiModel3": "${{MODELNAME3}}",
-        "tokenOWUI": "${{TOKENMODEL1}}",
+        "owuiModel": "{{ `$` }}{{ `{{` }}MODELNAME1{{ `}}` }}",
+        "owuiModel2": "{{ `$` }}{{ `{{` }}MODELNAME2{{ `}}` }}",
+        "owuiModel3": "{{ `$` }}{{ `{{` }}MODELNAME3{{ `}}` }}",
+        "tokenOWUI": "{{ `$` }}{{ `{{` }}TOKENMODEL1{{ `}}` }}",
         "authHeaderName": "Authorization",
         "authHeaderPrefix": "Bearer ",
-        "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
-        "keycloakRealm": "${{KEYCLOAK_REALM}}",
-        "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+        "keycloakIssuerUrl": "{{ `$` }}{{ `{{` }}KEYCLOAK_ISSUER_URL{{ `}}` }}",
+        "keycloakRealm": "{{ `$` }}{{ `{{` }}KEYCLOAK_REALM{{ `}}` }}",
+        "keycloakClientId": "{{ `$` }}{{ `{{` }}KEYCLOAK_CLIENT_ID{{ `}}` }}",
         "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails...",
         "systemPromptFormal": "Tu es un assistant professionnel qui répond en français...",
         "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement...",
@@ -259,10 +261,11 @@ data:
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
         "telemetryEndpoint": "https://traces.server.com/v1/traces",
-        "telemetrySel": "${{TELEMETRY_SALT}}",
+        "telemetrySel": "{{ `$` }}{{ `{{` }}TELEMETRY_SALT{{ `}}` }}",
         "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryKey": "{{ `$` }}{{ `{{` }}TELEMETRY_KEY{{ `}}` }}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
       "bootstrap_url": "http://localhost:3001/"
     }
+{{- end }}
