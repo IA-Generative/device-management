@@ -1,0 +1,36 @@
+include:
+  - project: $CATALOG_PATH
+    file:
+      - vault-ci.yml
+      - buildkit-ci.yml
+    ref: main
+
+default:
+    image: alpine:latest
+
+variables:
+    REGISTRY_URL: "${IMAGE_REPOSITORY}"
+    DOCKERFILE: Dockerfile
+
+stages:
+  - read-secret
+  - docker-build
+
+read_secret:
+  only:
+    - web
+  stage: read-secret
+  extends:
+    - .vault:read_secret
+
+docker-build-back:
+  needs: ["read_secret"]
+  only:
+    - web
+  variables:
+    WORKING_DIR: "/"
+    IMAGE_NAME: device-management
+    TAG: "1.0.0"
+  stage: docker-build
+  extends:
+    - .buildkit:build-push

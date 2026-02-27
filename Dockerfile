@@ -11,8 +11,11 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app /app/app
-COPY config /app/config
-COPY infra-minimal/db-schema.sql /app/infra-minimal/db-schema.sql
+COPY db-schema.sql /app/db-schema.sql
+
+RUN addgroup --gid 1001 appuser \
+    && adduser --uid 1001 --gid 1001 --disabled-password --gecos "" appuser \
+    && chown -R appuser:appuser /app
 
 # Defaults
 ENV DM_ENROLL_DIR=/data/enroll \
@@ -21,5 +24,7 @@ ENV DM_ENROLL_DIR=/data/enroll \
     DM_MAX_BODY_SIZE_MB=10
 
 EXPOSE 3001
+
+USER appuser
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3001"]

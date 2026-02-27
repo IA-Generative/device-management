@@ -57,7 +57,7 @@ def _repo_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-SCHEMA_SQL_PATH = os.path.join(_repo_root(), "infra-minimal", "db-schema.sql")
+SCHEMA_SQL_PATH = os.path.join(os.path.dirname(__file__), "db-schema.sql")
 
 
 def _db_url() -> str | None:

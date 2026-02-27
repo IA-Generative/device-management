@@ -34,9 +34,8 @@ services:
       # Database (for local tooling / future use)
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-dev}:${POSTGRES_PASSWORD:-dev}@postgres:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-bootstrap}}
     volumes:
-      - ./data:/data
-      - ../app:/app/app
-      - ../config:/app/config:ro
+      - data:/data
+      - ./config:/app/config:ro
     depends_on:
       - postgres
 
@@ -63,3 +62,4 @@ services:
 
 volumes:
   postgres-data:
+  data:
