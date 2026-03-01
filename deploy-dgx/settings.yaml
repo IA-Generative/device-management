@@ -1,0 +1,17 @@
+# DGX deployment settings (simple YAML: one key/value per line)
+namespace: bootstrap
+
+gateway_name: api-gateway
+gateway_namespace: envoy-gateway-system
+hostname: onyxia.gpu.minint.fr
+
+app_path_prefix: /bootstrap
+adminer_path_prefix: /adminer
+filebrowser_path_prefix: /files
+
+public_base_url: https://onyxia.gpu.minint.fr/bootstrap
+keycloak_issuer_url: https://sso.mirai.interieur.gouv.fr/
+keycloak_realm: mirai
+
+dm_store_enroll_s3: "false"
+dm_binaries_mode: local

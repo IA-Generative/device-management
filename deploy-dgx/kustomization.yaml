@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - manifests/00-namespace.yaml
+  - secrets/all-secrets.yaml
+  - manifests/10-configmap-device-management.yaml
+  - manifests/18-device-management-content-pvc.yaml
+  - manifests/19-device-management-enroll-pvc.yaml
+  - manifests/20-device-management-deployment.yaml
+  - manifests/21-device-management-service.yaml
+  - manifests/22-httproute.yaml
+  - manifests/29-postgres-pvc.yaml
+  - manifests/30-postgres-deployment.yaml
+  - manifests/31-postgres-service.yaml
+  - manifests/40-adminer-deployment.yaml
+  - manifests/41-adminer-service.yaml
+  - manifests/42-filebrowser-db-pvc.yaml
+  - manifests/51-filebrowser-users-job.yaml
+  - manifests/52-filebrowser-deployment.yaml
+  - manifests/53-filebrowser-service.yaml

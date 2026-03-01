@@ -7,7 +7,7 @@ data:
   config.int.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/binaries/matisse/evolution.png",
+      "updateUrl": "https://onyxia.gpu.minint.fr/bootstrap",
       "lastVersion": "0.2.3",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
@@ -37,13 +37,13 @@ data:
         "telemetryAuthorizationType": "Basic",
         "telemetryKey": "${{TELEMETRY_KEY}}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]",
-        "bootstrap_url": "http://localhost:3001/"
+        "bootstrap_url": "https://onyxia.gpu.minint.fr/bootstrap"
       }
     }
   matisse-config.int.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "https://onyxia.gpu.minint.fr/bootstrap",
       "lastVersion": "0.2.3-int",
       "environment": "int",
       "config": {
@@ -75,22 +75,22 @@ data:
         "telemetryKey": "${{TELEMETRY_KEY}}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
-      "bootstrap_url": "http://localhost:3001/"
+      "bootstrap_url": "https://onyxia.gpu.minint.fr/bootstrap"
     }
   libreoffice-config.int.json: |
     {
       "configVersion": 1,
       "environment": "int",
       "lastversion": -1,
-      "updateUrl": "https://bootstrap.fake-domain.name/binaries/libreoffice/mirai.oxt",
+      "updateUrl": "https://onyxia.gpu.minint.fr/bootstrap",
       "config": {
         "llm_base_urls": "https://chat.mirai.interieur.gouv.fr/api/",
         "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
         "llm_api_tokens": "${{LLM_API_TOKEN}}",
         "authHeaderName": "Authorization",
         "authHeaderPrefix": "Bearer ",
-        "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
-        "keycloakRealm": "${{KEYCLOAK_REALM}}",
+        "keycloakIssuerUrl": "https://sso.mirai.interieur.gouv.fr/",
+        "keycloakRealm": "mirai",
         "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
         "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
         "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
@@ -109,7 +109,7 @@ data:
         "simplify_selection_system_prompt": "",
         "_comment_device_management": "Device Management (configuration centralisee)",
         "enabled": true,
-        "bootstrap_url": "http://localhost:3001/",
+        "bootstrap_url": "https://onyxia.gpu.minint.fr/bootstrap",
         "config_path": "/config/libreoffice/config.json",
         "device_name": "mirai-libreoffice",
         "access_token": "",
@@ -129,7 +129,7 @@ data:
   chrome-config.int.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "https://onyxia.gpu.minint.fr/bootstrap",
       "lastVersion": "0.2.3-int",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
@@ -158,12 +158,12 @@ data:
         "telemetryKey": "${{TELEMETRY_KEY}}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
-      "bootstrap_url": "http://localhost:3001/"
+      "bootstrap_url": "https://onyxia.gpu.minint.fr/bootstrap"
     }
   edge-config.int.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "https://onyxia.gpu.minint.fr/bootstrap",
       "lastVersion": "0.2.3-int",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
@@ -192,12 +192,12 @@ data:
         "telemetryKey": "${{TELEMETRY_KEY}}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
-      "bootstrap_url": "http://localhost:3001/"
+      "bootstrap_url": "https://onyxia.gpu.minint.fr/bootstrap"
     }
   firefox-config.int.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "https://onyxia.gpu.minint.fr/bootstrap",
       "lastVersion": "0.2.3-int",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
@@ -226,12 +226,12 @@ data:
         "telemetryKey": "${{TELEMETRY_KEY}}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
-      "bootstrap_url": "http://localhost:3001/"
+      "bootstrap_url": "https://onyxia.gpu.minint.fr/bootstrap"
     }
   misc-config.int.json: |
     {
       "enabled": true,
-      "updateUrl": "${{PUBLIC_BASE_URL}}/mirai/update.json",
+      "updateUrl": "https://onyxia.gpu.minint.fr/bootstrap",
       "lastVersion": "0.2.3-int",
       "config": {
         "owuiEndpoint": "https://chat.mirai.interieur.gouv.fr/api/",
@@ -260,5 +260,5 @@ data:
         "telemetryKey": "${{TELEMETRY_KEY}}",
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       },
-      "bootstrap_url": "http://localhost:3001/"
+      "bootstrap_url": "https://onyxia.gpu.minint.fr/bootstrap"
     }

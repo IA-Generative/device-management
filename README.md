@@ -1,30 +1,30 @@
 # Device Management (FastAPI)
 
-Remplacement de l'implémentation Nginx/Lua par une API FastAPI.
+Replacement of the Nginx/Lua implementation with a FastAPI API.
 
 ## Documentation
-- `developer-readme.md` : guide opératoire (dev/infra)
-- `consumer-readme.md` : intégration client (PKCE, endpoints, cURL)
+- `developer-readme.md`: operations guide (dev/infra)
+- `consumer-readme.md`: client integration (PKCE, endpoints, cURL)
 
 ## Endpoints
 
-- `GET /config/config.json` : retourne la configuration (dynamique via variables d'environnement)
-- `GET /config/<device>/config.json` : configuration spécifique par device (matisse, libreoffice, chrome, edge, firefox, misc)
-- `POST|PUT /enroll` : enregistre un payload JSON (stockage local et/ou S3)
-- `GET /healthz` : retourne l'état de santé (200 si OK, 412 si prerequis manquants)
-- `GET /binaries/{path}` : sert des binaires stockés dans S3
-  - mode `presign` (par défaut) : redirige vers une URL présignée
-  - mode `proxy` : proxy/streaming via l'API (le client ne voit pas S3)
+- `GET /config/config.json`: returns configuration (dynamic via environment variables)
+- `GET /config/<device>/config.json`: device-specific configuration (matisse, libreoffice, chrome, edge, firefox, misc)
+- `POST|PUT /enroll`: records a JSON payload (local storage and/or S3)
+- `GET /healthz`: returns health status (200 if OK, 412 if prerequisites missing)
+- `GET /binaries/{path}`: serves binaries stored in S3
+  - `presign` mode (default): redirects to a presigned URL
+  - `proxy` mode: proxy/streaming via the API (client does not see S3)
 
-## Variables d'environnement (préfixe `DM_`)
+## Environment variables (`DM_` prefix)
 
-### URL publique (utilisée dans config/config.json)
+### Public URL (used in config/config.json)
 - `PUBLIC_BASE_URL=https://server.com`
 
-Le fichier `config/config.json` supporte les placeholders `${VARNAME}` (ex: `${PUBLIC_BASE_URL}`).
+The `config/config.json` file supports placeholders `${VARNAME}` (e.g. `${PUBLIC_BASE_URL}`).
 
 ### API / CORS
-- `DM_ALLOW_ORIGINS="*"` ou liste CSV d'origines
+- `DM_ALLOW_ORIGINS="*"` or CSV list of origins
 - `DM_MAX_BODY_SIZE_MB=10`
 
 ### /config/config.json
@@ -32,50 +32,50 @@ Le fichier `config/config.json` supporte les placeholders `${VARNAME}` (ex: `${P
 - `DM_APP_ENV=dev`
 - `DM_ENROLL_URL=/enroll`
 
-### Stockage enroll
+### Enroll storage
 - `DM_STORE_ENROLL_LOCALLY=true`
 - `DM_ENROLL_DIR=/data/enroll`
 - `DM_STORE_ENROLL_S3=false`
 - `DM_S3_BUCKET=...`
 - `DM_S3_PREFIX_ENROLL=enroll/`
 
-### Binaires S3
+### S3 binaries
 - `DM_S3_PREFIX_BINARIES=binaries/`
-- `DM_BINARIES_MODE=presign` (ou `proxy`)
+- `DM_BINARIES_MODE=presign` (or `proxy`)
 - `DM_PRESIGN_TTL_SECONDS=300`
 
 ### AWS
-L'app utilise les mécanismes standards (IAM role, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, etc.)
+The app uses standard mechanisms (IAM role, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, etc.)
 
-## Charger les variables d'environnement et secrets
+## Load environment variables and secrets
 
-- Docker Compose : `.env` + `.env.secrets`
-- Kubernetes : Helm (`values.yaml` → `env:` et `secrets:`)
+- Docker Compose: `.env` + `.env.secrets`
+- Kubernetes: Helm (`values.yaml` → `env:` and `secrets:`)
 
 ## TODO (Enrollment)
 
-Objectif : sécuriser l’enrôlement via **PKCE**, permettre un **provisioning silencieux** (refresh token) et la **récupération sécurisée des paramètres** dans les applications.
+Goal: secure enrollment with **PKCE**, enable **silent provisioning** (refresh token), and **secure parameter retrieval** in applications.
 
-### 1) Authentification PKCE (client public)
-- Créer un client Keycloak **public** avec PKCE obligatoire.
-- Interdire ROPC (Direct Access Grants).
-- URL de redirection stricte (localhost + port autorisé).
+### 1) PKCE authentication (public client)
+- Create a **public** Keycloak client with mandatory PKCE.
+- Disable ROPC (Direct Access Grants).
+- Strict redirect URL (localhost + allowed port).
 
-### 2) Enrôlement applicatif
-- Le plugin récupère le token via PKCE.
-- Vérifie le champ `email` du token (et `email_verified` si dispo).
-- Stocke le refresh token dans le coffre du système (Keychain/SecretService/Windows CredMan).
+### 2) Application enrollment
+- The plugin retrieves the token via PKCE.
+- Checks the token’s `email` field (and `email_verified` if available).
+- Stores the refresh token in the system vault (Keychain/SecretService/Windows CredMan).
 
-### 3) Provisioning silencieux
-- Renouveler le `access_token` via `refresh_token` sans interaction utilisateur.
-- Si refresh échoue → forcer re-auth.
+### 3) Silent provisioning
+- Renew `access_token` via `refresh_token` without user interaction.
+- If refresh fails → force re-auth.
 
-### 4) Paramètres et configuration
-- Récupérer la config via `/config/<device>/config.json`.
-- Utiliser `dm_bootstrap_url` pour pointer vers la source (prod vs dev).
-- Conserver les secrets côté serveur (pas dans le plugin).
+### 4) Settings and configuration
+- Fetch config via `/config/<device>/config.json`.
+- Use `dm_bootstrap_url` to point to the source (prod vs dev).
+- Keep secrets server-side (not in the plugin).
 
-## Lancer en local
+## Run locally
 
 ```bash
 python -m venv .venv
@@ -84,27 +84,27 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8088
 ```
 
-## Lancer via Docker
+## Run with Docker
 
 ```bash
 docker build -t device-management-fastapi .
 docker run --rm -p 8088:8088 -e DM_APP_ENV=dev -v "$(pwd)/data:/data" device-management-fastapi
 ```
 
-## Lancer via docker-compose
+## Run with docker-compose
 
 ```bash
 cp .env.example .env
 cp .env.secrets.example .env.secrets
-# Éditez .env et .env.secrets (PUBLIC_BASE_URL, S3, secrets...)
+# Edit .env and .env.secrets (PUBLIC_BASE_URL, S3, secrets...)
 docker compose up --build
 ```
 
-## Déploiement Kubernetes (Helm)
+## Kubernetes deployment (Helm)
 
-Le chart Helm est disponible dans `helm/device-management`.
+The Helm chart is available in `helm/device-management`.
 
-Exemple d'installation :
+Example install:
 
 ```bash
 helm upgrade --install device-management ./helm/device-management \
@@ -114,11 +114,11 @@ helm upgrade --install device-management ./helm/device-management \
 
 ### Configuration / secrets via Helm
 
-- Variables non sensibles : `values.yaml` → `env:`
-- Secrets : `values.yaml` → `secrets:` ou bien `existingSecretName`
-- Fichier `config.json` : `values.yaml` → `config.configJson`
+- Non-sensitive variables: `values.yaml` → `env:`
+- Secrets: `values.yaml` → `secrets:` or `existingSecretName`
+- `config.json` file: `values.yaml` → `config.configJson`
 
-Exemple de `values.yaml` minimal :
+Minimal `values.yaml` example:
 
 ```yaml
 env:
@@ -131,8 +131,8 @@ secrets:
 
 ## TODO (Cloud Pi Native)
 
-- Porter l'ensemble des manifestes Kubernetes en **chart Helm** (un seul point d’entrée, valeurs centralisées, profils par environnement).
-- Externaliser les secrets dans un **vault d’environnement** conforme au cadre **Cloud Pi Native** (www.cloud-pi-native.fr) :
-  - éviter les secrets en clair dans Git,
-  - définir une politique de rotation et d’accès (moindre privilège),
-  - injecter les secrets via des mécanismes natifs (external-secrets / CSI / vault provider).
+- Convert all Kubernetes manifests into a **Helm chart** (single entry point, centralized values, environment profiles).
+- Externalize secrets in an **environment vault** compliant with **Cloud Pi Native** (www.cloud-pi-native.fr):
+  - avoid plaintext secrets in Git,
+  - define a rotation and access policy (least privilege),
+  - inject secrets via native mechanisms (external-secrets / CSI / vault provider).

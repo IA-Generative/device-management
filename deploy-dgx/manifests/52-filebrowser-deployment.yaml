@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filebrowser
+  namespace: bootstrap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filebrowser
+  template:
+    metadata:
+      labels:
+        app: filebrowser
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: filebrowser
+          image: docker.io/filebrowser/filebrowser:v2.31.2
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--address"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
+            - "--root"
+            - "/srv"
+            - "--database"
+            - "/database/filebrowser.db"
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: content-data
+              mountPath: /srv
+            - name: db
+              mountPath: /database
+      volumes:
+        - name: content-data
+          persistentVolumeClaim:
+            claimName: device-management-content-pvc
+        - name: db
+          persistentVolumeClaim:
+            claimName: filebrowser-db-pvc

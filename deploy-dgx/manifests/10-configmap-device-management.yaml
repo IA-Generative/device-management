@@ -80,7 +80,7 @@ data:
       "configVersion": 1,
       "environment": "prod",
       "lastversion": -1,
-      "updateUrl": "https://bootstrap.fake-domain.name/binaries/libreoffice/mirai.oxt",
+      "updateUrl": "${{PUBLIC_BASE_URL}}/binaries/libreoffice/mirai.oxt",
       "config": {
         "llm_base_urls": "https://openwebui.fake-domain.name/api/",
         "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
@@ -109,7 +109,7 @@ data:
         "simplify_selection_system_prompt": "",
         "_comment_device_management": "Device Management (configuration centralisee)",
         "enabled": true,
-        "bootstrap_url": "https://bootstrap.fake-domain.name/",
+        "bootstrap_url": "${{PUBLIC_BASE_URL}}/",
         "config_path": "/config/libreoffice/config.json",
         "device_name": "mirai-libreoffice",
         "access_token": "",

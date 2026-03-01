@@ -35,10 +35,12 @@ class Settings(BaseSettings):
 
     # S3 binaries
     s3_prefix_binaries: str = Field(default="binaries/")
-    binaries_mode: str = Field(default="presign")  # "presign" or "proxy"
+    binaries_mode: str = Field(default="presign")  # "presign" or "proxy" or "local"
     presign_ttl_seconds: int = Field(default=300)
     s3_endpoint_url: str | None = Field(default=None)
     aws_region: str | None = Field(default=None)
+    local_binaries_dir: str = Field(default="/data/content/binaries")
+    config_dir: str = Field(default="/data/content/config")
 
     # Database (optional, used by local tooling)
     database_url: str = Field(default_factory=_default_database_url)
