@@ -8,6 +8,26 @@ Ce README est organise en 2 parties:
 
 ## 1) Usage quotidien
 
+### 1.0 Liens services (exemple fictif)
+
+Exemple d'URL de reference (fictive):
+- base host: `https://dgx.example.invalid`
+
+Services exposes:
+- application device-management: `https://dgx.example.invalid/bootstrap`
+- adminer: `https://dgx.example.invalid/adminer`
+- filebrowser: `https://dgx.example.invalid/files`
+
+Endpoints utiles:
+- liveness: `https://dgx.example.invalid/bootstrap/livez`
+- health detaille: `https://dgx.example.invalid/bootstrap/healthz`
+- config matisse: `https://dgx.example.invalid/bootstrap/config/matisse/config.json`
+- config libreoffice: `https://dgx.example.invalid/bootstrap/config/libreoffice/config.json`
+- binaire test png: `https://dgx.example.invalid/bootstrap/binaries/test/ok.png`
+- binaire test json: `https://dgx.example.invalid/bootstrap/binaries/test/test.json`
+
+Ces liens sont a adapter avec la valeur reelle de `hostname` dans `deploy-dgx/settings.yaml`.
+
 ### 1.1 Verifier le contexte kubectl
 
 Avant toute action:
@@ -132,6 +152,27 @@ DGX_TEST_EXTERNAL=1 DGX_TEST_EXTERNAL_INSECURE=1 ./deploy-dgx/scripts/smoke-test
 Desactiver le smoke test auto dans `deploy-full`:
 ```bash
 DGX_SKIP_SMOKE_TEST=1 ./deploy-dgx/deploy-full-dgx.sh
+```
+
+### 1.8 Depannage Filebrowser (`/files` ne charge pas)
+
+Symptome classique:
+- `GET /files/` retourne `200`
+- mais les assets `/static/...` retournent `404`
+
+Cause:
+- Filebrowser est derriere un prefix `/files` et doit etre lance avec `--baseurl /files`.
+
+Correctif:
+```bash
+kubectl -n bootstrap apply -f deploy-dgx/manifests/52-filebrowser-deployment.yaml
+kubectl -n bootstrap rollout status deployment/filebrowser --timeout=180s
+```
+
+Verification:
+```bash
+curl -sS https://onyxia.gpu.minint.fr/files/ | grep -E \"BaseURL|StaticURL\"
+curl -I https://onyxia.gpu.minint.fr/files/static/img/icons/favicon-16x16.png
 ```
 
 ## 2) Installation initiale et tests
