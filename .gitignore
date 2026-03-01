@@ -76,6 +76,7 @@ data/
 ############################
 .env
 .env.*
+config.default.json
 !.env.example
 !.env.secrets.example
 !infra-minimal/.env.example
