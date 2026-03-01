@@ -90,3 +90,13 @@ infra-minimal/bootstrap-secret.yaml
 
 # Bonus
 bordel/
+
+############################
+# DGX local deployment (do not publish)
+############################
+dgx-deploy/
+deploy-dgx/.DS_Store
+deploy-dgx/.env.registry
+deploy-dgx/secrets/*.yaml
+!deploy-dgx/secrets/*-example.yaml
+!deploy-dgx/.env.registry.example

@@ -1,0 +1,65 @@
+services:
+  device-management:
+    build:
+      context: ..
+      dockerfile: deploy-dgx/Dockerfile
+    ports:
+      - "${DM_PORT:-3001}:3001"
+    env_file:
+      - .env
+      - .env.secrets
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://server.com/bootstrap}
+      DM_APP_ENV: ${DM_APP_ENV:-dev}
+      DM_CONFIG_ENABLED: ${DM_CONFIG_ENABLED:-true}
+      DM_CONFIG_PROFILE: ${DM_CONFIG_PROFILE:-prod}
+      DM_ENROLL_URL: ${DM_ENROLL_URL:-/bootstrap/enroll}
+      DM_ALLOW_ORIGINS: ${DM_ALLOW_ORIGINS:-*}
+      DM_MAX_BODY_SIZE_MB: ${DM_MAX_BODY_SIZE_MB:-10}
+
+      # Local enroll storage
+      DM_STORE_ENROLL_LOCALLY: ${DM_STORE_ENROLL_LOCALLY:-true}
+      DM_ENROLL_DIR: ${DM_ENROLL_DIR:-/data/enroll}
+
+      # Optional S3
+      DM_STORE_ENROLL_S3: ${DM_STORE_ENROLL_S3:-true}
+      DM_S3_BUCKET: ${DM_S3_BUCKET:-}
+      DM_S3_PREFIX_ENROLL: ${DM_S3_PREFIX_ENROLL:-enroll/}
+      DM_S3_PREFIX_BINARIES: ${DM_S3_PREFIX_BINARIES:-binaries/}
+      DM_BINARIES_MODE: ${DM_BINARIES_MODE:-proxy}
+      DM_PRESIGN_TTL_SECONDS: ${DM_PRESIGN_TTL_SECONDS:-300}
+      DM_S3_ENDPOINT_URL: ${DM_S3_ENDPOINT_URL:-}
+      AWS_REGION: ${AWS_REGION:-}
+
+      # Database (for local tooling / future use)
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-dev}:${POSTGRES_PASSWORD:-dev}@postgres:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-bootstrap}}
+    volumes:
+      - ./data:/data
+      - ../app:/app/app
+      - ../config:/app/config:ro
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+      LANG: C
+      LC_ALL: C
+      POSTGRES_DB: ${POSTGRES_DB:-bootstrap}
+      POSTGRES_USER: ${POSTGRES_USER:-dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  adminer:
+    image: adminer:latest
+    ports:
+      - "${ADMINER_PORT:-8080}:8080"
+    depends_on:
+      - postgres
+
+volumes:
+  postgres-data:
