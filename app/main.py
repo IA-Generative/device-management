@@ -4,15 +4,18 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import uvicorn
+import boto3
+from botocore.client import Config
 
 try:
     import psycopg2  # type: ignore
@@ -306,26 +309,39 @@ def _load_config_template(profile: str, device: str | None = None) -> dict:
     - config/config.<profile>.json
     - config/config.json
     """
-    base = os.path.join(_repo_root(), "config")
-    candidates = []
-    if device:
+    bases: list[str] = []
+    if settings.config_dir:
+        bases.append(settings.config_dir)
+    bases.append(os.path.join(_repo_root(), "config"))
+
+    for base in bases:
+        candidates = []
+        if device:
+            candidates.extend(
+                [
+                    os.path.join(base, device, f"config.{profile}.json"),
+                    os.path.join(base, device, "config.json"),
+                ]
+            )
         candidates.extend(
             [
-                os.path.join(base, device, f"config.{profile}.json"),
-                os.path.join(base, device, "config.json"),
+                os.path.join(base, f"config.{profile}.json"),
+                os.path.join(base, "config.json"),
             ]
         )
-    candidates.extend(
-        [
-            os.path.join(base, f"config.{profile}.json"),
-            os.path.join(base, "config.json"),
-        ]
-    )
-    for p in candidates:
-        if os.path.isfile(p):
-            with open(p, "r", encoding="utf-8") as f:
-                return json.load(f)
+        for p in candidates:
+            if os.path.isfile(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
     raise FileNotFoundError("No config template found in ./config (expected config.json)")
+
+
+def _safe_path_join(base_dir: str, relative_path: str) -> str:
+    base_abs = os.path.abspath(base_dir)
+    candidate = os.path.abspath(os.path.join(base_abs, relative_path.lstrip("/")))
+    if candidate == base_abs or candidate.startswith(base_abs + os.sep):
+        return candidate
+    raise HTTPException(status_code=400, detail="Invalid path")
 
 
 def _substitute_env_in_str(value: str) -> str:
@@ -354,6 +370,41 @@ def _substitute_env(obj):
 def _apply_overrides(cfg: dict) -> dict:
     """Apply targeted overrides from env (currently none)."""
     return cfg
+
+
+def _s3_connectivity_check_worker() -> None:
+    s3_required = settings.store_enroll_s3 or settings.binaries_mode in ("presign", "proxy")
+    if not s3_required:
+        logger.info("S3 startup check skipped: S3 is not required by current settings.")
+        return
+    if not settings.s3_bucket:
+        logger.warning("S3 startup check skipped: DM_S3_BUCKET is not set.")
+        return
+
+    logger.info("S3 startup check: testing connectivity to bucket '%s'...", settings.s3_bucket)
+    try:
+        endpoint_url = settings.s3_endpoint_url or None
+        region = settings.aws_region or os.getenv("AWS_REGION") or None
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            region_name=region,
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "virtual"},
+                connect_timeout=2,
+                read_timeout=3,
+                retries={"max_attempts": 1},
+            ),
+        )
+        s3.head_bucket(Bucket=settings.s3_bucket)
+        logger.info("S3 startup check: connectivity OK for bucket '%s'.", settings.s3_bucket)
+    except Exception as exc:
+        logger.warning("S3 startup check failed (non-blocking): %r", exc)
+
+
+def _start_s3_connectivity_check_non_blocking() -> None:
+    threading.Thread(target=_s3_connectivity_check_worker, daemon=True).start()
 
 
 @app.get("/healthz")
@@ -433,6 +484,21 @@ def healthz():
             "status": 200,
             "detail": "All dependencies are healthy.",
             "checks": checks,
+        },
+    )
+
+
+@app.get("/livez")
+def livez():
+    """Lightweight liveness endpoint (no external dependency checks)."""
+    return JSONResponse(
+        status_code=200,
+        media_type="application/problem+json",
+        content={
+            "type": "https://example.com/problems/liveness",
+            "title": "OK",
+            "status": 200,
+            "detail": "Process is alive.",
         },
     )
 
@@ -583,6 +649,23 @@ async def enroll(request: Request):
 
 @app.get("/binaries/{path:path}")
 def get_binary(path: str):
+    if settings.binaries_mode == "local":
+        local_path = _safe_path_join(settings.local_binaries_dir, path)
+        if not os.path.isfile(local_path):
+            raise HTTPException(status_code=404, detail="Local binary not found.")
+        try:
+            _log_device_connection(
+                action="BINARY_GET",
+                email="system@local",
+                client_uuid="00000000-0000-0000-0000-000000000000",
+                encryption_key_fingerprint="none",
+                source_ip=None,
+                user_agent=None,
+            )
+        except Exception:
+            logger.exception("Failed to log binary call (local)")
+        return FileResponse(local_path, media_type="application/octet-stream")
+
     if not settings.s3_bucket:
         raise HTTPException(status_code=500, detail="S3 bucket not configured (DM_S3_BUCKET).")
 
@@ -636,7 +719,7 @@ def get_binary(path: str):
         except Exception as e:
             raise HTTPException(status_code=404, detail=f"Binary not found: {e!r}")
 
-    raise HTTPException(status_code=500, detail="Invalid DM_BINARIES_MODE (must be presign or proxy).")
+    raise HTTPException(status_code=500, detail="Invalid DM_BINARIES_MODE (must be presign or proxy or local).")
 
 # ---- Local entrypoint (VS Code friendly)
 # Allows debugging by running this file directly (e.g. VS Code: "Python: Current File").
@@ -661,6 +744,9 @@ if __name__ == "__main__":
 
 @app.on_event("startup")
 def _startup_db_init() -> None:
+    # Fire-and-forget startup check: useful diagnostics without blocking pod startup.
+    _start_s3_connectivity_check_non_blocking()
+
     if psycopg2 is None:
         logger.warning("psycopg2 not installed; skipping DB bootstrap/schema init")
         return
