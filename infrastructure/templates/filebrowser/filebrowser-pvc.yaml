@@ -1,8 +1,8 @@
-{{- if .Values.app.persistence.enabled }}
+{{- if .Values.filebrowser.enabled -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "device-management.name" . }}-data
+  name: {{ include "device-management.name" . }}-filebrowser-db
   labels:
     {{- include "device-management.labels" . | nindent 4 }}
 spec:
@@ -10,5 +10,5 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: {{ .Values.app.persistence.size | default "1Gi" }}
+      storage: {{ .Values.filebrowser.persistence.size | default "1Gi" }}
 {{- end }}

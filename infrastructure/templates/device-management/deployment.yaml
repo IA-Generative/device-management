@@ -1,0 +1,183 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: device-management
+  labels:
+    {{- include "device-management.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+spec:
+  replicas: {{ .Values.app.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "device-management.name" . }}
+      app.kubernetes.io/component: app
+  template:
+    metadata:
+      labels:
+        {{- include "device-management.labels" . | nindent 8 }}
+        app.kubernetes.io/component: app
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+      initContainers:
+        - name: init-content-layout
+          image: "{{ .Values.app.image.repository }}:{{ .Values.app.image.tag }}"
+          imagePullPolicy: {{ .Values.app.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -lc
+            - |
+              set -eu
+              mkdir -p /data/content/config /data/content/binaries
+              if [ -z "$(ls -A /data/content/config 2>/dev/null || true)" ]; then
+                cp -R /app/config/. /data/content/config/
+                echo "Initialized /data/content/config from bundled templates."
+              fi
+              if [ -z "$(ls -A /data/content/binaries 2>/dev/null || true)" ]; then
+                mkdir -p /data/content/binaries/test
+                python - <<'PY'
+                from pathlib import Path
+                import json
+
+                root = Path("/data/content/binaries/test")
+                root.mkdir(parents=True, exist_ok=True)
+
+                # 1x1 transparent PNG for automatic smoke checks.
+                png_bytes = bytes.fromhex(
+                    "89504E470D0A1A0A"
+                    "0000000D49484452000000010000000108060000001F15C489"
+                    "0000000A49444154789C6360000000020001E221BC330000000049454E44AE426082"
+                )
+                (root / "ok.png").write_bytes(png_bytes)
+
+                test_payload = {
+                    "ok": True,
+                    "source": "init-content-layout",
+                    "note": "auto-generated for DGX local PVC smoke test",
+                }
+                (root / "test.json").write_text(json.dumps(test_payload), encoding="utf-8")
+                PY
+                echo "Initialized /data/content/binaries/test with ok.png + test.json."
+              elif [ ! -f /data/content/binaries/test/ok.png ] || [ ! -f /data/content/binaries/test/test.json ]; then
+                mkdir -p /data/content/binaries/test
+                python - <<'PY'
+                from pathlib import Path
+                import json
+
+                root = Path("/data/content/binaries/test")
+                root.mkdir(parents=True, exist_ok=True)
+
+                png_bytes = bytes.fromhex(
+                    "89504E470D0A1A0A"
+                    "0000000D49484452000000010000000108060000001F15C489"
+                    "0000000A49444154789C6360000000020001E221BC330000000049454E44AE426082"
+                )
+                (root / "ok.png").write_bytes(png_bytes)
+
+                test_payload = {
+                    "ok": True,
+                    "source": "init-content-layout",
+                    "note": "auto-generated for DGX local PVC smoke test",
+                }
+                (root / "test.json").write_text(json.dumps(test_payload), encoding="utf-8")
+                PY
+                echo "Added missing /data/content/binaries/test assets for smoke tests."
+              fi
+          volumeMounts:
+            - name: content-data
+              mountPath: /data/content
+            - name: config-all
+              mountPath: /app/config
+          {{- if .Values.app.resources }}
+          resources:
+            {{- toYaml .Values.app.resources | nindent 12 }}
+          {{- end }}
+      containers:
+        - name: device-management
+          image: "{{ .Values.app.image.repository }}:{{ .Values.app.image.tag }}"
+          imagePullPolicy: {{ .Values.app.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.service.port }}
+              protocol: TCP
+          env:
+            - name: DM_CONFIG_DIR
+              value: /data/content/config
+            - name: DM_LOCAL_BINARIES_DIR
+              value: /data/content/binaries
+            {{- range $key, $val := .Values.app.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          {{- if .Values.vault.enabled }}
+          envFrom:
+            - secretRef:
+                  name: {{ include "device-management.name" . }}-config
+            {{- end }}
+          volumeMounts:
+            - name: enroll-data
+              mountPath: /data/enroll
+            - name: content-data
+              mountPath: /data/content
+            - name: config-all
+              mountPath: /app/config
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: {{ .Values.app.service.port }}
+            periodSeconds: 5
+            failureThreshold: 60
+            timeoutSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /livez
+              port: {{ .Values.app.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: {{ .Values.app.service.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          {{- if .Values.app.resources }}
+          resources:
+            {{- toYaml .Values.app.resources | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: enroll-data
+          persistentVolumeClaim:
+            claimName: {{ include "device-management.name" . }}-data
+        - name: content-data
+          persistentVolumeClaim:
+            claimName: {{ include "device-management.name" . }}-content
+        - name: config-all
+          projected:
+            sources:
+              - configMap:
+                  name: {{ include "device-management.name" . }}-config
+                  items:
+                    - key: config.json
+                      path: config.json
+                    - key: matisse-config.json
+                      path: matisse/config.json
+                    - key: libreoffice-config.json
+                      path: libreoffice/config.json
+                    - key: chrome-config.json
+                      path: chrome/config.json
+                    - key: edge-config.json
+                      path: edge/config.json
+                    - key: firefox-config.json
+                      path: firefox/config.json
+                    - key: misc-config.json
+                      path: misc/config.json

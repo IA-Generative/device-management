@@ -14,6 +14,8 @@
     "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
     "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
     "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
+    "proxy_allow_insecure_ssl": true,
+    "proxy_consistency_checked_once": false,    
     "systemPrompt": "Tu es un assistant spécialisé dans la rédaction de documents le contenu doit est concis et professionnels. Ton rôle est d'assister le redacteur pour disposer d'une redaction impecable   Ne répète pas mot pour mot le texte, reformule. Uniquement en texte seul et en français",
     "model": "achanger-model",
     "api_type": "chat",

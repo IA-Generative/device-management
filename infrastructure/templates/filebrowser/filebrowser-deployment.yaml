@@ -1,0 +1,72 @@
+{{- if .Values.filebrowser.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filebrowser
+  labels:
+    {{- include "device-management.labels" . | nindent 4 }}
+    app.kubernetes.io/component: filebrowser
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "device-management.name" . }}
+      app.kubernetes.io/component: filebrowser
+  template:
+    metadata:
+      labels:
+        {{- include "device-management.labels" . | nindent 8 }}
+        app.kubernetes.io/component: filebrowser
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+      containers:
+        - name: filebrowser
+          image: docker.io/filebrowser/filebrowser:v2.31.2
+          imagePullPolicy: {{ .Values.filebrowser.imagePullPolicy }}
+          args:
+            - "--address"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
+            - "--root"
+            - "/srv"
+            - "--database"
+            - "/database/filebrowser.db"
+          ports:
+            - containerPort: {{ .Values.filebrowser.port }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.filebrowser.port }}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.filebrowser.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: content-data
+              mountPath: /srv
+            - name: db
+              mountPath: /database
+          {{- if .Values.filebrowser.resources }}
+          resources:
+            {{- toYaml .Values.filebrowser.resources | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: content-data
+          persistentVolumeClaim:
+            claimName: {{ include "device-management.name" . }}-content
+        - name: db
+          persistentVolumeClaim:
+            claimName: {{ include "device-management.name" . }}-filebrowser-db
+{{- end }}

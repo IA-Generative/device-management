@@ -1,0 +1,19 @@
+{{- if .Values.adminer.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: adminer
+  labels:
+    {{- include "device-management.labels" . | nindent 4 }}
+    app.kubernetes.io/component: adminer
+spec:
+  type: ClusterIP
+  ports:
+    - port: http-alt
+      targetPort: {{ .Values.adminer.service.port }}
+      name: http-alt
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ include "device-management.name" . }}
+    app.kubernetes.io/component: adminer
+{{- end }}

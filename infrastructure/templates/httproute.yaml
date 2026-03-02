@@ -1,0 +1,77 @@
+{{- if .Values.httproute.enabled -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: device-management-route
+  labels:
+    {{- include "device-management.labels" . | nindent 4 }}
+spec:
+  hostnames:
+    {{- range .Values.httproute.hostnames }}
+    - {{ . }}
+    {{- end }}
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.httproute.gateway.name }}
+      namespace: {{ .Values.httproute.gateway.namespace }}
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: device-management
+          port: {{ .Values.app.service.port }}
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.app.path }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      timeouts:
+        request: 300s
+    {{- if .Values.adminer.enabled }}
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: adminer
+          port: {{ .Values.adminer.service.port }}
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.adminer.path }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      timeouts:
+        request: 300s
+    {{- end }}
+    {{- if .Values.filebrowser.enabled }}
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: filebrowser
+          port: {{ .Values.filebrowser.service.port }}
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.filebrowser.path }}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      timeouts:
+        request: 300s
+    {{- end }}
+{{- end }}

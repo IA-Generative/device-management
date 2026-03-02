@@ -1,4 +1,3 @@
-{{- if .Values.config.prod }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -56,6 +55,8 @@ data:
         "keycloakIssuerUrl": "{{ `$` }}{{ `{{` }}KEYCLOAK_ISSUER_URL{{ `}}` }}",
         "keycloakRealm": "{{ `$` }}{{ `{{` }}KEYCLOAK_REALM{{ `}}` }}",
         "keycloakClientId": "{{ `$` }}{{ `{{` }}KEYCLOAK_CLIENT_ID{{ `}}` }}",
+        "keycloak_redirect_uri": "{{ `$` }}{{ `{{` }}KEYCLOAK_REDIRECT_URI{{ `}}` }}",
+        "keycloak_allowed_redirect_uri": "{{ `$` }}{{ `{{` }}KEYCLOAK_ALLOWED_REDIRECT_URI{{ `}}` }}",
         "systemPrompt": "Tu es un assistant spécialisé dans la rédaction d'emails clairs, concis et professionnels. Ton rôle est de rédiger une réponse adaptée au contenu de l'email reçu. Contraintes : - Utilise un ton poli, professionnel et adapté au contexte. - Si l'email contient une demande précise, réponds directement en apportant la solution ou la réponse attendue. - Si l'email contient plusieurs questions, réponds point par point. - Si l'email est ambigu, formule une réponse neutre et propose de clarifier. - Garde la réponse brève (5 à 10 lignes maximum), mais suffisamment complète. - Ne répète pas mot pour mot le texte de l'expéditeur, reformule. - Termine par une formule de politesse adaptée mais ne signe pas les réponses. Format de sortie : rédige uniquement le texte de l'email de réponse, sans balises supplémentaires.",
         "systemPromptFormal": "Tu es un assistant professionnel qui répond en français dans un registre formel (vouvoiement). Utilise un ton clair, courtois et institutionnel. Contraintes : - Emploie systématiquement le vouvoiement (vous, votre, vos). - Sois précis et factuel. - Si l'email contient plusieurs points, réponds point par point. - Si une information manque, propose poliment de la préciser. - Conclus par une formule de politesse adaptée au contexte. Format : rédige uniquement le texte de l'email de réponse, sans balises supplémentaires.",
         "systemPromptCasual": "\n\nRègle de ton : adopte le tutoiement (tu/ton/ta/tes) pour rester aligné avec le message source.",
@@ -80,7 +81,7 @@ data:
       "configVersion": 1,
       "environment": "prod",
       "lastversion": -1,
-      "updateUrl": "https://bootstrap.fake-domain.name/binaries/libreoffice/mirai.oxt",
+      "updateUrl": "{{ `$` }}{{ `{{` }}PUBLIC_BASE_URL{{ `}}` }}/binaries/libreoffice/mirai.oxt",
       "config": {
         "llm_base_urls": "https://openwebui.fake-domain.name/api/",
         "llm_default_models": "{{ `$` }}{{ `{{` }}DEFAULT_MODEL_NAME{{ `}}` }}",
@@ -92,6 +93,8 @@ data:
         "keycloakClientId": "{{ `$` }}{{ `{{` }}KEYCLOAK_CLIENT_ID{{ `}}` }}",
         "keycloak_redirect_uri": "{{ `$` }}{{ `{{` }}KEYCLOAK_REDIRECT_URI{{ `}}` }}",
         "keycloak_allowed_redirect_uri": "{{ `$` }}{{ `{{` }}KEYCLOAK_ALLOWED_REDIRECT_URI{{ `}}` }}",
+        "proxy_allow_insecure_ssl": true,
+        "proxy_consistency_checked_once": false,
         "systemPrompt": "Tu es un assistant spécialisé dans la rédaction de documents le contenu doit est concis et professionnels. Ton rôle est d'assister le redacteur pour disposer d'une redaction impecable   Ne répète pas mot pour mot le texte, reformule. Uniquement en texte seul et en français",
         "model": "achanger-model",
         "api_type": "chat",
@@ -107,7 +110,7 @@ data:
         "simplify_selection_system_prompt": "",
         "_comment_device_management": "Device Management (configuration centralisee)",
         "enabled": true,
-        "bootstrap_url": "https://bootstrap.fake-domain.name/",
+        "bootstrap_url": "{{ `$` }}{{ `{{` }}PUBLIC_BASE_URL{{ `}}` }}/",
         "config_path": "/config/libreoffice/config.json",
         "device_name": "mirai-libreoffice",
         "access_token": "",
@@ -260,4 +263,3 @@ data:
         "customExternalHandlers": "[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       }
     }
-{{- end }}

@@ -1,0 +1,19 @@
+{{- if .Values.filebrowser.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: filebrowser
+  labels:
+    {{- include "device-management.labels" . | nindent 4 }}
+    app.kubernetes.io/component: filebrowser
+spec:
+  type: ClusterIP
+  ports:
+    - port: http
+      targetPort: {{ .Values.filebrowser.service.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: {{ include "device-management.name" . }}
+    app.kubernetes.io/component: filebrowser
+{{- end }}

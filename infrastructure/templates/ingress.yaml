@@ -2,7 +2,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: device-management
+  name: device-management-route
   labels:
     {{- include "device-management.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
@@ -24,14 +24,35 @@ spec:
     {{- end }}
   {{- end }}
   rules:
-    - host: {{ .Values.ingress.host }}
+    {{- $hostnames := .Values.ingress.hostnames | default (list .Values.ingress.host) }}
+    {{- range $hostnames }}
+    - host: {{ . }}
       http:
         paths:
-          - path: /
+          - path: {{ $.Values.app.path | default "/" }}
             pathType: Prefix
             backend:
               service:
                 name: device-management
                 port:
-                  number: {{ .Values.app.service.port }}
+                  number: {{ $.Values.app.service.port }}
+          {{- if $.Values.adminer.enabled }}
+          - path: {{ $.Values.adminer.path | default "/adminer" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: adminer
+                port:
+                  number: {{ $.Values.adminer.service.port }}
+          {{- end }}
+          {{- if $.Values.filebrowser.enabled }}
+          - path: {{ $.Values.filebrowser.path | default "/files" }}
+            pathType: Prefix
+            backend:
+              service:
+                name: filebrowser
+                port:
+                  number: {{ $.Values.filebrowser.service.port }}
+          {{- end }}
+    {{- end }}
 {{- end }}
