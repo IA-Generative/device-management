@@ -11,6 +11,8 @@ Remplacement de l'implémentation Nginx/Lua par une API FastAPI.
 - `GET /config/config.json` : retourne la configuration (dynamique via variables d'environnement)
 - `GET /config/<device>/config.json` : configuration spécifique par device (matisse, libreoffice, chrome, edge, firefox, misc)
 - `POST|PUT /enroll` : enregistre un payload JSON (stockage local et/ou S3)
+- `GET /telemetry/token` : retourne un token Bearer de télémétrie courte durée (rotation)
+- `POST /telemetry/v1/traces` (ou `/v1/traces`) : endpoint relais de télémétrie vers le collecteur amont
 - `GET /healthz` : retourne l'état de santé (200 si OK, 412 si prerequis manquants)
 - `GET /binaries/{path}` : sert des binaires stockés dans S3
   - mode `presign` (par défaut) : redirige vers une URL présignée
@@ -31,6 +33,17 @@ Le fichier `config/config.json` supporte les placeholders `${VARNAME}` (ex: `${P
 - `DM_CONFIG_ENABLED=true`
 - `DM_APP_ENV=dev`
 - `DM_ENROLL_URL=/enroll`
+
+### Relais télémétrie et rotation
+- `DM_TELEMETRY_ENABLED=true`
+- `DM_TELEMETRY_PUBLIC_ENDPOINT=/telemetry/v1/traces`
+- `DM_TELEMETRY_AUTHORIZATION_TYPE=Bearer`
+- `DM_TELEMETRY_UPSTREAM_ENDPOINT=https://telemetry.minint.fr/v1/traces`
+- `DM_TELEMETRY_UPSTREAM_AUTH_TYPE=Bearer`
+- `DM_TELEMETRY_UPSTREAM_KEY=...` (optionnel si l’amont exige une auth)
+- `DM_TELEMETRY_TOKEN_TTL_SECONDS=300`
+- `DM_TELEMETRY_TOKEN_SIGNING_KEY=...` (requis quand `DM_TELEMETRY_REQUIRE_TOKEN=true`)
+- `DM_TELEMETRY_REQUIRE_TOKEN=true`
 
 ### Stockage enroll
 - `DM_STORE_ENROLL_LOCALLY=true`

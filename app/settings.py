@@ -12,6 +12,14 @@ def _default_database_url() -> str:
     return ""
 
 
+def _env_default(*keys: str, default: str) -> str:
+    for key in keys:
+        value = os.getenv(key)
+        if value is not None and value != "":
+            return value
+    return default
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="DM_", extra="ignore")
 
@@ -41,6 +49,31 @@ class Settings(BaseSettings):
     aws_region: str | None = Field(default=None)
     local_binaries_dir: str = Field(default="/data/content/binaries")
     config_dir: str = Field(default="/data/content/config")
+
+    # Telemetry relay / token rotation
+    telemetry_enabled: bool = Field(default=True)
+    telemetry_public_endpoint: str = Field(
+        default_factory=lambda: _env_default("TELEMETRY_PUBLIC_ENDPOINT", default="/telemetry/v1/traces")
+    )
+    telemetry_authorization_type: str = Field(
+        default_factory=lambda: _env_default("TELEMETRY_AUTHORIZATION_TYPE", default="Bearer")
+    )
+    telemetry_upstream_endpoint: str = Field(
+        default_factory=lambda: _env_default(
+            "TELEMETRY_UPSTREAM_ENDPOINT",
+            default="https://telemetry.minint.fr/v1/traces",
+        )
+    )
+    telemetry_upstream_auth_type: str = Field(
+        default_factory=lambda: _env_default("TELEMETRY_UPSTREAM_AUTH_TYPE", default="Bearer")
+    )
+    telemetry_upstream_key: str = Field(
+        default_factory=lambda: _env_default("TELEMETRY_UPSTREAM_KEY", default="")
+    )
+    telemetry_token_ttl_seconds: int = Field(default=300)
+    telemetry_token_signing_key: str = Field(default="")
+    telemetry_require_token: bool = Field(default=True)
+    telemetry_max_body_size_mb: int = Field(default=2)
 
     # Database (optional, used by local tooling)
     database_url: str = Field(default_factory=_default_database_url)

@@ -11,6 +11,8 @@ Replacement of the Nginx/Lua implementation with a FastAPI API.
 - `GET /config/config.json`: returns configuration (dynamic via environment variables)
 - `GET /config/<device>/config.json`: device-specific configuration (matisse, libreoffice, chrome, edge, firefox, misc)
 - `POST|PUT /enroll`: records a JSON payload (local storage and/or S3)
+- `GET /telemetry/token`: returns a short-lived telemetry Bearer token (rotation)
+- `POST /telemetry/v1/traces` (or `/v1/traces`): telemetry relay endpoint to upstream collector
 - `GET /healthz`: returns health status (200 if OK, 412 if prerequisites missing)
 - `GET /binaries/{path}`: serves binaries stored in S3
   - `presign` mode (default): redirects to a presigned URL
@@ -31,6 +33,17 @@ The `config/config.json` file supports placeholders `${VARNAME}` (e.g. `${PUBLIC
 - `DM_CONFIG_ENABLED=true`
 - `DM_APP_ENV=dev`
 - `DM_ENROLL_URL=/enroll`
+
+### Telemetry relay and rotation
+- `DM_TELEMETRY_ENABLED=true`
+- `DM_TELEMETRY_PUBLIC_ENDPOINT=/telemetry/v1/traces`
+- `DM_TELEMETRY_AUTHORIZATION_TYPE=Bearer`
+- `DM_TELEMETRY_UPSTREAM_ENDPOINT=https://telemetry.minint.fr/v1/traces`
+- `DM_TELEMETRY_UPSTREAM_AUTH_TYPE=Bearer`
+- `DM_TELEMETRY_UPSTREAM_KEY=...` (optional if upstream requires auth)
+- `DM_TELEMETRY_TOKEN_TTL_SECONDS=300`
+- `DM_TELEMETRY_TOKEN_SIGNING_KEY=...` (required when `DM_TELEMETRY_REQUIRE_TOKEN=true`)
+- `DM_TELEMETRY_REQUIRE_TOKEN=true`
 
 ### Enroll storage
 - `DM_STORE_ENROLL_LOCALLY=true`

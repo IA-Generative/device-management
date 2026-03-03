@@ -77,11 +77,16 @@ check_required_yaml_key "$SETTINGS_FILE" gateway_namespace
 check_required_yaml_key "$SETTINGS_FILE" hostname
 check_required_yaml_key "$SETTINGS_FILE" app_path_prefix
 check_required_yaml_key "$SETTINGS_FILE" adminer_path_prefix
+check_required_yaml_key "$SETTINGS_FILE" telemetry_path_prefix
 check_required_yaml_key "$SETTINGS_FILE" public_base_url
 
 check_non_placeholder "$DEVICE_SECRET_FILE" KEYCLOAK_CLIENT_ID
 check_not_empty_or_warn "$DEVICE_SECRET_FILE" KEYCLOAK_REDIRECT_URI
 check_not_empty_or_warn "$DEVICE_SECRET_FILE" KEYCLOAK_ALLOWED_REDIRECT_URI
+check_not_empty_or_warn "$DEVICE_SECRET_FILE" DM_TELEMETRY_UPSTREAM_ENDPOINT
+if [ "$(printf "%s" "$(read_yaml_key "$DEVICE_SECRET_FILE" "DM_TELEMETRY_REQUIRE_TOKEN")" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+  check_non_placeholder "$DEVICE_SECRET_FILE" DM_TELEMETRY_TOKEN_SIGNING_KEY
+fi
 
 if [ "$(printf "%s" "$DM_STORE_ENROLL_S3" | tr '[:upper:]' '[:lower:]')" = "true" ]; then
   check_non_placeholder "$DEVICE_SECRET_FILE" DM_S3_BUCKET
