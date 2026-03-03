@@ -50,6 +50,7 @@ update_setting hostname "Hostname expose"
 update_setting app_path_prefix "Prefix app python (/bootstrap)"
 update_setting adminer_path_prefix "Prefix adminer (/adminer)"
 update_setting filebrowser_path_prefix "Prefix filebrowser (/files)"
+update_setting telemetry_path_prefix "Prefix telemetry relay (/telemetry)"
 update_setting public_base_url "PUBLIC_BASE_URL complet"
 
 echo
@@ -69,6 +70,12 @@ update_secret_key DM_S3_ENDPOINT_URL "DM_S3_ENDPOINT_URL"
 update_secret_key AWS_REGION "AWS_REGION"
 update_secret_key AWS_ACCESS_KEY_ID "AWS_ACCESS_KEY_ID"
 update_secret_key AWS_SECRET_ACCESS_KEY "AWS_SECRET_ACCESS_KEY"
+update_secret_key DM_TELEMETRY_UPSTREAM_ENDPOINT "DM_TELEMETRY_UPSTREAM_ENDPOINT"
+update_secret_key DM_TELEMETRY_UPSTREAM_AUTH_TYPE "DM_TELEMETRY_UPSTREAM_AUTH_TYPE"
+update_secret_key DM_TELEMETRY_UPSTREAM_KEY "DM_TELEMETRY_UPSTREAM_KEY"
+update_secret_key DM_TELEMETRY_TOKEN_TTL_SECONDS "DM_TELEMETRY_TOKEN_TTL_SECONDS"
+update_secret_key DM_TELEMETRY_TOKEN_SIGNING_KEY "DM_TELEMETRY_TOKEN_SIGNING_KEY"
+update_secret_key DM_TELEMETRY_REQUIRE_TOKEN "DM_TELEMETRY_REQUIRE_TOKEN"
 
 if prompt_yes_no "Renseigner aussi AWS_SESSION_TOKEN ?" "n"; then
   update_secret_key AWS_SESSION_TOKEN "AWS_SESSION_TOKEN"

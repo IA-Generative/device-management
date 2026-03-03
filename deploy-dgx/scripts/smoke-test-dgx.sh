@@ -22,15 +22,18 @@ HOSTNAME="$(read_yaml_key "$SETTINGS_FILE" "hostname")"
 APP_PATH_PREFIX="$(read_yaml_key "$SETTINGS_FILE" "app_path_prefix")"
 ADMINER_PATH_PREFIX="$(read_yaml_key "$SETTINGS_FILE" "adminer_path_prefix")"
 FILEBROWSER_PATH_PREFIX="$(read_yaml_key "$SETTINGS_FILE" "filebrowser_path_prefix")"
+TELEMETRY_PATH_PREFIX="$(read_yaml_key "$SETTINGS_FILE" "telemetry_path_prefix")"
 EXTERNAL_SCHEME="${EXTERNAL_SCHEME:-https}"
 EXTERNAL_INSECURE="${DGX_TEST_EXTERNAL_INSECURE:-0}"
 
 APP_PATH_PREFIX="${APP_PATH_PREFIX%/}"
 ADMINER_PATH_PREFIX="${ADMINER_PATH_PREFIX%/}"
 FILEBROWSER_PATH_PREFIX="${FILEBROWSER_PATH_PREFIX%/}"
+TELEMETRY_PATH_PREFIX="${TELEMETRY_PATH_PREFIX%/}"
 [ -z "$APP_PATH_PREFIX" ] && APP_PATH_PREFIX="/"
 [ -z "$ADMINER_PATH_PREFIX" ] && ADMINER_PATH_PREFIX="/adminer"
 [ -z "$FILEBROWSER_PATH_PREFIX" ] && FILEBROWSER_PATH_PREFIX="/files"
+[ -z "$TELEMETRY_PATH_PREFIX" ] && TELEMETRY_PATH_PREFIX="/telemetry"
 
 echo "== DGX Smoke Tests =="
 echo "Namespace: $NAMESPACE"
@@ -40,12 +43,13 @@ echo
 echo "[1/4] Rollout status"
 kubectl -n "$NAMESPACE" rollout status deployment/postgres --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
 kubectl -n "$NAMESPACE" rollout status deployment/device-management --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
+kubectl -n "$NAMESPACE" rollout status deployment/telemetry-relay --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
 kubectl -n "$NAMESPACE" rollout status deployment/adminer --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
 kubectl -n "$NAMESPACE" rollout status deployment/filebrowser --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
 
 echo
 echo "[2/4] Services and endpoints"
-for svc in postgres device-management adminer filebrowser; do
+for svc in postgres device-management telemetry-relay adminer filebrowser; do
   kubectl -n "$NAMESPACE" get svc "$svc" >/dev/null
   endpoints="$(kubectl -n "$NAMESPACE" get endpoints "$svc" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)"
   if [ -z "${endpoints// }" ]; then
@@ -152,6 +156,8 @@ spec:
               check_http("device-management /livez", "http://device-management:80/livez", expect_json=True)
               check_http("device-management /config/matisse/config.json", "http://device-management:80/config/matisse/config.json", expect_json=True)
               check_http("device-management /config/libreoffice/config.json", "http://device-management:80/config/libreoffice/config.json", expect_json=True)
+              check_http("device-management /telemetry/token", "http://device-management:80/telemetry/token", expect_json=True)
+              check_http("telemetry-relay /livez", "http://telemetry-relay:80/livez", expect_json=True)
 
               check_http("adminer service", "http://adminer:8080/")
               check_http("filebrowser service", "http://filebrowser:80/", allowed_error_codes={401, 403})
@@ -216,10 +222,13 @@ if [ "${DGX_TEST_EXTERNAL:-0}" = "1" ]; then
   APP_BASE="${EXTERNAL_SCHEME}://${HOSTNAME}${APP_PATH_PREFIX}"
   ADMINER_BASE="${EXTERNAL_SCHEME}://${HOSTNAME}${ADMINER_PATH_PREFIX}"
   FILEBROWSER_BASE="${EXTERNAL_SCHEME}://${HOSTNAME}${FILEBROWSER_PATH_PREFIX}"
+  TELEMETRY_BASE="${EXTERNAL_SCHEME}://${HOSTNAME}${TELEMETRY_PATH_PREFIX}"
 
   check_external_http "device-management /livez" "$APP_BASE/livez" 200
   check_external_http "device-management /config/matisse/config.json" "$APP_BASE/config/matisse/config.json" 200
   check_external_http "device-management /config/libreoffice/config.json" "$APP_BASE/config/libreoffice/config.json" 200
+  check_external_http "device-management /telemetry/token" "$APP_BASE/telemetry/token" 200
+  check_external_http "telemetry relay /livez" "$TELEMETRY_BASE/livez" 200
   check_external_http "adminer route" "$ADMINER_BASE/" 200 301 302
   check_external_http "filebrowser route" "$FILEBROWSER_BASE/" 200 301 302 401 403
 

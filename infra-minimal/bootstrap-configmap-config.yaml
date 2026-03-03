@@ -32,10 +32,10 @@ data:
         "dailySummaryUserPrompt": "Analyse cette liste de ${messageCount} messages non lus...",
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
-        "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
+        "telemetryEndpoint": "https://telemetry.minint.fr/v1/traces",
         "telemetrySel": "${{TELEMETRY_SALT}}",
-        "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryAuthorizationType": "Bearer",
+        "telemetryKey": "",
         "customExternalHandlers":"[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       }
     }
@@ -68,10 +68,10 @@ data:
         "dailySummaryUserPrompt": "Analyse cette liste de ${messageCount} messages non lus...",
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
-        "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
+        "telemetryEndpoint": "https://telemetry.minint.fr/v1/traces",
         "telemetrySel": "${{TELEMETRY_SALT}}",
-        "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryAuthorizationType": "Bearer",
+        "telemetryKey": "",
         "customExternalHandlers":"[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       }
     }
@@ -116,10 +116,10 @@ data:
         "refresh_token": "",
         "enrolled": false,
         "telemetryEnabled": true,
-        "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
+        "telemetryEndpoint": "https://telemetry.minint.fr/v1/traces",
         "telemetrySel": "${{TELEMETRY_SALT}}",
-        "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}"
+        "telemetryAuthorizationType": "Bearer",
+        "telemetryKey": ""
       }
     }
   chrome-config.json: |
@@ -150,10 +150,10 @@ data:
         "dailySummaryUserPrompt": "Analyse cette liste de ${messageCount} messages non lus...",
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
-        "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
+        "telemetryEndpoint": "https://telemetry.minint.fr/v1/traces",
         "telemetrySel": "${{TELEMETRY_SALT}}",
-        "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryAuthorizationType": "Bearer",
+        "telemetryKey": "",
         "customExternalHandlers":"[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       }
     }
@@ -185,10 +185,10 @@ data:
         "dailySummaryUserPrompt": "Analyse cette liste de ${messageCount} messages non lus...",
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
-        "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
+        "telemetryEndpoint": "https://telemetry.minint.fr/v1/traces",
         "telemetrySel": "${{TELEMETRY_SALT}}",
-        "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryAuthorizationType": "Bearer",
+        "telemetryKey": "",
         "customExternalHandlers":"[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       }
     }
@@ -220,10 +220,10 @@ data:
         "dailySummaryUserPrompt": "Analyse cette liste de ${messageCount} messages non lus...",
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
-        "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
+        "telemetryEndpoint": "https://telemetry.minint.fr/v1/traces",
         "telemetrySel": "${{TELEMETRY_SALT}}",
-        "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryAuthorizationType": "Bearer",
+        "telemetryKey": "",
         "customExternalHandlers":"[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       }
     }
@@ -255,10 +255,10 @@ data:
         "dailySummaryUserPrompt": "Analyse cette liste de ${messageCount} messages non lus...",
         "calendarSystemPrompt": "Tu es un assistant spécialisé dans la détection d'invitations...",
         "calendarUserPrompt": "Analyse cet email pour détecter s'il contient une invitation...",
-        "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
+        "telemetryEndpoint": "https://telemetry.minint.fr/v1/traces",
         "telemetrySel": "${{TELEMETRY_SALT}}",
-        "telemetryAuthorizationType": "Basic",
-        "telemetryKey": "${{TELEMETRY_KEY}}",
+        "telemetryAuthorizationType": "Bearer",
+        "telemetryKey": "",
         "customExternalHandlers":"[{\"name\":\"Chromium - Teams\",\"type\":\"contains\",\"pattern\":\"teams.microsoft.com\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webinaire\",\"type\":\"host\",\"pattern\":\"webinaire.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Numerique\",\"type\":\"host\",\"pattern\":\"webconf.numerique.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf Minint\",\"type\":\"host\",\"pattern\":\"webconf.comu.minint.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]},{\"name\":\"Chromium - Webconf COMU\",\"type\":\"host\",\"pattern\":\"webconf.comu.gouv.fr\",\"exec\":\"C:\\\\Program Files\\\\Chromium\\\\Application\\\\chrome.exe\",\"platforms\":[\"winnt\"]}]"
       }
     }

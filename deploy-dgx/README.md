@@ -15,6 +15,7 @@ Exemple d'URL de reference (fictive):
 
 Services exposes:
 - application device-management: `https://dgx.example.invalid/bootstrap`
+- telemetry relay: `https://dgx.example.invalid/telemetry`
 - adminer: `https://dgx.example.invalid/adminer`
 - filebrowser: `https://dgx.example.invalid/files`
 
@@ -23,6 +24,8 @@ Endpoints utiles:
 - health detaille: `https://dgx.example.invalid/bootstrap/healthz`
 - config matisse: `https://dgx.example.invalid/bootstrap/config/matisse/config.json`
 - config libreoffice: `https://dgx.example.invalid/bootstrap/config/libreoffice/config.json`
+- telemetry token (rotation): `https://dgx.example.invalid/bootstrap/telemetry/token`
+- telemetry traces relay: `https://dgx.example.invalid/telemetry/v1/traces`
 - binaire test png: `https://dgx.example.invalid/bootstrap/binaries/test/ok.png`
 - binaire test json: `https://dgx.example.invalid/bootstrap/binaries/test/test.json`
 
@@ -64,6 +67,11 @@ Mode `presign` (clients doivent atteindre S3):
 - `dm_store_enroll_s3: "true"`
 - `dm_binaries_mode: presign`
 - le service renvoie une URL signee S3 (redirect)
+
+Chemin telemetry (Gateway API):
+- `telemetry_path_prefix: /telemetry`
+- endpoint externe recommande pour les clients: `https://<host>/telemetry/v1/traces`
+- token court recupere via: `https://<host>/bootstrap/telemetry/token`
 
 Apres modification:
 ```bash
@@ -228,12 +236,14 @@ Le script enchaine:
 ### 2.4 Validation de l'installation
 
 `deploy-full-dgx.sh` lance un smoke test complet qui valide:
-- rollout: `postgres`, `device-management`, `adminer`, `filebrowser`
+- rollout: `postgres`, `device-management`, `telemetry-relay`, `adminer`, `filebrowser`
 - endpoints services
 - checks fonctionnels device-management:
   - `/livez`
   - `/config/matisse/config.json`
   - `/config/libreoffice/config.json`
+  - `/telemetry/token`
+  - `telemetry-relay /livez`
   - acces interne `adminer` et `filebrowser`
   - connectivite `postgres:5432`
 - en mode `local`: verification de `/binaries/test/test.json` et `/binaries/test/ok.png`

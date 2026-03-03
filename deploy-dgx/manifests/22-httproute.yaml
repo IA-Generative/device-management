@@ -66,3 +66,21 @@ spec:
               replacePrefixMatch: /
       timeouts:
         request: 300s
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: telemetry-relay
+          port: 80
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: /telemetry
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      timeouts:
+        request: 300s

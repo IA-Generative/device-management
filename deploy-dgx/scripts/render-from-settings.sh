@@ -79,6 +79,7 @@ HOSTNAME="$(require_setting hostname)"
 APP_PATH_PREFIX="$(require_setting app_path_prefix)"
 ADMINER_PATH_PREFIX="$(require_setting adminer_path_prefix)"
 FILEBROWSER_PATH_PREFIX="$(read_setting filebrowser_path_prefix)"
+TELEMETRY_PATH_PREFIX="$(read_setting telemetry_path_prefix)"
 PUBLIC_BASE_URL="$(require_setting public_base_url)"
 KEYCLOAK_ISSUER_URL="$(require_setting keycloak_issuer_url)"
 KEYCLOAK_REALM="$(require_setting keycloak_realm)"
@@ -97,10 +98,19 @@ FILEBROWSER_PATH_PREFIX="${FILEBROWSER_PATH_PREFIX%/}"
 if [ -z "$FILEBROWSER_PATH_PREFIX" ]; then
   FILEBROWSER_PATH_PREFIX="/files"
 fi
+TELEMETRY_PATH_PREFIX="${TELEMETRY_PATH_PREFIX%/}"
+if [ -z "$TELEMETRY_PATH_PREFIX" ]; then
+  TELEMETRY_PATH_PREFIX="/telemetry"
+fi
 if [ "$APP_PATH_PREFIX" = "/" ]; then
   DM_ENROLL_URL="/enroll"
 else
   DM_ENROLL_URL="${APP_PATH_PREFIX}/enroll"
+fi
+if [ "$TELEMETRY_PATH_PREFIX" = "/" ]; then
+  DM_TELEMETRY_PUBLIC_ENDPOINT="/v1/traces"
+else
+  DM_TELEMETRY_PUBLIC_ENDPOINT="${TELEMETRY_PATH_PREFIX}/v1/traces"
 fi
 
 cat > "$NAMESPACE_MANIFEST" <<EOF
@@ -179,6 +189,24 @@ spec:
               replacePrefixMatch: /
       timeouts:
         request: 300s
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: telemetry-relay
+          port: 80
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: ${TELEMETRY_PATH_PREFIX}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      timeouts:
+        request: 300s
 EOF
 
 # Keep all namespace-scoped manifests aligned with settings.yaml
@@ -187,6 +215,8 @@ for f in \
   "$ROOT_DIR/deploy-dgx/manifests/19-device-management-enroll-pvc.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/20-device-management-deployment.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/21-device-management-service.yaml" \
+  "$ROOT_DIR/deploy-dgx/manifests/23-telemetry-relay-deployment.yaml" \
+  "$ROOT_DIR/deploy-dgx/manifests/24-telemetry-relay-service.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/29-postgres-pvc.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/30-postgres-deployment.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/31-postgres-service.yaml" \
@@ -209,6 +239,7 @@ replace_yaml_key "$DEVICE_SECRET" "DM_BINARIES_MODE" "$DM_BINARIES_MODE" true
 replace_yaml_key "$DEVICE_SECRET" "KEYCLOAK_ISSUER_URL" "$KEYCLOAK_ISSUER_URL" true
 replace_yaml_key "$DEVICE_SECRET" "KEYCLOAK_REALM" "$KEYCLOAK_REALM" true
 replace_yaml_key "$DEVICE_SECRET" "PUBLIC_BASE_URL" "$PUBLIC_BASE_URL" true
+replace_yaml_key "$DEVICE_SECRET" "DM_TELEMETRY_PUBLIC_ENDPOINT" "$DM_TELEMETRY_PUBLIC_ENDPOINT" true
 
 cat "$DEVICE_SECRET" > "$ALL_SECRETS"
 printf "\n---\n" >> "$ALL_SECRETS"

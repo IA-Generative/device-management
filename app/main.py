@@ -7,7 +7,12 @@ import re
 import threading
 import time
 import uuid
+import base64
+import hmac
+import hashlib
 from urllib.parse import urlparse, urlunparse
+from urllib import request as urllib_request
+from urllib import error as urllib_error
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -42,7 +47,9 @@ app.add_middleware(
 )
 
 MAX_BODY_BYTES = settings.max_body_size_mb * 1024 * 1024
+TELEMETRY_MAX_BODY_BYTES = settings.telemetry_max_body_size_mb * 1024 * 1024
 S3_BINARIES_PREFIX = settings.s3_prefix_binaries
+_telemetry_signing_warning_emitted = False
 
 
 def _ensure_dir(path: str) -> None:
@@ -367,9 +374,145 @@ def _substitute_env(obj):
     return obj
 
 
-def _apply_overrides(cfg: dict) -> dict:
-    """Apply targeted overrides from env (currently none)."""
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(raw: str) -> bytes:
+    pad = "=" * ((4 - (len(raw) % 4)) % 4)
+    return base64.urlsafe_b64decode((raw + pad).encode("ascii"))
+
+
+def _resolve_public_telemetry_endpoint() -> str:
+    endpoint = (settings.telemetry_public_endpoint or "").strip() or "/telemetry/v1/traces"
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        return endpoint
+    if not endpoint.startswith("/"):
+        endpoint = "/" + endpoint
+
+    public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip()
+    if public_base:
+        parsed = urlparse(public_base)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}{endpoint}"
+    return endpoint
+
+
+def _mint_telemetry_token(*, device: str | None, profile: str) -> tuple[str, int | None]:
+    secret = (settings.telemetry_token_signing_key or "").strip()
+    if not secret:
+        return "", None
+
+    now = int(time.time())
+    ttl = max(30, int(settings.telemetry_token_ttl_seconds))
+    payload = {
+        "jti": uuid.uuid4().hex,
+        "iat": now,
+        "exp": now + ttl,
+        "profile": profile,
+        "device": device or "unknown",
+    }
+    payload_raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_b64 = _b64url_encode(payload_raw)
+    sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    token = f"{payload_b64}.{_b64url_encode(sig)}"
+    return token, int(payload["exp"])
+
+
+def _verify_telemetry_token(token: str) -> dict:
+    secret = (settings.telemetry_token_signing_key or "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Telemetry token verification key is not configured.")
+
+    try:
+        payload_b64, sig_b64 = token.split(".", 1)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Malformed telemetry token.")
+
+    expected_sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    try:
+        provided_sig = _b64url_decode(sig_b64)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Malformed telemetry token signature.")
+    if not hmac.compare_digest(expected_sig, provided_sig):
+        raise HTTPException(status_code=401, detail="Invalid telemetry token signature.")
+
+    try:
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Malformed telemetry token payload.")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=401, detail="Malformed telemetry token payload.")
+
+    now = int(time.time())
+    exp = int(payload.get("exp") or 0)
+    if exp <= now:
+        raise HTTPException(status_code=401, detail="Telemetry token expired.")
+    return payload
+
+
+def _extract_bearer_token(request: Request) -> str:
+    auth = (request.headers.get("authorization") or "").strip()
+    if not auth.lower().startswith("bearer "):
+        return ""
+    return auth[7:].strip()
+
+
+def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> dict:
+    """Apply targeted overrides from env."""
+    global _telemetry_signing_warning_emitted
+
+    config_obj = cfg.get("config")
+    if not isinstance(config_obj, dict):
+        return cfg
+
+    config_obj["telemetryEnabled"] = bool(settings.telemetry_enabled)
+    config_obj["telemetryEndpoint"] = _resolve_public_telemetry_endpoint()
+    config_obj["telemetryAuthorizationType"] = settings.telemetry_authorization_type
+
+    token = ""
+    expires_at: int | None = None
+    if settings.telemetry_enabled and settings.telemetry_authorization_type.lower() == "bearer":
+        token, expires_at = _mint_telemetry_token(device=device, profile=profile)
+        if settings.telemetry_require_token and not token and not _telemetry_signing_warning_emitted:
+            logger.warning(
+                "Telemetry token rotation requested but DM_TELEMETRY_TOKEN_SIGNING_KEY is empty."
+            )
+            _telemetry_signing_warning_emitted = True
+
+    config_obj["telemetryKey"] = token
+    if expires_at is not None:
+        config_obj["telemetryKeyExpiresAt"] = expires_at
+        config_obj["telemetryKeyTtlSeconds"] = int(settings.telemetry_token_ttl_seconds)
     return cfg
+
+
+def _forward_telemetry_to_upstream(body: bytes, *, content_type: str, user_agent: str | None) -> Response:
+    endpoint = (settings.telemetry_upstream_endpoint or "").strip()
+    if not endpoint:
+        raise HTTPException(status_code=503, detail="Telemetry upstream endpoint is not configured.")
+
+    headers: dict[str, str] = {"Content-Type": content_type or "application/json"}
+    if user_agent:
+        headers["User-Agent"] = user_agent
+
+    upstream_auth_type = (settings.telemetry_upstream_auth_type or "").strip()
+    upstream_key = (settings.telemetry_upstream_key or "").strip()
+    if upstream_auth_type and upstream_key:
+        headers["Authorization"] = f"{upstream_auth_type} {upstream_key}".strip()
+
+    req = urllib_request.Request(endpoint, data=body, headers=headers, method="POST")
+    try:
+        with urllib_request.urlopen(req, timeout=10) as resp:
+            payload = resp.read()
+            response_ct = resp.headers.get("Content-Type", "application/json")
+            return Response(content=payload, status_code=resp.status, headers={"Content-Type": response_ct})
+    except urllib_error.HTTPError as e:
+        payload = e.read()
+        response_ct = e.headers.get("Content-Type", "application/json")
+        return Response(content=payload, status_code=e.code, headers={"Content-Type": response_ct})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Telemetry upstream unreachable: {e!r}")
 
 
 def _s3_connectivity_check_worker() -> None:
@@ -531,7 +674,7 @@ def get_config(profile: str | None = None, device: str | None = None):
     cfg = _substitute_env(cfg)
 
     # 2) targeted overrides (e.g. telemetrySel)
-    cfg = _apply_overrides(cfg)
+    cfg = _apply_overrides(cfg, profile=prof, device=dev or None)
 
     # 3) keep top-level enable switch from service settings if you still want a global kill-switch
     cfg["enabled"] = bool(settings.config_enabled)
@@ -554,6 +697,79 @@ def get_config(profile: str | None = None, device: str | None = None):
 @app.get("/config/{device}/config.json")
 def get_device_config(device: str, profile: str | None = None):
     return get_config(profile=profile, device=device)
+
+
+@app.get("/telemetry/token")
+def get_telemetry_token(profile: str | None = None, device: str | None = None):
+    prof = (profile or os.getenv("DM_CONFIG_PROFILE", "prod")).strip().lower()
+    dev = (device or "").strip().lower()
+
+    if not settings.telemetry_enabled:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "telemetryEnabled": False,
+                "telemetryAuthorizationType": settings.telemetry_authorization_type,
+                "telemetryKey": "",
+            },
+        )
+    token, exp = _mint_telemetry_token(device=dev or None, profile=prof)
+    if settings.telemetry_require_token and not token:
+        raise HTTPException(status_code=503, detail="Telemetry signing key is not configured.")
+    return JSONResponse(
+        status_code=200,
+        content={
+            "telemetryEnabled": True,
+            "telemetryEndpoint": _resolve_public_telemetry_endpoint(),
+            "telemetryAuthorizationType": settings.telemetry_authorization_type,
+            "telemetryKey": token,
+            "telemetryKeyExpiresAt": exp,
+            "telemetryKeyTtlSeconds": int(settings.telemetry_token_ttl_seconds),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.api_route("/v1/traces", methods=["POST", "OPTIONS"])
+@app.api_route("/telemetry/v1/traces", methods=["POST", "OPTIONS"])
+async def telemetry_traces(request: Request):
+    if request.method == "OPTIONS":
+        return Response(status_code=204)
+    if not settings.telemetry_enabled:
+        raise HTTPException(status_code=503, detail="Telemetry relay is disabled.")
+
+    body = await request.body()
+    if len(body) == 0:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Empty telemetry payload"})
+    if len(body) > TELEMETRY_MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"ok": False, "error": "Telemetry payload too large"})
+
+    if settings.telemetry_require_token:
+        token = _extract_bearer_token(request)
+        if not token:
+            raise HTTPException(status_code=401, detail="Missing telemetry Bearer token.")
+        payload = _verify_telemetry_token(token)
+        client_uuid = str(payload.get("jti") or "telemetry")
+    else:
+        client_uuid = "telemetry-open"
+
+    try:
+        _log_device_connection(
+            action="TELEMETRY_RELAY",
+            email="telemetry@local",
+            client_uuid=client_uuid,
+            encryption_key_fingerprint="none",
+            source_ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+    except Exception:
+        logger.exception("Failed to log telemetry relay call")
+
+    return _forward_telemetry_to_upstream(
+        body,
+        content_type=request.headers.get("content-type", "application/json"),
+        user_agent=request.headers.get("user-agent"),
+    )
 
 
 @app.api_route("/enroll", methods=["POST", "PUT", "OPTIONS"])

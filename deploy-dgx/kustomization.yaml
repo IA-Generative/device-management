@@ -9,6 +9,8 @@ resources:
   - manifests/19-device-management-enroll-pvc.yaml
   - manifests/20-device-management-deployment.yaml
   - manifests/21-device-management-service.yaml
+  - manifests/23-telemetry-relay-deployment.yaml
+  - manifests/24-telemetry-relay-service.yaml
   - manifests/22-httproute.yaml
   - manifests/29-postgres-pvc.yaml
   - manifests/30-postgres-deployment.yaml
