@@ -162,6 +162,56 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: TELEMETRY_KEY
+            - name: DM_TELEMETRY_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_ENABLED
+            - name: DM_TELEMETRY_PUBLIC_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_PUBLIC_ENDPOINT
+            - name: DM_TELEMETRY_AUTHORIZATION_TYPE
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_AUTHORIZATION_TYPE
+            - name: DM_TELEMETRY_UPSTREAM_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_UPSTREAM_ENDPOINT
+            - name: DM_TELEMETRY_UPSTREAM_AUTH_TYPE
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_UPSTREAM_AUTH_TYPE
+            - name: DM_TELEMETRY_UPSTREAM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_UPSTREAM_KEY
+            - name: DM_TELEMETRY_TOKEN_TTL_SECONDS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_TOKEN_TTL_SECONDS
+            - name: DM_TELEMETRY_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_TOKEN_SIGNING_KEY
+            - name: DM_TELEMETRY_REQUIRE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_REQUIRE_TOKEN
+            - name: DM_TELEMETRY_MAX_BODY_SIZE_MB
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_MAX_BODY_SIZE_MB
             - name: DM_S3_ENDPOINT_URL
               valueFrom:
                 secretKeyRef:

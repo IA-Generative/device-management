@@ -48,6 +48,8 @@ kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/18-device-management-content-pv
 kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/19-device-management-enroll-pvc.yaml"
 kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/20-device-management-deployment.yaml"
 kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/21-device-management-service.yaml"
+kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/23-telemetry-relay-deployment.yaml"
+kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/24-telemetry-relay-service.yaml"
 kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/22-httproute.yaml"
 kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/29-postgres-pvc.yaml"
 kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/30-postgres-deployment.yaml"
@@ -65,6 +67,7 @@ kubectl apply -f "$ROOT_DIR/deploy-dgx/manifests/53-filebrowser-service.yaml"
 
 if [ -n "$NAMESPACE" ]; then
   kubectl -n "$NAMESPACE" rollout status deployment/device-management --timeout=180s || true
+  kubectl -n "$NAMESPACE" rollout status deployment/telemetry-relay --timeout=180s || true
   kubectl -n "$NAMESPACE" rollout status deployment/filebrowser --timeout=180s || true
 fi
 

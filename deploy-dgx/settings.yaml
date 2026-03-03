@@ -8,6 +8,7 @@ hostname: <DGX_HOSTNAME>
 app_path_prefix: /bootstrap
 adminer_path_prefix: /adminer
 filebrowser_path_prefix: /files
+telemetry_path_prefix: /telemetry
 
 public_base_url: https://<DGX_HOSTNAME>/bootstrap
 keycloak_issuer_url: https://<SSO_HOSTNAME>/
