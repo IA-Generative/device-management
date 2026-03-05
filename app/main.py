@@ -225,7 +225,7 @@ def _extract_identity(request: Request, body_obj: dict | None = None) -> tuple[s
 
 def _validate_enroll_payload(body_obj: dict) -> list[str]:
     missing: list[str] = []
-    for field in ("device_name", "plugin_uuid", "email"):
+    for field in ("device_name", "plugin_uuid"):
         val = body_obj.get(field)
         if not isinstance(val, str) or not val.strip():
             missing.append(field)
@@ -458,6 +458,237 @@ def _extract_bearer_token(request: Request) -> str:
     return auth[7:].strip()
 
 
+_SECRET_CONFIG_KEYS = {
+    "llm_api_tokens",
+    "tokenOWUI",
+    "telemetryKey",
+    "keycloak_client_secret",
+    "keycloakClientSecret",
+}
+
+_RELAY_MEMORY_STORE: dict[str, dict] = {}
+
+
+def _normalize_client_uuid(raw_value: str | None) -> str:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return str(uuid.uuid4())
+    try:
+        return str(uuid.UUID(raw))
+    except Exception:
+        # Keep deterministic fallback for non-UUID plugin ids.
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, raw))
+
+
+def _extract_access_token_from_request(request: Request) -> str:
+    auth = (request.headers.get("authorization") or "").strip()
+    if not auth.lower().startswith("bearer "):
+        return ""
+    return auth[7:].strip()
+
+
+def _parse_unverified_jwt_payload(token: str) -> dict:
+    if not token:
+        return {}
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload_raw = _b64url_decode(parts[1]).decode("utf-8")
+        data = json.loads(payload_raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _email_from_access_token(token: str) -> str:
+    payload = _parse_unverified_jwt_payload(token)
+    email = payload.get("email") or payload.get("preferred_username") or payload.get("sub")
+    if isinstance(email, str):
+        return email.strip()
+    return ""
+
+
+def _relay_allowed_targets() -> list[str]:
+    raw = str(settings.relay_allowed_targets_csv or "").strip()
+    targets = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    if not targets:
+        targets = ["keycloak", "config"]
+    if "config" not in targets:
+        targets.append("config")
+    return sorted(set(targets))
+
+
+def _hash_relay_secret(relay_client_id: str, relay_key: str) -> str:
+    pepper = str(settings.relay_secret_pepper or "")
+    base = f"{relay_client_id}:{relay_key}:{pepper}".encode("utf-8")
+    return hashlib.sha256(base).hexdigest()
+
+
+def _mint_or_rotate_relay_credentials(*, client_uuid: str, email: str) -> dict:
+    relay_client_id = f"rc_{uuid.uuid4().hex[:24]}"
+    relay_client_key = _b64url_encode(os.urandom(32))
+    relay_key_hash = _hash_relay_secret(relay_client_id, relay_client_key)
+    allowed_targets = _relay_allowed_targets()
+    ttl_seconds = max(60, int(settings.relay_key_ttl_seconds or 0))
+    expires_at = int(time.time()) + ttl_seconds
+
+    db_url = _db_url_bootstrap()
+    if psycopg2 is not None and db_url:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE relay_clients
+                    SET revoked_at = now(), comments = 'rotated'
+                    WHERE client_uuid = %s AND revoked_at IS NULL
+                    """,
+                    (client_uuid,),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO relay_clients (
+                        client_uuid, email, relay_client_id, relay_key_hash,
+                        allowed_targets, expires_at, comments
+                    ) VALUES (%s, %s, %s, %s, %s, to_timestamp(%s), %s)
+                    """,
+                    (
+                        client_uuid,
+                        email,
+                        relay_client_id,
+                        relay_key_hash,
+                        allowed_targets,
+                        expires_at,
+                        "enroll",
+                    ),
+                )
+        finally:
+            conn.close()
+    else:
+        _RELAY_MEMORY_STORE[relay_client_id] = {
+            "client_uuid": client_uuid,
+            "email": email,
+            "relay_key_hash": relay_key_hash,
+            "allowed_targets": allowed_targets,
+            "expires_at": expires_at,
+            "revoked": False,
+        }
+
+    return {
+        "client_id": relay_client_id,
+        "client_key": relay_client_key,
+        "allowed_targets": allowed_targets,
+        "expires_at": expires_at,
+        "ttl_seconds": ttl_seconds,
+    }
+
+
+def _verify_relay_credentials(relay_client_id: str, relay_key: str, target: str | None = None) -> tuple[bool, dict | str]:
+    relay_client_id = str(relay_client_id or "").strip()
+    relay_key = str(relay_key or "").strip()
+    target_norm = str(target or "").strip().lower()
+    if not relay_client_id or not relay_key:
+        return False, "missing relay headers"
+
+    now = int(time.time())
+    row: dict | None = None
+
+    db_url = _db_url_bootstrap()
+    if psycopg2 is not None and db_url:
+        conn = psycopg2.connect(db_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT client_uuid::text, email::text, relay_key_hash, allowed_targets,
+                           EXTRACT(EPOCH FROM expires_at)::bigint, revoked_at
+                    FROM relay_clients
+                    WHERE relay_client_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (relay_client_id,),
+                )
+                item = cur.fetchone()
+            if item:
+                row = {
+                    "client_uuid": item[0],
+                    "email": item[1],
+                    "relay_key_hash": item[2],
+                    "allowed_targets": list(item[3] or []),
+                    "expires_at": int(item[4] or 0),
+                    "revoked": item[5] is not None,
+                }
+        finally:
+            conn.close()
+    else:
+        row = _RELAY_MEMORY_STORE.get(relay_client_id)
+
+    if not row:
+        return False, "unknown relay client"
+    if bool(row.get("revoked")):
+        return False, "relay key revoked"
+
+    expected_hash = str(row.get("relay_key_hash") or "")
+    provided_hash = _hash_relay_secret(relay_client_id, relay_key)
+    if not expected_hash or not hmac.compare_digest(expected_hash, provided_hash):
+        return False, "invalid relay key"
+
+    expires_at = int(row.get("expires_at") or 0)
+    if expires_at and expires_at <= now:
+        return False, "relay key expired"
+
+    allowed_targets = [str(t).strip().lower() for t in (row.get("allowed_targets") or []) if str(t).strip()]
+    if target_norm and allowed_targets and target_norm not in allowed_targets:
+        return False, f"target '{target_norm}' not allowed"
+
+    return True, {
+        "client_uuid": row.get("client_uuid", ""),
+        "email": row.get("email", ""),
+        "allowed_targets": allowed_targets,
+        "expires_at": expires_at,
+    }
+
+
+def _relay_auth_from_request(
+    request: Request,
+    *,
+    target: str | None = None,
+    require_proxy_token: bool = False,
+) -> tuple[bool, dict | str]:
+    if not settings.relay_enabled:
+        return False, "relay auth disabled"
+
+    if require_proxy_token:
+        expected = str(settings.relay_proxy_shared_token or "").strip()
+        provided = str(request.headers.get("x-relay-proxy-token") or "").strip()
+        if expected and not hmac.compare_digest(expected, provided):
+            return False, "invalid relay proxy token"
+
+    relay_client_id = request.headers.get("x-relay-client") or request.headers.get("x-client-id") or ""
+    relay_key = request.headers.get("x-relay-key") or request.headers.get("x-client-key") or ""
+    return _verify_relay_credentials(relay_client_id, relay_key, target=target)
+
+
+def _scrub_secret_values(cfg: dict) -> dict:
+    cfg_obj = dict(cfg)
+    config_obj = cfg_obj.get("config")
+    if not isinstance(config_obj, dict):
+        return cfg_obj
+
+    for secret_key in _SECRET_CONFIG_KEYS:
+        if secret_key in config_obj:
+            config_obj[secret_key] = ""
+
+    # legacy aliases
+    if "authHeaderKey" in config_obj:
+        config_obj["authHeaderKey"] = ""
+
+    cfg_obj["config"] = config_obj
+    return cfg_obj
+
 def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> dict:
     """Apply targeted overrides from env."""
     global _telemetry_signing_warning_emitted
@@ -469,6 +700,15 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
     config_obj["telemetryEnabled"] = bool(settings.telemetry_enabled)
     config_obj["telemetryEndpoint"] = _resolve_public_telemetry_endpoint()
     config_obj["telemetryAuthorizationType"] = settings.telemetry_authorization_type
+
+    public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if public_base:
+        relay_keycloak_base = f"{public_base}/relay-assistant/keycloak"
+        config_obj["keycloakIssuerUrl"] = relay_keycloak_base
+        config_obj["keycloakAuthorizationEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/auth"
+        config_obj["keycloakTokenEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/token"
+        config_obj["keycloakUserinfoEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/userinfo"
+        config_obj["relayAssistantBaseUrl"] = f"{public_base}/relay-assistant"
 
     token = ""
     expires_at: int | None = None
@@ -648,7 +888,7 @@ def livez():
 
 
 @app.get("/config/config.json")
-def get_config(profile: str | None = None, device: str | None = None):
+def get_config(request: Request, profile: str | None = None, device: str | None = None):
     """Return remote-config JSON.
 
     The response is loaded from a static template file under `exemple/` and supports
@@ -676,6 +916,10 @@ def get_config(profile: str | None = None, device: str | None = None):
     # 2) targeted overrides (e.g. telemetrySel)
     cfg = _apply_overrides(cfg, profile=prof, device=dev or None)
 
+    relay_ok, relay_meta = _relay_auth_from_request(request, target="config")
+    if settings.relay_require_key_for_secrets and not relay_ok:
+        cfg = _scrub_secret_values(cfg)
+
     # 3) keep top-level enable switch from service settings if you still want a global kill-switch
     cfg["enabled"] = bool(settings.config_enabled)
 
@@ -695,8 +939,8 @@ def get_config(profile: str | None = None, device: str | None = None):
 
 
 @app.get("/config/{device}/config.json")
-def get_device_config(device: str, profile: str | None = None):
-    return get_config(profile=profile, device=device)
+def get_device_config(request: Request, device: str, profile: str | None = None):
+    return get_config(request=request, profile=profile, device=device)
 
 
 @app.get("/telemetry/token")
@@ -729,6 +973,42 @@ def get_telemetry_token(profile: str | None = None, device: str | None = None):
         headers={"Cache-Control": "no-store"},
     )
 
+
+
+@app.get("/relay/authorize")
+def relay_authorize(request: Request, target: str | None = None):
+    target_name = (target or request.headers.get("x-relay-target") or "").strip().lower()
+    ok, info = _relay_auth_from_request(
+        request,
+        target=target_name,
+        require_proxy_token=True,
+    )
+    if not ok:
+        return JSONResponse(status_code=403, content={"ok": False, "error": str(info)})
+    meta = info if isinstance(info, dict) else {}
+    return JSONResponse(
+        status_code=200,
+        content={
+            "ok": True,
+            "target": target_name,
+            "client_uuid": meta.get("client_uuid", ""),
+            "email": meta.get("email", ""),
+            "expires_at": meta.get("expires_at", 0),
+        },
+    )
+
+
+@app.get("/relay/introspect")
+def relay_introspect(request: Request, target: str | None = None):
+    target_name = (target or request.headers.get("x-relay-target") or "").strip().lower()
+    ok, info = _relay_auth_from_request(
+        request,
+        target=target_name,
+        require_proxy_token=False,
+    )
+    if not ok:
+        return JSONResponse(status_code=401, content={"ok": False, "error": str(info)})
+    return JSONResponse(status_code=200, content={"ok": True, "relay": info})
 
 @app.api_route("/v1/traces", methods=["POST", "OPTIONS"])
 @app.api_route("/telemetry/v1/traces", methods=["POST", "OPTIONS"])
@@ -799,9 +1079,18 @@ async def enroll(request: Request):
                 "error": "Missing required fields: " + ", ".join(missing),
             },
         )
+
+    access_token = _extract_access_token_from_request(request)
+    auth_email = _email_from_access_token(access_token)
+    if not auth_email:
+        return JSONResponse(
+            status_code=401,
+            content={"ok": False, "error": "Missing or invalid PKCE access token."},
+        )
+
     device_name = str(body_obj.get("device_name", "")).strip()
     plugin_uuid = str(body_obj.get("plugin_uuid", "")).strip()
-    email = str(body_obj.get("email", "")).strip()
+    email = auth_email
 
     epoch_ms = int(time.time() * 1000)
     rid = uuid.uuid4().hex
@@ -835,10 +1124,13 @@ async def enroll(request: Request):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Cannot write to S3: {e!r}")
 
+    relay_data = {}
+
     try:
-        email, client_uuid, fingerprint = _extract_identity(request, body_obj=body_obj)
+        _email, client_uuid, fingerprint = _extract_identity(request, body_obj=body_obj)
         if plugin_uuid:
             client_uuid = plugin_uuid
+        client_uuid = _normalize_client_uuid(client_uuid)
         encryption_key = fingerprint if fingerprint and fingerprint != "unknown" else "unknown"
         try:
             _upsert_provisioning(
@@ -849,6 +1141,9 @@ async def enroll(request: Request):
             )
         except Exception:
             logger.exception("Failed to upsert provisioning")
+
+        relay_data = _mint_or_rotate_relay_credentials(client_uuid=client_uuid, email=email)
+
         _log_device_connection(
             action="ENROLL",
             email=email,
@@ -858,9 +1153,19 @@ async def enroll(request: Request):
             user_agent=request.headers.get("user-agent"),
         )
     except Exception:
-        logger.exception("Failed to log enroll call")
+        logger.exception("Failed to process enroll call")
 
-    return JSONResponse(status_code=201, content={"ok": True, "stored": stored})
+    return JSONResponse(
+        status_code=201,
+        content={
+            "ok": True,
+            "stored": stored,
+            "relay": relay_data,
+            "relayClientId": relay_data.get("client_id", ""),
+            "relayClientKey": relay_data.get("client_key", ""),
+            "relayKeyExpiresAt": relay_data.get("expires_at", 0),
+        },
+    )
 
 
 @app.get("/binaries/{path:path}")

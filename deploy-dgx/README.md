@@ -16,6 +16,7 @@ Exemple d'URL de reference (fictive):
 Services exposes:
 - application device-management: `https://dgx.example.invalid/bootstrap`
 - telemetry relay: `https://dgx.example.invalid/telemetry`
+- relay assistant: `https://dgx.example.invalid/relay-assistant`
 - adminer: `https://dgx.example.invalid/adminer`
 - filebrowser: `https://dgx.example.invalid/files`
 
@@ -26,6 +27,7 @@ Endpoints utiles:
 - config libreoffice: `https://dgx.example.invalid/bootstrap/config/libreoffice/config.json`
 - telemetry token (rotation): `https://dgx.example.invalid/bootstrap/telemetry/token`
 - telemetry traces relay: `https://dgx.example.invalid/telemetry/v1/traces`
+- relay keycloak token (protected): `https://dgx.example.invalid/relay-assistant/keycloak/protocol/openid-connect/token`
 - binaire test png: `https://dgx.example.invalid/bootstrap/binaries/test/ok.png`
 - binaire test json: `https://dgx.example.invalid/bootstrap/binaries/test/test.json`
 
@@ -147,6 +149,11 @@ Smoke test manuel:
 ./deploy-dgx/scripts/smoke-test-dgx.sh
 ```
 
+Upgrade idempotent du flux relay/enrollment (secret + manifests + image + checks):
+```bash
+DGX_SKIP_CONTEXT_CONFIRM=1 ./deploy-dgx/scripts/upgrade-relay-flow.sh --tag 0.0.2-relay
+```
+
 Smoke test externe (routes gateway):
 ```bash
 DGX_TEST_EXTERNAL=1 ./deploy-dgx/scripts/smoke-test-dgx.sh
@@ -236,7 +243,7 @@ Le script enchaine:
 ### 2.4 Validation de l'installation
 
 `deploy-full-dgx.sh` lance un smoke test complet qui valide:
-- rollout: `postgres`, `device-management`, `telemetry-relay`, `adminer`, `filebrowser`
+- rollout: `postgres`, `device-management`, `relay-assistant`, `telemetry-relay`, `adminer`, `filebrowser`
 - endpoints services
 - checks fonctionnels device-management:
   - `/livez`

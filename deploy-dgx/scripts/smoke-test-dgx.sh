@@ -23,6 +23,7 @@ APP_PATH_PREFIX="$(read_yaml_key "$SETTINGS_FILE" "app_path_prefix")"
 ADMINER_PATH_PREFIX="$(read_yaml_key "$SETTINGS_FILE" "adminer_path_prefix")"
 FILEBROWSER_PATH_PREFIX="$(read_yaml_key "$SETTINGS_FILE" "filebrowser_path_prefix")"
 TELEMETRY_PATH_PREFIX="$(read_yaml_key "$SETTINGS_FILE" "telemetry_path_prefix")"
+RELAY_PATH_PREFIX="$(read_yaml_key "$SETTINGS_FILE" "relay_path_prefix")"
 EXTERNAL_SCHEME="${EXTERNAL_SCHEME:-https}"
 EXTERNAL_INSECURE="${DGX_TEST_EXTERNAL_INSECURE:-0}"
 
@@ -30,10 +31,12 @@ APP_PATH_PREFIX="${APP_PATH_PREFIX%/}"
 ADMINER_PATH_PREFIX="${ADMINER_PATH_PREFIX%/}"
 FILEBROWSER_PATH_PREFIX="${FILEBROWSER_PATH_PREFIX%/}"
 TELEMETRY_PATH_PREFIX="${TELEMETRY_PATH_PREFIX%/}"
+RELAY_PATH_PREFIX="${RELAY_PATH_PREFIX%/}"
 [ -z "$APP_PATH_PREFIX" ] && APP_PATH_PREFIX="/"
 [ -z "$ADMINER_PATH_PREFIX" ] && ADMINER_PATH_PREFIX="/adminer"
 [ -z "$FILEBROWSER_PATH_PREFIX" ] && FILEBROWSER_PATH_PREFIX="/files"
 [ -z "$TELEMETRY_PATH_PREFIX" ] && TELEMETRY_PATH_PREFIX="/telemetry"
+[ -z "$RELAY_PATH_PREFIX" ] && RELAY_PATH_PREFIX="/relay-assistant"
 
 echo "== DGX Smoke Tests =="
 echo "Namespace: $NAMESPACE"
@@ -43,13 +46,14 @@ echo
 echo "[1/4] Rollout status"
 kubectl -n "$NAMESPACE" rollout status deployment/postgres --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
 kubectl -n "$NAMESPACE" rollout status deployment/device-management --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
+kubectl -n "$NAMESPACE" rollout status deployment/relay-assistant --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
 kubectl -n "$NAMESPACE" rollout status deployment/telemetry-relay --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
 kubectl -n "$NAMESPACE" rollout status deployment/adminer --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
 kubectl -n "$NAMESPACE" rollout status deployment/filebrowser --timeout="${ROLLOUT_TIMEOUT_SECONDS}s"
 
 echo
 echo "[2/4] Services and endpoints"
-for svc in postgres device-management telemetry-relay adminer filebrowser; do
+for svc in postgres device-management relay-assistant telemetry-relay adminer filebrowser; do
   kubectl -n "$NAMESPACE" get svc "$svc" >/dev/null
   endpoints="$(kubectl -n "$NAMESPACE" get endpoints "$svc" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)"
   if [ -z "${endpoints// }" ]; then
@@ -67,7 +71,7 @@ cleanup_smoke_job() {
 }
 trap cleanup_smoke_job EXIT
 
-cat <<EOF | kubectl -n "$NAMESPACE" apply -f -
+cat <<EOF2 | kubectl -n "$NAMESPACE" apply -f -
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -99,15 +103,12 @@ spec:
 
               failures = []
 
-
               def _ok(name: str) -> None:
                   print(f"OK: {name}")
-
 
               def _fail(name: str, detail: str) -> None:
                   failures.append(f"{name}: {detail}")
                   print(f"ERROR: {name}: {detail}")
-
 
               def check_http(name: str, url: str, *, expect_json: bool = False, allowed_error_codes=None) -> None:
                   allowed_error_codes = allowed_error_codes or set()
@@ -129,7 +130,6 @@ spec:
                       _fail(name, repr(exc))
                       return
 
-
               def check_postgres_tcp() -> None:
                   name = "postgres tcp connect (postgres:5432)"
                   try:
@@ -138,7 +138,6 @@ spec:
                       _ok(name)
                   except Exception as exc:  # noqa: BLE001
                       _fail(name, repr(exc))
-
 
               def check_png(url: str) -> None:
                   name = "device-management /binaries/test/ok.png"
@@ -152,11 +151,12 @@ spec:
                   except Exception as exc:
                       _fail(name, repr(exc))
 
-
               check_http("device-management /livez", "http://device-management:80/livez", expect_json=True)
               check_http("device-management /config/matisse/config.json", "http://device-management:80/config/matisse/config.json", expect_json=True)
               check_http("device-management /config/libreoffice/config.json", "http://device-management:80/config/libreoffice/config.json", expect_json=True)
               check_http("device-management /telemetry/token", "http://device-management:80/telemetry/token", expect_json=True)
+              check_http("relay-assistant /healthz", "http://relay-assistant:80/healthz")
+              check_http("relay-assistant keycloak denied without key", "http://relay-assistant:80/keycloak/protocol/openid-connect/token", allowed_error_codes={401, 403, 404, 405})
               check_http("telemetry-relay /livez", "http://telemetry-relay:80/livez", expect_json=True)
 
               check_http("adminer service", "http://adminer:8080/")
@@ -177,7 +177,7 @@ spec:
                   sys.exit(1)
 
               print("\nAll smoke checks passed.")
-EOF
+EOF2
 
 if ! kubectl -n "$NAMESPACE" wait --for=condition=complete --timeout="${ROLLOUT_TIMEOUT_SECONDS}s" "job/${SMOKE_JOB}" >/dev/null 2>&1; then
   echo "ERROR: smoke job failed or timeout. Logs:" >&2
@@ -223,11 +223,14 @@ if [ "${DGX_TEST_EXTERNAL:-0}" = "1" ]; then
   ADMINER_BASE="${EXTERNAL_SCHEME}://${HOSTNAME}${ADMINER_PATH_PREFIX}"
   FILEBROWSER_BASE="${EXTERNAL_SCHEME}://${HOSTNAME}${FILEBROWSER_PATH_PREFIX}"
   TELEMETRY_BASE="${EXTERNAL_SCHEME}://${HOSTNAME}${TELEMETRY_PATH_PREFIX}"
+  RELAY_BASE="${EXTERNAL_SCHEME}://${HOSTNAME}${RELAY_PATH_PREFIX}"
 
   check_external_http "device-management /livez" "$APP_BASE/livez" 200
   check_external_http "device-management /config/matisse/config.json" "$APP_BASE/config/matisse/config.json" 200
   check_external_http "device-management /config/libreoffice/config.json" "$APP_BASE/config/libreoffice/config.json" 200
   check_external_http "device-management /telemetry/token" "$APP_BASE/telemetry/token" 200
+  check_external_http "relay-assistant /healthz" "$RELAY_BASE/healthz" 200
+  check_external_http "relay-assistant keycloak denied without key" "$RELAY_BASE/keycloak/protocol/openid-connect/token" 401 403 404 405
   check_external_http "telemetry relay /livez" "$TELEMETRY_BASE/livez" 200
   check_external_http "adminer route" "$ADMINER_BASE/" 200 301 302
   check_external_http "filebrowser route" "$FILEBROWSER_BASE/" 200 301 302 401 403

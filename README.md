@@ -149,3 +149,87 @@ secrets:
   - avoid plaintext secrets in Git,
   - define a rotation and access policy (least privilege),
   - inject secrets via native mechanisms (external-secrets / CSI / vault provider).
+
+## Secure Relay Flow (PKCE -> enroll -> relay)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as User
+  participant P as LibreOffice Plugin
+  participant KC as Keycloak
+  participant DM as Device Management
+  participant R as relay-assistant (nginx)
+  participant API as Upstream APIs (Keycloak/LLM/MCR)
+
+  P->>DM: GET /config/libreoffice/config.json (no relay headers)
+  DM-->>P: public config (secrets scrubbed)
+
+  U->>P: Click Login (PKCE)
+  P->>KC: /auth (PKCE)
+  KC-->>P: authorization code
+  P->>KC: /token (code+verifier)
+  KC-->>P: access_token (+refresh_token)
+
+  P->>DM: POST /enroll (Authorization: Bearer access_token)
+  DM-->>P: relayClientId + relayClientKey + expiry
+
+  P->>DM: GET /config/libreoffice/config.json + X-Relay-Client/X-Relay-Key
+  DM-->>P: config with secret values (llm_api_tokens, etc.)
+
+  P->>R: /relay-assistant/keycloak/... + relay headers
+  R->>DM: GET /relay/authorize?target=keycloak
+  DM-->>R: 200/403
+  R->>API: proxied request only if authorized + whitelisted target/path
+  API-->>R: response
+  R-->>P: response
+```
+
+### Security model summary
+- Enrollment requires a user PKCE access token.
+- Relay credentials are generated server-side at enroll and rotated on re-enroll.
+- Secret config values are returned only with valid relay credentials.
+- `relay-assistant` is a standard nginx proxy with strict path whitelist.
+- Authorization is delegated to DM (`/relay/authorize`) with an internal shared token.
+- No free-form URL forwarding: target is constrained to allowed prefixes (`keycloak`, `llm`, `mcr-api`).
+
+## Validation scripts
+
+### Full validation (all targets)
+
+```bash
+./scripts/test-all.sh
+```
+
+### DM (Docker / infra-minimal)
+
+```bash
+./infra-minimal/validate-all.sh
+```
+
+### DM (deploy-dgx)
+
+```bash
+./deploy-dgx/validate-all.sh
+./deploy-dgx/scripts/smoke-test-dgx.sh
+```
+
+### Kubernetes manifest sanity (client-side)
+
+```bash
+kubectl apply --dry-run=client -f infra-minimal/bootstrap-app.yaml
+kubectl apply --dry-run=client -k deploy-dgx
+```
+
+### Reset from zero
+
+```bash
+FORCE=1 RESET_K8S=1 ./scripts/reset-from-scratch.sh
+```
+
+### Plugin-side validation (from plugin repo)
+
+```bash
+cd ../AssistantMiraiLibreOffice
+./scripts/03-test-local.sh
+```

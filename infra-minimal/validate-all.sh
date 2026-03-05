@@ -6,6 +6,7 @@ ENV_TOOL="$ROOT_DIR/infra-minimal/env-tool.sh"
 COMPOSE_FILE="$ROOT_DIR/infra-minimal/docker-compose.yml"
 
 BASE_URL="${BASE_URL:-http://localhost:3001}"
+RELAY_BASE_URL="${RELAY_BASE_URL:-http://localhost:8088}"
 
 say() { printf "%s\n" "$*"; }
 
@@ -49,6 +50,17 @@ test_config() {
   curl -sS "$BASE_URL/config/config.json" | python -c 'import json,sys; print(json.load(sys.stdin).get("updateUrl"))' || true
 }
 
+test_relay() {
+  if ! check_cmd curl; then
+    return 0
+  fi
+  say "HTTP: relay-assistant /healthz"
+  curl -sS "$RELAY_BASE_URL/healthz" || true
+  say "HTTP: relay-assistant keycloak denied without key (expect 401/403/404/405)"
+  code="$(curl -sS -o /dev/null -w '%{http_code}' "$RELAY_BASE_URL/keycloak/protocol/openid-connect/token" || true)"
+  echo "relay status=$code"
+}
+
 test_binaries() {
   if ! check_cmd curl; then
     return 0
@@ -63,6 +75,7 @@ k8s_smoke() {
   fi
   say "Kubernetes: basic status (namespace bootstrap)"
   kubectl -n bootstrap get pods -l app=device-management || true
+  kubectl -n bootstrap get pods -l app=relay-assistant || true
   kubectl -n bootstrap rollout status deploy/device-management || true
 }
 
@@ -70,6 +83,7 @@ check_env_alignment
 docker_up
 test_healthz
 test_config
+test_relay
 test_binaries
 k8s_smoke
 
