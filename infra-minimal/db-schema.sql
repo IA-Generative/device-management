@@ -205,3 +205,48 @@ ALTER TABLE device_connections
 -- WHERE client_uuid = '00000000-0000-0000-0000-000000000000'
 -- ORDER BY connected_at DESC
 -- LIMIT 10;
+
+-- Relay credentials per enrolled client (for /relay-assistant authorization)
+CREATE TABLE IF NOT EXISTS relay_clients (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  client_uuid UUID NOT NULL,
+  email citext NOT NULL,
+  relay_client_id text NOT NULL,
+  relay_key_hash text NOT NULL,
+  allowed_targets text[] NOT NULL DEFAULT ARRAY['keycloak']::text[],
+  expires_at timestamptz,
+  revoked_at timestamptz,
+  comments text
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgname = 'trg_relay_clients_set_updated_at'
+  ) THEN
+    CREATE TRIGGER trg_relay_clients_set_updated_at
+    BEFORE UPDATE ON relay_clients
+    FOR EACH ROW
+    EXECUTE FUNCTION set_updated_at();
+  END IF;
+END
+$$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_clients_client_uuid_active
+  ON relay_clients (client_uuid)
+  WHERE revoked_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_clients_relay_client_id_active
+  ON relay_clients (relay_client_id)
+  WHERE revoked_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_relay_clients_email
+  ON relay_clients (email);
+
+CREATE INDEX IF NOT EXISTS idx_relay_clients_expires_at
+  ON relay_clients (expires_at);
+
