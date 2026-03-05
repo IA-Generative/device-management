@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: relay-assistant
+  namespace: bootstrap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: relay-assistant
+  template:
+    metadata:
+      labels:
+        app: relay-assistant
+    spec:
+      containers:
+        - name: relay-assistant
+          image: nginx:1.27-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: RELAY_PROXY_SHARED_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_PROXY_SHARED_TOKEN
+            - name: RELAY_KEYCLOAK_UPSTREAM
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: RELAY_KEYCLOAK_UPSTREAM
+            - name: RELAY_LLM_UPSTREAM
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: RELAY_LLM_UPSTREAM
+            - name: RELAY_MCR_API_UPSTREAM
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: RELAY_MCR_API_UPSTREAM
+          volumeMounts:
+            - name: nginx-template
+              mountPath: /etc/nginx/templates/default.conf.template
+              subPath: default.conf.template
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: nginx-template
+          configMap:
+            name: relay-assistant-nginx
+            items:
+              - key: default.conf.template
+                path: default.conf.template

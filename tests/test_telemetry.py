@@ -11,22 +11,24 @@ def _load_module():
     if root not in sys.path:
         sys.path.insert(0, root)
 
-    os.environ.setdefault("DM_STORE_ENROLL_LOCALLY", "false")
-    os.environ.setdefault("DM_STORE_ENROLL_S3", "false")
-    os.environ.setdefault("DM_CONFIG_ENABLED", "true")
-    os.environ.setdefault("DM_CONFIG_PROFILE", "prod")
-    os.environ.setdefault("DM_TELEMETRY_ENABLED", "true")
-    os.environ.setdefault("DM_TELEMETRY_TOKEN_SIGNING_KEY", "unit-test-signing-key")
-    os.environ.setdefault("DM_TELEMETRY_REQUIRE_TOKEN", "true")
-    os.environ.setdefault("DM_TELEMETRY_PUBLIC_ENDPOINT", "/telemetry/v1/traces")
-    os.environ.setdefault("PUBLIC_BASE_URL", "https://example.test/bootstrap")
+    os.environ["DM_STORE_ENROLL_LOCALLY"] = "false"
+    os.environ["DM_STORE_ENROLL_S3"] = "false"
+    os.environ["DM_CONFIG_ENABLED"] = "true"
+    os.environ["DM_CONFIG_PROFILE"] = "prod"
+    os.environ["DM_TELEMETRY_ENABLED"] = "true"
+    os.environ["DM_TELEMETRY_TOKEN_SIGNING_KEY"] = "unit-test-signing-key"
+    os.environ["DM_TELEMETRY_REQUIRE_TOKEN"] = "true"
+    os.environ["DM_TELEMETRY_PUBLIC_ENDPOINT"] = "/telemetry/v1/traces"
+    os.environ["PUBLIC_BASE_URL"] = "https://example.test/bootstrap"
 
+    sys.modules.pop("app.main", None)
+    sys.modules.pop("app.settings", None)
     mod = importlib.import_module("app.main")
     importlib.reload(mod)
     return mod
 
 
-def test_config_injects_rotating_telemetry_token():
+def test_config_exposes_public_telemetry_settings_and_uses_token_endpoint_for_key():
     mod = _load_module()
     client = TestClient(mod.app)
 
@@ -38,9 +40,14 @@ def test_config_injects_rotating_telemetry_token():
     assert cfg.get("telemetryEnabled") is True
     assert cfg.get("telemetryAuthorizationType") == "Bearer"
     assert cfg.get("telemetryEndpoint") == "https://example.test/telemetry/v1/traces"
-    assert isinstance(cfg.get("telemetryKey"), str)
-    assert cfg.get("telemetryKey")
+    # telemetryKey is treated as a secret and is scrubbed unless relay auth is provided.
+    assert cfg.get("telemetryKey", "") == ""
     assert int(cfg.get("telemetryKeyTtlSeconds")) > 0
+
+    token_res = client.get("/telemetry/token?profile=prod&device=libreoffice")
+    assert token_res.status_code == 200
+    token = token_res.json().get("telemetryKey")
+    assert isinstance(token, str) and token
 
 
 def test_telemetry_relay_rejects_missing_token():

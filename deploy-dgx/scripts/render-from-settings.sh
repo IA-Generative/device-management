@@ -80,6 +80,7 @@ APP_PATH_PREFIX="$(require_setting app_path_prefix)"
 ADMINER_PATH_PREFIX="$(require_setting adminer_path_prefix)"
 FILEBROWSER_PATH_PREFIX="$(read_setting filebrowser_path_prefix)"
 TELEMETRY_PATH_PREFIX="$(read_setting telemetry_path_prefix)"
+RELAY_PATH_PREFIX="$(read_setting relay_path_prefix)"
 PUBLIC_BASE_URL="$(require_setting public_base_url)"
 KEYCLOAK_ISSUER_URL="$(require_setting keycloak_issuer_url)"
 KEYCLOAK_REALM="$(require_setting keycloak_realm)"
@@ -102,25 +103,38 @@ TELEMETRY_PATH_PREFIX="${TELEMETRY_PATH_PREFIX%/}"
 if [ -z "$TELEMETRY_PATH_PREFIX" ]; then
   TELEMETRY_PATH_PREFIX="/telemetry"
 fi
+RELAY_PATH_PREFIX="${RELAY_PATH_PREFIX%/}"
+if [ -z "$RELAY_PATH_PREFIX" ]; then
+  RELAY_PATH_PREFIX="/relay-assistant"
+fi
+
 if [ "$APP_PATH_PREFIX" = "/" ]; then
   DM_ENROLL_URL="/enroll"
 else
   DM_ENROLL_URL="${APP_PATH_PREFIX}/enroll"
 fi
+
 if [ "$TELEMETRY_PATH_PREFIX" = "/" ]; then
   DM_TELEMETRY_PUBLIC_ENDPOINT="/v1/traces"
 else
   DM_TELEMETRY_PUBLIC_ENDPOINT="${TELEMETRY_PATH_PREFIX}/v1/traces"
 fi
 
-cat > "$NAMESPACE_MANIFEST" <<EOF
+KEYCLOAK_ISSUER_URL_TRIMMED="${KEYCLOAK_ISSUER_URL%/}"
+if [[ "$KEYCLOAK_ISSUER_URL_TRIMMED" == *"/realms/"* ]]; then
+  RELAY_KEYCLOAK_UPSTREAM="$KEYCLOAK_ISSUER_URL_TRIMMED"
+else
+  RELAY_KEYCLOAK_UPSTREAM="${KEYCLOAK_ISSUER_URL_TRIMMED}/realms/${KEYCLOAK_REALM}"
+fi
+
+cat > "$NAMESPACE_MANIFEST" <<EOF2
 apiVersion: v1
 kind: Namespace
 metadata:
   name: ${NAMESPACE}
-EOF
+EOF2
 
-cat > "$HTTPROUTE_MANIFEST" <<EOF
+cat > "$HTTPROUTE_MANIFEST" <<EOF2
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -192,6 +206,24 @@ spec:
     - backendRefs:
         - group: ""
           kind: Service
+          name: relay-assistant
+          port: 80
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: ${RELAY_PATH_PREFIX}
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      timeouts:
+        request: 300s
+    - backendRefs:
+        - group: ""
+          kind: Service
           name: telemetry-relay
           port: 80
           weight: 1
@@ -207,7 +239,7 @@ spec:
               replacePrefixMatch: /
       timeouts:
         request: 300s
-EOF
+EOF2
 
 # Keep all namespace-scoped manifests aligned with settings.yaml
 for f in \
@@ -217,6 +249,9 @@ for f in \
   "$ROOT_DIR/deploy-dgx/manifests/21-device-management-service.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/23-telemetry-relay-deployment.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/24-telemetry-relay-service.yaml" \
+  "$ROOT_DIR/deploy-dgx/manifests/25-relay-assistant-configmap.yaml" \
+  "$ROOT_DIR/deploy-dgx/manifests/26-relay-assistant-deployment.yaml" \
+  "$ROOT_DIR/deploy-dgx/manifests/27-relay-assistant-service.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/29-postgres-pvc.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/30-postgres-deployment.yaml" \
   "$ROOT_DIR/deploy-dgx/manifests/31-postgres-service.yaml" \
@@ -240,6 +275,7 @@ replace_yaml_key "$DEVICE_SECRET" "KEYCLOAK_ISSUER_URL" "$KEYCLOAK_ISSUER_URL" t
 replace_yaml_key "$DEVICE_SECRET" "KEYCLOAK_REALM" "$KEYCLOAK_REALM" true
 replace_yaml_key "$DEVICE_SECRET" "PUBLIC_BASE_URL" "$PUBLIC_BASE_URL" true
 replace_yaml_key "$DEVICE_SECRET" "DM_TELEMETRY_PUBLIC_ENDPOINT" "$DM_TELEMETRY_PUBLIC_ENDPOINT" true
+replace_yaml_key "$DEVICE_SECRET" "RELAY_KEYCLOAK_UPSTREAM" "$RELAY_KEYCLOAK_UPSTREAM" true
 
 cat "$DEVICE_SECRET" > "$ALL_SECRETS"
 printf "\n---\n" >> "$ALL_SECRETS"

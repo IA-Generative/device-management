@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     telemetry_require_token: bool = Field(default=True)
     telemetry_max_body_size_mb: int = Field(default=2)
 
+    # Relay auth (plugin -> relay -> DM authorize)
+    relay_enabled: bool = Field(default=True)
+    relay_proxy_shared_token: str = Field(default="")
+    relay_secret_pepper: str = Field(default="change-me-relay-pepper")
+    relay_key_ttl_seconds: int = Field(default=30 * 24 * 3600)
+    relay_allowed_targets_csv: str = Field(default="keycloak")
+    relay_require_key_for_secrets: bool = Field(default=True)
+
     # Database (optional, used by local tooling)
     database_url: str = Field(default_factory=_default_database_url)
 

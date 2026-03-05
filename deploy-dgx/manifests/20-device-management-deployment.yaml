@@ -98,6 +98,36 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DM_ENROLL_DIR
+            - name: DM_RELAY_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_ENABLED
+            - name: DM_RELAY_KEY_TTL_SECONDS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_KEY_TTL_SECONDS
+            - name: DM_RELAY_ALLOWED_TARGETS_CSV
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_ALLOWED_TARGETS_CSV
+            - name: DM_RELAY_REQUIRE_KEY_FOR_SECRETS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_REQUIRE_KEY_FOR_SECRETS
+            - name: DM_RELAY_PROXY_SHARED_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_PROXY_SHARED_TOKEN
+            - name: DM_RELAY_SECRET_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_SECRET_PEPPER
             - name: DM_CONFIG_DIR
               value: /data/content/config
             - name: DM_LOCAL_BINARIES_DIR

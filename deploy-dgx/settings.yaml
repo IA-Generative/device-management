@@ -9,6 +9,7 @@ app_path_prefix: /bootstrap
 adminer_path_prefix: /adminer
 filebrowser_path_prefix: /files
 telemetry_path_prefix: /telemetry
+relay_path_prefix: /relay-assistant
 
 public_base_url: https://onyxia.gpu.minint.fr/bootstrap
 keycloak_issuer_url: https://sso.mirai.interieur.gouv.fr/
