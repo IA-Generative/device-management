@@ -193,6 +193,93 @@ sequenceDiagram
 - Authorization is delegated to DM (`/relay/authorize`) with an internal shared token.
 - No free-form URL forwarding: target is constrained to allowed prefixes (`keycloak`, `llm`, `mcr-api`).
 
+## Auto-Update Workflow (TB60 / LibreOffice / MV2 / MV3)
+
+Progressive rollout summary: the plugin sends `plugin_uuid`, current version, and (after PKCE login) a Keycloak token; Device Management validates the JWT (JWKS/signature, `iss`, `aud`, `exp`), derives user identity (`sub`) and `groups`, then applies rollout targeting priority (first the 5 management-wired deployment groups, then mapped Keycloak groups). DM returns a campaign policy (`none/update/rollback`, target version, artifact URL, checksum/signature, rollout percentage). The client installs only if policy allows and cryptographic verification succeeds, then reports status (`success/failure`) so campaigns can be started, paused, promoted, or rolled back with per-group tracking.
+
+```mermaid
+flowchart TD
+  A[Plugin check-in: plugin_uuid + plugin_version + optional Keycloak token] --> B[DM validates JWT via JWKS]
+  B --> C[Extract sub + groups]
+  C --> D{Group resolution}
+  D -->|Priority 1| E[Management wired groups g1..g5]
+  D -->|Priority 2| F[Mapped Keycloak groups]
+  D -->|Fallback| G[Global default policy]
+  E --> H[Campaign policy evaluation]
+  F --> H
+  G --> H
+  H --> I{Action}
+  I -->|none| J[No update]
+  I -->|update| K[Return targetVersion + artifact + sha256 + signature]
+  I -->|rollback| L[Return rollback target]
+  K --> M[Plugin verifies crypto and installs]
+  L --> M
+  M --> N[Telemetry: success/failure by campaign/group]
+```
+
+### 1) Unified release and progressive rollout
+
+```mermaid
+flowchart TD
+  A[CI Build] --> B[Unit/Integration/Security checks]
+  B --> C[Sign artifacts + generate checksums]
+  C --> D[Publish release metadata]
+  D --> E[Canary rollout 5 percent]
+  E --> F{Error budget and SLO OK?}
+  F -- No --> R[Rollback to previous stable version]
+  F -- Yes --> G[Progressive rollout 25 to 50 to 100 percent]
+```
+
+### 2) Client-side update cycle via Device Management
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client (TB60/LO/MV2/MV3)
+  participant DM as Device Management
+  participant U as Update Repository/CDN
+  participant T as Telemetry
+
+  C->>DM: GET update policy/channel (bootstrap config)
+  DM-->>C: target version, manifest URL, rollout gate
+  C->>U: GET manifest
+  C->>C: verify signature + sha256 + compatibility
+  alt update available and valid
+    C->>U: download package
+    C->>C: install update
+    C->>T: update_success(version)
+  else no update or invalid
+    C->>T: update_skipped_or_failed(reason)
+  end
+```
+
+### 3) Platform tracks
+
+```mermaid
+flowchart LR
+  subgraph TB60[Thunderbird 60]
+    T1[Check update manifest URL] --> T2[Download signed XPI]
+    T2 --> T3[Verify signature and compatibility]
+    T3 --> T4[Install and restart if needed]
+  end
+
+  subgraph LO[LibreOffice]
+    L1[Read DM update policy] --> L2[Download OXT package]
+    L2 --> L3[Verify checksum and signature]
+    L3 --> L4[Install extension update and reload]
+  end
+
+  subgraph MV2[Browser Extension MV2]
+    M21[Store or self-hosted update URL] --> M22[Browser auto-update cycle]
+    M22 --> M23[Background page reload + migration]
+  end
+
+  subgraph MV3[Browser Extension MV3]
+    M31[Store staged rollout] --> M32[Service worker update]
+    M32 --> M33[Storage schema migration + health ping]
+  end
+```
+
 ## Validation scripts
 
 ### Full validation (all targets)
