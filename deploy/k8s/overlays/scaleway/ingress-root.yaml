@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bootstrap-root
+  namespace: bootstrap
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - bootstrap.fake-domain.name
+      secretName: bootstrap-tls
+  rules:
+    - host: bootstrap.fake-domain.name
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: device-management
+                port:
+                  number: 80

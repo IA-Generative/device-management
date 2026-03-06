@@ -79,6 +79,7 @@ data/
 config.default.json
 !.env.example
 !.env.secrets.example
+!.env.registry.example
 !infra-minimal/.env.example
 !infra-minimal/.env.secrets.example
 infra-minimal/bootstrap-secret.yaml

@@ -332,16 +332,6 @@ kubectl apply -f deploy-dgx/manifests/51-filebrowser-users-job.yaml
 kubectl -n bootstrap wait --for=condition=complete --timeout=180s job/filebrowser-users-init
 ```
 
-### Argo CD
-
-`deploy-dgx/kustomization.yaml` pointe vers les manifests separes.
-
-1. Modifier `repoURL`/`targetRevision` dans `deploy-dgx/argocd/application.yaml`
-2. Appliquer:
-```bash
-kubectl apply -f deploy-dgx/argocd/application.yaml
-```
-
 Note registry:
 - `all-secrets.yaml` n'inclut pas `regcred`
 - creer/mettre a jour `regcred` avec `./deploy-dgx/create-registry-secret.sh` avant `deploy-full`

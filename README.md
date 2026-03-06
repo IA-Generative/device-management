@@ -321,3 +321,43 @@ FORCE=1 RESET_K8S=1 ./scripts/reset-from-scratch.sh
 cd ../AssistantMiraiLibreOffice
 ./scripts/03-test-local.sh
 ```
+
+## Kubernetes agnostique (nouveau socle)
+
+Le déploiement Kubernetes est maintenant structuré en **base + overlays**:
+
+- `deploy/k8s/base`
+- `deploy/k8s/overlays/local`
+- `deploy/k8s/overlays/scaleway`
+- `deploy/k8s/overlays/dgx`
+
+Profils cibles:
+
+- `local`: `http://bootstrap.home`
+- `scaleway`: `https://bootstrap.fake-domain.name`
+- `dgx`: `https://onyxia.gpu.minint.fr/bootstrap`
+
+Commandes unifiées:
+
+```bash
+cp .env.registry.example .env.registry
+./scripts/k8s/create-registry-secret.sh local
+./scripts/k8s/render.sh local
+./scripts/k8s/deploy.sh local
+./scripts/k8s/validate.sh local
+./scripts/k8s/validate-all.sh
+```
+
+Notes HTTP/HTTPS:
+
+- `local` en HTTP est strictement réservé au dev local (réseau de confiance).
+- `scaleway` et `dgx` doivent rester en HTTPS avec certificats valides.
+- En production, ne pas désactiver la vérification TLS.
+
+### Dépréciation `infra-minimal`
+
+`infra-minimal` est désormais un chemin legacy. La cible est:
+
+1. valider la parité fonctionnelle via `deploy/k8s/overlays/*`,
+2. basculer CI/CD et opérations sur `scripts/k8s/*`,
+3. supprimer `infra-minimal` une fois la parité confirmée.

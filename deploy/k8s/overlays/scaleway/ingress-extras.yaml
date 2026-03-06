@@ -1,0 +1,46 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bootstrap-extras
+  namespace: bootstrap
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - bootstrap.fake-domain.name
+      secretName: bootstrap-tls
+  rules:
+    - host: bootstrap.fake-domain.name
+      http:
+        paths:
+          - path: /adminer(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: adminer
+                port:
+                  number: 8080
+          - path: /files(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: filebrowser
+                port:
+                  number: 80
+          - path: /relay-assistant(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: relay-assistant
+                port:
+                  number: 80
+          - path: /telemetry(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: telemetry-relay
+                port:
+                  number: 80

@@ -1,0 +1,103 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: filebrowser-users-init
+  namespace: bootstrap
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: OnFailure
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: init-users
+          image: docker.io/filebrowser/filebrowser:v2.31.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -lc
+            - |
+              set -eu
+              DB="/database/filebrowser.db"
+              mkdir -p /database
+
+              add_user() {
+                user="$1"
+                pass="$2"
+                if [ -z "$pass" ]; then
+                  echo "Skipping $user (empty password)."
+                  return 0
+                fi
+                /filebrowser users add "$user" "$pass" --perm.admin -d "$DB" >/dev/null 2>&1 || true
+                echo "Ensured filebrowser account: $user"
+              }
+
+              add_user "editor1"  "${EDITOR1_PASSWORD:-}"
+              add_user "editor2"  "${EDITOR2_PASSWORD:-}"
+              add_user "editor3"  "${EDITOR3_PASSWORD:-}"
+              add_user "editor4"  "${EDITOR4_PASSWORD:-}"
+              add_user "editor5"  "${EDITOR5_PASSWORD:-}"
+              add_user "editor6"  "${EDITOR6_PASSWORD:-}"
+              add_user "editor7"  "${EDITOR7_PASSWORD:-}"
+              add_user "editor8"  "${EDITOR8_PASSWORD:-}"
+              add_user "editor9"  "${EDITOR9_PASSWORD:-}"
+              add_user "editor10" "${EDITOR10_PASSWORD:-}"
+          env:
+            - name: EDITOR1_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR1_PASSWORD
+            - name: EDITOR2_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR2_PASSWORD
+            - name: EDITOR3_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR3_PASSWORD
+            - name: EDITOR4_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR4_PASSWORD
+            - name: EDITOR5_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR5_PASSWORD
+            - name: EDITOR6_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR6_PASSWORD
+            - name: EDITOR7_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR7_PASSWORD
+            - name: EDITOR8_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR8_PASSWORD
+            - name: EDITOR9_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR9_PASSWORD
+            - name: EDITOR10_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: filebrowser-users-secrets
+                  key: EDITOR10_PASSWORD
+          volumeMounts:
+            - name: db
+              mountPath: /database
+      volumes:
+        - name: db
+          persistentVolumeClaim:
+            claimName: filebrowser-db-pvc
