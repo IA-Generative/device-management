@@ -39,7 +39,7 @@ def test_config_exposes_public_telemetry_settings_and_uses_token_endpoint_for_ke
 
     assert cfg.get("telemetryEnabled") is True
     assert cfg.get("telemetryAuthorizationType") == "Bearer"
-    assert cfg.get("telemetryEndpoint") == "https://example.test/telemetry/v1/traces"
+    assert cfg.get("telemetryEndpoint") == "https://example.test/relay-assistant/telemetry/v1/traces"
     # telemetryKey is treated as a secret and is scrubbed unless relay auth is provided.
     assert cfg.get("telemetryKey", "") == ""
     assert int(cfg.get("telemetryKeyTtlSeconds")) > 0

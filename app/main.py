@@ -394,6 +394,9 @@ def _resolve_public_telemetry_endpoint() -> str:
     if public_base:
         parsed = urlparse(public_base)
         if parsed.scheme and parsed.netloc:
+            # Unified relay strategy: when relay is enabled, expose telemetry through relay-assistant.
+            if settings.relay_enabled and endpoint in ("/telemetry/v1/traces", "/v1/traces"):
+                return f"{parsed.scheme}://{parsed.netloc}/relay-assistant/telemetry/v1/traces"
             return f"{parsed.scheme}://{parsed.netloc}{endpoint}"
     return endpoint
 
@@ -513,9 +516,11 @@ def _relay_allowed_targets() -> list[str]:
     raw = str(settings.relay_allowed_targets_csv or "").strip()
     targets = [t.strip().lower() for t in raw.split(",") if t.strip()]
     if not targets:
-        targets = ["keycloak", "config"]
+        targets = ["keycloak", "config", "telemetry"]
     if "config" not in targets:
         targets.append("config")
+    if "telemetry" not in targets:
+        targets.append("telemetry")
     return sorted(set(targets))
 
 
@@ -641,13 +646,19 @@ def _verify_relay_credentials(relay_client_id: str, relay_key: str, target: str 
         return False, "relay key expired"
 
     allowed_targets = [str(t).strip().lower() for t in (row.get("allowed_targets") or []) if str(t).strip()]
-    if target_norm and allowed_targets and target_norm not in allowed_targets:
+    effective_targets = sorted(set(allowed_targets))
+    # Backward compatibility: existing credentials with 'config' are also allowed for telemetry relay.
+    if "config" in effective_targets and "telemetry" not in effective_targets:
+        effective_targets.append("telemetry")
+        effective_targets = sorted(set(effective_targets))
+
+    if target_norm and effective_targets and target_norm not in effective_targets:
         return False, f"target '{target_norm}' not allowed"
 
     return True, {
         "client_uuid": row.get("client_uuid", ""),
         "email": row.get("email", ""),
-        "allowed_targets": allowed_targets,
+        "allowed_targets": effective_targets,
         "expires_at": expires_at,
     }
 
@@ -703,12 +714,16 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
 
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if public_base:
-        relay_keycloak_base = f"{public_base}/relay-assistant/keycloak"
-        config_obj["keycloakIssuerUrl"] = relay_keycloak_base
-        config_obj["keycloakAuthorizationEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/auth"
-        config_obj["keycloakTokenEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/token"
-        config_obj["keycloakUserinfoEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/userinfo"
         config_obj["relayAssistantBaseUrl"] = f"{public_base}/relay-assistant"
+
+        # Keep Keycloak values from config by default.
+        # Force relay endpoints only when explicitly enabled via DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS.
+        if settings.relay_force_keycloak_endpoints:
+            relay_keycloak_base = f"{public_base}/relay-assistant/keycloak"
+            config_obj["keycloakIssuerUrl"] = relay_keycloak_base
+            config_obj["keycloakAuthorizationEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/auth"
+            config_obj["keycloakTokenEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/token"
+            config_obj["keycloakUserinfoEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/userinfo"
 
     token = ""
     expires_at: int | None = None
