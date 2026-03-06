@@ -268,7 +268,7 @@ patch = {
     "stringData": {
         "DM_RELAY_ENABLED": "true",
         "DM_RELAY_KEY_TTL_SECONDS": "2592000",
-        "DM_RELAY_ALLOWED_TARGETS_CSV": "keycloak,config,llm,mcr-api",
+        "DM_RELAY_ALLOWED_TARGETS_CSV": "keycloak,config,llm,mcr-api,telemetry",
         "DM_RELAY_REQUIRE_KEY_FOR_SECRETS": "true",
         "DM_RELAY_PROXY_SHARED_TOKEN": proxy_token,
         "DM_RELAY_SECRET_PEPPER": pepper,

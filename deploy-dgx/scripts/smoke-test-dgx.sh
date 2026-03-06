@@ -85,7 +85,7 @@ spec:
         - name: regcred
       containers:
         - name: smoke
-          image: docker.io/etiquet/device-management:0.0.1
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.0.3-unified-relay
           imagePullPolicy: IfNotPresent
           env:
             - name: DM_BINARIES_MODE

@@ -5,6 +5,8 @@ metadata:
   namespace: bootstrap
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: device-management
@@ -17,7 +19,7 @@ spec:
         - name: regcred
       initContainers:
         - name: init-content-layout
-          image: docker.io/etiquet/device-management:0.0.1
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.0.3-unified-relay
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
@@ -48,7 +50,7 @@ spec:
               mountPath: /app/config
       containers:
         - name: device-management
-          image: docker.io/etiquet/device-management:0.0.1
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.0.3-unified-relay
           imagePullPolicy: Always
           ports:
             - containerPort: 3001

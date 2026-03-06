@@ -408,6 +408,15 @@ data:
         proxy_pass ${RELAY_MCR_API_UPSTREAM}/$1$is_args$args;
       }
 
+      location = /telemetry/v1/traces {
+        set $relay_target telemetry;
+        auth_request /__relay_auth;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Content-Type $http_content_type;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass http://device-management:3001/telemetry/v1/traces$is_args$args;
+      }
+
       location / {
         return 404;
       }
@@ -529,6 +538,8 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data

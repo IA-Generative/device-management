@@ -29,7 +29,9 @@ def _load_module():
     os.environ["DM_RELAY_ENABLED"] = "true"
     os.environ["DM_RELAY_SECRET_PEPPER"] = "unit-test-pepper"
     os.environ["DM_RELAY_PROXY_SHARED_TOKEN"] = "proxy-shared-token"
-    os.environ["DM_RELAY_ALLOWED_TARGETS_CSV"] = "keycloak,config,llm,mcr-api"
+    os.environ["DM_RELAY_ALLOWED_TARGETS_CSV"] = "keycloak,config,llm,mcr-api,telemetry"
+    os.environ["DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS"] = "false"
+    os.environ["KEYCLOAK_ISSUER_URL"] = "https://issuer.from.config.test/realms/bootstrap"
     os.environ["PUBLIC_BASE_URL"] = "https://example.test/bootstrap"
     os.environ["LLM_API_TOKEN"] = "very-secret-token"
 
@@ -64,7 +66,7 @@ def test_config_hides_secrets_without_relay_key():
     cfg = res.json().get("config", {})
 
     assert cfg.get("llm_api_tokens", "") == ""
-    assert cfg.get("keycloakTokenEndpoint", "").startswith("https://example.test/bootstrap/relay-assistant/keycloak")
+    assert cfg.get("keycloakIssuerUrl") == "https://issuer.from.config.test/realms/bootstrap"
 
 
 def test_config_returns_secrets_with_valid_relay_key():
@@ -93,3 +95,17 @@ def test_relay_authorize_requires_proxy_shared_token():
     allowed = client.get("/relay/authorize?target=keycloak", headers=ok_headers)
     assert allowed.status_code == 200
     assert allowed.json().get("ok") is True
+
+
+def test_relay_authorize_telemetry_with_proxy_token():
+    mod = _load_module()
+    client = TestClient(mod.app)
+    relay_headers = _enroll_and_get_relay_headers(client)
+
+    ok_headers = dict(relay_headers)
+    ok_headers["X-Relay-Proxy-Token"] = "proxy-shared-token"
+    allowed = client.get("/relay/authorize?target=telemetry", headers=ok_headers)
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body.get("ok") is True
+    assert body.get("target") == "telemetry"
