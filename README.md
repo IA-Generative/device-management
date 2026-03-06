@@ -44,6 +44,7 @@ The `config/config.json` file supports placeholders `${VARNAME}` (e.g. `${PUBLIC
 - `DM_TELEMETRY_TOKEN_TTL_SECONDS=300`
 - `DM_TELEMETRY_TOKEN_SIGNING_KEY=...` (required when `DM_TELEMETRY_REQUIRE_TOKEN=true`)
 - `DM_TELEMETRY_REQUIRE_TOKEN=true`
+- `DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS=false` (default: keep Keycloak issuer/token endpoints from config template)
 
 ### Enroll storage
 - `DM_STORE_ENROLL_LOCALLY=true`

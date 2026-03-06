@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     relay_key_ttl_seconds: int = Field(default=30 * 24 * 3600)
     relay_allowed_targets_csv: str = Field(default="keycloak")
     relay_require_key_for_secrets: bool = Field(default=True)
+    relay_force_keycloak_endpoints: bool = Field(default=False)
 
     # Database (optional, used by local tooling)
     database_url: str = Field(default_factory=_default_database_url)

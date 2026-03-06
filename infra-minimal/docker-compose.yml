@@ -26,7 +26,7 @@ services:
       DM_RELAY_PROXY_SHARED_TOKEN: ${DM_RELAY_PROXY_SHARED_TOKEN:-change-me-relay-proxy-token}
       DM_RELAY_SECRET_PEPPER: ${DM_RELAY_SECRET_PEPPER:-change-me-relay-secret-pepper}
       DM_RELAY_KEY_TTL_SECONDS: ${DM_RELAY_KEY_TTL_SECONDS:-2592000}
-      DM_RELAY_ALLOWED_TARGETS_CSV: ${DM_RELAY_ALLOWED_TARGETS_CSV:-keycloak,config,llm,mcr-api}
+      DM_RELAY_ALLOWED_TARGETS_CSV: ${DM_RELAY_ALLOWED_TARGETS_CSV:-keycloak,config,llm,mcr-api,telemetry}
       DM_RELAY_REQUIRE_KEY_FOR_SECRETS: ${DM_RELAY_REQUIRE_KEY_FOR_SECRETS:-true}
 
       # Optional S3
