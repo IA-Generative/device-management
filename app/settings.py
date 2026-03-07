@@ -1,7 +1,16 @@
 import os
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+
+try:
+    # Pydantic v2 stack (preferred)
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+    _HAS_PYDANTIC_V2_SETTINGS = True
+except Exception:
+    # Compatibility for environments still pinned to pydantic v1.
+    from pydantic import BaseSettings
+    SettingsConfigDict = None
+    _HAS_PYDANTIC_V2_SETTINGS = False
 
 
 def _default_database_url() -> str:
@@ -21,11 +30,19 @@ def _env_default(*keys: str, default: str) -> str:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="DM_", extra="ignore")
+    if _HAS_PYDANTIC_V2_SETTINGS:
+        model_config = SettingsConfigDict(env_prefix="DM_", extra="ignore")
+    else:
+        class Config:
+            env_prefix = "DM_"
+            extra = "ignore"
 
     # API
     allow_origins: str = Field(default="*")  # CSV list
     max_body_size_mb: int = Field(default=10)
+    uvicorn_workers: int = Field(default=1)
+    uvicorn_access_log: bool = Field(default=False)
+    uvicorn_timeout_keep_alive: int = Field(default=10)
 
     # Config endpoint
     config_enabled: bool = Field(default=True)
@@ -74,6 +91,19 @@ class Settings(BaseSettings):
     telemetry_token_signing_key: str = Field(default="")
     telemetry_require_token: bool = Field(default=True)
     telemetry_max_body_size_mb: int = Field(default=2)
+
+    # Postgres queue / workers
+    runtime_mode: str = Field(default="api")  # api | worker | all
+    queue_enabled: bool = Field(default=False)
+    queue_batch_size: int = Field(default=50)
+    queue_poll_interval_seconds: float = Field(default=0.5)
+    queue_lock_ttl_seconds: int = Field(default=60)
+    queue_default_max_attempts: int = Field(default=8)
+    queue_retry_base_seconds: int = Field(default=2)
+    queue_retry_max_seconds: int = Field(default=300)
+    queue_retry_jitter_seconds: float = Field(default=1.0)
+    queue_admin_token: str = Field(default="")
+    metrics_enabled: bool = Field(default=True)
 
     # Relay auth (plugin -> relay -> DM authorize)
     relay_enabled: bool = Field(default=True)
