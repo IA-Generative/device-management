@@ -250,3 +250,63 @@ CREATE INDEX IF NOT EXISTS idx_relay_clients_email
 CREATE INDEX IF NOT EXISTS idx_relay_clients_expires_at
   ON relay_clients (expires_at);
 
+-- Postgres queue for asynchronous processing (idempotent jobs + dead letters)
+CREATE TABLE IF NOT EXISTS queue_jobs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  topic text NOT NULL,
+  payload jsonb NOT NULL,
+  status text NOT NULL DEFAULT 'pending',
+  attempts integer NOT NULL DEFAULT 0,
+  max_attempts integer NOT NULL DEFAULT 8,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  locked_at timestamptz,
+  lock_owner text,
+  dedupe_key text,
+  completed_at timestamptz,
+  last_error text,
+  CHECK (status IN ('pending', 'processing', 'done', 'dead'))
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgname = 'trg_queue_jobs_set_updated_at'
+  ) THEN
+    CREATE TRIGGER trg_queue_jobs_set_updated_at
+    BEFORE UPDATE ON queue_jobs
+    FOR EACH ROW
+    EXECUTE FUNCTION set_updated_at();
+  END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_queue_jobs_status_next_attempt
+  ON queue_jobs (status, next_attempt_at, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_queue_jobs_lock
+  ON queue_jobs (status, locked_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_queue_jobs_topic_dedupe
+  ON queue_jobs (topic, dedupe_key);
+
+CREATE TABLE IF NOT EXISTS queue_job_dead_letters (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  job_id UUID NOT NULL,
+  topic text NOT NULL,
+  payload jsonb NOT NULL,
+  dedupe_key text,
+  attempts integer NOT NULL,
+  max_attempts integer NOT NULL,
+  last_error text
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_queue_dead_letters_job_id
+  ON queue_job_dead_letters (job_id);
+
+CREATE INDEX IF NOT EXISTS idx_queue_dead_letters_created_at
+  ON queue_job_dead_letters (created_at DESC);
