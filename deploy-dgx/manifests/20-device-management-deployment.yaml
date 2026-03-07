@@ -4,9 +4,9 @@ metadata:
   name: device-management
   namespace: bootstrap
 spec:
-  replicas: 1
+  replicas: 3
   strategy:
-    type: Recreate
+    type: RollingUpdate
   selector:
     matchLabels:
       app: device-management
@@ -17,40 +17,9 @@ spec:
     spec:
       imagePullSecrets:
         - name: regcred
-      initContainers:
-        - name: init-content-layout
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.0.3-unified-relay
-          imagePullPolicy: IfNotPresent
-          command:
-            - /bin/sh
-            - -lc
-            - |
-              set -eu
-              mkdir -p /data/content/config /data/content/binaries
-              if [ -z "$(ls -A /data/content/config 2>/dev/null || true)" ]; then
-                cp -R /app/config/. /data/content/config/
-                echo "Initialized /data/content/config from bundled templates."
-              fi
-              write_test_assets() {
-                mkdir -p /data/content/binaries/test
-                printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==' | base64 -d > /data/content/binaries/test/ok.png
-                printf '%s\n' '{"ok":true,"source":"init-content-layout","note":"auto-generated for DGX local PVC smoke test"}' > /data/content/binaries/test/test.json
-              }
-              if [ -z "$(ls -A /data/content/binaries 2>/dev/null || true)" ]; then
-                write_test_assets
-                echo "Initialized /data/content/binaries/test with ok.png + test.json."
-              elif [ ! -f /data/content/binaries/test/ok.png ] || [ ! -f /data/content/binaries/test/test.json ]; then
-                write_test_assets
-                echo "Added missing /data/content/binaries/test assets for smoke tests."
-              fi
-          volumeMounts:
-            - name: content-data
-              mountPath: /data/content
-            - name: config-all
-              mountPath: /app/config
       containers:
         - name: device-management
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.0.3-unified-relay
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.0.5-unified-relay
           imagePullPolicy: Always
           ports:
             - containerPort: 3001
@@ -90,16 +59,36 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DM_PORT
+            - name: DM_UVICORN_WORKERS
+              value: "2"
+            - name: DM_UVICORN_ACCESS_LOG
+              value: "false"
+            - name: DM_UVICORN_TIMEOUT_KEEP_ALIVE
+              value: "15"
+            - name: DM_RUNTIME_MODE
+              value: "api"
+            - name: DM_QUEUE_ENABLED
+              value: "true"
+            - name: DM_QUEUE_BATCH_SIZE
+              value: "50"
+            - name: DM_QUEUE_POLL_INTERVAL_SECONDS
+              value: "0.5"
+            - name: DM_QUEUE_LOCK_TTL_SECONDS
+              value: "60"
+            - name: DM_QUEUE_DEFAULT_MAX_ATTEMPTS
+              value: "8"
+            - name: DM_QUEUE_RETRY_BASE_SECONDS
+              value: "2"
+            - name: DM_QUEUE_RETRY_MAX_SECONDS
+              value: "300"
+            - name: DM_QUEUE_RETRY_JITTER_SECONDS
+              value: "1.0"
+            - name: DM_METRICS_ENABLED
+              value: "true"
             - name: DM_STORE_ENROLL_LOCALLY
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: DM_STORE_ENROLL_LOCALLY
+              value: "false"
             - name: DM_ENROLL_DIR
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: DM_ENROLL_DIR
+              value: /tmp/enroll
             - name: DM_RELAY_ENABLED
               valueFrom:
                 secretKeyRef:
@@ -131,9 +120,9 @@ spec:
                   name: device-management-secrets
                   key: DM_RELAY_SECRET_PEPPER
             - name: DM_CONFIG_DIR
-              value: /data/content/config
+              value: /app/config
             - name: DM_LOCAL_BINARIES_DIR
-              value: /data/content/binaries
+              value: /app/config/binaries
             - name: PUBLIC_BASE_URL
               valueFrom:
                 secretKeyRef:
@@ -310,42 +299,39 @@ spec:
                   name: device-management-secrets
                   key: DATABASE_ADMIN_URL
           volumeMounts:
-            - name: enroll-data
-              mountPath: /data/enroll
-            - name: content-data
-              mountPath: /data/content
             - name: config-all
               mountPath: /app/config
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
           startupProbe:
             httpGet:
               path: /livez
               port: 3001
-            periodSeconds: 5
+            periodSeconds: 10
             failureThreshold: 60
-            timeoutSeconds: 2
+            timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /livez
               port: 3001
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 2
-            failureThreshold: 6
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
           livenessProbe:
             httpGet:
               path: /livez
               port: 3001
-            initialDelaySeconds: 15
-            periodSeconds: 10
-            timeoutSeconds: 2
-            failureThreshold: 3
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
       volumes:
-        - name: enroll-data
-          persistentVolumeClaim:
-            claimName: device-management-enroll-pvc
-        - name: content-data
-          persistentVolumeClaim:
-            claimName: device-management-content-pvc
         - name: config-all
           projected:
             sources:

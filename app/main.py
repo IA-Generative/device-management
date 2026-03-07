@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
 import uuid
@@ -32,6 +33,7 @@ if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.enviro
 
 from .settings import settings
 from .s3 import s3_client
+from .postgres_queue import PostgresQueue, QueueJob
 
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
@@ -50,6 +52,10 @@ MAX_BODY_BYTES = settings.max_body_size_mb * 1024 * 1024
 TELEMETRY_MAX_BODY_BYTES = settings.telemetry_max_body_size_mb * 1024 * 1024
 S3_BINARIES_PREFIX = settings.s3_prefix_binaries
 _telemetry_signing_warning_emitted = False
+_queue_manager: PostgresQueue | None = None
+_queue_lock = threading.Lock()
+_embedded_worker_thread: threading.Thread | None = None
+_embedded_worker_stop: threading.Event | None = None
 
 
 def _ensure_dir(path: str) -> None:
@@ -79,6 +85,37 @@ def _db_url_bootstrap() -> str | None:
     if not base:
         return None
     return _with_db(base, "bootstrap")
+
+
+def _queue_db_url() -> str | None:
+    return _db_url_bootstrap() or _db_url()
+
+
+def _get_queue_manager() -> PostgresQueue | None:
+    global _queue_manager
+    if not settings.queue_enabled:
+        return None
+    if psycopg2 is None:
+        return None
+    dsn = _queue_db_url()
+    if not dsn:
+        return None
+    with _queue_lock:
+        if _queue_manager is not None:
+            return _queue_manager
+        try:
+            _queue_manager = PostgresQueue(
+                dsn,
+                lock_ttl_seconds=settings.queue_lock_ttl_seconds,
+                default_max_attempts=settings.queue_default_max_attempts,
+                retry_base_seconds=settings.queue_retry_base_seconds,
+                retry_max_seconds=settings.queue_retry_max_seconds,
+                retry_jitter_seconds=settings.queue_retry_jitter_seconds,
+            )
+        except Exception as exc:
+            logger.warning("Queue manager unavailable: %s", exc)
+            return None
+        return _queue_manager
 
 
 def _with_db(url: str, db_name: str) -> str:
@@ -461,6 +498,20 @@ def _extract_bearer_token(request: Request) -> str:
     return auth[7:].strip()
 
 
+def _queue_admin_guard(request: Request) -> None:
+    expected = str(settings.queue_admin_token or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Queue admin token is not configured.")
+    provided = str(request.headers.get("x-queue-admin-token") or "").strip()
+    if not provided or not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=401, detail="Missing or invalid queue admin token.")
+
+
+def _queue_worker_id(role: str) -> str:
+    host = socket.gethostname() or "unknown-host"
+    return f"{role}:{host}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+
+
 _SECRET_CONFIG_KEYS = {
     "llm_api_tokens",
     "tokenOWUI",
@@ -770,6 +821,220 @@ def _forward_telemetry_to_upstream(body: bytes, *, content_type: str, user_agent
         raise HTTPException(status_code=502, detail=f"Telemetry upstream unreachable: {e!r}")
 
 
+def _enqueue_telemetry_payload(
+    *,
+    body: bytes,
+    content_type: str,
+    user_agent: str | None,
+    client_uuid: str,
+    dedupe_key: str | None = None,
+) -> tuple[bool, str | None]:
+    queue = _get_queue_manager()
+    if not queue:
+        return False, None
+    payload = {
+        "body_b64": _b64url_encode(body),
+        "content_type": content_type or "application/json",
+        "user_agent": user_agent or "",
+        "client_uuid": client_uuid,
+        "received_at": int(time.time()),
+    }
+    job_id, _status = queue.enqueue(
+        topic="telemetry.forward",
+        payload=payload,
+        dedupe_key=dedupe_key,
+    )
+    return True, job_id
+
+
+def _persist_enroll_side_effects(
+    *,
+    body: bytes,
+    email: str,
+    client_uuid: str,
+    fingerprint: str,
+    device_name: str,
+    source_ip: str | None,
+    user_agent: str | None,
+) -> dict[str, str | bool]:
+    epoch_ms = int(time.time() * 1000)
+    rid = uuid.uuid4().hex
+    fname = f"{epoch_ms}-{rid}.json"
+    stored: dict[str, str | bool] = {}
+
+    if settings.store_enroll_locally:
+        _ensure_dir(settings.enroll_dir)
+        path = os.path.join(settings.enroll_dir, fname)
+        with open(path, "wb") as f:
+            f.write(body)
+        stored["local"] = path
+
+    if settings.store_enroll_s3:
+        if not settings.s3_bucket:
+            raise RuntimeError("S3 bucket not configured (DM_S3_BUCKET).")
+        key = f"{settings.s3_prefix_enroll.rstrip('/')}/{fname}"
+        s3 = s3_client()
+        s3.put_object(
+            Bucket=settings.s3_bucket,
+            Key=key,
+            Body=body,
+            ContentType="application/json",
+        )
+        stored["s3"] = f"s3://{settings.s3_bucket}/{key}"
+
+    encryption_key = fingerprint if fingerprint and fingerprint != "unknown" else "unknown"
+    try:
+        _upsert_provisioning(
+            email=email,
+            client_uuid=client_uuid,
+            device_name=device_name,
+            encryption_key=encryption_key,
+        )
+    except Exception:
+        logger.exception("Failed to upsert provisioning")
+
+    try:
+        _log_device_connection(
+            action="ENROLL",
+            email=email,
+            client_uuid=client_uuid,
+            encryption_key_fingerprint=fingerprint,
+            source_ip=source_ip,
+            user_agent=user_agent,
+        )
+    except Exception:
+        logger.exception("Failed to log enroll call")
+
+    return stored
+
+
+def _enqueue_enroll_payload(
+    *,
+    body: bytes,
+    email: str,
+    client_uuid: str,
+    fingerprint: str,
+    device_name: str,
+    source_ip: str | None,
+    user_agent: str | None,
+    dedupe_key: str | None = None,
+) -> tuple[bool, str | None]:
+    queue = _get_queue_manager()
+    if not queue:
+        return False, None
+    payload = {
+        "body_b64": _b64url_encode(body),
+        "email": email,
+        "client_uuid": client_uuid,
+        "fingerprint": fingerprint,
+        "device_name": device_name,
+        "source_ip": source_ip or "",
+        "user_agent": user_agent or "",
+        "received_at": int(time.time()),
+    }
+    try:
+        job_id, _status = queue.enqueue(
+            topic="enroll.process",
+            payload=payload,
+            dedupe_key=dedupe_key,
+        )
+        return True, job_id
+    except Exception:
+        logger.exception("Failed to enqueue enroll payload; falling back to sync processing")
+        return False, None
+
+
+def _decode_job_body(encoded: str) -> bytes:
+    value = str(encoded or "").strip()
+    if not value:
+        return b""
+    return _b64url_decode(value)
+
+
+def _process_queue_job(job: QueueJob) -> None:
+    if job.topic == "telemetry.forward":
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        body = _decode_job_body(str(payload.get("body_b64") or ""))
+        content_type = str(payload.get("content_type") or "application/json")
+        user_agent = str(payload.get("user_agent") or "").strip() or None
+        response = _forward_telemetry_to_upstream(
+            body,
+            content_type=content_type,
+            user_agent=user_agent,
+        )
+        status = int(getattr(response, "status_code", 500) or 500)
+        if status < 200 or status >= 300:
+            raise RuntimeError(f"telemetry upstream returned status={status}")
+        return
+    if job.topic == "enroll.process":
+        payload = job.payload if isinstance(job.payload, dict) else {}
+        body = _decode_job_body(str(payload.get("body_b64") or ""))
+        email = str(payload.get("email") or "").strip()
+        client_uuid = str(payload.get("client_uuid") or "").strip()
+        fingerprint = str(payload.get("fingerprint") or "unknown").strip() or "unknown"
+        device_name = str(payload.get("device_name") or "").strip()
+        source_ip = str(payload.get("source_ip") or "").strip() or None
+        user_agent = str(payload.get("user_agent") or "").strip() or None
+        if not email or not client_uuid or not device_name:
+            raise RuntimeError("invalid enroll.process payload")
+        _persist_enroll_side_effects(
+            body=body,
+            email=email,
+            client_uuid=client_uuid,
+            fingerprint=fingerprint,
+            device_name=device_name,
+            source_ip=source_ip,
+            user_agent=user_agent,
+        )
+        return
+    raise RuntimeError(f"unknown queue topic '{job.topic}'")
+
+
+def _run_queue_worker_loop(stop_event: threading.Event | None = None, once: bool = False) -> None:
+    queue = _get_queue_manager()
+    if not queue:
+        logger.warning("Queue worker started but queue is disabled/unavailable.")
+        return
+    worker_id = _queue_worker_id("worker")
+    stop = stop_event or threading.Event()
+    poll_interval = max(0.1, float(settings.queue_poll_interval_seconds))
+    batch_size = max(1, int(settings.queue_batch_size))
+    logger.info("Queue worker loop started: worker_id=%s batch_size=%s", worker_id, batch_size)
+
+    while not stop.is_set():
+        jobs = queue.claim_jobs(worker_id=worker_id, limit=batch_size)
+        if not jobs:
+            if once:
+                return
+            stop.wait(poll_interval)
+            continue
+
+        for job in jobs:
+            try:
+                _process_queue_job(job)
+                queue.ack(job_id=job.id, worker_id=worker_id)
+            except Exception as exc:
+                error_text = str(exc or "job processing failed")
+                if int(job.attempts) >= int(job.max_attempts):
+                    queue.move_to_dead_letter(job=job, worker_id=worker_id, error_text=error_text)
+                else:
+                    queue.retry(
+                        job_id=job.id,
+                        worker_id=worker_id,
+                        attempts=job.attempts,
+                        error_text=error_text,
+                    )
+                logger.warning(
+                    "Queue job failed: worker_id=%s topic=%s job_id=%s attempts=%s/%s error=%s",
+                    worker_id,
+                    job.topic,
+                    job.id,
+                    job.attempts,
+                    job.max_attempts,
+                    error_text,
+                )
+
+
 def _s3_connectivity_check_worker() -> None:
     s3_required = settings.store_enroll_s3 or settings.binaries_mode in ("presign", "proxy")
     if not s3_required:
@@ -828,7 +1093,7 @@ def healthz():
     if s3_required and not settings.s3_bucket:
         errors.append("S3 bucket is not configured (DM_S3_BUCKET missing).")
         checks["s3"] = {"status": "error", "detail": "bucket missing"}
-    elif settings.s3_bucket:
+    elif s3_required and settings.s3_bucket:
         try:
             s3 = s3_client()
             s3.head_bucket(Bucket=settings.s3_bucket)
@@ -898,6 +1163,124 @@ def livez():
             "status": 200,
             "detail": "Process is alive.",
         },
+    )
+
+
+@app.get("/ops/queue/health")
+def queue_health(request: Request):
+    _queue_admin_guard(request)
+    queue = _get_queue_manager()
+    if not settings.queue_enabled:
+        return JSONResponse(status_code=200, content={"ok": True, "queue": {"enabled": False, "status": "disabled"}})
+    if not queue:
+        return JSONResponse(status_code=503, content={"ok": False, "queue": {"enabled": True, "status": "unavailable"}})
+    stats = queue.stats()
+    healthy = int(stats.get("stale_processing", 0)) == 0
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "ok": healthy,
+            "queue": {
+                "enabled": True,
+                "status": "ok" if healthy else "degraded",
+                "stats": stats,
+            },
+        },
+    )
+
+
+@app.get("/ops/queue/stats")
+def queue_stats(request: Request):
+    _queue_admin_guard(request)
+    queue = _get_queue_manager()
+    if not settings.queue_enabled:
+        return JSONResponse(status_code=200, content={"ok": True, "queue": {"enabled": False, "stats": {}}})
+    if not queue:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "queue is unavailable"})
+    return JSONResponse(status_code=200, content={"ok": True, "queue": {"enabled": True, "stats": queue.stats()}})
+
+
+@app.get("/metrics")
+def metrics():
+    if not bool(settings.metrics_enabled):
+        raise HTTPException(status_code=404, detail="Metrics endpoint is disabled.")
+
+    queue_enabled = bool(settings.queue_enabled)
+    queue_available = 0
+    scrape_ok = 1
+    stats: dict[str, int] = {
+        "pending": 0,
+        "processing": 0,
+        "done": 0,
+        "dead": 0,
+        "total": 0,
+        "oldest_pending_age_seconds": 0,
+        "stale_processing": 0,
+    }
+
+    if queue_enabled:
+        queue = _get_queue_manager()
+        if queue:
+            queue_available = 1
+            try:
+                raw_stats = queue.stats()
+                stats = {
+                    "pending": int(raw_stats.get("pending", 0) or 0),
+                    "processing": int(raw_stats.get("processing", 0) or 0),
+                    "done": int(raw_stats.get("done", 0) or 0),
+                    "dead": int(raw_stats.get("dead", 0) or 0),
+                    "total": int(raw_stats.get("total", 0) or 0),
+                    "oldest_pending_age_seconds": int(raw_stats.get("oldest_pending_age_seconds", 0) or 0),
+                    "stale_processing": int(raw_stats.get("stale_processing", 0) or 0),
+                }
+            except Exception:
+                queue_available = 0
+                scrape_ok = 0
+                logger.exception("Failed to read queue stats for /metrics")
+        else:
+            scrape_ok = 0
+
+    mode = str(settings.runtime_mode or "api").strip().lower()
+    worker_active = 1 if mode in ("worker", "all") else 0
+    lines = [
+        "# HELP dm_metrics_scrape_success 1 if the metrics collection succeeded.",
+        "# TYPE dm_metrics_scrape_success gauge",
+        f"dm_metrics_scrape_success {scrape_ok}",
+        "# HELP dm_queue_enabled 1 if Postgres queue is enabled.",
+        "# TYPE dm_queue_enabled gauge",
+        f"dm_queue_enabled {1 if queue_enabled else 0}",
+        "# HELP dm_queue_available 1 if queue backend is reachable.",
+        "# TYPE dm_queue_available gauge",
+        f"dm_queue_available {queue_available}",
+        "# HELP dm_queue_pending_jobs Number of pending jobs.",
+        "# TYPE dm_queue_pending_jobs gauge",
+        f"dm_queue_pending_jobs {stats['pending']}",
+        "# HELP dm_queue_processing_jobs Number of processing jobs.",
+        "# TYPE dm_queue_processing_jobs gauge",
+        f"dm_queue_processing_jobs {stats['processing']}",
+        "# HELP dm_queue_done_jobs Number of completed jobs.",
+        "# TYPE dm_queue_done_jobs counter",
+        f"dm_queue_done_jobs {stats['done']}",
+        "# HELP dm_queue_dead_jobs Number of dead jobs.",
+        "# TYPE dm_queue_dead_jobs gauge",
+        f"dm_queue_dead_jobs {stats['dead']}",
+        "# HELP dm_queue_total_jobs Total jobs tracked in queue table.",
+        "# TYPE dm_queue_total_jobs gauge",
+        f"dm_queue_total_jobs {stats['total']}",
+        "# HELP dm_queue_oldest_pending_age_seconds Age in seconds of the oldest pending job.",
+        "# TYPE dm_queue_oldest_pending_age_seconds gauge",
+        f"dm_queue_oldest_pending_age_seconds {stats['oldest_pending_age_seconds']}",
+        "# HELP dm_queue_stale_processing_jobs Number of stale processing jobs beyond lock TTL.",
+        "# TYPE dm_queue_stale_processing_jobs gauge",
+        f"dm_queue_stale_processing_jobs {stats['stale_processing']}",
+        "# HELP dm_runtime_worker_active 1 if current process can execute queue jobs.",
+        "# TYPE dm_runtime_worker_active gauge",
+        f'dm_runtime_worker_active{{mode="{mode}"}} {worker_active}',
+    ]
+
+    return Response(
+        content="\n".join(lines) + "\n",
+        media_type="text/plain; version=0.0.4; charset=utf-8",
     )
 
 
@@ -1060,10 +1443,32 @@ async def telemetry_traces(request: Request):
     except Exception:
         logger.exception("Failed to log telemetry relay call")
 
+    content_type = request.headers.get("content-type", "application/json")
+    user_agent = request.headers.get("user-agent")
+    idempotency_key = (
+        request.headers.get("x-idempotency-key")
+        or request.headers.get("x-request-id")
+        or ""
+    ).strip()
+    dedupe_key = f"telemetry:{client_uuid}:{idempotency_key}" if idempotency_key else None
+
+    queued, job_id = _enqueue_telemetry_payload(
+        body=body,
+        content_type=content_type,
+        user_agent=user_agent,
+        client_uuid=client_uuid,
+        dedupe_key=dedupe_key,
+    )
+    if queued:
+        return JSONResponse(
+            status_code=202,
+            content={"ok": True, "queued": True, "jobId": job_id},
+        )
+
     return _forward_telemetry_to_upstream(
         body,
-        content_type=request.headers.get("content-type", "application/json"),
-        user_agent=request.headers.get("user-agent"),
+        content_type=content_type,
+        user_agent=user_agent,
     )
 
 
@@ -1106,75 +1511,57 @@ async def enroll(request: Request):
     device_name = str(body_obj.get("device_name", "")).strip()
     plugin_uuid = str(body_obj.get("plugin_uuid", "")).strip()
     email = auth_email
+    _email, client_uuid, fingerprint = _extract_identity(request, body_obj=body_obj)
+    if plugin_uuid:
+        client_uuid = plugin_uuid
+    client_uuid = _normalize_client_uuid(client_uuid)
+    source_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
 
-    epoch_ms = int(time.time() * 1000)
-    rid = uuid.uuid4().hex
-    fname = f"{epoch_ms}-{rid}.json"
+    relay_data = _mint_or_rotate_relay_credentials(client_uuid=client_uuid, email=email)
 
-    stored = {}
+    idempotency_key = (
+        request.headers.get("x-idempotency-key")
+        or request.headers.get("x-request-id")
+        or ""
+    ).strip()
+    dedupe_key = f"enroll:{client_uuid}:{idempotency_key}" if idempotency_key else None
 
-    if settings.store_enroll_locally:
-        _ensure_dir(settings.enroll_dir)
-        path = os.path.join(settings.enroll_dir, fname)
+    queued, job_id = _enqueue_enroll_payload(
+        body=body,
+        email=email,
+        client_uuid=client_uuid,
+        fingerprint=fingerprint,
+        device_name=device_name,
+        source_ip=source_ip,
+        user_agent=user_agent,
+        dedupe_key=dedupe_key,
+    )
+
+    stored: dict[str, str | bool] = {}
+    if queued:
+        stored = {"queued": True, "jobId": str(job_id or "")}
+    else:
         try:
-            with open(path, "wb") as f:
-                f.write(body)
-            stored["local"] = path
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Cannot write local file: {e!r}")
-
-    if settings.store_enroll_s3:
-        if not settings.s3_bucket:
-            raise HTTPException(status_code=500, detail="S3 bucket not configured (DM_S3_BUCKET).")
-        key = f"{settings.s3_prefix_enroll.rstrip('/')}/{fname}"
-        try:
-            s3 = s3_client()
-            s3.put_object(
-                Bucket=settings.s3_bucket,
-                Key=key,
-                Body=body,
-                ContentType="application/json",
-            )
-            stored["s3"] = f"s3://{settings.s3_bucket}/{key}"
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Cannot write to S3: {e!r}")
-
-    relay_data = {}
-
-    try:
-        _email, client_uuid, fingerprint = _extract_identity(request, body_obj=body_obj)
-        if plugin_uuid:
-            client_uuid = plugin_uuid
-        client_uuid = _normalize_client_uuid(client_uuid)
-        encryption_key = fingerprint if fingerprint and fingerprint != "unknown" else "unknown"
-        try:
-            _upsert_provisioning(
+            stored = _persist_enroll_side_effects(
+                body=body,
                 email=email,
                 client_uuid=client_uuid,
+                fingerprint=fingerprint,
                 device_name=device_name,
-                encryption_key=encryption_key,
+                source_ip=source_ip,
+                user_agent=user_agent,
             )
-        except Exception:
-            logger.exception("Failed to upsert provisioning")
-
-        relay_data = _mint_or_rotate_relay_credentials(client_uuid=client_uuid, email=email)
-
-        _log_device_connection(
-            action="ENROLL",
-            email=email,
-            client_uuid=client_uuid,
-            encryption_key_fingerprint=fingerprint,
-            source_ip=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-        )
-    except Exception:
-        logger.exception("Failed to process enroll call")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Cannot persist enroll payload: {e!r}")
 
     return JSONResponse(
         status_code=201,
         content={
             "ok": True,
             "stored": stored,
+            "queued": queued,
+            "jobId": job_id,
             "relay": relay_data,
             "relayClientId": relay_data.get("client_id", ""),
             "relayClientKey": relay_data.get("client_key", ""),
@@ -1269,13 +1656,24 @@ def _get_port() -> int:
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "app.main:app",
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=_get_port(),
-        reload=os.getenv("RELOAD", "false").lower() in ("1", "true", "yes"),
-        log_level=os.getenv("LOG_LEVEL", "info"),
-    )
+    if str(settings.runtime_mode or "api").strip().lower() == "worker":
+        _run_queue_worker_loop(stop_event=None, once=False)
+    else:
+        reload_enabled = os.getenv("RELOAD", "false").lower() in ("1", "true", "yes")
+        workers = max(1, int(settings.uvicorn_workers or 1))
+        if reload_enabled and workers > 1:
+            logger.warning("RELOAD=true is incompatible with DM_UVICORN_WORKERS>1; forcing workers=1")
+            workers = 1
+        uvicorn.run(
+            "app.main:app",
+            host=os.getenv("HOST", "0.0.0.0"),
+            port=_get_port(),
+            reload=reload_enabled,
+            workers=workers,
+            log_level=os.getenv("LOG_LEVEL", "info"),
+            access_log=bool(settings.uvicorn_access_log),
+            timeout_keep_alive=max(1, int(settings.uvicorn_timeout_keep_alive)),
+        )
 
 
 @app.on_event("startup")
@@ -1318,3 +1716,35 @@ def _startup_db_init() -> None:
             logger.warning("No bootstrap database URL available; skipping schema apply.")
     except Exception:
         logger.exception("Failed to apply DB schema")
+
+
+@app.on_event("startup")
+def _startup_embedded_queue_worker() -> None:
+    global _embedded_worker_thread, _embedded_worker_stop
+    mode = str(settings.runtime_mode or "api").strip().lower()
+    if mode != "all":
+        return
+    if not settings.queue_enabled:
+        return
+    if _embedded_worker_thread and _embedded_worker_thread.is_alive():
+        return
+    _embedded_worker_stop = threading.Event()
+    _embedded_worker_thread = threading.Thread(
+        target=_run_queue_worker_loop,
+        kwargs={"stop_event": _embedded_worker_stop, "once": False},
+        daemon=True,
+        name="dm-embedded-queue-worker",
+    )
+    _embedded_worker_thread.start()
+    logger.info("Embedded queue worker started (mode=all).")
+
+
+@app.on_event("shutdown")
+def _shutdown_embedded_queue_worker() -> None:
+    global _embedded_worker_thread, _embedded_worker_stop
+    if _embedded_worker_stop:
+        _embedded_worker_stop.set()
+    if _embedded_worker_thread and _embedded_worker_thread.is_alive():
+        _embedded_worker_thread.join(timeout=5)
+    _embedded_worker_thread = None
+    _embedded_worker_stop = None
