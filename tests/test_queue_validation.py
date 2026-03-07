@@ -39,6 +39,7 @@ def _load_module(
     os.environ["DM_TELEMETRY_PUBLIC_ENDPOINT"] = "/telemetry/v1/traces"
     os.environ["DM_QUEUE_ENABLED"] = "true" if queue_enabled else "false"
     os.environ["DM_QUEUE_ADMIN_TOKEN"] = "queue-admin-secret"
+    os.environ["DM_AUTH_VERIFY_ACCESS_TOKEN"] = "false"
     os.environ["DM_RUNTIME_MODE"] = "api"
     os.environ["DM_BINARIES_MODE"] = binaries_mode
     os.environ["DM_S3_BUCKET"] = s3_bucket

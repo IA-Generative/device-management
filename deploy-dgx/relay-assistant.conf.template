@@ -10,6 +10,12 @@ server {
     return 200 'ok';
   }
 
+  # JWKs are public material and can be exposed without relay credentials.
+  location = /keycloak/protocol/openid-connect/certs {
+    proxy_set_header User-Agent $http_user_agent;
+    proxy_pass ${RELAY_KEYCLOAK_UPSTREAM}/protocol/openid-connect/certs$is_args$args;
+  }
+
   location = /__relay_auth {
     internal;
     proxy_pass http://device-management:3001/relay/authorize;
