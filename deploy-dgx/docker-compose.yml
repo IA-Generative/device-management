@@ -16,6 +16,17 @@ services:
       DM_ENROLL_URL: ${DM_ENROLL_URL:-/bootstrap/enroll}
       DM_ALLOW_ORIGINS: ${DM_ALLOW_ORIGINS:-*}
       DM_MAX_BODY_SIZE_MB: ${DM_MAX_BODY_SIZE_MB:-10}
+      DM_RUNTIME_MODE: ${DM_RUNTIME_MODE:-api}
+      DM_QUEUE_ENABLED: ${DM_QUEUE_ENABLED:-true}
+      DM_QUEUE_BATCH_SIZE: ${DM_QUEUE_BATCH_SIZE:-50}
+      DM_QUEUE_POLL_INTERVAL_SECONDS: ${DM_QUEUE_POLL_INTERVAL_SECONDS:-0.5}
+      DM_QUEUE_LOCK_TTL_SECONDS: ${DM_QUEUE_LOCK_TTL_SECONDS:-60}
+      DM_QUEUE_DEFAULT_MAX_ATTEMPTS: ${DM_QUEUE_DEFAULT_MAX_ATTEMPTS:-8}
+      DM_QUEUE_RETRY_BASE_SECONDS: ${DM_QUEUE_RETRY_BASE_SECONDS:-2}
+      DM_QUEUE_RETRY_MAX_SECONDS: ${DM_QUEUE_RETRY_MAX_SECONDS:-300}
+      DM_QUEUE_RETRY_JITTER_SECONDS: ${DM_QUEUE_RETRY_JITTER_SECONDS:-1.0}
+      DM_QUEUE_ADMIN_TOKEN: ${DM_QUEUE_ADMIN_TOKEN:-}
+      DM_METRICS_ENABLED: ${DM_METRICS_ENABLED:-true}
 
       # Local enroll storage
       DM_STORE_ENROLL_LOCALLY: ${DM_STORE_ENROLL_LOCALLY:-true}
@@ -45,6 +56,31 @@ services:
       - ./data:/data
       - ../app:/app/app
       - ../config:/app/config:ro
+    depends_on:
+      - postgres
+
+  queue-worker:
+    build:
+      context: ..
+      dockerfile: deploy-dgx/Dockerfile
+    env_file:
+      - .env
+      - .env.secrets
+    command: ["python", "-m", "app.worker_main"]
+    environment:
+      DM_RUNTIME_MODE: worker
+      DM_QUEUE_ENABLED: ${DM_QUEUE_ENABLED:-true}
+      DM_QUEUE_BATCH_SIZE: ${DM_QUEUE_BATCH_SIZE:-50}
+      DM_QUEUE_POLL_INTERVAL_SECONDS: ${DM_QUEUE_POLL_INTERVAL_SECONDS:-0.5}
+      DM_QUEUE_LOCK_TTL_SECONDS: ${DM_QUEUE_LOCK_TTL_SECONDS:-60}
+      DM_QUEUE_DEFAULT_MAX_ATTEMPTS: ${DM_QUEUE_DEFAULT_MAX_ATTEMPTS:-8}
+      DM_QUEUE_RETRY_BASE_SECONDS: ${DM_QUEUE_RETRY_BASE_SECONDS:-2}
+      DM_QUEUE_RETRY_MAX_SECONDS: ${DM_QUEUE_RETRY_MAX_SECONDS:-300}
+      DM_QUEUE_RETRY_JITTER_SECONDS: ${DM_QUEUE_RETRY_JITTER_SECONDS:-1.0}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-dev}:${POSTGRES_PASSWORD:-dev}@postgres:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-bootstrap}}
+    volumes:
+      - ./data:/data
+      - ../app:/app/app
     depends_on:
       - postgres
 

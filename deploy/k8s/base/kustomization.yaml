@@ -14,6 +14,7 @@ resources:
   - manifests/25-relay-assistant-configmap.yaml
   - manifests/26-relay-assistant-deployment.yaml
   - manifests/27-relay-assistant-service.yaml
+  - manifests/28-queue-worker-deployment.yaml
   - manifests/29-postgres-pvc.yaml
   - manifests/30-postgres-deployment.yaml
   - manifests/31-postgres-service.yaml
@@ -23,3 +24,5 @@ resources:
   - manifests/51-filebrowser-users-job.yaml
   - manifests/52-filebrowser-deployment.yaml
   - manifests/53-filebrowser-service.yaml
+  - manifests/60-device-management-hpa.yaml
+  - manifests/61-queue-worker-hpa.yaml
