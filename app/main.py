@@ -11,6 +11,7 @@ import uuid
 import base64
 import hmac
 import hashlib
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 from urllib import request as urllib_request
 from urllib import error as urllib_error
@@ -27,6 +28,13 @@ try:
     import psycopg2  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover
     psycopg2 = None  # type: ignore
+
+try:
+    import jwt  # type: ignore
+    from jwt import PyJWKClient  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    jwt = None  # type: ignore
+    PyJWKClient = None  # type: ignore
 
 if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.environ:
     os.environ["DATABASE_URL"] = "postgresql://dev:dev@localhost:5432/bootstrap"
@@ -521,6 +529,9 @@ _SECRET_CONFIG_KEYS = {
 }
 
 _RELAY_MEMORY_STORE: dict[str, dict] = {}
+_AUTH_JWKS_CLIENT_CACHE: dict[str, tuple[float, Any]] = {}
+_AUTH_JWKS_URI_CACHE: dict[str, tuple[float, str]] = {}
+_AUTH_CACHE_LOCK = threading.Lock()
 
 
 def _normalize_client_uuid(raw_value: str | None) -> str:
@@ -555,8 +566,143 @@ def _parse_unverified_jwt_payload(token: str) -> dict:
         return {}
 
 
+def _normalized_url(url: str | None) -> str:
+    return str(url or "").strip().rstrip("/")
+
+
+def _resolve_auth_issuer_url() -> str:
+    # DM_AUTH_ISSUER_URL has priority (via settings), then fallback to KEYCLOAK_ISSUER_URL.
+    return _normalized_url(settings.auth_issuer_url or os.getenv("KEYCLOAK_ISSUER_URL"))
+
+
+def _resolve_auth_audience() -> str:
+    # DM_AUTH_AUDIENCE has priority (via settings), then fallback to KEYCLOAK_CLIENT_ID.
+    return str(settings.auth_audience or os.getenv("KEYCLOAK_CLIENT_ID") or "").strip()
+
+
+def _resolve_allowed_auth_algorithms() -> list[str]:
+    raw = str(settings.auth_allowed_algorithms_csv or "").strip()
+    values = [a.strip() for a in raw.split(",") if a.strip()]
+    return values or ["RS256"]
+
+
+def _resolve_jwks_uri(issuer: str) -> str:
+    explicit_jwks_url = str(settings.auth_jwks_url or "").strip()
+    if explicit_jwks_url:
+        return explicit_jwks_url
+
+    now = time.time()
+    ttl = max(60, int(settings.auth_jwks_cache_ttl_seconds or 0))
+    with _AUTH_CACHE_LOCK:
+        cached = _AUTH_JWKS_URI_CACHE.get(issuer)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    # Try OIDC discovery first.
+    discovery_url = f"{issuer}/.well-known/openid-configuration"
+    jwks_uri = ""
+    try:
+        req = urllib_request.Request(
+            discovery_url,
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        with urllib_request.urlopen(req, timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+            if isinstance(payload, dict):
+                jwks_uri = str(payload.get("jwks_uri") or "").strip()
+    except Exception:
+        jwks_uri = ""
+
+    # Keycloak fallback when discovery is unavailable.
+    if not jwks_uri:
+        jwks_uri = f"{issuer}/protocol/openid-connect/certs"
+
+    with _AUTH_CACHE_LOCK:
+        _AUTH_JWKS_URI_CACHE[issuer] = (now + ttl, jwks_uri)
+    return jwks_uri
+
+
+def _get_jwks_client(issuer: str):
+    if PyJWKClient is None:
+        raise HTTPException(status_code=503, detail="JWT verification backend is unavailable.")
+
+    now = time.time()
+    ttl = max(60, int(settings.auth_jwks_cache_ttl_seconds or 0))
+    with _AUTH_CACHE_LOCK:
+        cached = _AUTH_JWKS_CLIENT_CACHE.get(issuer)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    jwks_uri = _resolve_jwks_uri(issuer)
+    client = PyJWKClient(jwks_uri, cache_keys=True)
+    with _AUTH_CACHE_LOCK:
+        _AUTH_JWKS_CLIENT_CACHE[issuer] = (now + ttl, client)
+    return client
+
+
+def _verify_access_token(token: str) -> dict:
+    if not token:
+        return {}
+
+    if not settings.auth_verify_access_token:
+        payload = _parse_unverified_jwt_payload(token)
+        return payload if isinstance(payload, dict) else {}
+
+    if jwt is None:
+        raise HTTPException(status_code=503, detail="JWT verification backend is unavailable.")
+
+    issuer = _resolve_auth_issuer_url()
+    if not issuer:
+        raise HTTPException(status_code=503, detail="Auth issuer URL is not configured.")
+    audience = _resolve_auth_audience()
+    algorithms = _resolve_allowed_auth_algorithms()
+
+    try:
+        jwks_client = _get_jwks_client(issuer)
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=algorithms,
+            audience=audience if audience else None,
+            options={
+                "verify_aud": bool(audience),
+                "verify_exp": True,
+                "verify_iat": False,
+                "verify_nbf": True,
+                "verify_iss": False,
+            },
+            leeway=max(0, int(settings.auth_leeway_seconds)),
+        )
+    except Exception as exc:
+        err_name = exc.__class__.__name__
+        detail = str(exc)
+        if err_name in {
+            "DecodeError",
+            "ExpiredSignatureError",
+            "ImmatureSignatureError",
+            "InvalidAudienceError",
+            "InvalidIssuedAtError",
+            "InvalidKeyError",
+            "InvalidSignatureError",
+            "InvalidTokenError",
+            "MissingRequiredClaimError",
+        }:
+            raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
+        logger.warning("JWT verification failed with backend error: %s: %s", err_name, detail)
+        raise HTTPException(status_code=503, detail="Access token verification service unavailable.")
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
+    token_issuer = _normalized_url(payload.get("iss"))
+    if not token_issuer or token_issuer != issuer:
+        raise HTTPException(status_code=401, detail="Invalid PKCE access token issuer.")
+    return payload
+
+
 def _email_from_access_token(token: str) -> str:
-    payload = _parse_unverified_jwt_payload(token)
+    payload = _verify_access_token(token)
     email = payload.get("email") or payload.get("preferred_username") or payload.get("sub")
     if isinstance(email, str):
         return email.strip()
@@ -1501,7 +1647,12 @@ async def enroll(request: Request):
         )
 
     access_token = _extract_access_token_from_request(request)
-    auth_email = _email_from_access_token(access_token)
+    try:
+        auth_email = _email_from_access_token(access_token)
+    except HTTPException as exc:
+        if exc.status_code >= 500:
+            raise
+        auth_email = ""
     if not auth_email:
         return JSONResponse(
             status_code=401,

@@ -4,7 +4,7 @@ metadata:
   name: device-management
   namespace: bootstrap
 spec:
-  replicas: 3
+  replicas: 4
   strategy:
     type: RollingUpdate
   selector:
@@ -19,7 +19,7 @@ spec:
         - name: regcred
       containers:
         - name: device-management
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.0.5-unified-relay
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.0.7-auth-jwks
           imagePullPolicy: Always
           ports:
             - containerPort: 3001
@@ -60,7 +60,7 @@ spec:
                   name: device-management-secrets
                   key: DM_PORT
             - name: DM_UVICORN_WORKERS
-              value: "2"
+              value: "4"
             - name: DM_UVICORN_ACCESS_LOG
               value: "false"
             - name: DM_UVICORN_TIMEOUT_KEEP_ALIVE
@@ -83,6 +83,11 @@ spec:
               value: "300"
             - name: DM_QUEUE_RETRY_JITTER_SECONDS
               value: "1.0"
+            - name: DM_QUEUE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_QUEUE_ADMIN_TOKEN
             - name: DM_METRICS_ENABLED
               value: "true"
             - name: DM_STORE_ENROLL_LOCALLY
@@ -173,6 +178,41 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: KEYCLOAK_ALLOWED_REDIRECT_URI
+            - name: DM_AUTH_VERIFY_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_VERIFY_ACCESS_TOKEN
+            - name: DM_AUTH_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_ISSUER_URL
+            - name: DM_AUTH_JWKS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_JWKS_URL
+            - name: DM_AUTH_AUDIENCE
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_AUDIENCE
+            - name: DM_AUTH_ALLOWED_ALGORITHMS_CSV
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_ALLOWED_ALGORITHMS_CSV
+            - name: DM_AUTH_LEEWAY_SECONDS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_LEEWAY_SECONDS
+            - name: DM_AUTH_JWKS_CACHE_TTL_SECONDS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_JWKS_CACHE_TTL_SECONDS
             - name: TELEMETRY_SALT
               valueFrom:
                 secretKeyRef:
@@ -303,34 +343,34 @@ spec:
               mountPath: /app/config
           resources:
             requests:
-              cpu: 250m
-              memory: 256Mi
-            limits:
-              cpu: "1"
+              cpu: 500m
               memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
           startupProbe:
             httpGet:
               path: /livez
               port: 3001
             periodSeconds: 10
-            failureThreshold: 60
-            timeoutSeconds: 5
+            failureThreshold: 90
+            timeoutSeconds: 10
           readinessProbe:
             httpGet:
               path: /livez
               port: 3001
-            initialDelaySeconds: 20
+            initialDelaySeconds: 30
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 12
+            timeoutSeconds: 8
+            failureThreshold: 18
           livenessProbe:
             httpGet:
               path: /livez
               port: 3001
-            initialDelaySeconds: 60
-            periodSeconds: 20
-            timeoutSeconds: 5
-            failureThreshold: 6
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 8
+            failureThreshold: 8
       volumes:
         - name: config-all
           projected:

@@ -114,6 +114,21 @@ class Settings(BaseSettings):
     relay_require_key_for_secrets: bool = Field(default=True)
     relay_force_keycloak_endpoints: bool = Field(default=False)
 
+    # PKCE/OIDC access-token verification
+    auth_verify_access_token: bool = Field(default=True)
+    auth_issuer_url: str = Field(
+        default_factory=lambda: _env_default("AUTH_ISSUER_URL", "KEYCLOAK_ISSUER_URL", default="")
+    )
+    auth_jwks_url: str = Field(
+        default_factory=lambda: _env_default("AUTH_JWKS_URL", default="")
+    )
+    auth_audience: str = Field(
+        default_factory=lambda: _env_default("AUTH_AUDIENCE", "KEYCLOAK_CLIENT_ID", default="")
+    )
+    auth_allowed_algorithms_csv: str = Field(default="RS256")
+    auth_leeway_seconds: int = Field(default=30)
+    auth_jwks_cache_ttl_seconds: int = Field(default=600)
+
     # Database (optional, used by local tooling)
     database_url: str = Field(default_factory=_default_database_url)
 

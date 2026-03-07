@@ -31,6 +31,7 @@ def _load_module():
     os.environ["DM_RELAY_PROXY_SHARED_TOKEN"] = "proxy-shared-token"
     os.environ["DM_RELAY_ALLOWED_TARGETS_CSV"] = "keycloak,config,llm,mcr-api,telemetry"
     os.environ["DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS"] = "false"
+    os.environ["DM_AUTH_VERIFY_ACCESS_TOKEN"] = "false"
     os.environ["KEYCLOAK_ISSUER_URL"] = "https://issuer.from.config.test/realms/bootstrap"
     os.environ["PUBLIC_BASE_URL"] = "https://example.test/bootstrap"
     os.environ["LLM_API_TOKEN"] = "very-secret-token"
