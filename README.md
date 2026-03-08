@@ -334,8 +334,8 @@ Le déploiement Kubernetes est maintenant structuré en **base + overlays**:
 Profils cibles:
 
 - `local`: `http://bootstrap.home`
-- `scaleway`: `https://<SCALEWAY_HOSTNAME>`
-- `dgx`: `https://<DGX_HOSTNAME>/bootstrap`
+- `scaleway`: `https://bootstrap.change-me.domain`
+- `dgx`: `https://internal-domain/bootstrap`
 
 Commandes unifiées:
 
