@@ -328,8 +328,8 @@ Create a file named `bootstrap-iassistant-client.json` and import it in the Keyc
 
 ```json
 {
-  "clientId": "boostrap-iasssistant",
-  "name": "boostrap-iasssistant",
+  "clientId": "bootstrap-iassistant",
+  "name": "bootstrap-iassistant",
   "enabled": true,
   "publicClient": true,
   "standardFlowEnabled": true,
@@ -393,7 +393,7 @@ PY
 
 2) Open in a browser:
 ```
-https://openwebui-sso.fake-domain.name/realms/openwebui/protocol/openid-connect/auth?response_type=code&client_id=boostrap-iasssistant&redirect_uri=http%3A%2F%2Flocalhost%3A28443%2Fcallback&scope=openid%20email&code_challenge_method=S256&code_challenge=${CODE_CHALLENGE}
+https://openwebui-sso.fake-domain.name/realms/openwebui/protocol/openid-connect/auth?response_type=code&client_id=bootstrap-iassistant&redirect_uri=http%3A%2F%2Flocalhost%3A28443%2Fcallback&scope=openid%20email&code_challenge_method=S256&code_challenge=${CODE_CHALLENGE}
 ```
 
 3) Exchange the code for tokens:
@@ -402,7 +402,7 @@ curl -sS -X POST \
   https://openwebui-sso.fake-domain.name/realms/openwebui/protocol/openid-connect/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=authorization_code" \
-  -d "client_id=boostrap-iasssistant" \
+  -d "client_id=bootstrap-iassistant" \
   -d "redirect_uri=http://localhost:28443/callback" \
   -d "code=${CODE}" \
   -d "code_verifier=${CODE_VERIFIER}"

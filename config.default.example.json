@@ -10,7 +10,7 @@
     "device_name": "mirai-libreoffice",
     "keycloakIssuerUrl": "https://sso.mirai.interieur.gouv.fr/",
     "keycloakRealm": "mirai",
-    "keycloakClientId": "boostrap-iasssistant",
+    "keycloakClientId": "bootstrap-iassistant",
     "access_token": "",
     "refresh_token": "",
     "enrolled": false
