@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app /app/app
 COPY config /app/config
-COPY infra-minimal/db-schema.sql /app/infra-minimal/db-schema.sql
+COPY db/schema.sql /app/db/schema.sql
 
 # Defaults
 ENV DM_ENROLL_DIR=/data/enroll \

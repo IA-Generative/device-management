@@ -77,13 +77,11 @@ data/
 .env
 .env.*
 config.default.json
+# Commit only example/template files
 !.env.example
 !.env.secrets.example
-!.env.registry.example
-!infra-minimal/.env.example
-!infra-minimal/.env.secrets.example
-infra-minimal/bootstrap-secret.yaml
-!infra-minimal/bootstrap-secret-example.yaml
+!deploy/docker/.env
+!deploy/docker/.env.secrets.example
 
 ############################
 # Misc
@@ -92,13 +90,3 @@ infra-minimal/bootstrap-secret.yaml
 
 # Bonus
 bordel/
-
-############################
-# DGX local deployment (do not publish)
-############################
-dgx-deploy/
-deploy-dgx/.DS_Store
-deploy-dgx/.env.registry
-deploy-dgx/secrets/*.yaml
-!deploy-dgx/secrets/*-example.yaml
-!deploy-dgx/.env.registry.example
