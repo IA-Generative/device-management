@@ -32,9 +32,11 @@ except ModuleNotFoundError:  # pragma: no cover
 try:
     import jwt  # type: ignore
     from jwt import PyJWKClient  # type: ignore
+    from jwt.exceptions import PyJWTError  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover
     jwt = None  # type: ignore
     PyJWKClient = None  # type: ignore
+    PyJWTError = Exception  # type: ignore
 
 if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.environ:
     os.environ["DATABASE_URL"] = "postgresql://dev:dev@localhost:5432/bootstrap"
@@ -50,7 +52,7 @@ logger = logging.getLogger("device-management")
 origins = [o.strip() for o in settings.allow_origins.split(",")] if settings.allow_origins else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if origins != ["*"] else ["*"],
+    allow_origins=origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
@@ -287,30 +289,20 @@ def _upsert_provisioning(*, email: str, client_uuid: str, device_name: str, encr
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            try:
-                cur.execute(
-                    """
-                    INSERT INTO provisioning (email, device_name, client_uuid, status, encryption_key, comments)
-                    VALUES (%s, %s, %s, 'ENROLLED', %s, %s)
-                    """,
-                    (email, device_name, client_uuid, encryption_key, "enroll"),
-                )
-            except psycopg2.Error as exc:
-                if getattr(exc, "pgcode", None) != "23505":
-                    raise
-                cur.execute(
-                    """
-                    UPDATE provisioning
-                    SET email = %s,
-                        device_name = %s,
-                        status = 'ENROLLED',
-                        encryption_key = %s,
-                        updated_at = now()
-                    WHERE client_uuid = %s
-                      AND status IN ('PENDING', 'ENROLLED')
-                    """,
-                    (email, device_name, encryption_key, client_uuid),
-                )
+            cur.execute(
+                """
+                INSERT INTO provisioning (email, device_name, client_uuid, status, encryption_key, comments)
+                VALUES (%s, %s, %s, 'ENROLLED', %s, %s)
+                ON CONFLICT (client_uuid) DO UPDATE
+                SET email = EXCLUDED.email,
+                    device_name = EXCLUDED.device_name,
+                    status = 'ENROLLED',
+                    encryption_key = EXCLUDED.encryption_key,
+                    updated_at = now()
+                WHERE provisioning.status IN ('PENDING', 'ENROLLED')
+                """,
+                (email, device_name, client_uuid, encryption_key, "enroll"),
+            )
     finally:
         conn.close()
 
@@ -506,6 +498,9 @@ def _extract_bearer_token(request: Request) -> str:
     return auth[7:].strip()
 
 
+_extract_access_token_from_request = _extract_bearer_token
+
+
 def _queue_admin_guard(request: Request) -> None:
     expected = str(settings.queue_admin_token or "").strip()
     if not expected:
@@ -545,13 +540,6 @@ def _normalize_client_uuid(raw_value: str | None) -> str:
         return str(uuid.uuid5(uuid.NAMESPACE_URL, raw))
 
 
-def _extract_access_token_from_request(request: Request) -> str:
-    auth = (request.headers.get("authorization") or "").strip()
-    if not auth.lower().startswith("bearer "):
-        return ""
-    return auth[7:].strip()
-
-
 def _parse_unverified_jwt_payload(token: str) -> dict:
     if not token:
         return {}
@@ -571,17 +559,17 @@ def _normalized_url(url: str | None) -> str:
 
 
 def _resolve_auth_issuer_url() -> str:
-    # DM_AUTH_ISSUER_URL has priority (via settings), then fallback to KEYCLOAK_ISSUER_URL.
-    return _normalized_url(settings.auth_issuer_url or os.getenv("KEYCLOAK_ISSUER_URL"))
+    # settings.auth_issuer_url already resolves AUTH_ISSUER_URL → KEYCLOAK_ISSUER_URL via _env_default.
+    return _normalized_url(settings.auth_issuer_url)
 
 
 def _resolve_auth_audience() -> str:
-    # DM_AUTH_AUDIENCE has priority (via settings), then fallback to KEYCLOAK_CLIENT_ID.
-    return str(settings.auth_audience or os.getenv("KEYCLOAK_CLIENT_ID") or "").strip()
+    # settings.auth_audience already resolves AUTH_AUDIENCE → KEYCLOAK_CLIENT_ID via _env_default.
+    return settings.auth_audience.strip()
 
 
 def _resolve_allowed_auth_algorithms() -> list[str]:
-    raw = str(settings.auth_allowed_algorithms_csv or "").strip()
+    raw = settings.auth_allowed_algorithms_csv.strip()
     values = [a.strip() for a in raw.split(",") if a.strip()]
     return values or ["RS256"]
 
@@ -675,22 +663,10 @@ def _verify_access_token(token: str) -> dict:
             },
             leeway=max(0, int(settings.auth_leeway_seconds)),
         )
+    except PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
     except Exception as exc:
-        err_name = exc.__class__.__name__
-        detail = str(exc)
-        if err_name in {
-            "DecodeError",
-            "ExpiredSignatureError",
-            "ImmatureSignatureError",
-            "InvalidAudienceError",
-            "InvalidIssuedAtError",
-            "InvalidKeyError",
-            "InvalidSignatureError",
-            "InvalidTokenError",
-            "MissingRequiredClaimError",
-        }:
-            raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
-        logger.warning("JWT verification failed with backend error: %s: %s", err_name, detail)
+        logger.warning("JWT verification failed with backend error: %s: %s", exc.__class__.__name__, exc)
         raise HTTPException(status_code=503, detail="Access token verification service unavailable.")
 
     if not isinstance(payload, dict):
@@ -847,7 +823,7 @@ def _verify_relay_credentials(relay_client_id: str, relay_key: str, target: str 
     # Backward compatibility: existing credentials with 'config' are also allowed for telemetry relay.
     if "config" in effective_targets and "telemetry" not in effective_targets:
         effective_targets.append("telemetry")
-        effective_targets = sorted(set(effective_targets))
+        effective_targets.sort()
 
     if target_norm and effective_targets and target_norm not in effective_targets:
         return False, f"target '{target_norm}' not allowed"
@@ -1723,21 +1699,22 @@ async def enroll(request: Request):
 
 @app.get("/binaries/{path:path}")
 def get_binary(path: str):
+    try:
+        _log_device_connection(
+            action="BINARY_GET",
+            email="system@local",
+            client_uuid="00000000-0000-0000-0000-000000000000",
+            encryption_key_fingerprint="none",
+            source_ip=None,
+            user_agent=None,
+        )
+    except Exception:
+        logger.exception("Failed to log binary call")
+
     if settings.binaries_mode == "local":
         local_path = _safe_path_join(settings.local_binaries_dir, path)
         if not os.path.isfile(local_path):
             raise HTTPException(status_code=404, detail="Local binary not found.")
-        try:
-            _log_device_connection(
-                action="BINARY_GET",
-                email="system@local",
-                client_uuid="00000000-0000-0000-0000-000000000000",
-                encryption_key_fingerprint="none",
-                source_ip=None,
-                user_agent=None,
-            )
-        except Exception:
-            logger.exception("Failed to log binary call (local)")
         return FileResponse(local_path, media_type="application/octet-stream")
 
     if not settings.s3_bucket:
@@ -1753,17 +1730,6 @@ def get_binary(path: str):
                 Params={"Bucket": settings.s3_bucket, "Key": key},
                 ExpiresIn=settings.presign_ttl_seconds,
             )
-            try:
-                _log_device_connection(
-                    action="BINARY_GET",
-                    email="system@local",
-                    client_uuid="00000000-0000-0000-0000-000000000000",
-                    encryption_key_fingerprint="none",
-                    source_ip=None,
-                    user_agent=None,
-                )
-            except Exception:
-                logger.exception("Failed to log binary call (presign)")
             return RedirectResponse(url=url, status_code=302)
         except Exception as e:
             raise HTTPException(status_code=404, detail=f"Binary not found or cannot presign: {e!r}")
@@ -1778,17 +1744,6 @@ def get_binary(path: str):
                 for chunk in iter(lambda: body_stream.read(1024 * 1024), b""):
                     yield chunk
 
-            try:
-                _log_device_connection(
-                    action="BINARY_GET",
-                    email="system@local",
-                    client_uuid="00000000-0000-0000-0000-000000000000",
-                    encryption_key_fingerprint="none",
-                    source_ip=None,
-                    user_agent=None,
-                )
-            except Exception:
-                logger.exception("Failed to log binary call (proxy)")
             return StreamingResponse(iterfile(), media_type=content_type)
         except Exception as e:
             raise HTTPException(status_code=404, detail=f"Binary not found: {e!r}")
