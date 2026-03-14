@@ -1,6 +1,6 @@
 {
-  "clientId": "boostrap-iasssistant",
-  "name": "boostrap-iasssistant",
+  "clientId": "bootstrap-iassistant",
+  "name": "bootstrap-iassistant",
   "protocol": "openid-connect",
   "enabled": true,
   "publicClient": true,

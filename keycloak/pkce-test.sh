@@ -3,7 +3,7 @@ set -eu
 
 AUTH_URL="https://openwebui-sso.fake-domain.name/realms/openwebui/protocol/openid-connect/auth"
 TOKEN_URL="https://openwebui-sso.fake-domain.name/realms/openwebui/protocol/openid-connect/token"
-CLIENT_ID="boostrap-iasssistant"
+CLIENT_ID="bootstrap-iassistant"
 REDIRECT_URI="${REDIRECT_URI:-http://localhost:28443/callback}"
 
 CODE_VERIFIER=$(python - <<'PY'
