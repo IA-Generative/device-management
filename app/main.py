@@ -11,6 +11,7 @@ import uuid
 import base64
 import hmac
 import hashlib
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 from urllib import request as urllib_request
@@ -527,6 +528,290 @@ _RELAY_MEMORY_STORE: dict[str, dict] = {}
 _AUTH_JWKS_CLIENT_CACHE: dict[str, tuple[float, Any]] = {}
 _AUTH_JWKS_URI_CACHE: dict[str, tuple[float, str]] = {}
 _AUTH_CACHE_LOCK = threading.Lock()
+
+# ---- Keycloak group membership cache (for cohort resolution)
+# Structure: {group_name: (expiry_timestamp, set_of_emails)}
+_KC_GROUP_CACHE: dict[str, tuple[float, set]] = {}
+_KC_GROUP_CACHE_TTL = 300.0  # 5 minutes
+_KC_GROUP_CACHE_LOCK = threading.Lock()
+
+
+# ---- Enriched config helpers
+
+def _parse_version_tuple(v: str) -> tuple:
+    """Parse a semver string into a tuple of ints for comparison."""
+    try:
+        return tuple(int(x) for x in str(v).split(".")[:3])
+    except Exception:
+        return (0, 0, 0)
+
+
+def _infer_platform_variant(platform_type: str, platform_version: str, manifest_version: int | None) -> str | None:
+    """Infer a platform variant string from platform type/version/manifest."""
+    if platform_type == "thunderbird":
+        v = _parse_version_tuple(platform_version)
+        if v < (78, 0, 0):
+            return "tb60"
+        if v < (128, 0, 0):
+            return "tb78"
+        return "tb128"
+    if platform_type in ("chrome", "edge"):
+        return f"mv{manifest_version}" if manifest_version else "mv3"
+    return None
+
+
+def _resolve_device_cohorts(cur, *, email: str, client_uuid: str) -> list[int]:
+    """Return a list of cohort IDs the device belongs to.
+
+    Gracefully returns [] if the migration tables don't exist yet.
+    """
+    try:
+        cur.execute("SELECT id, type, config FROM cohorts")
+        cohorts = cur.fetchall()
+    except Exception:
+        return []
+
+    matched: list[int] = []
+    for row in cohorts:
+        cohort_id, ctype, cconfig = row[0], row[1], row[2] or {}
+        if isinstance(cconfig, str):
+            try:
+                cconfig = json.loads(cconfig)
+            except Exception:
+                cconfig = {}
+
+        if ctype == "manual":
+            # Check cohort_members for email or client_uuid match
+            try:
+                cur.execute(
+                    """
+                    SELECT 1 FROM cohort_members
+                    WHERE cohort_id = %s
+                      AND (
+                        (identifier_type = 'email' AND identifier_value = %s)
+                        OR (identifier_type = 'client_uuid' AND identifier_value = %s)
+                      )
+                    LIMIT 1
+                    """,
+                    (cohort_id, email, client_uuid),
+                )
+                if cur.fetchone():
+                    matched.append(cohort_id)
+            except Exception:
+                pass
+
+        elif ctype == "percentage":
+            pct = int(cconfig.get("percentage", 0))
+            if pct > 0 and client_uuid:
+                digest = hashlib.sha256(client_uuid.encode()).hexdigest()
+                if int(digest, 16) % 100 < pct:
+                    matched.append(cohort_id)
+
+        elif ctype == "email_pattern":
+            pattern = str(cconfig.get("pattern", ""))
+            if pattern:
+                try:
+                    if re.match(pattern, email or "", re.IGNORECASE):
+                        matched.append(cohort_id)
+                except Exception:
+                    pass
+
+        elif ctype == "keycloak_group":
+            group_name = str(cconfig.get("group_name", ""))
+            if group_name and email:
+                now = time.time()
+                group_emails: set | None = None
+                with _KC_GROUP_CACHE_LOCK:
+                    cached = _KC_GROUP_CACHE.get(group_name)
+                    if cached and cached[0] > now:
+                        group_emails = cached[1]
+                if group_emails is None:
+                    # No live fetch in this implementation — cache miss yields empty set
+                    group_emails = set()
+                    with _KC_GROUP_CACHE_LOCK:
+                        _KC_GROUP_CACHE[group_name] = (now + _KC_GROUP_CACHE_TTL, group_emails)
+                if email.lower() in {e.lower() for e in group_emails}:
+                    matched.append(cohort_id)
+
+    return matched
+
+
+def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version: str) -> dict:
+    """Compute the effective feature flags dict for the device."""
+    try:
+        cur.execute("SELECT name, default_value FROM feature_flags")
+        flags: dict[str, bool] = {row[0]: bool(row[1]) for row in cur.fetchall()}
+    except Exception:
+        return {}
+
+    if not flags:
+        return {}
+
+    if device_cohort_ids:
+        try:
+            placeholders = ",".join(["%s"] * len(device_cohort_ids))
+            cur.execute(
+                f"""
+                SELECT ff.name, ffo.value, ffo.min_plugin_version
+                FROM feature_flag_overrides ffo
+                JOIN feature_flags ff ON ff.id = ffo.feature_id
+                WHERE ffo.cohort_id IN ({placeholders})
+                """,
+                device_cohort_ids,
+            )
+            overrides = cur.fetchall()
+        except Exception:
+            overrides = []
+
+        for row in overrides:
+            flag_name, override_val, min_pv = row[0], bool(row[1]), row[2]
+            if min_pv and plugin_version:
+                if _parse_version_tuple(plugin_version) < _parse_version_tuple(min_pv):
+                    continue  # plugin too old, skip this override
+            # false wins: once false, stays false
+            if flag_name in flags:
+                flags[flag_name] = flags[flag_name] and override_val
+
+    return flags
+
+
+def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: str, platform_version: str) -> dict | None:
+    """Find the best active plugin_update campaign for the device, or None."""
+    try:
+        cohort_filter = list(device_cohort_ids) if device_cohort_ids else []
+        cur.execute(
+            """
+            SELECT
+              c.id, c.urgency, c.deadline_at, c.target_cohort_id,
+              a.version  AS artifact_version,
+              a.s3_path  AS artifact_s3_path,
+              a.checksum AS artifact_checksum,
+              a.changelog_url,
+              a.min_host_version,
+              a.max_host_version,
+              ra.s3_path  AS rollback_s3_path,
+              ra.version  AS rollback_version,
+              ra.checksum AS rollback_checksum
+            FROM campaigns c
+            LEFT JOIN artifacts a  ON a.id  = c.artifact_id
+            LEFT JOIN artifacts ra ON ra.id = c.rollback_artifact_id
+            WHERE c.status = 'active'
+              AND c.type   = 'plugin_update'
+              AND (c.target_cohort_id IS NULL OR c.target_cohort_id = ANY(%s))
+            ORDER BY c.created_at DESC
+            LIMIT 1
+            """,
+            (cohort_filter if cohort_filter else [None],),
+        )
+        row = cur.fetchone()
+    except Exception:
+        return None
+
+    if not row:
+        return None
+
+    (
+        camp_id, urgency, deadline_at, target_cohort_id,
+        artifact_version, artifact_s3_path, artifact_checksum, changelog_url,
+        min_host_version, max_host_version,
+        rollback_s3_path, rollback_version, rollback_checksum,
+    ) = row
+
+    # Filter by host (platform) version compatibility
+    if platform_version and min_host_version:
+        if _parse_version_tuple(platform_version) < _parse_version_tuple(min_host_version):
+            return None
+    if platform_version and max_host_version:
+        if _parse_version_tuple(platform_version) >= _parse_version_tuple(max_host_version):
+            return None
+
+    deadline_iso: str | None = None
+    if deadline_at is not None:
+        try:
+            if hasattr(deadline_at, "isoformat"):
+                deadline_iso = deadline_at.isoformat()
+            else:
+                deadline_iso = str(deadline_at)
+        except Exception:
+            deadline_iso = None
+
+    return {
+        "campaign_id": camp_id,
+        "urgency": str(urgency or "normal"),
+        "deadline_iso": deadline_iso,
+        "artifact_version": str(artifact_version or ""),
+        "artifact_s3_path": str(artifact_s3_path or ""),
+        "artifact_checksum": str(artifact_checksum or ""),
+        "changelog_url": changelog_url,
+        "rollback_s3_path": rollback_s3_path,
+        "rollback_version": str(rollback_version or ""),
+        "rollback_checksum": str(rollback_checksum or ""),
+    }
+
+
+def _build_update_directive(
+    *,
+    plugin_version: str,
+    campaign: dict | None,
+) -> dict | None:
+    """Build the update directive dict, or return None if no action needed."""
+    if not plugin_version or not campaign:
+        return None
+
+    artifact_version = campaign["artifact_version"]
+    if not artifact_version:
+        return None
+
+    if plugin_version == artifact_version:
+        return None
+
+    pv = _parse_version_tuple(plugin_version)
+    av = _parse_version_tuple(artifact_version)
+
+    if pv < av:
+        return {
+            "action": "update",
+            "current_version": plugin_version,
+            "target_version": artifact_version,
+            "artifact_url": "/binaries/" + campaign["artifact_s3_path"],
+            "checksum": campaign["artifact_checksum"],
+            "urgency": campaign["urgency"],
+            "changelog_url": campaign["changelog_url"],
+            "deadline_at": campaign["deadline_iso"],
+            "campaign_id": campaign["campaign_id"],
+        }
+
+    # plugin_version > artifact_version → possible rollback
+    if campaign["rollback_s3_path"] and campaign["rollback_version"]:
+        return {
+            "action": "rollback",
+            "current_version": plugin_version,
+            "target_version": campaign["rollback_version"],
+            "artifact_url": "/binaries/" + campaign["rollback_s3_path"],
+            "checksum": campaign["rollback_checksum"],
+            "urgency": campaign["urgency"],
+            "changelog_url": campaign["changelog_url"],
+            "deadline_at": campaign["deadline_iso"],
+            "campaign_id": campaign["campaign_id"],
+        }
+
+    return None
+
+
+def _upsert_campaign_device_status(cur, *, campaign_id: int, client_uuid: str, email: str, version_before: str) -> None:
+    """UPSERT the campaign_device_status row (fire-and-forget, errors swallowed by caller)."""
+    cur.execute(
+        """
+        INSERT INTO campaign_device_status
+          (campaign_id, client_uuid, email, status, version_before, last_contact_at)
+        VALUES (%s, %s, %s, 'notified', %s, NOW())
+        ON CONFLICT (campaign_id, client_uuid) DO UPDATE
+          SET status = 'notified',
+              version_before = EXCLUDED.version_before,
+              last_contact_at = NOW()
+        """,
+        (campaign_id, client_uuid, email or None, version_before or None),
+    )
 
 
 def _normalize_client_uuid(raw_value: str | None) -> str:
@@ -1409,9 +1694,9 @@ def metrics():
 
 @app.get("/config/config.json")
 def get_config(request: Request, profile: str | None = None, device: str | None = None):
-    """Return remote-config JSON.
+    """Return remote-config JSON (EnrichedConfigResponse v2).
 
-    The response is loaded from a static template file under `exemple/` and supports
+    The response is loaded from a static template file under `config/` and supports
     placeholder substitution with environment variables using the syntax: ${{VARNAME}}.
 
     Profile selection:
@@ -1455,7 +1740,92 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     except Exception:
         logger.exception("Failed to log config call")
 
-    return JSONResponse(content=cfg, headers={"Cache-Control": "no-store"})
+    # ---- Step 1: Parse new enrichment headers (all optional)
+    plugin_version = request.headers.get("X-Plugin-Version", "").strip()
+    platform_type = request.headers.get("X-Platform-Type", dev).strip().lower()
+    platform_version = request.headers.get("X-Platform-Version", "").strip()
+    manifest_version_str = request.headers.get("X-Manifest-Version", "").strip()
+    manifest_version: int | None = int(manifest_version_str) if manifest_version_str.isdigit() else None
+    client_uuid = request.headers.get("X-Client-UUID", "").strip()
+    email = request.headers.get("X-User-Email", "").strip()
+
+    # ---- Step 2: Infer platform_variant
+    platform_variant = _infer_platform_variant(platform_type, platform_version, manifest_version)
+
+    # ---- Steps 3-9: DB-backed enrichment (degrade gracefully if tables absent)
+    update_directive: dict | None = None
+    flags: dict = {}
+
+    db_url = _db_url_bootstrap() or _db_url()
+    if psycopg2 is not None and db_url:
+        try:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            try:
+                with conn.cursor() as cur:
+                    # Step 4: Resolve cohorts
+                    device_cohort_ids = _resolve_device_cohorts(
+                        cur, email=email, client_uuid=client_uuid
+                    )
+
+                    # Step 5: Compute feature flags
+                    flags = _resolve_feature_flags(
+                        cur,
+                        device_cohort_ids=device_cohort_ids,
+                        plugin_version=plugin_version,
+                    )
+
+                    # Step 6 & 7: Find active campaign (with host version filtering)
+                    campaign = _resolve_active_campaign(
+                        cur,
+                        device_cohort_ids=device_cohort_ids,
+                        device_type=dev or "misc",
+                        platform_version=platform_version,
+                    )
+
+                    # Step 8: Build update directive
+                    update_directive = _build_update_directive(
+                        plugin_version=plugin_version,
+                        campaign=campaign,
+                    )
+
+                    # Step 9: UPSERT campaign_device_status (only when we have an update)
+                    if update_directive is not None and campaign and client_uuid:
+                        try:
+                            _upsert_campaign_device_status(
+                                cur,
+                                campaign_id=campaign["campaign_id"],
+                                client_uuid=client_uuid,
+                                email=email,
+                                version_before=plugin_version,
+                            )
+                        except Exception:
+                            logger.debug("campaign_device_status upsert skipped (table may not exist)")
+            finally:
+                conn.close()
+        except Exception:
+            # Migration tables don't exist yet or DB is unreachable — degrade gracefully
+            update_directive = None
+            flags = {}
+
+    # ---- Step 10: Build final EnrichedConfigResponse
+    # Extract the inner config dict (was previously top-level)
+    inner_config = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+
+    response_body = {
+        "meta": {
+            "schema_version": 2,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "device_type": dev or "misc",
+            "platform_variant": platform_variant,
+            "client_uuid": client_uuid,
+            "profile": prof,
+        },
+        "config": inner_config,
+        "update": update_directive,
+        "features": flags,
+    }
+    return JSONResponse(response_body, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/config/{device}/config.json")
