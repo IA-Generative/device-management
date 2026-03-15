@@ -575,6 +575,24 @@ Backward compatibility:
 
 Do NOT change: enrollment, telemetry, relay, binary serving endpoints.
 Do NOT add admin endpoints in this task (separate scope).
+
+Headless tests (add in tests/test_enriched_config.py using pytest + FastAPI TestClient):
+- test_no_headers_returns_legacy_shape: GET without X-Plugin-Version → update=null, features={}
+- test_schema_version_2_present: GET with X-Plugin-Version → meta.schema_version==2
+- test_feature_flag_default_true: flag with default=True, no override → features[flag]=True
+- test_feature_flag_cohort_override_false: device in cohort with override=False → features[flag]=False
+- test_feature_flag_min_version_gate: override=True, min_plugin_version="2.0", plugin="1.5" → False
+- test_update_action_when_behind: plugin_version < artifact.version → update.action=="update"
+- test_update_null_when_current: plugin_version == artifact.version → update==null
+- test_rollback_action: plugin_version > artifact.version, rollback_artifact exists → action=="rollback"
+- test_campaign_device_status_upserted: after config fetch with update, row exists in DB
+- test_percentage_cohort_stable: same uuid always in/out of 50% cohort
+- test_platform_variant_tb60: X-Platform-Version=60.9, X-Platform-Type=thunderbird → variant=="tb60"
+- test_platform_variant_mv3: X-Platform-Type=chrome, X-Manifest-Version=3 → variant=="mv3"
+- test_backward_compat_no_new_tables: if DB tables absent, endpoint returns 200 with update=null
+
+Use pytest-asyncio + psycopg2 against a real test PostgreSQL (docker-compose.test.yml).
+Mock S3 with moto. Do NOT use mocks for the DB — use transactions rolled back after each test.
 ```
 
 ---
@@ -684,6 +702,27 @@ Security constraints:
 - _features_cache is never written to local config.json (memory only)
 - Remove "lastversion" and "updateUrl" from set_config() sync logic
   (these flat keys are now superseded by update.target_version / update.artifact_url)
+
+Headless tests (add in tests/test_update_features.py using pytest, NO UNO runtime):
+Mock strategy: replace self.sm, self.ctx, self._urlopen, uno module with unittest.mock.
+- test_feature_enabled_default_true: _features_cache absent → _is_feature_enabled returns True
+- test_feature_enabled_from_cache: _features_cache={"f":False} → _is_feature_enabled("f")==False
+- test_fetch_config_v2_populates_features: mock HTTP returns schema_version=2 response
+    → self._features_cache populated correctly
+- test_fetch_config_v2_schedules_update: mock response with update.action="update"
+    → _schedule_update called once, _update_in_progress=True
+- test_fetch_config_legacy_no_update: mock response without "meta" key
+    → _features_cache unchanged, _schedule_update NOT called
+- test_perform_update_checksum_ok: mock download returns known bytes, checksum matches
+    → addExtension called with correct file URL
+- test_perform_update_checksum_mismatch: checksum mismatch
+    → addExtension NOT called, telemetry ExtensionUpdateFailed sent
+- test_perform_update_clears_flag_on_exception: addExtension raises
+    → _update_in_progress=False in finally
+- test_get_extension_version_fallback: PackageInformationProvider raises → returns ""
+- test_update_not_retriggered_while_in_progress: _update_in_progress=True
+    → second _schedule_update call ignored
+Run with: pytest tests/test_update_features.py -v --tb=short
 ```
 
 ---
@@ -764,6 +803,20 @@ a link to the update URL (user installs manually or via admin policy).
 Do NOT implement enrollment (PKCE flow) in this task — it is a separate scope.
 Do NOT implement .crx download or chrome.runtime.requestUpdate() — not applicable
 for self-hosted non-webstore extensions in MV3.
+
+Headless tests (add tests/dm.test.js using Jest + chrome API mock via jest-chrome):
+- fetchDMConfig_noop_when_no_base_url: storage returns empty dm_base_url → fetch not called
+- fetchDMConfig_sends_correct_headers: mock fetch → assert X-Plugin-Version, X-Platform-Type headers
+- fetchDMConfig_stores_features_on_v2: mock response schema_version=2, features={f:true}
+    → chrome.storage.local.set called with {dm_features:{f:true}}
+- fetchDMConfig_calls_handleUpdate_on_action: response.update.action="update"
+    → handleUpdateDirective called with directive
+- handleUpdateDirective_creates_notification: assert chrome.notifications.create called
+    with correct title containing target_version
+- isFeatureEnabled_returns_default_when_absent: storage has no dm_features → returns true
+- isFeatureEnabled_returns_stored_value: storage has {f:false} → isFeatureEnabled("f")==false
+- fetchDMConfig_handles_fetch_error_silently: fetch rejects → no throw, console.error called
+Run with: npx jest tests/dm.test.js --coverage
 ```
 
 ---
@@ -881,4 +934,23 @@ while keeping full backward compatibility with the old flat format.
 Backward compatibility:
    If the DM server returns a legacy flat response (no "meta" key), the plugin
    continues to work exactly as before. The schema detection in step 1 handles this.
+
+Headless tests (add tests/test_plugin_state.js and tests/test_auto_updater.js using Jest):
+Mock strategy: stub ChromeUtils, Services, AddonManager, XMLHttpRequest with jest.fn().
+test_plugin_state.js:
+- parseV2Response_extracts_update: response with meta.schema_version=2, update.action="update"
+    → _updateUrl, _lastVersion, _updateUrgency, _updateChecksum, _campaignId populated
+- parseV2Response_null_update: response.update=null → _updateUrl=null, _lastVersion=null
+- parseV1Response_legacy_flat: no "meta" key, response.updateUrl="http://x"
+    → _updateUrl="http://x" (legacy path)
+- parseV2Response_extracts_features: response.features={f:true} → _features={f:true}
+- isFeatureEnabled_present: _features={f:false} → isFeatureEnabled("f")==false
+- isFeatureEnabled_absent: _features={} → isFeatureEnabled("x", true)==true
+- xhrHeaders_sent: after init, XHR setRequestHeader called with X-Plugin-Version, X-Platform-Type
+test_auto_updater.js:
+- checksum_verified_before_install: getUpdateChecksum returns "sha256:abc"
+    → crypto.subtle.digest called, if mismatch AddonManager.getInstallForURL NOT called
+- checksum_absent_skips_verify: getUpdateChecksum returns "" → install proceeds without verify
+- critical_urgency_shows_modal: getUpdateUrgency returns "critical" → notification shown
+Run with: npx jest tests/test_plugin_state.js tests/test_auto_updater.js --coverage
 ```
