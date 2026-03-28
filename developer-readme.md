@@ -43,35 +43,39 @@ Admin UI : http://localhost:3001/admin/ (auto-login en dev)
 Quand un plugin appelle `/config/{x}/config.json?profile=dev` :
 
 ```
-1. RESOLVE : x → (device_name, device_type, plugin_id, resolved_via)
-   - slug "mirai-libreoffice" → match direct
-   - alias "libreoffice" → lookup + LOG acces alias
-   - inconnu → 400
-
-2. TEMPLATE : charge config/{device_type}/config.{profile}.json
-
-3. SUBSTITUTION : ${{VAR}} → valeurs env systeme
-
-4. OVERRIDES DM : telemetrie, relay, etc.
-
-5. OVERRIDES CATALOGUE : plugin_env_overrides (par plugin + env)
-
-6. KEYCLOAK : injecte client_id + realm specifiques au plugin/env
-
-7. ACCESS CONTROL : open | waitlist | keycloak_group
-
-8. INJECTION : force device_name + config_path dans la reponse
-   (meme si appel via alias → migration douce automatique)
+ 1. RESOLVE     x → (device_name, device_type, plugin_id, resolved_via)
+                slug "mirai-libreoffice" → match | alias "libreoffice" → lookup + LOG | → 400
+ 2. TEMPLATE    plugins.config_template (DB) → merge default + section profil
+                Fallback : config/{device_name}/ ou config/{device_type}/ (fichier)
+ 3. INJECTION   force device_name, config_path, bootstrap_url
+ 4. SUBSTITUTION ${{VAR}} → valeurs env systeme (LLM, Keycloak, etc.)
+ 5. OVERRIDES DM telemetrie, relay, etc.
+ 6. OVERRIDES CATALOGUE  plugin_env_overrides (par plugin + profil)
+ 7. KEYCLOAK    plugin_keycloak_clients → injecte client_id + realm
+ 8. ACCESS CTRL open | waitlist | keycloak_group
+ 9. SCRUB       secrets masques si pas de relay credentials
+10. ENRICHMENT  campaigns, features, communications
 
 9. SCRUB : secrets masques si pas de relay credentials
 
 10. ENRICHMENT : campaigns, features, communications
 ```
 
-Templates config sur disque (par device_type, inchanges) :
+Templates config :
+- **Source principale** : `plugins.config_template` (JSONB en DB, format dm-config.json)
+- **Fallback fichier** : `config/{device_name}/` puis `config/{device_type}/`
+- **Profils libres** : `?profile=local|dev|int|prod|staging|dgx|...`
+
+Format dm-config.json (default + sections par env) :
+```json
+{ "default": {...}, "local": {...}, "dev": {"llm_base_urls": "${{LLM_BASE_URL}}"}, "prod": {...} }
+```
+Les sections serveur sont auto-completees avec les placeholders `${{VAR}}` si manquants.
+
+Fichiers sur disque (fallback, retrocompat) :
 ```
 config/
-  libreoffice/config.json, config.dev.json, config.int.json
+  mirai-libreoffice/config.json, config.dev.json, config.int.json
   matisse/config.json, config.dev.json, config.int.json
 ```
 

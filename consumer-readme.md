@@ -47,8 +47,13 @@ sequenceDiagram
 
 ```
 GET /config/{device_name}/config.json
-GET /config/{device_name}/config.json?profile=dev|int|prod
+GET /config/{device_name}/config.json?profile=local|dev|int|prod|...
 ```
+
+Les profils sont libres. 4 profils standards : `local` (dev autonome sans DM),
+`dev` (DM local), `int` (recette), `prod` (production).
+Les valeurs sont resolues depuis le template `dm-config.json` du plugin +
+overrides catalogue + variables plateforme `${{VAR}}`.
 
 Le `device_name` peut etre :
 - Le slug du plugin : `mirai-libreoffice`, `mirai-matisse`
@@ -263,6 +268,41 @@ curl -sS -X POST https://sso.example.com/realms/openwebui/protocol/openid-connec
 - Windows : Credential Manager
 - macOS : Keychain
 - Linux : Secret Service (libsecret)
+
+## Convention `dm-config.json` (pour les developpeurs de plugins)
+
+Pour que le DM serve automatiquement la bonne configuration, le developpeur
+du plugin peut fournir un fichier `dm-config.json` (dans le package ou separement) :
+
+```json
+{
+  "configVersion": 1,
+  "default": {
+    "systemPrompt": "Tu es un assistant...",
+    "extend_selection_max_tokens": 15000,
+    "telemetryEnabled": true,
+    "llm_request_timeout_seconds": 45
+  },
+  "local": {
+    "llm_base_urls": "http://localhost:11434/api",
+    "llm_default_models": "llama3.2",
+    "telemetryEnabled": false
+  },
+  "dev": {
+    "llm_base_urls": "${{LLM_BASE_URL}}",
+    "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}"
+  },
+  "prod": {
+    "llm_base_urls": "${{LLM_BASE_URL}}"
+  }
+}
+```
+
+- `default` : valeurs communes a tous les environnements
+- `local` : dev autonome, valeurs en dur (pas de DM)
+- `dev`/`int`/`prod` : `${{VAR}}` substitues par les variables serveur
+- Profils supplementaires libres (`staging`, `dgx`, etc.)
+- Si une section serveur manque des cles plateforme, le DM les ajoute automatiquement
 
 ## Catalogue public
 
