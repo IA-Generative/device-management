@@ -22,7 +22,7 @@ spec:
         - name: regcred
       containers:
         - name: device-management
-          image: <SCALEWAY_REGISTRY>/device-management:0.2.1-config-cleanup
+          image: <SCALEWAY_REGISTRY>/device-management:0.2.2-server-cleanup
           imagePullPolicy: Always
           ports:
             - containerPort: 3001
