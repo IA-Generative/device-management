@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Debug{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+  <h1 class="dm-page-title" style="margin:0;">Debug — Sante des services</h1>
+  <a href="/admin/debug" class="dm-btn dm-btn--secondary dm-btn--sm">Rafraichir</a>
+</div>
+
+<h3 style="font-size:1rem;margin-bottom:0.75rem;">Services</h3>
+<table>
+  <thead><tr><th>Service</th><th>Statut</th><th>Latence</th><th>Detail</th></tr></thead>
+  <tbody>
+    {% for name, c in checks.items() %}
+    <tr>
+      <td>{{ name }}</td>
+      <td>
+        {% if c.status == 'ok' %}
+        <span style="color:#18753C;">&#9679; OK</span>
+        {% else %}
+        <span style="color:#CE0500;">&#9679; Erreur</span>
+        {% endif %}
+      </td>
+      <td>{{ c.latency_ms }}ms</td>
+      <td style="font-size:0.85rem;color:#666;">{{ c.detail }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3 style="font-size:1rem;margin-top:1.5rem;margin-bottom:0.75rem;">Configuration</h3>
+<table class="dm-table-compact">
+  <thead><tr><th>Variable</th><th>Valeur</th></tr></thead>
+  <tbody>
+    {% for v in config_vars %}
+    <tr>
+      <td><code>{{ v.key }}</code></td>
+      <td style="font-size:0.85rem;">{{ v.value }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3 style="font-size:1rem;margin-top:1.5rem;margin-bottom:0.75rem;">Base de donnees</h3>
+<table class="dm-table-compact">
+  <thead><tr><th>Table</th><th>Lignes</th></tr></thead>
+  <tbody>
+    {% for t in db_stats %}
+    <tr>
+      <td><code>{{ t.table }}</code></td>
+      <td>{{ t.rows }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h3 style="font-size:1rem;margin-top:1.5rem;margin-bottom:0.75rem;">Systeme</h3>
+<table class="dm-table-compact">
+  <tbody>
+    <tr><td>Hostname</td><td><code>{{ system_info.hostname }}</code></td></tr>
+    <tr><td>Python</td><td>{{ system_info.python }}</td></tr>
+  </tbody>
+</table>
+{% endblock %}

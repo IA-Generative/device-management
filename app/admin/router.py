@@ -2051,6 +2051,232 @@ async def catalog_upload_logo(request: Request, plugin_id: int,
         conn.close()
 
 
+# ─── Dashboard APIs ──────────────────────────────────────────────────────
+
+@router.get("/api/debug/status", response_class=HTMLResponse)
+@require_admin
+async def api_debug_status(request: Request):
+    """HTMX fragment: service availability banner for dashboard."""
+    import urllib.request as urlreq
+    import time as _time
+
+    checks = {}
+    # DB
+    t0 = _time.monotonic()
+    try:
+        conn = get_db_connection()
+        conn.cursor().execute("SELECT 1")
+        conn.close()
+        checks["db"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
+    except Exception:
+        checks["db"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
+
+    # Keycloak
+    issuer = os.getenv("KEYCLOAK_ISSUER_URL", "")
+    if issuer:
+        t0 = _time.monotonic()
+        try:
+            urlreq.urlopen(f"{issuer.rstrip('/')}/.well-known/openid-configuration", timeout=5)
+            checks["keycloak"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
+        except Exception:
+            checks["keycloak"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
+
+    # LLM
+    llm_url = os.getenv("LLM_BASE_URL", "")
+    if llm_url:
+        t0 = _time.monotonic()
+        try:
+            urlreq.urlopen(f"{llm_url.rstrip('/')}/models", timeout=5)
+            checks["llm"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
+        except Exception:
+            checks["llm"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
+
+    # Relay
+    t0 = _time.monotonic()
+    try:
+        urlreq.urlopen("http://relay-assistant:8080/healthz", timeout=3)
+        checks["relay"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
+    except Exception:
+        checks["relay"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
+
+    all_ok = all(c["ok"] for c in checks.values())
+    down = [k for k, v in checks.items() if not v["ok"]]
+
+    if all_ok:
+        banner = '<div class="dm-flash dm-flash--success" style="margin-bottom:0;display:flex;justify-content:space-between;align-items:center;">'
+        banner += '<span>&#9679; Tous les services sont operationnels</span>'
+        detail = " | ".join(f'{k} {v["ms"]}ms' for k, v in checks.items())
+        banner += f'<span style="font-size:0.8rem;color:#666;">{detail} &mdash; <a href="/admin/debug">Details</a></span>'
+        banner += '</div>'
+    else:
+        banner = '<div class="dm-flash dm-flash--warning" style="margin-bottom:0;display:flex;justify-content:space-between;align-items:center;">'
+        banner += f'<span>&#9684; Service degrade &mdash; {", ".join(down)} indisponible(s)</span>'
+        banner += '<a href="/admin/debug" style="font-size:0.8rem;">Details</a>'
+        banner += '</div>'
+
+    return HTMLResponse(banner)
+
+
+@router.get("/api/adoption")
+@require_admin
+async def api_adoption(request: Request, period: str = "1M"):
+    """Adoption metrics for dashboard chart."""
+    intervals = {"1J": "1 day", "1S": "7 days", "1M": "30 days", "3M": "90 days", "6M": "180 days"}
+    interval = intervals.get(period, "30 days")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM provisioning WHERE status = 'ENROLLED'")
+            total = cur.fetchone()[0]
+            cur.execute(f"""
+                SELECT COUNT(DISTINCT client_uuid) FROM provisioning
+                WHERE status = 'ENROLLED' AND created_at > NOW() - INTERVAL '{interval}'
+            """)
+            new_period = cur.fetchone()[0]
+            cur.execute("""
+                SELECT COUNT(DISTINCT client_uuid) FROM device_connections
+                WHERE created_at > NOW() - INTERVAL '7 days'
+            """)
+            active_7d = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM plugins WHERE status = 'active'")
+            plugins_count = cur.fetchone()[0]
+            # Timeseries
+            cur.execute(f"""
+                SELECT d::date AS date, COUNT(DISTINCT p.client_uuid) AS enrolled
+                FROM generate_series(NOW() - INTERVAL '{interval}', NOW(), '1 day') d
+                LEFT JOIN provisioning p ON p.status = 'ENROLLED' AND p.created_at <= d
+                GROUP BY d::date ORDER BY d::date
+            """)
+            timeseries = [{"date": str(r[0]), "enrolled": r[1]} for r in cur.fetchall()]
+        return JSONResponse({
+            "period": period,
+            "summary": {
+                "total": total, "new_period": new_period,
+                "active_pct": round(active_7d / total * 100) if total else 0,
+                "plugins": plugins_count,
+            },
+            "timeseries": timeseries,
+        })
+    finally:
+        conn.close()
+
+
+# ─── Debug Page ──────────────────────────────────────────────────────────
+
+@router.get("/debug", response_class=HTMLResponse)
+@require_admin
+async def debug_page(request: Request):
+    """Full debug page with all service health checks."""
+    import urllib.request as urlreq
+    import time as _time
+    import socket
+    import concurrent.futures
+
+    def _check(name, fn):
+        t0 = _time.monotonic()
+        try:
+            detail = fn()
+            return name, {"status": "ok", "latency_ms": round((_time.monotonic()-t0)*1000), "detail": detail}
+        except Exception as e:
+            return name, {"status": "error", "latency_ms": round((_time.monotonic()-t0)*1000), "detail": str(e)[:120]}
+
+    def check_db():
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM pg_tables WHERE schemaname='public'")
+        n = cur.fetchone()[0]
+        conn.close()
+        return f"{n} tables"
+
+    def check_keycloak():
+        issuer = os.getenv("KEYCLOAK_ISSUER_URL", "")
+        if not issuer: return "non configure"
+        with urlreq.urlopen(f"{issuer.rstrip('/')}/.well-known/openid-configuration", timeout=5) as r:
+            data = json.loads(r.read())
+        return f"{os.getenv('KEYCLOAK_REALM','?')}, {len([k for k in data if 'endpoint' in k])} endpoints"
+
+    def check_llm():
+        llm_url = os.getenv("LLM_BASE_URL", "")
+        if not llm_url: return "non configure"
+        token = os.getenv("LLM_API_TOKEN", "")
+        model = os.getenv("DEFAULT_MODEL_NAME", "?")
+        req = urlreq.Request(f"{llm_url.rstrip('/')}/models",
+                             headers={"Authorization": f"Bearer {token}"})
+        with urlreq.urlopen(req, timeout=10) as r:
+            pass
+        return f"{model}"
+
+    def check_relay():
+        with urlreq.urlopen("http://relay-assistant:8080/healthz", timeout=3) as r:
+            pass
+        return "nginx OK"
+
+    def check_telemetry():
+        url = os.getenv("DM_TELEMETRY_UPSTREAM_ENDPOINT", "")
+        if not url: return "non configure"
+        req = urlreq.Request(url, method="HEAD")
+        with urlreq.urlopen(req, timeout=5) as r:
+            pass
+        return "accessible"
+
+    # Run checks in parallel
+    checks = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [
+            pool.submit(_check, "PostgreSQL", check_db),
+            pool.submit(_check, "Keycloak OIDC", check_keycloak),
+            pool.submit(_check, "LLM", check_llm),
+            pool.submit(_check, "Relay-assistant", check_relay),
+            pool.submit(_check, "Telemetrie upstream", check_telemetry),
+        ]
+        for f in concurrent.futures.as_completed(futures, timeout=15):
+            name, result = f.result()
+            checks[name] = result
+
+    # Config vars (safe)
+    secret_keys = {"LLM_API_TOKEN", "AWS_SECRET_ACCESS_KEY", "DATABASE_URL",
+                   "ADMIN_OIDC_CLIENT_SECRET", "ADMIN_SESSION_SECRET",
+                   "DM_RELAY_PROXY_SHARED_TOKEN", "DM_TELEMETRY_TOKEN_SIGNING_KEY"}
+    config_vars = []
+    for key in ["PUBLIC_BASE_URL", "DM_APP_ENV", "DM_CONFIG_PROFILE", "DM_PORT",
+                "DM_RELAY_ENABLED", "DM_TELEMETRY_ENABLED",
+                "KEYCLOAK_ISSUER_URL", "KEYCLOAK_REALM", "KEYCLOAK_CLIENT_ID",
+                "LLM_BASE_URL", "LLM_API_TOKEN", "DEFAULT_MODEL_NAME",
+                "DM_S3_BUCKET", "DATABASE_URL"]:
+        val = os.getenv(key, "")
+        if key in secret_keys and val:
+            val = val[:4] + "***" + val[-4:] if len(val) > 8 else "***"
+        config_vars.append({"key": key, "value": val or "(vide)"})
+
+    # DB stats
+    db_stats = []
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
+        for (tbl,) in cur.fetchall():
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                db_stats.append({"table": tbl, "rows": cur.fetchone()[0]})
+            except Exception:
+                db_stats.append({"table": tbl, "rows": "?"})
+        conn.close()
+    except Exception:
+        pass
+
+    # System
+    system_info = {
+        "hostname": socket.gethostname(),
+        "python": os.popen("python3 --version 2>&1").read().strip(),
+        "uptime": "N/A",
+    }
+
+    return templates.TemplateResponse("debug.html", {
+        "request": request, "checks": checks, "config_vars": config_vars,
+        "db_stats": db_stats, "system_info": system_info,
+    })
+
+
 # ─── Audit Log ────────────────────────────────────────────────────────────
 
 @router.get("/audit", response_class=HTMLResponse)
