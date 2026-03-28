@@ -2615,6 +2615,17 @@ async def api_upload_artifact(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@app.get("/catalog/icons/{filename}")
+def catalog_icon(filename: str):
+    """Serve plugin icon/logo (public, no auth)."""
+    icons_dir = os.getenv("DM_ICONS_DIR", "/data/content/icons")
+    safe_name = os.path.basename(filename)
+    filepath = os.path.join(icons_dir, safe_name)
+    if not os.path.isfile(filepath):
+        raise HTTPException(404, "Icon not found")
+    return FileResponse(filepath, headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/binaries/{path:path}")
 def get_binary(path: str):
     try:

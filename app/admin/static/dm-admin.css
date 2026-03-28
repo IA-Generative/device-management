@@ -160,6 +160,35 @@
 }
 .dm-tag__remove:hover { opacity: 1; }
 
+/* Spinner animation */
+.dm-spinner {
+  display: inline-block;
+  width: 18px; height: 18px;
+  border: 3px solid #e5e5e5;
+  border-top-color: #000091;
+  border-radius: 50%;
+  animation: dm-spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 0.5rem;
+}
+@keyframes dm-spin { to { transform: rotate(360deg); } }
+
+/* Pulsing text */
+.dm-pulse { animation: dm-pulse-anim 1.5s ease-in-out infinite; }
+@keyframes dm-pulse-anim { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+/* Indeterminate progress bar */
+.dm-progress-indeterminate {
+  height: 3px; background: #e5e5e5; border-radius: 2px;
+  overflow: hidden; margin-top: 0.5rem;
+}
+.dm-progress-indeterminate::after {
+  content: ''; display: block; height: 100%; width: 30%;
+  background: #000091; border-radius: 2px;
+  animation: dm-slide 1.2s ease-in-out infinite;
+}
+@keyframes dm-slide { 0%{transform:translateX(-100%);} 100%{transform:translateX(400%);} }
+
 /* Plugin detail — large icon */
 .dm-plugin-icon-lg {
   width: 60px; height: 60px; border-radius: 12px; background: #000091; color: #fff;

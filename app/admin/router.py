@@ -31,6 +31,7 @@ from .services import (
     audit as audit_svc,
     catalog as catalog_svc,
     communications as comms_svc,
+    keycloak as keycloak_svc,
 )
 
 logger = logging.getLogger("dm-admin-router")
@@ -1401,6 +1402,27 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             stats = catalog_svc.get_plugin_stats(cur, plugin_id)
             installations = catalog_svc.list_installations(cur, plugin_id, limit=20)
             artifact_list = artifacts_svc.list_artifacts(cur)
+            # Env overrides
+            cur.execute("""
+                SELECT * FROM plugin_env_overrides WHERE plugin_id = %s
+                ORDER BY environment, key
+            """, (plugin_id,))
+            env_cols = [d[0] for d in cur.description]
+            env_overrides = [dict(zip(env_cols, r)) for r in cur.fetchall()]
+            # Keycloak clients
+            kc_clients = keycloak_svc.get_plugin_clients(cur, plugin_id)
+            all_kc_clients = keycloak_svc.list_clients(cur)
+            kc_defaults = keycloak_svc.get_defaults()
+            # Waitlist
+            cur.execute("""
+                SELECT * FROM plugin_waitlist WHERE plugin_id = %s
+                ORDER BY created_at DESC LIMIT 50
+            """, (plugin_id,))
+            wl_cols = [d[0] for d in cur.description]
+            waitlist = [dict(zip(wl_cols, r)) for r in cur.fetchall()]
+            # Aliases
+            cur.execute("SELECT alias FROM plugin_aliases WHERE plugin_id = %s ORDER BY alias", (plugin_id,))
+            aliases = [r[0] for r in cur.fetchall()]
         features = plugin.get("key_features") or []
         if isinstance(features, str):
             features = json.loads(features)
@@ -1408,6 +1430,9 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             "request": request, "plugin": plugin, "versions": versions,
             "stats": stats, "installations": installations,
             "artifacts": artifact_list, "features": features,
+            "env_overrides": env_overrides, "kc_clients": kc_clients,
+            "all_kc_clients": all_kc_clients, "kc_defaults": kc_defaults,
+            "waitlist": waitlist, "aliases": aliases,
             "tab": tab, "timeago": timeago,
         })
     finally:
@@ -1661,6 +1686,369 @@ async def communication_status(request: Request, comm_id: int,
 @require_admin
 async def catalog_preview(request: Request):
     return templates.TemplateResponse("catalog_preview.html", {"request": request})
+
+
+# ─── Env Overrides ───────────────────────────────────────────────────────
+
+@router.post("/catalog/{plugin_id}/env")
+@require_admin
+async def catalog_env_upsert(request: Request, plugin_id: int,
+                              environment: str = Form(...),
+                              key: str = Form(...),
+                              value: str = Form(...),
+                              is_secret: str = Form("")):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO plugin_env_overrides (plugin_id, environment, key, value, is_secret)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (plugin_id, environment, key)
+                DO UPDATE SET value = %s, is_secret = %s, updated_at = NOW()
+            """, (plugin_id, environment, key, value, is_secret == "on",
+                  value, is_secret == "on"))
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="env.override.upsert",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"env": environment, "key": key},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=env", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.delete("/catalog/{plugin_id}/env/{override_id}")
+@require_admin
+async def catalog_env_delete(request: Request, plugin_id: int, override_id: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM plugin_env_overrides WHERE id = %s AND plugin_id = %s",
+                        (override_id, plugin_id))
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="env.override.delete",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"override_id": override_id},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=env", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.get("/api/catalog/{plugin_id}/preview")
+@require_admin
+async def catalog_preview_config(request: Request, plugin_id: int, profile: str = "dev"):
+    """Preview the final config JSON as the plugin would receive it."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            plugin = catalog_svc.get_plugin(cur, plugin_id)
+            if not plugin:
+                return JSONResponse({"error": "Plugin non trouve"}, status_code=404)
+            # Simulate config loading
+            from app.main import _load_config_template, _substitute_env, _apply_overrides, _apply_catalog_overrides
+            cfg = _load_config_template(profile, device=plugin["device_type"],
+                                        device_name=plugin["slug"])
+            cfg = _substitute_env(cfg)
+            cfg = _apply_overrides(cfg, profile=profile, device=plugin["device_type"])
+            cfg = _apply_catalog_overrides(cfg, plugin_id=plugin_id, profile=profile, cur=cur)
+            config_obj = cfg.get("config")
+            if isinstance(config_obj, dict):
+                config_obj["device_name"] = plugin["slug"]
+                config_obj["config_path"] = f"/config/{plugin['slug']}/config.json"
+        return JSONResponse(cfg)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        conn.close()
+
+
+# ─── Keycloak Clients ────────────────────────────────────────────────────
+
+@router.get("/api/keycloak/defaults")
+@require_admin
+async def api_keycloak_defaults(request: Request):
+    return JSONResponse(keycloak_svc.get_defaults())
+
+
+@router.get("/api/keycloak/clients")
+@require_admin
+async def api_keycloak_clients(request: Request):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            clients = keycloak_svc.list_clients(cur)
+        return JSONResponse(clients)
+    finally:
+        conn.close()
+
+
+@router.post("/api/keycloak/clients")
+@require_admin
+async def api_keycloak_create_client(request: Request,
+                                      client_id: str = Form(...),
+                                      realm: str = Form(...),
+                                      description: str = Form(""),
+                                      client_type: str = Form("public"),
+                                      redirect_uris: str = Form(""),
+                                      pkce_enabled: str = Form("on")):
+    uris = [u.strip() for u in redirect_uris.strip().splitlines() if u.strip()]
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            kc_id = keycloak_svc.create_client(
+                cur, client_id=client_id, realm=realm, description=description,
+                client_type=client_type, redirect_uris=uris,
+                pkce_enabled=pkce_enabled == "on",
+            )
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="keycloak.client.create",
+                      resource_type="keycloak_client", resource_id=str(kc_id),
+                      payload={"client_id": client_id, "realm": realm},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return JSONResponse({"ok": True, "id": kc_id, "client_id": client_id})
+    except Exception as e:
+        conn.rollback()
+        return JSONResponse({"error": str(e)}, status_code=400)
+    finally:
+        conn.close()
+
+
+@router.get("/api/keycloak/clients/{client_db_id}/export")
+@require_admin
+async def api_keycloak_export(request: Request, client_db_id: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            client = keycloak_svc.get_client(cur, client_db_id)
+            if not client:
+                raise HTTPException(404, "Client non trouve")
+        export = keycloak_svc.export_keycloak_json(client)
+        return JSONResponse(
+            export,
+            headers={"Content-Disposition": f'attachment; filename="keycloak-client-{client["client_id"]}.json"'}
+        )
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/keycloak/link")
+@require_admin
+async def catalog_keycloak_link(request: Request, plugin_id: int,
+                                 keycloak_client_id: int = Form(...),
+                                 environment: str = Form("prod")):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            keycloak_svc.link_plugin_client(cur, plugin_id, keycloak_client_id, environment)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="keycloak.link",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"kc_client_id": keycloak_client_id, "env": environment},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=keycloak", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+# ─── Access (maturity + waitlist) ────────────────────────────────────────
+
+@router.post("/catalog/{plugin_id}/access")
+@require_admin
+async def catalog_access_update(request: Request, plugin_id: int,
+                                 maturity: str = Form("release"),
+                                 access_mode: str = Form("open"),
+                                 required_group: str = Form("")):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            catalog_svc.update_plugin(cur, plugin_id,
+                                      maturity=maturity, access_mode=access_mode,
+                                      required_group=required_group or None)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="plugin.access.update",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"maturity": maturity, "access_mode": access_mode},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=access", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/waitlist/{wl_id}/approve")
+@require_admin
+async def catalog_waitlist_approve(request: Request, plugin_id: int, wl_id: int):
+    conn = get_db_connection()
+    try:
+        actor = getattr(request.state, "admin_session", {})
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE plugin_waitlist SET status = 'approved', reviewed_by = %s, reviewed_at = NOW()
+                WHERE id = %s AND plugin_id = %s
+            """, (actor.get("email"), wl_id, plugin_id))
+            audit_log(cur, actor=actor, action="waitlist.approve",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"waitlist_id": wl_id},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=access", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/waitlist/{wl_id}/reject")
+@require_admin
+async def catalog_waitlist_reject(request: Request, plugin_id: int, wl_id: int):
+    conn = get_db_connection()
+    try:
+        actor = getattr(request.state, "admin_session", {})
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE plugin_waitlist SET status = 'rejected', reviewed_by = %s, reviewed_at = NOW()
+                WHERE id = %s AND plugin_id = %s
+            """, (actor.get("email"), wl_id, plugin_id))
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=access", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+# ─── Alias ───────────────────────────────────────────────────────────────
+
+@router.post("/catalog/{plugin_id}/alias")
+@require_admin
+async def catalog_alias_add(request: Request, plugin_id: int,
+                             alias: str = Form(...)):
+    alias = alias.strip().lower()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO plugin_aliases (alias, plugin_id) VALUES (%s, %s)",
+                        (alias, plugin_id))
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="alias.add",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"alias": alias},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=alias", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.delete("/catalog/{plugin_id}/alias/{alias}")
+@require_admin
+async def catalog_alias_delete(request: Request, plugin_id: int, alias: str):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM plugin_aliases WHERE alias = %s AND plugin_id = %s",
+                        (alias, plugin_id))
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="alias.delete",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"alias": alias},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=alias", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.get("/api/catalog/{plugin_id}/alias-stats")
+@require_admin
+async def catalog_alias_stats(request: Request, plugin_id: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT alias, COUNT(*) AS total_calls,
+                       COUNT(DISTINCT client_uuid) FILTER (WHERE client_uuid IS NOT NULL) AS unique_devices
+                FROM alias_access_log
+                WHERE plugin_id = %s AND accessed_at > NOW() - INTERVAL '7 days'
+                GROUP BY alias ORDER BY total_calls DESC
+            """, (plugin_id,))
+            cols = [d[0] for d in cur.description]
+            stats = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return JSONResponse(stats)
+    finally:
+        conn.close()
+
+
+# ─── Plugin Logo ─────────────────────────────────────────────────────────
+
+@router.post("/catalog/{plugin_id}/logo")
+@require_admin
+async def catalog_upload_logo(request: Request, plugin_id: int,
+                              logo: UploadFile = File(...)):
+    """Upload plugin logo/mascot."""
+    allowed_ext = {".png", ".jpg", ".jpeg", ".svg", ".webp"}
+    filename = logo.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in allowed_ext:
+        return HTMLResponse(f'<div class="dm-flash dm-flash--error">Format non supporte ({ext}). Utiliser PNG, JPG, SVG ou WebP.</div>')
+
+    data = await logo.read()
+    if len(data) > 2 * 1024 * 1024:
+        return HTMLResponse('<div class="dm-flash dm-flash--error">Fichier trop volumineux (max 2 Mo).</div>')
+
+    icons_dir = os.getenv("DM_ICONS_DIR", "/data/content/icons")
+    os.makedirs(icons_dir, exist_ok=True)
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            plugin = catalog_svc.get_plugin(cur, plugin_id)
+            if not plugin:
+                raise HTTPException(404, "Plugin non trouve")
+
+            icon_filename = f"{plugin['slug']}{ext}"
+            icon_path = os.path.join(icons_dir, icon_filename)
+            with open(icon_path, "wb") as f:
+                f.write(data)
+
+            catalog_svc.update_plugin(cur, plugin_id, icon_path=icon_path)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="plugin.logo.upload",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"filename": icon_filename, "size": len(data)},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=edit", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        return HTMLResponse(f'<div class="dm-flash dm-flash--error">Erreur: {e}</div>')
+    finally:
+        conn.close()
 
 
 # ─── Audit Log ────────────────────────────────────────────────────────────
