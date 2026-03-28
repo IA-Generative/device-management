@@ -127,15 +127,15 @@ Les environnements sont **libres** — le developpeur peut en creer autant qu'il
     "llm_base_urls": "http://localhost:11434/api"
   },
   "int": {
-    "llm_base_urls": "https://api.scaleway.ai/.../v1",
-    "keycloakIssuerUrl": "https://sso-int.domain/realms/openwebui"
+    "llm_base_urls": "${{LLM_BASE_URL}}",
+    "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}"
   },
   "prod": {
-    "llm_base_urls": "https://chat.mirai.interieur.gouv.fr/api/",
-    "keycloakIssuerUrl": "https://sso.mirai.interieur.gouv.fr/realms/mirai"
+    "llm_base_urls": "${{LLM_BASE_URL}}",
+    "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}"
   },
   "dgx": {
-    "llm_base_urls": "https://api.gpu.minint.fr/v1"
+    "llm_base_urls": "${{LLM_BASE_URL}}"
   }
 }
 ```
@@ -195,38 +195,176 @@ a utiliser ces noms pour une coherence inter-plugins.
   },
   "dev": {
     "_description": "Dev avec DM Docker Compose local",
-    "llm_base_urls": "http://localhost:11434/api",
-    "llm_default_models": "llama3.2",
-    "keycloakIssuerUrl": "http://localhost:8082/realms/openwebui",
-    "keycloakRealm": "openwebui",
-    "keycloakClientId": "bootstrap-iassistant"
+    "llm_base_urls": "${{LLM_BASE_URL}}",
+    "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
+    "llm_api_tokens": "${{LLM_API_TOKEN}}",
+    "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
+    "keycloakRealm": "${{KEYCLOAK_REALM}}",
+    "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+    "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
+    "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}"
   },
   "int": {
     "_description": "Integration / recette (cluster partage)",
-    "llm_base_urls": "",
-    "keycloakIssuerUrl": "",
-    "keycloakRealm": "",
-    "keycloakClientId": ""
+    "llm_base_urls": "${{LLM_BASE_URL}}",
+    "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
+    "llm_api_tokens": "${{LLM_API_TOKEN}}",
+    "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
+    "keycloakRealm": "${{KEYCLOAK_REALM}}",
+    "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+    "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
+    "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}"
   },
   "prod": {
     "_description": "Production",
-    "llm_base_urls": "",
-    "keycloakIssuerUrl": "",
-    "keycloakRealm": "",
-    "keycloakClientId": ""
+    "llm_base_urls": "${{LLM_BASE_URL}}",
+    "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
+    "llm_api_tokens": "${{LLM_API_TOKEN}}",
+    "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
+    "keycloakRealm": "${{KEYCLOAK_REALM}}",
+    "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+    "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
+    "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}"
   }
 }
 ```
 
 **Conventions** :
-- `local` desactive la telemetrie et laisse `bootstrap_url` vide (pas de DM)
-- `local` et `dev` ont des valeurs concretes pour fonctionner immediatement
-- `int` et `prod` ont des champs vides — remplis par le serveur ou les overrides admin
+- `${{VAR}}` = placeholder substitue au runtime par la variable d'env de la plateforme DM
+- `local` a des valeurs en dur (pas de DM, pas de substitution)
+- `dev`, `int`, `prod` utilisent les placeholders — la plateforme DM fournit les vraies valeurs selon l'env
 - Les champs `_description` sont ignores par le DM (documentation inline)
 - Le developpeur peut ajouter des profils supplementaires (`staging`, `dgx`, `preprod`)
 
 **Avantage** : un developpeur qui clone le repo plugin et lance en `local`
 a un LLM fonctionnel (Ollama) sans aucune configuration serveur.
+Les environnements servis par le DM (`dev`, `int`, `prod`) heritent automatiquement
+des valeurs de la plateforme grace aux placeholders `${{VAR}}`.
+
+### Variables de plateforme disponibles
+
+Ces placeholders sont substitues par le DM au runtime avec les variables d'env du serveur :
+
+| Placeholder | Variable d'env | Exemple |
+|-------------|---------------|---------|
+| `${{LLM_BASE_URL}}` | `LLM_BASE_URL` | `https://api.scaleway.ai/.../v1` |
+| `${{LLM_API_TOKEN}}` | `LLM_API_TOKEN` | `17f16fa6-...` |
+| `${{DEFAULT_MODEL_NAME}}` | `DEFAULT_MODEL_NAME` | `deepseek-r1-distill-llama-70b` |
+| `${{KEYCLOAK_ISSUER_URL}}` | `KEYCLOAK_ISSUER_URL` | `https://sso.domain/realms/openwebui` |
+| `${{KEYCLOAK_REALM}}` | `KEYCLOAK_REALM` | `openwebui` |
+| `${{KEYCLOAK_CLIENT_ID}}` | `KEYCLOAK_CLIENT_ID` | `bootstrap-iassistant` |
+| `${{KEYCLOAK_REDIRECT_URI}}` | `KEYCLOAK_REDIRECT_URI` | `http://localhost:28443/callback` |
+| `${{KEYCLOAK_ALLOWED_REDIRECT_URI}}` | `KEYCLOAK_ALLOWED_REDIRECT_URI` | `http://localhost:28443/callback` |
+| `${{PUBLIC_BASE_URL}}` | `PUBLIC_BASE_URL` | `https://bootstrap.domain.name` |
+| `${{TELEMETRY_SALT}}` | `TELEMETRY_SALT` | (secret) |
+| `${{TELEMETRY_KEY}}` | `TELEMETRY_KEY` | (secret) |
+
+Le DM injecte aussi automatiquement (pas besoin de placeholder) :
+- `bootstrap_url` → `PUBLIC_BASE_URL`
+- `config_path` → `/config/{slug}/config.json`
+- `device_name` → slug du plugin
+- `telemetryEndpoint` → genere par le DM
+- `telemetryKey` → JWT court-duree genere par le DM
+
+### Initialisation automatique des placeholders
+
+Quand un `dm-config.json` est enregistre (depuis le package ou upload separe),
+le DM **complete automatiquement** les sections `dev`, `int` et `prod` avec les
+placeholders de la plateforme. Cela garantit que meme un `dm-config.json` minimal
+herite des variables serveur.
+
+**Regles d'initialisation** :
+
+| Cle | Placeholder | Ajoutee si absente ? | Remplacee si vide `""` ? |
+|-----|------------|---------------------|-------------------------|
+| `llm_base_urls` | `${{LLM_BASE_URL}}` | Oui | Oui |
+| `llm_default_models` | `${{DEFAULT_MODEL_NAME}}` | Oui | Oui |
+| `llm_api_tokens` | `${{LLM_API_TOKEN}}` | Oui | Oui |
+| `keycloakIssuerUrl` | `${{KEYCLOAK_ISSUER_URL}}` | Oui | Oui |
+| `keycloakRealm` | `${{KEYCLOAK_REALM}}` | Oui | Oui |
+| `keycloakClientId` | `${{KEYCLOAK_CLIENT_ID}}` | Oui | Oui |
+| `keycloak_redirect_uri` | `${{KEYCLOAK_REDIRECT_URI}}` | Oui | Oui |
+| `keycloak_allowed_redirect_uri` | `${{KEYCLOAK_ALLOWED_REDIRECT_URI}}` | Oui | Oui |
+
+**Ne s'applique pas a** la section `local` (pas de DM, valeurs en dur).
+**Ne remplace pas** une valeur deja remplie (ex: `"llm_base_urls": "https://custom.api/v1"` est preservee).
+
+```python
+# Placeholders plateforme par defaut
+_PLATFORM_DEFAULTS = {
+    "llm_base_urls": "${{LLM_BASE_URL}}",
+    "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
+    "llm_api_tokens": "${{LLM_API_TOKEN}}",
+    "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
+    "keycloakRealm": "${{KEYCLOAK_REALM}}",
+    "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+    "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
+    "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
+}
+
+# Sections qui ne recoivent PAS les placeholders
+_LOCAL_PROFILES = {"local"}
+
+
+def _apply_platform_defaults(template: dict) -> dict:
+    """Complete les sections serveur avec les placeholders plateforme.
+
+    - Ajoute les cles manquantes
+    - Remplace les valeurs vides ("") par le placeholder
+    - Ne touche pas aux sections 'local' ni aux valeurs deja remplies
+    """
+    for section_name, section in template.items():
+        if section_name in ("configVersion", "default") or section_name in _LOCAL_PROFILES:
+            continue
+        if not isinstance(section, dict):
+            continue
+        for key, placeholder in _PLATFORM_DEFAULTS.items():
+            current = section.get(key)
+            if current is None or current == "":
+                section[key] = placeholder
+    return template
+```
+
+**Affichage dans l'admin UI** :
+
+Quand le template est affiche dans l'onglet Configuration, les placeholders
+sont mis en evidence avec un style distinct :
+
+```html
+<!-- Valeur plateforme (placeholder) -->
+<span class="dm-placeholder" title="Sera remplace par la variable d'env LLM_BASE_URL">
+  ${{LLM_BASE_URL}}
+</span>
+
+<!-- Valeur en dur (definie par le developpeur) -->
+<span>http://localhost:11434/api</span>
+```
+
+```css
+.dm-placeholder {
+  color: #000091;
+  background: #e8e8ff;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.85em;
+  cursor: help;
+}
+```
+
+Dans l'editeur JSON, un encart explique :
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  ℹ Les valeurs ${{...}} sont des variables de la plateforme.    │
+│  Elles seront remplacees au runtime par les variables d'env     │
+│  du serveur Device Management.                                   │
+│                                                                  │
+│  Exemple : ${{LLM_BASE_URL}} → https://api.scaleway.ai/.../v1  │
+│                                                                  │
+│  Les sections local restent en valeurs directes (pas de DM).    │
+└──────────────────────────────────────────────────────────────────┘
+```
 
 ### Pipeline de merge au serving
 
