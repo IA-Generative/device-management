@@ -4,7 +4,7 @@
   "lastversion": -1,
   "updateUrl": "https://bootstrap.fake-domain.name/binaries/libreoffice/mirai.oxt",
   "config": {
-    "llm_base_urls": "https://openwebui.fake-domain.name/api/",
+    "llm_base_urls": "${{LLM_BASE_URL}}",
     "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
     "llm_api_tokens": "${{LLM_API_TOKEN}}",
     "authHeaderName": "Authorization",
@@ -14,6 +14,8 @@
     "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
     "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
     "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
+    "portal_url": "https://mirai.interieur.gouv.fr",
+    "doc_url": "https://github.com/IA-Generative/AssistantMiraiLibreOffice/blob/master/docs/notice-utilisateur.md",
     "systemPrompt": "Tu es un assistant spécialisé dans la rédaction de documents le contenu doit est concis et professionnels. Ton rôle est d'assister le redacteur pour disposer d'une redaction impecable   Ne répète pas mot pour mot le texte, reformule. Uniquement en texte seul et en français",
     "model": "achanger-model",
     "api_type": "chat",

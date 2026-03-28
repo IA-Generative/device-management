@@ -21,6 +21,7 @@ from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+import httpx
 import uvicorn
 import boto3
 from botocore.client import Config
@@ -48,6 +49,32 @@ from .postgres_queue import PostgresQueue, QueueJob
 
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
+
+# ---- Admin UI router (Jinja2 + HTMX, no external JS build)
+from fastapi.staticfiles import StaticFiles
+from .admin.router import router as admin_router
+app.include_router(admin_router, prefix="/admin")
+# Serve admin static files (DSFR, dm-admin.css)
+_admin_static = os.path.join(os.path.dirname(__file__), "admin", "static")
+if os.path.isdir(_admin_static):
+    app.mount("/admin/static", StaticFiles(directory=_admin_static), name="admin-static")
+
+# ---- Security headers middleware (admin UI + API)
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if request.url.path.startswith("/admin"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' https://unpkg.com; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "font-src 'self';"
+        )
+    return response
 
 # ---- CORS
 origins = [o.strip() for o in settings.allow_origins.split(",")] if settings.allow_origins else ["*"]
@@ -432,9 +459,7 @@ def _resolve_public_telemetry_endpoint() -> str:
     if public_base:
         parsed = urlparse(public_base)
         if parsed.scheme and parsed.netloc:
-            # Unified relay strategy: when relay is enabled, expose telemetry through relay-assistant.
-            if settings.relay_enabled and endpoint in ("/telemetry/v1/traces", "/v1/traces"):
-                return f"{parsed.scheme}://{parsed.netloc}/relay-assistant/telemetry/v1/traces"
+            # Telemetry uses its own Bearer token auth — no need for the relay proxy.
             return f"{parsed.scheme}://{parsed.netloc}{endpoint}"
     return endpoint
 
@@ -519,7 +544,6 @@ def _queue_worker_id(role: str) -> str:
 _SECRET_CONFIG_KEYS = {
     "llm_api_tokens",
     "tokenOWUI",
-    "telemetryKey",
     "keycloak_client_secret",
     "keycloakClientSecret",
 }
@@ -2119,6 +2143,54 @@ def get_binary(path: str):
             raise HTTPException(status_code=404, detail=f"Binary not found: {e!r}")
 
     raise HTTPException(status_code=500, detail="Invalid DM_BINARIES_MODE (must be presign or proxy or local).")
+
+# ---- Relay-assistant reverse proxy (dev / single-origin setups) ----
+# In production a front reverse-proxy routes /relay-assistant/* to the nginx
+# relay service.  In docker-compose dev the relay is a separate container
+# (relay-assistant:8080) so we proxy here to keep the plugin's single-origin
+# assumption working.
+
+_RELAY_UPSTREAM = os.getenv(
+    "DM_RELAY_ASSISTANT_UPSTREAM", "http://relay-assistant:8080"
+).rstrip("/")
+
+_RELAY_HOP_HEADERS = frozenset({
+    "host", "transfer-encoding", "connection", "keep-alive",
+    "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade",
+})
+
+
+@app.api_route("/relay-assistant/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+async def relay_assistant_proxy(path: str, request: Request):
+    upstream_url = f"{_RELAY_UPSTREAM}/{path}"
+    qs = str(request.url.query)
+    if qs:
+        upstream_url = f"{upstream_url}?{qs}"
+
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _RELAY_HOP_HEADERS
+    }
+    body = await request.body()
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        upstream_resp = await client.request(
+            method=request.method,
+            url=upstream_url,
+            headers=headers,
+            content=body,
+        )
+
+    resp_headers = {
+        k: v for k, v in upstream_resp.headers.items()
+        if k.lower() not in _RELAY_HOP_HEADERS
+    }
+    return Response(
+        content=upstream_resp.content,
+        status_code=upstream_resp.status_code,
+        headers=resp_headers,
+    )
+
 
 # ---- Local entrypoint (VS Code friendly)
 # Allows debugging by running this file directly (e.g. VS Code: "Python: Current File").

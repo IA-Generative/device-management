@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Appareils{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Appareils</h1>
+
+<!-- Health summary counters -->
+<div class="dm-grid-4" id="health-summary"
+     hx-get="/admin/api/devices/health-summary" hx-trigger="load, every 60s" hx-swap="innerHTML">
+  <div class="dm-counter" onclick="window.location='/admin/devices?health=ok'">
+    <span class="dm-counter__value" style="color: #18753C;">{{ summary.ok_count }}</span>
+    <span class="dm-counter__label">OK</span>
+  </div>
+  <div class="dm-counter" onclick="window.location='/admin/devices?health=stale'">
+    <span class="dm-counter__value" style="color: #B34000;">{{ summary.stale_count }}</span>
+    <span class="dm-counter__label">Inactifs</span>
+  </div>
+  <div class="dm-counter" onclick="window.location='/admin/devices?health=error'">
+    <span class="dm-counter__value" style="color: #CE0500;">{{ summary.error_count }}</span>
+    <span class="dm-counter__label">En erreur</span>
+  </div>
+  <div class="dm-counter" onclick="window.location='/admin/devices?health=never'">
+    <span class="dm-counter__value" style="color: #929292;">{{ summary.never_count }}</span>
+    <span class="dm-counter__label">Jamais vus</span>
+  </div>
+</div>
+
+<!-- Search / filters -->
+<form class="dm-search"
+      hx-get="/admin/devices" hx-target="#device-table" hx-swap="outerHTML"
+      hx-trigger="keyup changed delay:300ms from:#search-owner, change from:select">
+  <input id="search-owner" name="owner" class="dm-input" style="flex:2;"
+         placeholder="Rechercher par email ou nom..." autofocus
+         value="{{ filters.owner or '' }}">
+  <select name="platform" class="dm-select">
+    <option value="">Toutes les plateformes</option>
+    <option value="CONFIG_GET" {% if filters.platform == 'CONFIG_GET' %}selected{% endif %}>Config</option>
+    <option value="ENROLL" {% if filters.platform == 'ENROLL' %}selected{% endif %}>Enrolement</option>
+  </select>
+  <select name="health" class="dm-select">
+    <option value="">Tous les etats</option>
+    <option value="ok" {% if filters.health == 'ok' %}selected{% endif %}>OK</option>
+    <option value="stale" {% if filters.health == 'stale' %}selected{% endif %}>Inactif</option>
+    <option value="error" {% if filters.health == 'error' %}selected{% endif %}>En erreur</option>
+    <option value="never" {% if filters.health == 'never' %}selected{% endif %}>Jamais vu</option>
+  </select>
+</form>
+
+<!-- Device table -->
+<div id="device-table">
+  <table>
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Action</th>
+        <th>User-Agent</th>
+        <th>Etat</th>
+        <th>Derniere connexion</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in devices %}
+      <tr>
+        <td>{{ d.email }}</td>
+        <td>{{ d.platform_type }}</td>
+        <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          {{ d.user_agent or '-' }}
+        </td>
+        <td><span class="dm-health-{{ d.health }}">{{ d.health | upper }}</span></td>
+        <td>{{ timeago(d.last_contact) }}</td>
+        <td>
+          <a href="/admin/devices/{{ d.client_uuid }}" class="dm-btn dm-btn--sm dm-btn--ghost">Detail</a>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not devices %}
+      <tr><td colspan="6" style="text-align: center; color: #666;">Aucun appareil trouve.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  {% if page > 0 or devices | length >= 50 %}
+  <div class="dm-pagination">
+    {% if page > 0 %}
+    <a href="/admin/devices?page={{ page - 1 }}&owner={{ filters.owner or '' }}&platform={{ filters.platform or '' }}&health={{ filters.health or '' }}"
+       class="dm-btn dm-btn--sm dm-btn--secondary">&laquo; Precedent</a>
+    {% endif %}
+    <span>Page {{ page + 1 }}</span>
+    {% if devices | length >= 50 %}
+    <a href="/admin/devices?page={{ page + 1 }}&owner={{ filters.owner or '' }}&platform={{ filters.platform or '' }}&health={{ filters.health or '' }}"
+       class="dm-btn dm-btn--sm dm-btn--secondary">Suivant &raquo;</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -9,6 +9,9 @@ data:
       listen 8080;
       server_name _;
 
+      # Resolve external hostnames via cluster DNS (10.32.0.10 = kube-dns ClusterIP)
+      resolver 10.32.0.10 valid=30s ipv6=off;
+
       proxy_ssl_server_name on;
       proxy_http_version 1.1;
 

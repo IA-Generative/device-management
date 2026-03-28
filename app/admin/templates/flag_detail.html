@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Flag {{ flag.name }}{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb">
+  <a href="/admin/flags">Feature flags</a> &rsaquo; {{ flag.name }}
+</div>
+{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">{{ flag.name }}</h1>
+<p style="color: #666;">{{ flag.description or 'Aucune description' }}</p>
+
+<!-- Default value -->
+<h2 style="font-size: 1.125rem; margin-top: 1.5rem;">Valeur globale</h2>
+<form hx-post="/admin/flags/{{ flag.id }}/default" hx-swap="none"
+      style="display: flex; gap: 0.5rem; align-items: center;">
+  <select name="value" class="dm-select">
+    <option value="true" {% if flag.default_value %}selected{% endif %}>Active pour tous</option>
+    <option value="false" {% if not flag.default_value %}selected{% endif %}>Desactive par defaut</option>
+  </select>
+  <button type="submit" class="dm-btn dm-btn--primary dm-btn--sm">Enregistrer</button>
+</form>
+
+<!-- Overrides -->
+<h2 style="font-size: 1.125rem; margin-top: 2rem;">Overrides par cohorte</h2>
+{% if overrides %}
+<table>
+  <thead>
+    <tr><th>Cohorte</th><th>Valeur</th><th>Version min</th><th>Actions</th></tr>
+  </thead>
+  <tbody>
+    {% for o in overrides %}
+    <tr>
+      <td><a href="/admin/cohorts/{{ o.cohort_id }}">{{ o.cohort_name }}</a></td>
+      <td>
+        {% if o.value %}
+        <span class="dm-badge dm-badge--success">ON</span>
+        {% else %}
+        <span class="dm-badge dm-badge--error">OFF</span>
+        {% endif %}
+      </td>
+      <td>{{ o.min_plugin_version or '-' }}</td>
+      <td>
+        <form hx-delete="/admin/flags/{{ flag.id }}/overrides/{{ o.cohort_id }}"
+              hx-confirm="Supprimer cet override ?" style="display:inline;">
+          <button type="submit" class="dm-btn dm-btn--sm dm-btn--danger">Supprimer</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color: #666;">Aucun override.</p>
+{% endif %}
+
+<!-- Add override -->
+<details style="margin-top: 1rem; border: 1px solid #e5e5e5; border-radius: 4px; padding: 1rem;">
+  <summary style="cursor: pointer; font-weight: 600;">+ Ajouter un override</summary>
+  <form hx-post="/admin/flags/{{ flag.id }}/overrides" hx-swap="none"
+        style="margin-top: 0.5rem;">
+    <div class="dm-grid-3">
+      <div class="dm-form-row">
+        <label class="dm-label">Cohorte</label>
+        <select name="cohort_id" class="dm-select" style="width: 100%;" required>
+          <option value="">Selectionner...</option>
+          {% for c in cohorts %}
+          <option value="{{ c.id }}">{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Valeur</label>
+        <select name="value" class="dm-select" style="width: 100%;">
+          <option value="true">Active (ON)</option>
+          <option value="false">Desactive (OFF)</option>
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Version min plugin</label>
+        <input class="dm-input" name="min_plugin_version" placeholder="ex: 2.0.0">
+      </div>
+    </div>
+    <button type="submit" class="dm-btn dm-btn--primary dm-btn--sm">Ajouter</button>
+  </form>
+</details>
+{% endblock %}

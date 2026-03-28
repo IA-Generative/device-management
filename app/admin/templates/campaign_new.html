@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Nouvelle campagne{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb">
+  <a href="/admin/campaigns">Campagnes</a> &rsaquo; Nouvelle
+</div>
+{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Nouvelle campagne</h1>
+
+<form method="POST" action="/admin/campaigns">
+  <!-- Step 1: Artifact -->
+  <fieldset style="border: 1px solid #e5e5e5; border-radius: 4px; padding: 1.5rem; margin-bottom: 1.5rem;">
+    <legend style="font-weight: 600; padding: 0 0.5rem;">Etape 1 — Artifact</legend>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Artifact cible</label>
+        <select name="artifact_id" class="dm-select" style="width: 100%;">
+          <option value="">Aucun</option>
+          {% for a in artifacts %}
+          {% if a.is_active %}
+          <option value="{{ a.id }}">{{ a.device_type }} / {{ a.version }}</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Artifact de rollback</label>
+        <select name="rollback_artifact_id" class="dm-select" style="width: 100%;">
+          <option value="">Aucun</option>
+          {% for a in artifacts %}
+          <option value="{{ a.id }}">{{ a.device_type }} / {{ a.version }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </fieldset>
+
+  <!-- Step 2: Cohort -->
+  <fieldset style="border: 1px solid #e5e5e5; border-radius: 4px; padding: 1.5rem; margin-bottom: 1.5rem;">
+    <legend style="font-weight: 600; padding: 0 0.5rem;">Etape 2 — Cohorte</legend>
+    <div class="dm-form-row">
+      <label class="dm-label">Cohorte existante</label>
+      <select name="target_cohort_id" class="dm-select" style="width: 100%;">
+        <option value="">Selectionner...</option>
+        {% for c in cohorts %}
+        <option value="{{ c.id }}">{{ c.name }} ({{ c.type }}, {{ c.member_count }} membres)</option>
+        {% endfor %}
+      </select>
+    </div>
+  </fieldset>
+
+  <!-- Step 3: Parameters -->
+  <fieldset style="border: 1px solid #e5e5e5; border-radius: 4px; padding: 1.5rem; margin-bottom: 1.5rem;">
+    <legend style="font-weight: 600; padding: 0 0.5rem;">Etape 3 — Parametres</legend>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Nom</label>
+        <input class="dm-input" name="name" required placeholder="ex: Mirai 2.0.0 — canary 5%">
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Urgence</label>
+        <select name="urgency" class="dm-select" style="width: 100%;">
+          <option value="normal">Normal</option>
+          <option value="low">Basse</option>
+          <option value="critical">Critique</option>
+        </select>
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Description</label>
+      <textarea class="dm-input" name="description" rows="2" placeholder="Description optionnelle"></textarea>
+    </div>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Deadline (optionnelle)</label>
+        <input class="dm-input" name="deadline_at" type="datetime-local">
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Statut initial</label>
+        <select name="start_status" class="dm-select" style="width: 100%;">
+          <option value="draft">Brouillon (activer manuellement)</option>
+          <option value="active">Actif (immediatement)</option>
+        </select>
+      </div>
+    </div>
+  </fieldset>
+
+  <div class="dm-form-actions">
+    <a href="/admin/campaigns" class="dm-btn dm-btn--secondary">&larr; Annuler</a>
+    <button type="submit" class="dm-btn dm-btn--primary">Creer la campagne</button>
+  </div>
+</form>
+{% endblock %}

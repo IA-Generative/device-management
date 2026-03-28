@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Feature flags{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Feature flags</h1>
+
+<!-- Create flag form -->
+<details style="margin-bottom: 1.5rem; border: 1px solid #e5e5e5; border-radius: 4px; padding: 1rem;">
+  <summary style="cursor: pointer; font-weight: 600;">+ Creer un feature flag</summary>
+  <form hx-post="/admin/flags" hx-target="#flag-list" hx-swap="outerHTML"
+        style="margin-top: 1rem;">
+    <div class="dm-grid-3">
+      <div class="dm-form-row">
+        <label class="dm-label" for="name">Nom (snake_case)</label>
+        <input class="dm-input" id="name" name="name" required pattern="[\w_]+"
+               placeholder="ex: writer_assistant">
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label" for="default_value">Valeur par defaut</label>
+        <select class="dm-select" id="default_value" name="default_value" style="width: 100%;">
+          <option value="true">Active (true)</option>
+          <option value="false">Desactive (false)</option>
+        </select>
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label" for="description">Description</label>
+      <input class="dm-input" id="description" name="description" placeholder="Description optionnelle">
+    </div>
+    <div class="dm-form-actions">
+      <button type="submit" class="dm-btn dm-btn--primary">Creer</button>
+    </div>
+  </form>
+</details>
+
+<!-- Flag list -->
+<div id="flag-list">
+  <table>
+    <thead>
+      <tr>
+        <th>Nom</th>
+        <th>Valeur defaut</th>
+        <th>Overrides</th>
+        <th>Derniere modif</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in flags %}
+      <tr>
+        <td><a href="/admin/flags/{{ f.id }}">{{ f.name }}</a></td>
+        <td>
+          {% if f.default_value %}
+          <span class="dm-badge dm-badge--success">ON</span>
+          {% else %}
+          <span class="dm-badge dm-badge--error">OFF</span>
+          {% endif %}
+        </td>
+        <td>{{ f.override_count }}</td>
+        <td>{{ f.updated_at.strftime('%d/%m/%Y') if f.updated_at else '-' }}</td>
+        <td>
+          <a href="/admin/flags/{{ f.id }}" class="dm-btn dm-btn--sm dm-btn--ghost">Detail</a>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not flags %}
+      <tr><td colspan="5" style="text-align: center; color: #666;">Aucun feature flag.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

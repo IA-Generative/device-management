@@ -48,14 +48,17 @@ spec:
             httpGet:
               path: /healthz
               port: 8080
-            initialDelaySeconds: 3
-            periodSeconds: 5
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /healthz
               port: 8080
-            initialDelaySeconds: 10
+            initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
       volumes:
         - name: nginx-template
           configMap:

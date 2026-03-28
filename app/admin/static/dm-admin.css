@@ -1,0 +1,83 @@
+/* DM Admin — custom components beyond DSFR */
+
+/* Progress bar (campaign rollout) */
+.dm-progress-bar {
+  background-color: #e5e5e5;
+  border-radius: 4px;
+  height: 8px;
+  overflow: hidden;
+}
+.dm-progress-bar__fill {
+  height: 100%;
+  background-color: #000091;
+  transition: width 0.4s ease;
+}
+.dm-progress-bar__fill--error {
+  background-color: #CE0500;
+}
+
+/* Metric tile */
+.dm-metric-tile {
+  background: #F5F5FE;
+  border-left: 4px solid #000091;
+  padding: 1rem 1.5rem;
+  border-radius: 4px;
+}
+.dm-metric-tile--warning { border-left-color: #B34000; }
+.dm-metric-tile--error   { border-left-color: #CE0500; }
+.dm-metric-tile--success { border-left-color: #18753C; }
+
+/* Step indicator (campaign) */
+.dm-steps { display: flex; align-items: center; gap: 0; }
+.dm-step {
+  padding: 0.5rem 1.25rem;
+  background: #F6F6F6;
+  border: 1px solid #ddd;
+  font-size: 0.875rem;
+  color: #666666;
+}
+.dm-step--done   { background: #18753C; color: #fff; }
+.dm-step--active { background: #000091; color: #fff; font-weight: bold; }
+.dm-step--arrow::after { content: '\203A'; margin-left: 0.75rem; color: #929292; }
+
+/* Health badges */
+.dm-health-ok    { background: #18753C; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+.dm-health-stale { background: #B34000; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+.dm-health-error { background: #CE0500; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+.dm-health-never { background: #929292; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+
+/* Grid helpers */
+.dm-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+.dm-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+.dm-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+
+@media (max-width: 768px) {
+  .dm-grid-4, .dm-grid-3, .dm-grid-2 { grid-template-columns: 1fr; }
+}
+
+/* Status badges */
+.dm-badge { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+.dm-badge--success { background: #18753C; color: #fff; }
+.dm-badge--warning { background: #B34000; color: #fff; }
+.dm-badge--error   { background: #CE0500; color: #fff; }
+.dm-badge--info    { background: #0063CB; color: #fff; }
+.dm-badge--neutral { background: #929292; color: #fff; }
+
+/* Form spacing */
+.dm-form-row { margin-bottom: 1rem; }
+.dm-form-actions { margin-top: 1.5rem; display: flex; gap: 0.5rem; }
+
+/* Table improvements */
+.dm-table-compact td, .dm-table-compact th { padding: 0.5rem 0.75rem; font-size: 0.875rem; }
+
+/* Flash messages */
+.dm-flash { padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
+.dm-flash--success { background: #B8FEC9; color: #18753C; }
+.dm-flash--error   { background: #FCE4E4; color: #CE0500; }
+.dm-flash--warning { background: #FFF4E5; color: #B34000; }
+
+/* Clickable counters */
+.dm-counter { cursor: pointer; text-align: center; padding: 1rem; border-radius: 4px; transition: background 0.2s; }
+.dm-counter:hover { background: #e8e8e8; }
+.dm-counter__value { font-size: 1.75rem; font-weight: bold; display: block; }
+.dm-counter__label { font-size: 0.875rem; color: #666; }

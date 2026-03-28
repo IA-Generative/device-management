@@ -2,6 +2,7 @@ server {
   listen 8080;
   server_name _;
 
+  resolver 127.0.0.11 valid=10s;  # Docker embedded DNS (requis pour host.docker.internal)
   proxy_ssl_server_name on;
   proxy_http_version 1.1;
 

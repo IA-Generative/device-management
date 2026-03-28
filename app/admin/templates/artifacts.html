@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Artifacts{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Artifacts</h1>
+
+<!-- Upload form -->
+<details style="margin-bottom: 1.5rem; border: 1px solid #e5e5e5; border-radius: 4px; padding: 1rem;">
+  <summary style="cursor: pointer; font-weight: 600;">+ Uploader un artifact</summary>
+  <form hx-post="/admin/artifacts/upload" hx-encoding="multipart/form-data"
+        hx-target="#upload-result" hx-swap="innerHTML"
+        style="margin-top: 1rem;">
+    <div class="dm-grid-3">
+      <div class="dm-form-row">
+        <label class="dm-label">Plateforme</label>
+        <select name="device_type" class="dm-select" style="width: 100%;">
+          <option value="libreoffice">LibreOffice (.oxt)</option>
+          <option value="thunderbird">Thunderbird (.xpi)</option>
+          <option value="chrome">Chrome/Edge (.crx)</option>
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Variante</label>
+        <select name="platform_variant" class="dm-select" style="width: 100%;">
+          <option value="">Aucune</option>
+          <option value="tb60">tb60</option>
+          <option value="tb128">tb128</option>
+          <option value="mv2">mv2</option>
+          <option value="mv3">mv3</option>
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Version</label>
+        <input class="dm-input" name="version" required placeholder="2.0.0">
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">URL changelog (optionnel)</label>
+      <input class="dm-input" name="changelog_url" placeholder="https://...">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Fichier binaire</label>
+      <input type="file" name="binary" accept=".oxt,.xpi,.crx" required>
+    </div>
+    <div class="dm-form-actions">
+      <button type="submit" class="dm-btn dm-btn--primary">Uploader</button>
+    </div>
+    <div id="upload-result" style="margin-top: 0.5rem;"></div>
+  </form>
+</details>
+
+<!-- Artifact list -->
+<table>
+  <thead>
+    <tr>
+      <th>Plateforme</th>
+      <th>Variante</th>
+      <th>Version</th>
+      <th>Checksum</th>
+      <th>Actif</th>
+      <th>Campagnes</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for a in artifacts %}
+    <tr>
+      <td>{{ a.device_type }}</td>
+      <td>{{ a.platform_variant or '-' }}</td>
+      <td><code>{{ a.version }}</code></td>
+      <td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;">
+        <code title="{{ a.checksum }}">{{ a.checksum[:20] }}...</code>
+      </td>
+      <td>
+        {% if a.is_active %}
+        <span class="dm-badge dm-badge--success">Actif</span>
+        {% else %}
+        <span class="dm-badge dm-badge--neutral">Inactif</span>
+        {% endif %}
+      </td>
+      <td>{{ a.campaign_count }}</td>
+      <td>
+        {% if a.is_active %}
+        <form hx-post="/admin/artifacts/{{ a.id }}/toggle" style="display:inline;">
+          <input type="hidden" name="is_active" value="false">
+          <button type="submit" class="dm-btn dm-btn--sm dm-btn--warning">Desactiver</button>
+        </form>
+        {% else %}
+        <form hx-post="/admin/artifacts/{{ a.id }}/toggle" style="display:inline;">
+          <input type="hidden" name="is_active" value="true">
+          <button type="submit" class="dm-btn dm-btn--sm dm-btn--secondary">Activer</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not artifacts %}
+    <tr><td colspan="7" style="text-align: center; color: #666;">Aucun artifact.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{% endblock %}

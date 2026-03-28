@@ -1778,7 +1778,50 @@ templates = Jinja2Templates(directory="app/admin/templates")
 
 ---
 
-## 10. Références
+## 10. Retour d'experience (ajoute apres execution 2026-03-16)
+
+> Ces points ont ete decouverts lors de l'implementation reelle et doivent etre pris en compte.
+
+### 10.1 Pieges techniques
+
+1. **`from __future__ import annotations`** est **incompatible** avec FastAPI `UploadFile` / `File` / `Form` dans les parametres de route. Ne jamais l'utiliser dans `router.py`.
+
+2. **`TemplateResponse` API moderne** : l'API actuelle de Starlette est `TemplateResponse(request, name, context)` et non `TemplateResponse(name, {"request": request, ...})`. L'ancienne forme genere un `DeprecationWarning`.
+
+3. **Tailwind dans les exemples HTML** : la section 7 interdit Tailwind mais les exemples HTML des sections 3.x utilisent des classes Tailwind (`w-80`, `border`, `rounded`, `grid-cols-4`, `gap-4`). Remplacer par des classes CSS custom dans `dm-admin.css`.
+
+### 10.2 Mode dev (critique)
+
+Le prompt doit expliciter le **mode dev sans Keycloak** : quand `ADMIN_OIDC_ISSUER_URL` est vide et `ADMIN_SESSION_SECRET` vaut `changeme-dev-only`, creer automatiquement une session admin pour permettre le developpement local. C'est indispensable pour l'experience developpeur.
+
+### 10.3 Dependencies manquantes dans le prompt
+
+Ajouter aux dev dependencies :
+```
+playwright>=1.58.0
+pytest-playwright>=0.7.0
+```
+
+### 10.4 Structure services/ recommandee
+
+Le prompt section 7.4 recommande un dossier `services/` mais ne donne pas les noms de fichiers. Structure validee :
+```
+services/
+  audit.py     ← lecture audit log (filtres, pagination, count)
+  devices.py   ← liste, detail, health summary, connections, activity, flags
+  campaigns.py ← CRUD + lifecycle (activate/pause/resume/complete/rollback) + stats
+  flags.py     ← CRUD feature flags + overrides
+  cohorts.py   ← CRUD cohortes + add_members + estimate_device_count
+  artifacts.py ← CRUD + validate_upload + compute_checksum
+```
+
+### 10.5 HTMX + CSRF
+
+Pour le CSRF avec HTMX, configurer `hx-headers` globalement via `document.body.addEventListener('htmx:configRequest', ...)` plutot qu'un champ hidden par formulaire — plus fiable avec les requetes partielles HTMX.
+
+---
+
+## 11. References
 
 - Mode opératoire : `docs/mode-operatoire-campagnes.md`
 - Protocole plugin ↔ DM : `docs/plugin-dm-protocol-update-features.md`

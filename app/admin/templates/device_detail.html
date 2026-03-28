@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Appareil {{ device.client_uuid[:8] }}{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb">
+  <a href="/admin/devices">Appareils</a> &rsaquo; {{ device.email }}
+</div>
+{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">{{ device.email }}</h1>
+
+<!-- Tabs -->
+<div>
+  <div class="dm-tabs">
+    <ul class="dm-tabs__list">
+      <li><button class="dm-tabs__tab dm-tabs__tab--active" data-tab="tab-infos">Infos &amp; Sante</button></li>
+      <li><button class="dm-tabs__tab" data-tab="tab-campaigns">Campagnes</button></li>
+      <li><button class="dm-tabs__tab" data-tab="tab-flags">Feature flags</button></li>
+      <li><button class="dm-tabs__tab" data-tab="tab-history">Historique</button></li>
+      <li><button class="dm-tabs__tab" data-tab="tab-activity"
+                   hx-get="/admin/api/devices/{{ device.client_uuid }}/activity"
+                   hx-target="#tab-activity" hx-trigger="click once" hx-swap="innerHTML">Activite recente</button></li>
+    </ul>
+  </div>
+
+  <!-- Tab: Infos -->
+  <div id="tab-infos" class="dm-tabs__panel dm-tabs__panel--active">
+    <div class="dm-grid-2" style="margin-top: 1rem;">
+      <div>
+        <table class="dm-table-compact">
+          <tr><th style="width:40%;">UUID</th><td><code>{{ device.client_uuid }}</code></td></tr>
+          <tr><th>Email</th><td>{{ device.email }}</td></tr>
+          <tr><th>Nom</th><td>{{ device.device_name or '-' }}</td></tr>
+          <tr><th>Plateforme</th><td>{{ device.platform_type }}</td></tr>
+          <tr><th>Enrolement</th><td>{{ device.enrollment_status or 'Non enrole' }}</td></tr>
+          <tr><th>Derniere connexion</th><td>{{ timeago(device.last_contact) }}</td></tr>
+          <tr><th>IP</th><td><code>{{ device.source_ip or '-' }}</code></td></tr>
+          <tr><th>User-Agent</th><td style="font-size: 0.8rem;">{{ device.user_agent or '-' }}</td></tr>
+        </table>
+      </div>
+      <div>
+        <h3 style="font-size: 1rem;">Diagnostic</h3>
+        <ul style="list-style: none; padding: 0;">
+          {% if device.enrollment_status == 'ENROLLED' %}
+          <li>&#x2705; Plugin enrole</li>
+          {% else %}
+          <li>&#x274C; Plugin non enrole</li>
+          {% endif %}
+          {% if device.last_contact %}
+          <li>&#x2705; Derniere connexion {{ timeago(device.last_contact) }}</li>
+          {% else %}
+          <li>&#x26A0;&#xFE0F; Aucune connexion enregistree</li>
+          {% endif %}
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab: Campaigns -->
+  <div id="tab-campaigns" class="dm-tabs__panel">
+    {% if campaign_statuses %}
+    <table style="margin-top: 1rem;">
+      <thead>
+        <tr><th>Campagne</th><th>Statut campagne</th><th>Statut device</th><th>Version</th><th>Erreur</th></tr>
+      </thead>
+      <tbody>
+        {% for cs in campaign_statuses %}
+        <tr>
+          <td><a href="/admin/campaigns/{{ cs.campaign_id }}">{{ cs.campaign_name }}</a></td>
+          <td><span class="dm-badge dm-badge--{{ 'success' if cs.campaign_status == 'active' else 'info' if cs.campaign_status == 'draft' else 'warning' }}">{{ cs.campaign_status }}</span></td>
+          <td>{{ cs.device_status }}</td>
+          <td>{{ cs.version_before or '-' }} &rarr; {{ cs.version_after or '-' }}</td>
+          <td style="color: #CE0500;">{{ cs.error_message or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color: #666; margin-top: 1rem;">Aucune campagne pour cet appareil.</p>
+    {% endif %}
+  </div>
+
+  <!-- Tab: Feature flags -->
+  <div id="tab-flags" class="dm-tabs__panel">
+    {% if device_flags %}
+    <table style="margin-top: 1rem;">
+      <thead>
+        <tr><th>Flag</th><th>Valeur par defaut</th><th>Override</th><th>Cohorte</th></tr>
+      </thead>
+      <tbody>
+        {% for f in device_flags %}
+        <tr>
+          <td><a href="/admin/flags/{{ f.id }}">{{ f.name }}</a></td>
+          <td>{{ 'ON' if f.default_value else 'OFF' }}</td>
+          <td>{% if f.override_value is not none %}{{ 'ON' if f.override_value else 'OFF' }}{% else %}-{% endif %}</td>
+          <td>{{ f.cohort_name or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color: #666; margin-top: 1rem;">Aucun feature flag configure.</p>
+    {% endif %}
+  </div>
+
+  <!-- Tab: History -->
+  <div id="tab-history" class="dm-tabs__panel">
+    {% if connections %}
+    <table style="margin-top: 1rem;" class="dm-table-compact">
+      <thead>
+        <tr><th>Horodatage</th><th>IP</th><th>Action</th><th>User-Agent</th></tr>
+      </thead>
+      <tbody>
+        {% for c in connections %}
+        <tr>
+          <td>{{ c.created_at.strftime('%d/%m/%Y %H:%M') if c.created_at else '-' }}</td>
+          <td><code>{{ c.source_ip or '-' }}</code></td>
+          <td>{{ c.action }}</td>
+          <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+            {{ c.user_agent or '-' }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color: #666; margin-top: 1rem;">Aucune connexion enregistree.</p>
+    {% endif %}
+  </div>
+
+  <!-- Tab: Activity (lazy loaded via HTMX) -->
+  <div id="tab-activity" class="dm-tabs__panel">
+    <p style="color: #666; margin-top: 1rem;">Cliquez sur l'onglet pour charger...</p>
+  </div>
+</div>
+{% endblock %}
