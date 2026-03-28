@@ -29,6 +29,8 @@ from .services import (
     cohorts as cohorts_svc,
     artifacts as artifacts_svc,
     audit as audit_svc,
+    catalog as catalog_svc,
+    communications as comms_svc,
 )
 
 logger = logging.getLogger("dm-admin-router")
@@ -786,7 +788,7 @@ async def api_campaign_stats(request: Request, campaign_id: int):
 
 
 def _campaign_action(campaign_id: int, new_status: str, action_name: str,
-                     request: Request):
+                     request: Request, redirect_prefix: str = "campaigns"):
     """Helper for campaign lifecycle actions."""
     conn = get_db_connection()
     try:
@@ -798,7 +800,7 @@ def _campaign_action(campaign_id: int, new_status: str, action_name: str,
                       payload={"new_status": new_status},
                       ip=request.client.host if request.client else None)
             conn.commit()
-        return RedirectResponse(f"/admin/campaigns/{campaign_id}", status_code=303)
+        return RedirectResponse(f"/admin/{redirect_prefix}/{campaign_id}", status_code=303)
     except Exception as e:
         conn.rollback()
         raise HTTPException(400, str(e))
@@ -834,6 +836,834 @@ async def campaign_complete(request: Request, campaign_id: int):
 @require_admin
 async def campaign_rollback(request: Request, campaign_id: int):
     return _campaign_action(campaign_id, "rolled_back", "rollback", request)
+
+
+# ─── Deploy Wizard (Deploiement 1-2-3) ────────────────────────────────
+
+DEVICE_TYPES = [
+    {"id": "libreoffice", "label": "LibreOffice", "ext": ".oxt"},
+    {"id": "firefox", "label": "Firefox", "ext": ".xpi"},
+    {"id": "chrome", "label": "Chrome", "ext": ".crx"},
+    {"id": "edge", "label": "Edge", "ext": ".crx"},
+    {"id": "matisse", "label": "Thunderbird (Matisse)", "ext": ".xpi"},
+]
+
+
+@router.get("/deploy", response_class=HTMLResponse)
+@require_admin
+async def deploy_wizard(request: Request):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cohort_list = cohorts_svc.list_cohorts(cur)
+            artifact_list = artifacts_svc.list_artifacts(cur)
+        return templates.TemplateResponse("deploy_wizard.html", {
+            "request": request,
+            "device_types": DEVICE_TYPES,
+            "cohorts": cohort_list,
+            "artifacts": artifact_list,
+            "mode": "wizard",
+        })
+    finally:
+        conn.close()
+
+
+@router.post("/api/deploy/extract-version")
+@require_admin
+async def api_extract_version(request: Request, binary: UploadFile = File(...)):
+    """Extract version from plugin package (ZIP: .xpi, .oxt, .crx)."""
+    import zipfile
+    import io
+    import re
+
+    data = await binary.read()
+    version = None
+    filename = binary.filename or ""
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = zf.namelist()
+
+            # .xpi / .crx — manifest.json
+            if "manifest.json" in names:
+                manifest = json.loads(zf.read("manifest.json"))
+                version = manifest.get("version")
+
+            # .oxt — description.xml
+            if not version and "description.xml" in names:
+                desc = zf.read("description.xml").decode("utf-8", errors="replace")
+                m = re.search(r'value="(\d+\.\d+(?:\.\d+)*)"', desc)
+                if m:
+                    version = m.group(1)
+
+            # .oxt — META-INF/manifest.xml fallback (rare)
+            if not version and "META-INF/manifest.xml" in names:
+                meta = zf.read("META-INF/manifest.xml").decode("utf-8", errors="replace")
+                m = re.search(r'version="(\d+\.\d+(?:\.\d+)*)"', meta)
+                if m:
+                    version = m.group(1)
+    except zipfile.BadZipFile:
+        pass
+
+    # Fallback: extract from filename
+    if not version:
+        m = re.search(r'(\d+\.\d+(?:\.\d+)*)', filename)
+        if m:
+            version = m.group(1)
+
+    # Validate format
+    errors = []
+    warnings = []
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    allowed_ext = {"oxt", "xpi", "crx"}
+    file_size = len(data)
+    is_valid_zip = False
+
+    if ext not in allowed_ext:
+        errors.append(f"Extension .{ext} non supportee (attendu: .oxt, .xpi, .crx)")
+    if file_size == 0:
+        errors.append("Fichier vide")
+    elif file_size > 100 * 1024 * 1024:
+        errors.append(f"Fichier trop volumineux ({file_size // (1024*1024)} Mo > 100 Mo)")
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf_check:
+            is_valid_zip = True
+            names = zf_check.namelist()
+            if ext == "xpi" and "manifest.json" not in names:
+                warnings.append("manifest.json absent du XPI")
+            if ext == "oxt" and "META-INF/manifest.xml" not in names and "description.xml" not in names:
+                warnings.append("description.xml et META-INF/manifest.xml absents du OXT")
+    except zipfile.BadZipFile:
+        errors.append("Le fichier n'est pas une archive ZIP valide")
+
+    if not version and not errors:
+        warnings.append("Version non detectee dans le package — saisie manuelle requise")
+
+    # Detect device type
+    device_type = None
+
+    if ext == "oxt":
+        device_type = "libreoffice"
+    elif ext in ("xpi", "crx"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf2:
+                if "manifest.json" in zf2.namelist():
+                    mf = json.loads(zf2.read("manifest.json"))
+                    bss = mf.get("browser_specific_settings", mf.get("applications", {}))
+                    if bss.get("thunderbird") or "messenger" in json.dumps(mf.get("permissions", [])).lower():
+                        device_type = "matisse"
+                    elif bss.get("gecko") or ext == "xpi":
+                        device_type = "firefox"
+                    elif mf.get("manifest_version") == 3:
+                        device_type = "chrome"
+                    else:
+                        device_type = "chrome" if ext == "crx" else "firefox"
+                else:
+                    device_type = "firefox" if ext == "xpi" else "chrome"
+        except zipfile.BadZipFile:
+            device_type = "firefox" if ext == "xpi" else "chrome"
+
+    return JSONResponse({
+        "version": version or "",
+        "source": "package" if version else "filename",
+        "device_type": device_type,
+        "valid": len(errors) == 0,
+        "is_valid_zip": is_valid_zip,
+        "file_size": file_size,
+        "extension": ext,
+        "errors": errors,
+        "warnings": warnings,
+    })
+
+
+@router.post("/deploy/create")
+@require_admin
+async def deploy_create(request: Request,
+                        device_type: str = Form(...),
+                        version: str = Form(...),
+                        target_mode: str = Form("all"),
+                        cohort_id: str = Form(""),
+                        percent: str = Form("10"),
+                        emails: str = Form(""),
+                        deploy_type: str = Form("progressive"),
+                        stage_hours: str = Form("24"),
+                        name: str = Form(""),
+                        rollback_artifact_id: str = Form(""),
+                        binary: UploadFile = File(...)):
+    # 1. Upload artifact
+    error = artifacts_svc.validate_upload(binary.filename or "", binary.size or 0)
+    if error:
+        raise HTTPException(400, error)
+
+    data = await binary.read()
+    if len(data) > artifacts_svc.MAX_UPLOAD_SIZE:
+        raise HTTPException(400, "Fichier trop volumineux (>100 Mo)")
+
+    checksum = artifacts_svc.compute_checksum(data)
+    binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+    os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
+    local_path = f"{binaries_dir}/{device_type}/{version}_{binary.filename}"
+    with open(local_path, "wb") as f:
+        f.write(data)
+
+    conn = get_db_connection()
+    try:
+        actor = getattr(request.state, "admin_session", {})
+        with conn.cursor() as cur:
+            artifact_id = artifacts_svc.create_artifact(
+                cur, device_type=device_type, platform_variant="",
+                version=version, s3_path=local_path, checksum=checksum,
+            )
+
+            # 2. Cohort
+            target_cohort_id = None
+            if target_mode == "existing" and cohort_id:
+                target_cohort_id = int(cohort_id)
+            elif target_mode == "percent":
+                pct = max(1, min(100, int(percent)))
+                cid = cohorts_svc.create_cohort(
+                    cur, name=f"auto-{device_type}-{version}-{pct}pct",
+                    description=f"Auto-created: {pct}% rollout", type="percentage",
+                )
+                target_cohort_id = cid
+            elif target_mode == "emails":
+                email_list = [e.strip() for e in emails.strip().splitlines() if e.strip()]
+                if email_list:
+                    cid = cohorts_svc.create_cohort(
+                        cur, name=f"auto-{device_type}-{version}-manual",
+                        description=f"Auto-created: {len(email_list)} emails",
+                        type="manual",
+                    )
+                    cohorts_svc.add_members(cur, cid, [("email", e) for e in email_list])
+                    target_cohort_id = cid
+
+            # 3. Campaign
+            rollout_config = None
+            urgency = "normal"
+            if deploy_type == "progressive":
+                hours = max(1, int(stage_hours))
+                rollout_config = {
+                    "stages": [
+                        {"percent": 5, "duration_hours": hours, "label": "Canary (5%)"},
+                        {"percent": 25, "duration_hours": hours, "label": "Early adopters (25%)"},
+                        {"percent": 50, "duration_hours": hours, "label": "Moitie (50%)"},
+                        {"percent": 100, "duration_hours": 0, "label": "Deploiement complet"},
+                    ]
+                }
+            else:
+                urgency = "critical"
+
+            campaign_name = name.strip() or f"MaJ {device_type} {version}"
+            campaign_id = campaigns_svc.create_campaign(
+                cur, name=campaign_name, type="plugin_update",
+                artifact_id=artifact_id,
+                rollback_artifact_id=int(rollback_artifact_id) if rollback_artifact_id else None,
+                target_cohort_id=target_cohort_id,
+                urgency=urgency, status="active",
+                rollout_config=rollout_config,
+                created_by=actor.get("email"),
+            )
+
+            audit_log(cur, actor=actor, action="deploy.create",
+                      resource_type="campaign", resource_id=str(campaign_id),
+                      payload={"name": campaign_name, "device_type": device_type,
+                               "version": version, "deploy_type": deploy_type},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/deploy/{campaign_id}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        logger.error("deploy create failed: %s", e)
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.get("/deploy/{campaign_id}", response_class=HTMLResponse)
+@require_admin
+async def deploy_tracking(request: Request, campaign_id: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            campaign = campaigns_svc.get_campaign(cur, campaign_id)
+            if not campaign:
+                raise HTTPException(404, "Deploiement non trouve")
+            stats = campaigns_svc.get_campaign_stats(cur, campaign_id)
+            events = campaigns_svc.get_campaign_events(cur, campaign_id, limit=10)
+        return templates.TemplateResponse("deploy_wizard.html", {
+            "request": request,
+            "mode": "tracking",
+            "campaign": campaign,
+            "stats": stats,
+            "events": events,
+        })
+    finally:
+        conn.close()
+
+
+@router.get("/api/deploy/{campaign_id}/progress")
+@require_admin
+async def api_deploy_progress(request: Request, campaign_id: int):
+    """JSON endpoint for real-time progress chart."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            campaign = campaigns_svc.get_campaign(cur, campaign_id)
+            if not campaign:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            stats = campaigns_svc.get_campaign_stats(cur, campaign_id)
+            events = campaigns_svc.get_campaign_events(cur, campaign_id, limit=10)
+
+        rollout_config = campaign.get("rollout_config")
+        if isinstance(rollout_config, str):
+            rollout_config = json.loads(rollout_config)
+        stages = (rollout_config or {}).get("stages", [])
+
+        created_at = campaign.get("created_at")
+        created_iso = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+
+        event_list = []
+        for e in events:
+            ts = e.get("updated_at")
+            event_list.append({
+                "email": e.get("email", ""),
+                "status": e.get("status", ""),
+                "version_before": e.get("version_before", ""),
+                "version_after": e.get("version_after", ""),
+                "updated_at": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+            })
+
+        return JSONResponse({
+            "campaign_id": campaign_id,
+            "status": campaign.get("status"),
+            "created_at": created_iso,
+            "stages": stages,
+            "stats": stats,
+            "events": event_list,
+        })
+    finally:
+        conn.close()
+
+
+@router.post("/deploy/{campaign_id}/pause")
+@require_admin
+async def deploy_pause(request: Request, campaign_id: int):
+    return _campaign_action(campaign_id, "paused", "pause", request, redirect_prefix="deploy")
+
+
+@router.post("/deploy/{campaign_id}/resume")
+@require_admin
+async def deploy_resume(request: Request, campaign_id: int):
+    return _campaign_action(campaign_id, "active", "resume", request, redirect_prefix="deploy")
+
+
+@router.post("/deploy/{campaign_id}/abort")
+@require_admin
+async def deploy_abort(request: Request, campaign_id: int):
+    return _campaign_action(campaign_id, "rolled_back", "rollback", request, redirect_prefix="deploy")
+
+
+@router.post("/deploy/{campaign_id}/complete")
+@require_admin
+async def deploy_complete(request: Request, campaign_id: int):
+    return _campaign_action(campaign_id, "completed", "complete", request, redirect_prefix="deploy")
+
+
+# ─── Catalog ─────────────────────────────────────────────────────────────
+
+PLUGIN_CATEGORIES = ["productivity", "security", "communication", "tools", "other"]
+
+
+@router.get("/api/catalog/check-slug")
+@require_admin
+async def api_check_slug(request: Request, slug: str = ""):
+    """Check if a slug is available and suggest alternatives if not."""
+    import re
+    slug = re.sub(r'[^a-z0-9]+', '-', slug.lower()).strip('-')
+    if not slug:
+        return JSONResponse({"available": False, "slug": "", "alternatives": []})
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM plugins WHERE slug = %s", (slug,))
+            taken = cur.fetchone()[0] > 0
+            alternatives = []
+            if taken:
+                for suffix in ["-2", "-v2", "-new", "-ext", "-pro"]:
+                    candidate = slug + suffix
+                    cur.execute("SELECT COUNT(*) FROM plugins WHERE slug = %s", (candidate,))
+                    if cur.fetchone()[0] == 0:
+                        alternatives.append(candidate)
+                        if len(alternatives) >= 3:
+                            break
+        return JSONResponse({"available": not taken, "slug": slug, "alternatives": alternatives})
+    finally:
+        conn.close()
+
+LLM_SUGGEST_PROMPT = """Tu es un assistant qui analyse un README ou le contenu d'un plugin pour pre-remplir une fiche de catalogue.
+
+A partir du texte fourni, extrais les informations suivantes au format JSON strict (pas de markdown, pas de commentaires) :
+{
+  "name": "Nom du plugin (court, lisible)",
+  "slug": "nom-en-kebab-case",
+  "intent": "Proposition de valeur en 1-2 phrases",
+  "description": "Description detaillee (2-5 phrases)",
+  "key_features": ["Tag court 1", "Tag court 2", ...],  // tags metier courts (2-3 mots max) ex: "Redaction IA", "Mode hors-ligne", "SSO Keycloak"
+  "category": "productivity|security|communication|tools|other",
+  "device_type": "libreoffice|firefox|chrome|edge|matisse",
+  "changelog": "Changelog extrait si present (format markdown), sinon vide"
+}
+
+Si tu ne trouves pas une info, mets une chaine vide ou une liste vide. Reponds uniquement avec le JSON."""
+
+
+@router.post("/api/catalog/suggest")
+@require_admin
+async def api_catalog_suggest(request: Request):
+    """Use LLM to suggest catalog fields from README and/or plugin content."""
+    import urllib.request as urlreq
+    import zipfile
+    import io
+
+    form = await request.form()
+    texts = []
+
+    # 1. README from file upload
+    readme_file = form.get("readme_file")
+    if readme_file and getattr(readme_file, "filename", None):
+        data = await readme_file.read()
+        texts.append(f"=== README ({readme_file.filename}) ===\n" + data.decode("utf-8", errors="replace")[:15000])
+
+    # 2. README from URL
+    readme_url = str(form.get("readme_url", "")).strip()
+    if readme_url:
+        try:
+            with urlreq.urlopen(readme_url, timeout=10) as r:
+                content = r.read().decode("utf-8", errors="replace")[:15000]
+            texts.append(f"=== README (URL) ===\n" + content)
+        except Exception as e:
+            texts.append(f"=== README URL error: {e} ===")
+
+    # 3. Plugin file — extract manifest/description from ZIP
+    has_readme = False
+    plugin_file = form.get("plugin_file")
+    if plugin_file and getattr(plugin_file, "filename", None):
+        pdata = await plugin_file.read()
+        extracted = []
+        interesting_files = {
+            "manifest.json", "description.xml", "package.json",
+            "readme.md", "readme.txt", "readme", "readme.rst",
+            "notice-utilisateur.md", "notice-utilisateur.txt",
+            "notice_utilisateur.md", "notice_utilisateur.txt",
+            "changelog.md", "changelog.txt", "changes.md", "history.md",
+        }
+        try:
+            with zipfile.ZipFile(io.BytesIO(pdata)) as zf:
+                for name in zf.namelist():
+                    basename = name.rsplit("/", 1)[-1].lower()
+                    if basename in interesting_files:
+                        content = zf.read(name).decode("utf-8", errors="replace")[:8000]
+                        extracted.append(f"--- {name} ---\n{content}")
+                        if basename.startswith(("readme", "notice")):
+                            has_readme = True
+        except zipfile.BadZipFile:
+            pass
+        if extracted:
+            texts.append(f"=== Plugin ({plugin_file.filename}) ===\n" + "\n\n".join(extracted))
+
+    if not texts:
+        return JSONResponse({"error": "Aucune source fournie"}, status_code=400)
+
+    combined = "\n\n".join(texts)[:20000]
+
+    # Call LLM (OpenAI-compatible)
+    import os
+    llm_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
+    llm_token = os.getenv("LLM_API_TOKEN", "")
+    llm_model = os.getenv("DEFAULT_MODEL_NAME", "gpt-oss-120b")
+
+    if not llm_url or not llm_token:
+        return JSONResponse({"error": "LLM non configure (LLM_BASE_URL / LLM_API_TOKEN)"}, status_code=503)
+
+    payload = json.dumps({
+        "model": llm_model,
+        "messages": [
+            {"role": "system", "content": LLM_SUGGEST_PROMPT},
+            {"role": "user", "content": combined},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 2000,
+    }).encode()
+
+    req = urlreq.Request(
+        f"{llm_url}/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {llm_token}",
+        },
+    )
+    try:
+        with urlreq.urlopen(req, timeout=30) as r:
+            result = json.loads(r.read())
+        content = result["choices"][0]["message"]["content"]
+        # Extract JSON from response (handle markdown code blocks)
+        if "```" in content:
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+        suggestion = json.loads(content.strip())
+        suggestion["_has_readme"] = has_readme
+        return JSONResponse(suggestion)
+    except Exception as e:
+        logger.error("LLM suggest failed: %s", e)
+        return JSONResponse({"error": f"Erreur LLM: {e}"}, status_code=502)
+
+
+@router.get("/catalog", response_class=HTMLResponse)
+@require_admin
+async def catalog_list(request: Request, status: str = "", device_type: str = "",
+                       category: str = ""):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            plugins = catalog_svc.list_plugins(
+                cur, status=status or None, device_type=device_type or None,
+                category=category or None,
+            )
+        return templates.TemplateResponse("catalog.html", {
+            "request": request, "plugins": plugins,
+            "categories": PLUGIN_CATEGORIES,
+            "filters": {"status": status, "device_type": device_type, "category": category},
+        })
+    finally:
+        conn.close()
+
+
+@router.get("/catalog/new", response_class=HTMLResponse)
+@require_admin
+async def catalog_new(request: Request):
+    return templates.TemplateResponse("catalog_plugin_new.html", {
+        "request": request,
+        "device_types": DEVICE_TYPES,
+        "categories": PLUGIN_CATEGORIES,
+    })
+
+
+@router.post("/catalog")
+@require_admin
+async def catalog_create(request: Request,
+                         slug: str = Form(...), name: str = Form(...),
+                         description: str = Form(""), intent: str = Form(""),
+                         key_features: str = Form(""),
+                         changelog: str = Form(""),
+                         device_type: str = Form("libreoffice"),
+                         category: str = Form("productivity"),
+                         icon_url: str = Form(""),
+                         homepage_url: str = Form(""),
+                         support_email: str = Form(""),
+                         publisher: str = Form("DNUM"),
+                         visibility: str = Form("public")):
+    features = [f.strip() for f in key_features.split(",") if f.strip()] if key_features else []
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            plugin_id = catalog_svc.create_plugin(
+                cur, slug=slug, name=name, description=description,
+                intent=intent, key_features=features, changelog=changelog,
+                device_type=device_type, category=category, icon_url=icon_url,
+                homepage_url=homepage_url, support_email=support_email,
+                publisher=publisher, visibility=visibility,
+            )
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="plugin.create",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"slug": slug, "name": name},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        logger.error("plugin create failed: %s", e)
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.get("/catalog/{plugin_id}", response_class=HTMLResponse)
+@require_admin
+async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "versions"):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            plugin = catalog_svc.get_plugin(cur, plugin_id)
+            if not plugin:
+                raise HTTPException(404, "Plugin non trouve")
+            versions = catalog_svc.list_versions(cur, plugin_id)
+            stats = catalog_svc.get_plugin_stats(cur, plugin_id)
+            installations = catalog_svc.list_installations(cur, plugin_id, limit=20)
+            artifact_list = artifacts_svc.list_artifacts(cur)
+        features = plugin.get("key_features") or []
+        if isinstance(features, str):
+            features = json.loads(features)
+        return templates.TemplateResponse("catalog_plugin.html", {
+            "request": request, "plugin": plugin, "versions": versions,
+            "stats": stats, "installations": installations,
+            "artifacts": artifact_list, "features": features,
+            "tab": tab, "timeago": timeago,
+        })
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/edit")
+@require_admin
+async def catalog_plugin_edit(request: Request, plugin_id: int,
+                              name: str = Form(...), description: str = Form(""),
+                              intent: str = Form(""), key_features: str = Form(""),
+                              changelog: str = Form(""),
+                              category: str = Form("productivity"),
+                              homepage_url: str = Form(""),
+                              support_email: str = Form(""),
+                              publisher: str = Form("DNUM"),
+                              visibility: str = Form("public")):
+    features = [f.strip() for f in key_features.split(",") if f.strip()] if key_features else []
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            catalog_svc.update_plugin(cur, plugin_id,
+                                      name=name, description=description, intent=intent,
+                                      key_features=features, changelog=changelog,
+                                      category=category, homepage_url=homepage_url,
+                                      support_email=support_email, publisher=publisher,
+                                      visibility=visibility)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="plugin.update",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"name": name},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/status")
+@require_admin
+async def catalog_plugin_status(request: Request, plugin_id: int,
+                                status: str = Form(...)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            catalog_svc.update_plugin(cur, plugin_id, status=status)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action=f"plugin.{status}",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"status": status},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/versions")
+@require_admin
+async def catalog_version_create(request: Request, plugin_id: int,
+                                 version: str = Form(...),
+                                 release_notes: str = Form(""),
+                                 artifact_id: str = Form(""),
+                                 download_url: str = Form(""),
+                                 distribution_mode: str = Form("managed"),
+                                 min_host_version: str = Form(""),
+                                 max_host_version: str = Form(""),
+                                 status: str = Form("draft")):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            vid = catalog_svc.create_version(
+                cur, plugin_id=plugin_id, version=version,
+                artifact_id=int(artifact_id) if artifact_id else None,
+                release_notes=release_notes, download_url=download_url,
+                distribution_mode=distribution_mode,
+                min_host_version=min_host_version,
+                max_host_version=max_host_version, status=status,
+            )
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="version.create",
+                      resource_type="plugin_version", resource_id=str(vid),
+                      payload={"plugin_id": plugin_id, "version": version, "status": status},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/versions/{version_id}/status")
+@require_admin
+async def catalog_version_status(request: Request, plugin_id: int,
+                                 version_id: int, status: str = Form(...)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            catalog_svc.update_version_status(cur, version_id, status)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action=f"version.{status}",
+                      resource_type="plugin_version", resource_id=str(version_id),
+                      payload={"plugin_id": plugin_id, "status": status},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+# ─── Communications ──────────────────────────────────────────────────
+
+@router.get("/communications", response_class=HTMLResponse)
+@require_admin
+async def communications_list(request: Request, type: str = "", status: str = ""):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            comm_list = comms_svc.list_communications(
+                cur, type=type or None, status=status or None,
+            )
+            plugin_list = catalog_svc.list_plugins(cur)
+        return templates.TemplateResponse("communications.html", {
+            "request": request, "communications": comm_list,
+            "plugins": plugin_list,
+            "filters": {"type": type, "status": status},
+        })
+    finally:
+        conn.close()
+
+
+@router.get("/communications/new", response_class=HTMLResponse)
+@require_admin
+async def communication_new(request: Request, type: str = "announcement"):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            plugin_list = catalog_svc.list_plugins(cur)
+            cohort_list = cohorts_svc.list_cohorts(cur)
+        return templates.TemplateResponse("communication_new.html", {
+            "request": request, "comm_type": type,
+            "plugins": plugin_list, "cohorts": cohort_list,
+        })
+    finally:
+        conn.close()
+
+
+@router.post("/communications")
+@require_admin
+async def communication_create(request: Request,
+                                type: str = Form(...),
+                                title: str = Form(...),
+                                body: str = Form(...),
+                                priority: str = Form("normal"),
+                                target_plugin_id: str = Form(""),
+                                target_cohort_id: str = Form(""),
+                                starts_at: str = Form(""),
+                                expires_at: str = Form(""),
+                                survey_question: str = Form(""),
+                                survey_choices: str = Form(""),
+                                survey_allow_multiple: str = Form(""),
+                                survey_allow_comment: str = Form(""),
+                                start_status: str = Form("draft")):
+    choices = [c.strip() for c in survey_choices.strip().splitlines() if c.strip()] if survey_choices else None
+    conn = get_db_connection()
+    try:
+        actor = getattr(request.state, "admin_session", {})
+        with conn.cursor() as cur:
+            comm_id = comms_svc.create_communication(
+                cur, type=type, title=title, body=body, priority=priority,
+                target_plugin_id=int(target_plugin_id) if target_plugin_id else None,
+                target_cohort_id=int(target_cohort_id) if target_cohort_id else None,
+                starts_at=starts_at or None, expires_at=expires_at or None,
+                survey_question=survey_question or None,
+                survey_choices=choices,
+                survey_allow_multiple=survey_allow_multiple == "on",
+                survey_allow_comment=survey_allow_comment == "on",
+                status=start_status,
+                created_by=actor.get("email"),
+            )
+            audit_log(cur, actor=actor, action="communication.create",
+                      resource_type="communication", resource_id=str(comm_id),
+                      payload={"type": type, "title": title},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/communications/{comm_id}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.get("/communications/{comm_id}", response_class=HTMLResponse)
+@require_admin
+async def communication_detail(request: Request, comm_id: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            comm = comms_svc.get_communication(cur, comm_id)
+            if not comm:
+                raise HTTPException(404, "Communication non trouvee")
+            stats = comms_svc.get_communication_stats(cur, comm_id)
+            survey_results = None
+            if comm.get("type") == "survey":
+                survey_results = comms_svc.get_survey_results(cur, comm_id)
+        return templates.TemplateResponse("communication_detail.html", {
+            "request": request, "comm": comm, "stats": stats,
+            "survey_results": survey_results,
+        })
+    finally:
+        conn.close()
+
+
+@router.post("/communications/{comm_id}/status")
+@require_admin
+async def communication_status(request: Request, comm_id: int,
+                                status: str = Form(...)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            comms_svc.update_communication_status(cur, comm_id, status)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action=f"communication.{status}",
+                      resource_type="communication", resource_id=str(comm_id),
+                      payload={"status": status},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/communications/{comm_id}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+# ─── Catalog Preview (static HTML) ────────────────────────────────────────
+
+@router.get("/catalog-preview", response_class=HTMLResponse)
+@require_admin
+async def catalog_preview(request: Request):
+    return templates.TemplateResponse("catalog_preview.html", {"request": request})
 
 
 # ─── Audit Log ────────────────────────────────────────────────────────────
