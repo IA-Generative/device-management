@@ -1,9 +1,38 @@
 # Prompt — Inclusion du dm-config.json dans le packaging plugin
 
-> Version : 1.0 — 2026-03-28
+> Version : 1.1 — 2026-03-28
 > Repos concernes : **AssistantMiraiLibreOffice**, **device-management**
 > Objectif : ajouter `dm-config.json` dans le package .oxt du plugin LibreOffice,
 > et adapter le DM pour l'extraire, le stocker en DB, et servir la config depuis la DB.
+
+---
+
+## Instructions pour le coding agent
+
+**Avant de commencer** : faire un commit de l'etat actuel dans chaque repo concerne
+pour pouvoir revenir en arriere si necessaire.
+
+```bash
+cd /Users/etiquet/Documents/GitHub/device-management
+git add -A && git commit -m "chore: checkpoint before dm-config packaging"
+
+cd /Users/etiquet/Documents/GitHub/AssistantMiraiLibreOffice
+git add -A && git commit -m "chore: checkpoint before dm-config packaging"
+```
+
+**A la fin** : faire un commit dans chaque repo avec un message clair decrivant
+les modifications. Deployer sur Docker local + Scaleway et executer les 5 tests
+de verification (Phase 5).
+
+```bash
+# Commit DM
+cd /Users/etiquet/Documents/GitHub/device-management
+git add -A && git commit -m "feat: serve config from plugins.config_template (dm-config.json)"
+
+# Commit plugin
+cd /Users/etiquet/Documents/GitHub/AssistantMiraiLibreOffice
+git add -A && git commit -m "feat: add dm-config.json to .oxt package"
+```
 
 ---
 
