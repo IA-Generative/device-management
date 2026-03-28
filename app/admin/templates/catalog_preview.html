@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="fr" data-fr-scheme="system">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Catalogue de plugins — Device Management</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.12.1/dist/dsfr.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.12.1/dist/utility/icons/icons.min.css">
+  <style>
+    .dm-hero { background: linear-gradient(135deg, #000091 0%, #1212ff 100%); color: #fff; padding: 3rem 0; }
+    .dm-hero h1 { color: #fff; margin-bottom: 0.5rem; }
+    .dm-hero p { color: rgba(255,255,255,0.85); }
+    .dm-stat-card { background: rgba(255,255,255,0.12); border-radius: 8px; padding: 1.25rem; text-align: center; }
+    .dm-stat-card strong { display: block; font-size: 1.75rem; margin-bottom: 0.25rem; }
+    .dm-stat-card span { font-size: 0.85rem; opacity: 0.85; }
+    .dm-plugin-icon { width: 64px; height: 64px; border-radius: 12px; background: #000091; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem; flex-shrink: 0; }
+    .dm-source-link { font-size: 0.8rem; color: #929292; display: inline-flex; align-items: center; gap: 0.3rem; text-decoration: none; }
+    .dm-source-link:hover { color: #000091; text-decoration: underline; }
+    .dm-section { padding: 3rem 0; }
+    .dm-section h2 { margin-bottom: 1.5rem; }
+    .dm-benefits { background: #f6f6f6; }
+  </style>
+</head>
+<body>
+
+<!-- ═══════ HEADER ═══════ -->
+<header role="banner" class="fr-header">
+  <div class="fr-header__body">
+    <div class="fr-container">
+      <div class="fr-header__body-row">
+        <div class="fr-header__brand fr-enlarge-link">
+          <div class="fr-header__brand-top">
+            <div class="fr-header__logo">
+              <p class="fr-logo">Republique<br>Francaise</p>
+            </div>
+          </div>
+          <div class="fr-header__service">
+            <a href="/catalog" title="Accueil catalogue">
+              <p class="fr-header__service-title">MIrAI — Catalogue de plugins</p>
+            </a>
+            <p class="fr-header__service-tagline">Extensions pour les outils bureautiques</p>
+          </div>
+        </div>
+        <div class="fr-header__tools">
+          <div class="fr-header__tools-links">
+            <ul class="fr-btns-group">
+              <li><a class="fr-btn fr-btn--sm" href="/catalog/api/docs">API Docs</a></li>
+              <li><a class="fr-btn fr-btn--sm fr-btn--secondary" href="/admin/">Administration</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ═══════ HERO ═══════ -->
+<div class="dm-hero">
+  <div class="fr-container">
+    <div class="fr-grid-row fr-grid-row--gutters fr-grid-row--middle">
+      <div class="fr-col-12 fr-col-md-7">
+        <h1 class="fr-display--sm" style="color:#fff;">Extensions pour vos outils bureautiques</h1>
+        <p class="fr-text--lead" style="color:rgba(255,255,255,0.85);">
+          Outils d'intelligence artificielle et de productivite pour les agents du Ministere de l'Interieur.
+        </p>
+      </div>
+      <div class="fr-col-12 fr-col-md-5">
+        <div class="fr-grid-row fr-grid-row--gutters">
+          <div class="fr-col-4">
+            <div class="dm-stat-card">
+              <strong>214</strong>
+              <span>agents equipes</span>
+            </div>
+          </div>
+          <div class="fr-col-4">
+            <div class="dm-stat-card">
+              <strong>2</strong>
+              <span>plugins actifs</span>
+            </div>
+          </div>
+          <div class="fr-col-4">
+            <div class="dm-stat-card">
+              <strong>Auto</strong>
+              <span>mises a jour</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ PLUGINS GRID ═══════ -->
+<div class="dm-section">
+  <div class="fr-container">
+    <h2>Nos extensions</h2>
+    <div class="fr-grid-row fr-grid-row--gutters">
+
+      <!-- Plugin 1: Mirai LibreOffice -->
+      <div class="fr-col-12 fr-col-md-6">
+        <div class="fr-card fr-enlarge-link" style="height:100%;">
+          <div class="fr-card__body">
+            <div class="fr-card__content">
+              <div style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:0.75rem;">
+                <div class="dm-plugin-icon">LO</div>
+                <div style="flex:1;">
+                  <h3 class="fr-card__title" style="margin:0;">
+                    <a href="/catalog/mirai-libreoffice">Assistant Mirai LibreOffice</a>
+                  </h3>
+                  <div style="margin-top:0.25rem;">
+                    <a href="https://github.com/IA-Generative/AssistantMiraiLibreOffice" target="_blank" class="dm-source-link">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                      Code source
+                    </a>
+                  </div>
+                </div>
+              </div>
+              <p class="fr-card__desc">
+                Augmentez votre productivite en integrant l'IA generative directement dans LibreOffice.
+              </p>
+              <div class="fr-card__start" style="margin-top:0.75rem;">
+                <p class="fr-badge fr-badge--success fr-badge--no-icon" style="margin-right:0.5rem;">Stable</p>
+                <span style="font-size:0.85rem;color:#666;">v2.1.0 — 1 245 installations</span>
+              </div>
+              <div class="fr-card__end" style="margin-top:0.75rem;">
+                <ul class="fr-tags-group">
+                  <li><p class="fr-tag">Redaction IA</p></li>
+                  <li><p class="fr-tag">Reformulation</p></li>
+                  <li><p class="fr-tag">Resume</p></li>
+                  <li><p class="fr-tag">Traduction</p></li>
+                  <li><p class="fr-tag">Mode hors-ligne</p></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Plugin 2: Matisse Thunderbird -->
+      <div class="fr-col-12 fr-col-md-6">
+        <div class="fr-card fr-enlarge-link" style="height:100%;">
+          <div class="fr-card__body">
+            <div class="fr-card__content">
+              <div style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:0.75rem;">
+                <div class="dm-plugin-icon" style="background:#B34000;">TB</div>
+                <div style="flex:1;">
+                  <h3 class="fr-card__title" style="margin:0;">
+                    <a href="/catalog/mirai-matisse">Matisse Thunderbird</a>
+                  </h3>
+                  <div style="margin-top:0.25rem;">
+                    <a href="https://github.com/IA-Generative/Matisse" target="_blank" class="dm-source-link">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                      Code source
+                    </a>
+                  </div>
+                </div>
+              </div>
+              <p class="fr-card__desc">
+                Gestion avancee des emails avec intelligence artificielle dans Thunderbird.
+              </p>
+              <div class="fr-card__start" style="margin-top:0.75rem;">
+                <p class="fr-badge fr-badge--warning fr-badge--no-icon" style="margin-right:0.5rem;">Beta</p>
+                <p class="fr-badge fr-badge--new fr-badge--no-icon" style="margin-right:0.5rem;">Acces restreint</p>
+                <span style="font-size:0.85rem;color:#666;">v1.3.0 — 892 installations</span>
+              </div>
+              <div class="fr-card__end" style="margin-top:0.75rem;">
+                <ul class="fr-tags-group">
+                  <li><p class="fr-tag">Email IA</p></li>
+                  <li><p class="fr-tag">Classement</p></li>
+                  <li><p class="fr-tag">Recherche</p></li>
+                  <li><p class="fr-tag">Templates</p></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ PROCHAINEMENT ═══════ -->
+<div class="dm-section" style="padding-top:0;">
+  <div class="fr-container">
+    <h2>Prochainement</h2>
+    <div class="fr-grid-row fr-grid-row--gutters">
+      <div class="fr-col-12 fr-col-md-4">
+        <div class="fr-card" style="opacity:0.7;">
+          <div class="fr-card__body">
+            <div class="fr-card__content">
+              <h3 class="fr-card__title">Extension Chrome MIrAI</h3>
+              <p class="fr-card__desc">Assistant IA pour le navigateur Chrome.</p>
+              <div class="fr-card__start" style="margin-top:0.5rem;">
+                <p class="fr-badge fr-badge--info fr-badge--no-icon">Prochainement</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="fr-col-12 fr-col-md-4">
+        <div class="fr-card" style="opacity:0.7;">
+          <div class="fr-card__body">
+            <div class="fr-card__content">
+              <h3 class="fr-card__title">Assistant MIrAI Edge</h3>
+              <p class="fr-card__desc">Integration IA pour Microsoft Edge.</p>
+              <div class="fr-card__start" style="margin-top:0.5rem;">
+                <p class="fr-badge fr-badge--info fr-badge--no-icon">Prochainement</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ BENEFICES ═══════ -->
+<div class="dm-section dm-benefits">
+  <div class="fr-container">
+    <h2>Pourquoi utiliser ces extensions ?</h2>
+    <div class="fr-grid-row fr-grid-row--gutters">
+      <div class="fr-col-12 fr-col-md-4">
+        <div class="fr-tile" style="height:100%;">
+          <div class="fr-tile__body">
+            <div class="fr-tile__content">
+              <h3 class="fr-tile__title">Outils adaptes</h3>
+              <p class="fr-tile__desc">Des extensions concues pour vos usages specifiques, directement integrees dans vos outils quotidiens.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="fr-col-12 fr-col-md-4">
+        <div class="fr-tile" style="height:100%;">
+          <div class="fr-tile__body">
+            <div class="fr-tile__content">
+              <h3 class="fr-tile__title">Gain de temps</h3>
+              <p class="fr-tile__desc">Gagnez du temps au quotidien grace a l'IA generative pour la redaction, la synthese et la traduction.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="fr-col-12 fr-col-md-4">
+        <div class="fr-tile" style="height:100%;">
+          <div class="fr-tile__body">
+            <div class="fr-tile__content">
+              <h3 class="fr-tile__title">Securite souveraine</h3>
+              <p class="fr-tile__desc">Vos donnees restent sur l'infrastructure souveraine. Aucune donnee n'est envoyee a l'exterieur.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ FOOTER ═══════ -->
+<footer class="fr-footer" role="contentinfo">
+  <div class="fr-container">
+    <div class="fr-footer__body">
+      <div class="fr-footer__brand fr-enlarge-link">
+        <p class="fr-logo">Republique<br>Francaise</p>
+      </div>
+      <div class="fr-footer__content">
+        <ul class="fr-footer__content-list">
+          <li><a href="https://info.gouv.fr" class="fr-footer__content-link">info.gouv.fr</a></li>
+          <li><a href="https://service-public.fr" class="fr-footer__content-link">service-public.fr</a></li>
+          <li><a href="https://legifrance.gouv.fr" class="fr-footer__content-link">legifrance.gouv.fr</a></li>
+          <li><a href="https://data.gouv.fr" class="fr-footer__content-link">data.gouv.fr</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="fr-footer__bottom">
+      <ul class="fr-footer__bottom-list">
+        <li><a class="fr-footer__bottom-link" href="#">Accessibilite : partiellement conforme</a></li>
+        <li><a class="fr-footer__bottom-link" href="#">Mentions legales</a></li>
+        <li><a class="fr-footer__bottom-link" href="#">Donnees personnelles</a></li>
+        <li><a class="fr-footer__bottom-link" href="/catalog/api/docs">API Documentation</a></li>
+      </ul>
+      <div class="fr-footer__bottom-copy">
+        <p>Sauf mention explicite, les contenus sont proposes sous
+        <a href="https://github.com/etalab/licence-ouverte/blob/master/LO.md">licence etalab-2.0</a></p>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.12.1/dist/dsfr.module.min.js"></script>
+</body>
+</html>

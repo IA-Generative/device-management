@@ -95,19 +95,22 @@ def get_campaign_events(cur, campaign_id: int, limit: int = 20) -> list[dict]:
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def create_campaign(cur, *, name: str, description: str, type: str,
+def create_campaign(cur, *, name: str, description: str = "", type: str = "plugin_update",
                     artifact_id: int = None, rollback_artifact_id: int = None,
                     target_cohort_id: int = None, urgency: str = "normal",
                     deadline_at: str = None, status: str = "draft",
+                    rollout_config: dict = None,
                     created_by: str = None) -> int:
     cur.execute("""
         INSERT INTO campaigns (name, description, type, artifact_id,
                               rollback_artifact_id, target_cohort_id,
-                              urgency, deadline_at, status, created_by)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              urgency, deadline_at, status, rollout_config, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """, (name, description, type, artifact_id, rollback_artifact_id,
-          target_cohort_id, urgency, deadline_at or None, status, created_by))
+          target_cohort_id, urgency, deadline_at or None, status,
+          json.dumps(rollout_config) if rollout_config else None,
+          created_by))
     return cur.fetchone()[0]
 
 

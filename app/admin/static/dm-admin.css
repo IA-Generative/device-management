@@ -81,3 +81,87 @@
 .dm-counter:hover { background: #e8e8e8; }
 .dm-counter__value { font-size: 1.75rem; font-weight: bold; display: block; }
 .dm-counter__label { font-size: 0.875rem; color: #666; }
+
+/* Deploy wizard — device cards */
+.dm-device-card {
+  display: block;
+  border: 2px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+.dm-device-card:hover { border-color: #000091; background: #F5F5FE; }
+.dm-device-card--selected { border-color: #000091; background: #F5F5FE; box-shadow: 0 0 0 2px rgba(0,0,145,0.2); }
+.dm-device-card__name { font-weight: 600; font-size: 1rem; margin-bottom: 0.25rem; }
+.dm-device-card__ext { font-size: 0.8rem; color: #666; }
+
+/* Catalog — plugin cards */
+.dm-plugin-card {
+  display: block;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 1rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  color: #161616;
+}
+.dm-plugin-card:hover { border-color: #000091; box-shadow: 0 2px 8px rgba(0,0,145,0.1); text-decoration: none; }
+.dm-plugin-card__header { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.5rem; }
+.dm-plugin-card__icon {
+  width: 40px; height: 40px; border-radius: 8px; background: #000091; color: #fff;
+  display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.8rem; flex-shrink: 0;
+}
+.dm-plugin-card__name { font-weight: 600; font-size: 0.95rem; }
+.dm-plugin-card__meta { font-size: 0.8rem; color: #666; }
+.dm-plugin-card__intent { font-size: 0.85rem; color: #3a3a3a; margin-bottom: 0.75rem; line-height: 1.4; }
+.dm-plugin-card__footer { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: #666; }
+
+/* Tags input */
+.dm-tags-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: text;
+  min-height: 38px;
+  align-items: center;
+}
+.dm-tags-container:focus-within { border-color: #000091; box-shadow: 0 0 0 2px rgba(0,0,145,0.15); }
+.dm-tags-input {
+  border: none;
+  outline: none;
+  font-size: 0.875rem;
+  padding: 0.15rem 0;
+  flex: 1;
+  min-width: 120px;
+  background: transparent;
+}
+.dm-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: #000091;
+  color: #fff;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+.dm-tag__remove {
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0.7;
+  margin-left: 0.15rem;
+}
+.dm-tag__remove:hover { opacity: 1; }
+
+/* Plugin detail — large icon */
+.dm-plugin-icon-lg {
+  width: 60px; height: 60px; border-radius: 12px; background: #000091; color: #fff;
+  display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.2rem; flex-shrink: 0;
+}
