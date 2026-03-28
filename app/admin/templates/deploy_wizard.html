@@ -249,7 +249,7 @@ document.getElementById('file-input').addEventListener('change', function() {
           checks.push('Version : ' + data.version + ' (depuis le nom de fichier)');
         }
         if (data.device_type) {
-          const typeLabels = {libreoffice:'LibreOffice', firefox:'Firefox', chrome:'Chrome', edge:'Edge', matisse:'Thunderbird (Matisse)'};
+          const typeLabels = {libreoffice:'LibreOffice', matisse:'Thunderbird (Matisse)'};
           checks.push('Type detecte : ' + (typeLabels[data.device_type] || data.device_type));
         }
         html += '<div class="dm-flash dm-flash--success" style="margin-bottom:0;">';

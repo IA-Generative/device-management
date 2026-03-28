@@ -50,7 +50,7 @@ class FlagOverrideCreate(BaseModel):
 
 
 class ArtifactUpload(BaseModel):
-    device_type: str = Field(..., pattern=r"^(libreoffice|thunderbird|chrome|edge|firefox)$")
+    device_type: str = Field(..., pattern=r"^(libreoffice|matisse)$")
     platform_variant: str = Field(default="")
     version: str = Field(..., min_length=1, max_length=50, pattern=r"^\d+\.\d+\.\d+")
     changelog_url: str = Field(default="")

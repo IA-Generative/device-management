@@ -842,9 +842,6 @@ async def campaign_rollback(request: Request, campaign_id: int):
 
 DEVICE_TYPES = [
     {"id": "libreoffice", "label": "LibreOffice", "ext": ".oxt"},
-    {"id": "firefox", "label": "Firefox", "ext": ".xpi"},
-    {"id": "chrome", "label": "Chrome", "ext": ".crx"},
-    {"id": "edge", "label": "Edge", "ext": ".crx"},
     {"id": "matisse", "label": "Thunderbird (Matisse)", "ext": ".xpi"},
 ]
 
