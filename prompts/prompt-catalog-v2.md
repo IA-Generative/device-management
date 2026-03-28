@@ -1,16 +1,37 @@
 # Prompt — Catalogue v2
 
-> Version : 2.1 — 2026-03-28
+> Version : 3.0 — 2026-03-28
 > Perimetre : device-management
 > Plugins : **mirai-libreoffice** (alias: libreoffice), **mirai-matisse** (alias: matisse)
 
 ---
 
-## Principe
+## Instructions pour le coding agent
 
-Le `device_name` est l'identifiant unique partage entre le plugin et le serveur.
-Le catalogue est une couche de gestion transparente : le plugin n'a pas besoin
-de savoir qu'il existe.
+**Avant de coder** : lis ce prompt en entier. Chaque section est autonome et numerotee.
+Implemente dans l'ordre de la section 12 (ordre d'implementation). Chaque etape doit
+etre testable independamment. Ne passe a l'etape suivante que si la precedente fonctionne.
+
+**Regles** :
+- Ne modifie pas le contrat d'interface avec les plugins (meme URLs, meme format JSON)
+- Les templates config sur disque (`config/libreoffice/`, `config/matisse/`) restent organises par `device_type`
+- Tout le SQL est dans un seul fichier `db/schema.sql` (pas de migrations incrementales)
+- Les services admin (DB) sont dans `app/admin/services/` — le router ne fait jamais de SQL directement
+- Les pages publiques utilisent le DSFR via CDN, les pages admin utilisent `dm-admin.css`
+- Le CSP doit autoriser `cdn.jsdelivr.net` (styles, scripts, fonts) pour les pages admin et publiques
+- Chaque endpoint LLM affiche un spinner, pre-remplit le champ, et laisse l'admin modifier — le LLM ne publie jamais directement
+
+**Fichiers cles a lire avant de commencer** :
+- `app/main.py` — API principale, `get_config()`, `_apply_overrides()`
+- `app/admin/router.py` — toutes les routes admin
+- `app/admin/templates/base.html` — layout admin (nav, header)
+- `app/admin/static/dm-admin.css` — styles admin
+- `db/schema.sql` — schema actuel
+- `config/libreoffice/config.dev.json` — exemple de template config
+
+---
+
+## Principe
 
 ```
 device_name  = slug = identifiant universel    ex: "mirai-libreoffice"
@@ -20,1185 +41,458 @@ alias        = retrocompatibilite              ex: "libreoffice" → "mirai-libr
 
 ---
 
-## 1. Pipeline de configuration (coeur du systeme)
+## 1. Pipeline de configuration
 
 Quand un plugin appelle `/config/{x}/config.json?profile=dev` :
 
 ```
-1. RESOLVE : x → (device_name, device_type, plugin_id, resolved_via)
-   ├─ slug exact "mirai-libreoffice" → match direct
-   ├─ alias "libreoffice" → lookup plugin_aliases → redirect + LOG
-   └─ inconnu → 400
-
-2. TEMPLATE : charge config/{device_type}/config.{profile}.json
-   ex: config/libreoffice/config.dev.json
-
-3. SUBSTITUTION : ${{VAR}} → valeurs env systeme
-
-4. OVERRIDES DM : telemetrie, relay, etc. (existant, inchange)
-
-5. OVERRIDES CATALOGUE : plugin_env_overrides WHERE plugin_id AND environment
-   → surcharge keycloakClientId, llm_base_urls, etc. par env
-
-6. KEYCLOAK CATALOGUE : plugin_keycloak_clients → injecte client_id + realm
-
-7. ACCESS CONTROL :
-   ├─ open → passe
-   ├─ keycloak_group → verifie le groupe dans le JWT
-   └─ waitlist → verifie plugin_waitlist.status = 'approved'
-   Si refuse → retourne config minimale avec access_denied=true
-
-8. INJECTION : force device_name + config_path dans la reponse
-   (meme si appel via alias, la reponse contient le vrai slug)
-
-9. SCRUB : secrets masques si pas de relay credentials
-
-10. ENRICHMENT : campaigns, features, communications (existant)
+ 1. RESOLVE      x → (device_name, device_type, plugin_id, resolved_via)
+                 slug exact → match | alias → lookup + LOG | inconnu → 400
+ 2. TEMPLATE     charge config/{device_type}/config.{profile}.json
+ 3. SUBSTITUTION ${{VAR}} → valeurs env systeme
+ 4. OVERRIDES DM telemetrie, relay, etc. (existant, inchange)
+ 5. OVERRIDES CATALOGUE  plugin_env_overrides WHERE plugin_id AND environment
+ 6. KEYCLOAK     plugin_keycloak_clients → injecte client_id + realm
+ 7. ACCESS CTRL  open | keycloak_group (JWT groups) | waitlist (approved)
+ 8. INJECTION    force device_name + config_path (meme si appel via alias)
+ 9. SCRUB        secrets masques si pas de relay credentials
+10. ENRICHMENT   campaigns, features, communications (existant)
 ```
 
-### Implementation (`_resolve_device`)
+### Fonctions a implementer dans `app/main.py`
 
 ```python
-def _resolve_device(device: str, cur) -> tuple[str | None, str | None, int | None, str]:
-    """Resolve slug/alias → (device_name, device_type, plugin_id, resolved_via)."""
-    # 1. Slug exact
-    cur.execute("""
-        SELECT slug, device_type, id FROM plugins
-        WHERE slug = %s AND status = 'active'
-    """, (device,))
+def _resolve_device(device: str, cur) -> tuple[str|None, str|None, int|None, str]:
+    """Resolve slug/alias → (device_name, device_type, plugin_id, resolved_via).
+    resolved_via: 'slug' | 'alias' | 'unknown'
+    """
+    cur.execute("SELECT slug, device_type, id FROM plugins WHERE slug=%s AND status='active'", (device,))
     row = cur.fetchone()
-    if row:
-        return row[0], row[1], row[2], "slug"
-
-    # 2. Alias
-    cur.execute("""
-        SELECT p.slug, p.device_type, p.id
-        FROM plugin_aliases a JOIN plugins p ON p.id = a.plugin_id
-        WHERE a.alias = %s AND p.status = 'active'
-    """, (device,))
+    if row: return row[0], row[1], row[2], "slug"
+    cur.execute("""SELECT p.slug, p.device_type, p.id FROM plugin_aliases a
+                   JOIN plugins p ON p.id=a.plugin_id WHERE a.alias=%s AND p.status='active'""", (device,))
     row = cur.fetchone()
-    if row:
-        return row[0], row[1], row[2], "alias"
-
+    if row: return row[0], row[1], row[2], "alias"
     return None, None, None, "unknown"
-```
 
-### Implementation (`_apply_catalog_overrides`)
+def _log_alias_access(cur, *, alias, slug, plugin_id, client_uuid="", source_ip=None):
+    cur.execute("INSERT INTO alias_access_log(alias,slug,plugin_id,client_uuid,source_ip) VALUES(%s,%s,%s,%s,%s::inet)",
+                (alias, slug, plugin_id, client_uuid or None, source_ip))
 
-```python
-def _apply_catalog_overrides(cfg: dict, *, plugin_id: int, profile: str, cur) -> dict:
-    """Applique les overrides catalogue + Keycloak pour un plugin et profil."""
+def _apply_catalog_overrides(cfg, *, plugin_id, profile, cur):
     config_obj = cfg.get("config")
-    if not isinstance(config_obj, dict):
-        return cfg
-
-    # Overrides env
-    cur.execute("""
-        SELECT key, value FROM plugin_env_overrides
-        WHERE plugin_id = %s AND environment = %s
-    """, (plugin_id, profile))
-    for key, value in cur.fetchall():
-        config_obj[key] = value
-
-    # Client Keycloak specifique
-    cur.execute("""
-        SELECT kc.client_id, kc.realm
-        FROM plugin_keycloak_clients pkc
-        JOIN keycloak_clients kc ON kc.id = pkc.keycloak_client_id
-        WHERE pkc.plugin_id = %s AND pkc.environment = %s LIMIT 1
-    """, (plugin_id, profile))
+    if not isinstance(config_obj, dict): return cfg
+    cur.execute("SELECT key,value FROM plugin_env_overrides WHERE plugin_id=%s AND environment=%s", (plugin_id, profile))
+    for key, value in cur.fetchall(): config_obj[key] = value
+    cur.execute("""SELECT kc.client_id, kc.realm FROM plugin_keycloak_clients pkc
+                   JOIN keycloak_clients kc ON kc.id=pkc.keycloak_client_id
+                   WHERE pkc.plugin_id=%s AND pkc.environment=%s LIMIT 1""", (plugin_id, profile))
     kc = cur.fetchone()
-    if kc:
-        config_obj["keycloakClientId"] = kc[0]
-        config_obj["keycloakRealm"] = kc[1]
-
+    if kc: config_obj["keycloakClientId"] = kc[0]; config_obj["keycloakRealm"] = kc[1]
     return cfg
 ```
 
-### Injection device_name (etape 8)
-
+Injection device_name (etape 8) — apres les overrides, avant le return :
 ```python
-config_obj = cfg.get("config")
 if isinstance(config_obj, dict) and device_name:
     config_obj["device_name"] = device_name
     config_obj["config_path"] = f"/config/{device_name}/config.json"
 ```
 
-### Migration douce des alias
-
-Un plugin appelant `/config/libreoffice/config.json` recoit :
-```json
-{ "config": { "device_name": "mirai-libreoffice", "config_path": "/config/mirai-libreoffice/config.json" } }
-```
-Au prochain cycle, il utilise le nouveau chemin. Zero action manuelle.
-
 ---
 
-## 2. Modele de donnees
+## 2. Schema DB (fresh start)
 
-### Migration 007 (unique)
+Remplacer `db/schema.sql` + supprimer `db/migrations/`. Un seul fichier contenant toutes les tables.
+
+<details>
+<summary>Schema SQL complet (cliquer pour derouler)</summary>
 
 ```sql
--- ─── ALTER plugins ──────────────────────────────────────────────
-
-ALTER TABLE plugins ADD COLUMN IF NOT EXISTS maturity VARCHAR(20) DEFAULT 'release'
-    CHECK (maturity IN ('dev', 'alpha', 'beta', 'pre-release', 'release'));
-ALTER TABLE plugins ADD COLUMN IF NOT EXISTS access_mode VARCHAR(20) DEFAULT 'open'
-    CHECK (access_mode IN ('open', 'waitlist', 'keycloak_group'));
-ALTER TABLE plugins ADD COLUMN IF NOT EXISTS required_group VARCHAR(200);
-ALTER TABLE plugins ADD COLUMN IF NOT EXISTS source_url TEXT;  -- lien vers le code source (GitHub, GitLab, etc.)
-
--- ─── Aliases ────────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS plugin_aliases (
-    alias VARCHAR(100) PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE
-);
-
--- ─── Alias access tracking ──────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS alias_access_log (
-    id BIGSERIAL PRIMARY KEY,
-    alias VARCHAR(100) NOT NULL,
-    slug VARCHAR(100) NOT NULL,
-    plugin_id INT NOT NULL,
-    client_uuid VARCHAR(255),
-    source_ip INET,
-    accessed_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_aal_alias ON alias_access_log(alias, accessed_at DESC);
-
--- ─── Env overrides ��────────────────────────────────────────���────
-
-CREATE TABLE IF NOT EXISTS plugin_env_overrides (
-    id SERIAL PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
-    environment VARCHAR(20) NOT NULL CHECK (environment IN ('dev', 'int', 'prod')),
-    key VARCHAR(200) NOT NULL,
-    value TEXT NOT NULL,
-    is_secret BOOLEAN DEFAULT false,
-    description TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (plugin_id, environment, key)
-);
-
--- ─── Keycloak clients ───────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS keycloak_clients (
-    id SERIAL PRIMARY KEY,
-    client_id VARCHAR(200) UNIQUE NOT NULL,
-    realm VARCHAR(100) NOT NULL,
-    description TEXT,
-    client_type VARCHAR(20) DEFAULT 'public' CHECK (client_type IN ('public', 'confidential')),
-    redirect_uris JSONB DEFAULT '[]'::jsonb,
-    web_origins JSONB DEFAULT '["*"]'::jsonb,
-    pkce_enabled BOOLEAN DEFAULT true,
-    direct_access_grants BOOLEAN DEFAULT false,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS plugin_keycloak_clients (
-    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
-    keycloak_client_id INT NOT NULL REFERENCES keycloak_clients(id) ON DELETE CASCADE,
-    environment VARCHAR(20) NOT NULL CHECK (environment IN ('dev', 'int', 'prod')),
-    PRIMARY KEY (plugin_id, keycloak_client_id, environment)
-);
-
--- ─── Waitlist ───────────────────────────────────────────────────
-
-CREATE TABLE IF NOT EXISTS plugin_waitlist (
-    id SERIAL PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
-    email VARCHAR(255) NOT NULL,
-    client_uuid VARCHAR(255),
-    reason TEXT,
-    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
-    reviewed_by VARCHAR(255),
-    reviewed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (plugin_id, email)
-);
-
--- ─── Seed ───────────────────────────────────────────────────────
-
-INSERT INTO plugins (slug, name, device_type, intent, category, maturity, access_mode, status)
-VALUES
-  ('mirai-libreoffice', 'Assistant Mirai LibreOffice', 'libreoffice',
-   'Assistant IA integre a LibreOffice pour la redaction', 'productivity', 'release', 'open', 'active'),
-  ('mirai-matisse', 'Matisse Thunderbird', 'matisse',
-   'Extension IA pour Thunderbird', 'communication', 'beta', 'keycloak_group', 'active')
-ON CONFLICT (slug) DO NOTHING;
-
-INSERT INTO plugin_aliases (alias, plugin_id) VALUES
-  ('libreoffice', (SELECT id FROM plugins WHERE slug = 'mirai-libreoffice')),
-  ('matisse', (SELECT id FROM plugins WHERE slug = 'mirai-matisse'))
-ON CONFLICT DO NOTHING;
-
--- Grants
-DO $$ BEGIN
-  PERFORM 1 FROM pg_roles WHERE rolname = 'dev';
-  IF FOUND THEN
-    GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO dev;
-    GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA public TO dev;
-  END IF;
-EXCEPTION WHEN insufficient_privilege THEN NULL;
-END $$;
-```
-
----
-
-## 3. Maturite et controle d'acces
-
-| Maturite | Badge DSFR | Description |
-|----------|------------|-------------|
-| `dev` | `fr-badge--neutral` gris | Developpement en cours, equipe dev uniquement |
-| `alpha` | `fr-badge--error` rouge | Interne, experimental |
-| `beta` | `fr-badge--warning` orange | Early adopters valides |
-| `pre-release` | `fr-badge--info` bleu | Validation finale |
-| `release` | `fr-badge--success` vert | Stable, tous |
-
-| Mode d'acces | Telechargement | Verification |
-|-------------|----------------|--------------|
-| `open` | Libre | Aucune |
-| `waitlist` | Apres validation admin | `plugin_waitlist.status = 'approved'` |
-| `keycloak_group` | Membres du groupe KC | JWT `groups` contient `required_group` |
-
----
-
-## 4. Interface admin (onglets fiche plugin)
-
-```
-[Versions] [Changelog] [Environnements] [Keycloak] [Acces] [Alias] [Installations] [Editer]
-```
-
-### Logo / Mascotte du plugin
-
-Chaque plugin peut avoir un logo (mascotte, icone produit) visible dans le catalogue
-et la fiche publique. Le logo remplace les initiales generiques (LO, TB).
-
-**Upload** : dans le formulaire "Nouveau plugin" et dans l'onglet "Editer" de la fiche :
-- Champ file input : `accept=".png,.jpg,.jpeg,.svg,.webp"`
-- Taille max : 2 Mo
-- Dimensions recommandees : 256x256 px (carre), redimensionne automatiquement si besoin
-- Stocke localement dans `/data/content/icons/{slug}.{ext}` (ou S3 si configure)
-- Le champ `icon_path` en base pointe vers le fichier
-
-**Serving** : route publique sans auth pour afficher le logo dans le catalogue :
-```
-GET /catalog/icons/{slug}.png  → sert le fichier depuis icon_path
-```
-
-**Affichage** : dans les cartes catalogue et la fiche plugin :
-```html
-{% if plugin.icon_path %}
-  <img src="/catalog/icons/{{ plugin.slug }}.png"
-       alt="{{ plugin.name }}"
-       style="width:64px;height:64px;border-radius:12px;object-fit:cover;">
-{% else %}
-  <div class="dm-plugin-icon">{{ plugin.device_type[:2]|upper }}</div>
-{% endif %}
-```
-
-Si pas de logo, fallback sur les initiales du device_type (comportement actuel).
-
-### Environnements
-
-Surcharges cle/valeur par profil (dev/int/prod). Dropdown des cles connues extrait du template config.
-Bouton "Previsualiser JSON" pour voir la config finale telle que le plugin la recevrait.
-
-### Keycloak
-
-Tableau clients par environnement. Boutons : associer existant, creer nouveau, telecharger JSON d'import.
-Client ID auto-genere : `bootstrap-{slug}` (+ `-dev`/`-int` pour les env non-prod).
-Quand un client est associe, les overrides `keycloakClientId` et `keycloakRealm` sont auto-crees.
-
-### Acces
-
-Selecteurs maturite + mode d'acces + groupe KC.
-Tableau liste d'attente avec validation/refus individuel ou en masse.
-
-### Alias (avec metriques de migration)
-
-Tableau : alias, appels 7j, devices uniques, tendance.
-Ratio slug/alias avec estimation du delai avant suppression possible (seuil < 1%).
-Purge auto des logs > 90 jours.
-
----
-
-## 5. Page publique catalogue (style mirai.interieur.gouv.fr)
-
-### Design
-
-DSFR via CDN (`@gouvfr/dsfr@1.12.1`). Header gouvernemental, footer avec liens officiels.
-
-- **Hero** : titre + 3 `fr-callout` stats (agents equipes, plugins actifs, MAJ automatiques)
-- **Grille** : `fr-card fr-card--horizontal` avec tags `fr-tag`, badge maturite, version, installs
-- **Prochainement** : plugins en `draft` avec `fr-badge--info`
-- **Benefices** : 3x `fr-tile` (outils adaptes, gain de temps, securite souveraine)
-
-### Fiche plugin (`/catalog/{slug}`)
-
-1. **En-tete** : icone, nom, version, badges maturite + acces, intent, tags features
-2. **Code source** : lien discret avec icone GitHub (si `homepage_url` defini), affiche en petit sous le nom
-3. **Statistiques** : 4 tuiles (installs, version, adoption, taille)
-3. **Mode d'emploi** : etapes numerotees specifiques au device_type + bouton telechargement
-4. **Nouveautes** : release notes de la derniere version
-5. **Changelog complet** : toutes les versions (expandable)
-6. **Feedback utilisateurs** : derniers commentaires positifs (depuis les sondages)
-7. **Liste d'attente** (si `access_mode = 'waitlist'`) : formulaire email + raison
-
-### Routes publiques
-
-| Route | Auth | Description |
-|-------|------|-------------|
-| `GET /catalog` | Non | Page d'accueil catalogue |
-| `GET /catalog/{slug}` | Non | Fiche plugin |
-| `GET /catalog/{slug}/download` | Selon access_mode | Telechargement derniere version |
-| `POST /catalog/{slug}/waitlist` | Non | Inscription liste d'attente |
-
----
-
-## 6. API JSON publique (integration mirai.interieur.gouv.fr)
-
-CORS ouvert, cache 5 min, zero auth.
-
-### Documentation Swagger/OpenAPI
-
-Exposer une page de documentation interactive a `/catalog/api/docs` :
-
-- Utiliser le **Swagger UI integre de FastAPI** (`/catalog/api/docs` pour Swagger, `/catalog/api/redoc` pour ReDoc)
-- Creer un sous-router FastAPI dedie avec `tags` et `description` pour une doc claire
-- Chaque endpoint documente avec `summary`, `description`, `response_model` (Pydantic)
-
-```python
-from fastapi import APIRouter
-from pydantic import BaseModel, Field
-
-catalog_api = APIRouter(prefix="/catalog/api", tags=["Catalogue public"])
-
-class PluginSummary(BaseModel):
-    slug: str = Field(..., example="mirai-libreoffice")
-    name: str = Field(..., example="Assistant Mirai LibreOffice")
-    intent: str = Field("", example="Augmentez votre productivite...")
-    device_type: str = Field(..., example="libreoffice")
-    maturity: str = Field("release", example="beta")
-    maturity_label: str = Field("Stable", example="Beta")
-    access_mode: str = Field("open", example="open")
-    latest_version: str | None = Field(None, example="2.1.0")
-    install_count: int = Field(0, example=1245)
-    key_features: list[str] = Field([], example=["Redaction IA", "Resume"])
-    icon_url: str | None = Field(None, example="https://bootstrap.fake-domain.name/catalog/icons/mirai-libreoffice.png")
-    detail_url: str = Field(..., example="https://bootstrap.fake-domain.name/catalog/mirai-libreoffice")
-    download_url: str = Field(..., example="https://bootstrap.fake-domain.name/catalog/mirai-libreoffice/download")
-
-class PluginDetail(PluginSummary):
-    description: str = Field("", example="Description detaillee du plugin...")
-    category: str = Field("productivity")
-    publisher: str = Field("DNUM")
-    homepage_url: str | None = None
-    source_url: str | None = Field(None, example="https://github.com/IA-Generative/AssistantMiraiLibreOffice")
-    support_email: str | None = None
-    changelog_summary: str = Field("", example="v2.1.0 : mode hors-ligne, fix telemetrie")
-    download_extension: str = Field("", example=".oxt")
-    download_size_bytes: int | None = None
-    install_guide_url: str | None = None
-
-class PluginListResponse(BaseModel):
-    plugins: list[PluginSummary]
-    total: int
-    generated_at: str
-
-@catalog_api.get("/plugins", response_model=PluginListResponse,
-                 summary="Liste des plugins",
-                 description="Retourne tous les plugins actifs et publics du catalogue.")
-def api_list_plugins(): ...
-
-@catalog_api.get("/plugins/{slug}", response_model=PluginDetail,
-                 summary="Detail d'un plugin",
-                 description="Retourne le detail complet d'un plugin par son slug (device_name).")
-def api_get_plugin(slug: str): ...
-```
-
-Monter le sous-router dans main.py :
-```python
-from app.catalog_api import catalog_api
-app.include_router(catalog_api)
-```
-
-Pages accessibles :
-- `/catalog/api/docs` — Swagger UI interactif (test des endpoints en live)
-- `/catalog/api/redoc` — Documentation ReDoc (lecture)
-- `/catalog/api/openapi.json` — Schema OpenAPI 3.x brut (pour generation de clients)
-
-### `GET /catalog/api/plugins`
-
-```json
-{
-  "plugins": [
-    {
-      "slug": "mirai-libreoffice",
-      "name": "Assistant Mirai LibreOffice",
-      "intent": "Augmentez votre productivite...",
-      "device_type": "libreoffice",
-      "maturity": "release", "maturity_label": "Stable",
-      "access_mode": "open",
-      "latest_version": "2.1.0",
-      "install_count": 1245,
-      "key_features": ["Redaction IA", "Reformulation", "Resume"],
-      "detail_url": "https://bootstrap.fake-domain.name/catalog/mirai-libreoffice",
-      "download_url": "https://bootstrap.fake-domain.name/catalog/mirai-libreoffice/download"
-    }
-  ],
-  "total": 2,
-  "generated_at": "2026-03-28T14:30:00Z"
-}
-```
-
-### `GET /catalog/api/plugins/{slug}`
-
-Idem + `description`, `changelog_summary`, `download_extension`, `download_size_bytes`,
-`homepage_url`, `support_email`, `install_guide_url`.
-
-### Integration cote mirai
-
-```html
-<div id="dm-plugins" class="fr-grid-row fr-grid-row--gutters"></div>
-<script>
-fetch('https://bootstrap.fake-domain.name/catalog/api/plugins')
-  .then(r => r.json())
-  .then(data => {
-    const c = document.getElementById('dm-plugins');
-    for (const p of data.plugins) {
-      const badge = {alpha:'error',beta:'warning','pre-release':'info',release:'success'}[p.maturity];
-      const tags = p.key_features.map(f => `<li><p class="fr-tag">${f}</p></li>`).join('');
-      c.innerHTML += `
-        <div class="fr-col-12 fr-col-md-6">
-          <div class="fr-card fr-enlarge-link">
-            <div class="fr-card__body"><div class="fr-card__content">
-              <h3 class="fr-card__title"><a href="${p.detail_url}">${p.name}</a></h3>
-              <p class="fr-card__desc">${p.intent}</p>
-              <div class="fr-card__start">
-                <p class="fr-badge fr-badge--${badge} fr-badge--no-icon">${p.maturity_label}</p>
-                <span style="margin-left:.5rem;font-size:.85rem;color:#666">
-                  v${p.latest_version||'—'} — ${p.install_count} installs
-                </span>
-              </div>
-              <div class="fr-card__end"><ul class="fr-tags-group">${tags}</ul></div>
-            </div></div>
-          </div>
-        </div>`;
-    }
-  });
-</script>
-```
-
----
-
-## 7. Assistance LLM (automatisation et simplification)
-
-Le systeme utilise un LLM (endpoint OpenAI-compatible, configurable via `LLM_BASE_URL`)
-pour assister l'administrateur a chaque etape du cycle de vie d'un plugin.
-
-### Fonctionnalites existantes
-
-| Feature | Declencheur | Action LLM |
-|---------|-------------|------------|
-| Analyse de package | Upload fichier dans "Nouveau plugin" | Extrait manifest + README du ZIP, genere nom, slug, intent, description, features, categorie, changelog |
-| Detection type/version | Upload fichier dans deploy wizard | Identifie device_type et version depuis manifest.json/description.xml |
-
-### Nouvelles fonctionnalites a implementer
-
-#### A. Generation automatique des release notes
-
-Quand une nouvelle version est publiee, le LLM peut generer les release notes
-a partir du diff entre deux versions (changelog du package ou description des commits).
-
-```
-Declencheur : bouton "Generer les notes" dans le formulaire de creation de version
-Input : release_notes de la version precedente + contenu du nouveau package (manifest, readme, changelog)
-Output : markdown des nouveautes, corrections, breaking changes
-```
-
-#### B. Resume intelligent du changelog
-
-Le changelog complet peut etre long. Le LLM genere un resume court (2-3 lignes)
-pour l'affichage dans les cartes du catalogue et l'API JSON (`changelog_summary`).
-
-```
-Declencheur : automatique a la publication d'une version
-Input : release_notes completes
-Output : 2-3 phrases de resume pour changelog_summary
-```
-
-#### C. Suggestion de tags/fonctionnalites cles
-
-Quand l'admin edite la fiche plugin, un bouton "Suggerer des tags" analyse
-la description, l'intent et le changelog pour proposer des tags metier pertinents.
-
-```
-Declencheur : bouton dans l'onglet Editer
-Input : name, intent, description, changelog, tags existants
-Output : liste de tags courts (2-3 mots) a ajouter ou remplacer
-```
-
-#### D. Redaction des communications
-
-Quand l'admin cree une annonce, alerte ou changelog, le LLM pre-remplit le message
-a partir du contexte (nouvelle version, correctif, etc.).
-
-```
-Declencheur : bouton "Rediger avec l'IA" dans le formulaire communication
-Input : type (annonce/alerte/changelog), plugin concern, derniere version, release notes
-Output : titre + corps du message en francais, ton professionnel adapte au type
-```
-
-#### E. Analyse des feedbacks sondage
-
-Le LLM synthetise les commentaires libres des sondages pour degager les tendances
-sans que l'admin ait a lire chaque reponse.
-
-```
-Declencheur : bouton "Synthetiser" dans la page resultats du sondage
-Input : tous les commentaires libres du sondage
-Output : 3-5 themes principaux avec citations representatives
-```
-
-#### F. Validation intelligente de la waitlist
-
-Pour les plugins en acces restreint, le LLM peut aider a trier les demandes
-d'acces en analysant la raison fournie par l'utilisateur.
-
-```
-Declencheur : bouton "Analyser les demandes" dans l'onglet Acces
-Input : liste des demandes en attente (email, raison)
-Output : score de pertinence (haute/moyenne/faible) + suggestion accept/reject pour chaque demande
-```
-
-#### G. Description de la fiche publique pour le SEO
-
-Le LLM genere une meta-description optimisee pour la fiche publique
-du catalogue (balise `<meta name="description">`).
-
-```
-Declencheur : automatique a la publication du plugin
-Input : name, intent, key_features
-Output : meta description 150-160 caracteres
-```
-
-### Implementation technique
-
-Toutes les fonctionnalites LLM partagent le meme pattern :
-
-```python
-async def _llm_assist(system_prompt: str, user_content: str) -> str:
-    """Appel LLM generique. Retourne le texte genere ou "" en cas d'erreur."""
-    llm_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
-    llm_token = os.getenv("LLM_API_TOKEN", "")
-    model = os.getenv("DEFAULT_MODEL_NAME", "")
-    if not llm_url or not llm_token:
-        return ""
-
-    payload = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content[:20000]},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 2000,
-    }).encode()
-
-    req = urllib.request.Request(
-        f"{llm_url}/chat/completions", data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {llm_token}"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            result = json.loads(r.read())
-        return result["choices"][0]["message"]["content"].strip()
-    except Exception:
-        return ""
-```
-
-### Routes API admin
-
-| Route | Feature |
-|-------|---------|
-| `POST /admin/api/catalog/suggest` | A. Analyse package (existant) |
-| `POST /admin/api/catalog/{id}/suggest-tags` | C. Suggestion tags |
-| `POST /admin/api/catalog/{id}/versions/{vid}/generate-notes` | A. Release notes |
-| `POST /admin/api/communications/draft` | D. Redaction communication |
-| `POST /admin/api/communications/{id}/summarize` | E. Synthese feedbacks |
-| `POST /admin/api/catalog/{id}/waitlist/analyze` | F. Analyse waitlist |
-
-Chaque bouton LLM dans l'interface affiche un spinner pendant l'appel,
-pre-remplit le champ concerne, et laisse l'admin modifier avant de valider.
-Le LLM ne publie jamais directement — il propose, l'humain decide.
-
----
-
-## 8. Nettoyage (supprimer chrome/edge/firefox/misc)
-
-| Action | Fichiers |
-|--------|----------|
-| Supprimer | `config/chrome/`, `config/edge/`, `config/firefox/`, `config/misc/` (12 fichiers) |
-| ConfigMap k8s | Supprimer 4 entrees + 4 volume mounts |
-| `DEVICE_ALLOWLIST` | Supprimer (remplace par `_resolve_device()`) |
-| `DEVICE_TYPES` | 5 → 2 entrees (libreoffice, matisse) |
-| `schemas.py` | Pattern → `libreoffice\|matisse` |
-| Templates | Retirer references chrome/edge/firefox dans JS |
-| `config/libreoffice/*.json` | `config_path` → `/config/mirai-libreoffice/config.json` |
-| `config/matisse/*.json` | `config_path` → `/config/mirai-matisse/config.json` |
-
-Templates config sur disque : **inchanges** (organises par device_type).
-Manifests k8s : inchanges sauf suppression des 4 device types retires.
-
----
-
-## 8. Fresh start DB + fichiers a creer/modifier
-
-### Consolidation du schema
-
-Le schema actuel est le resultat de 6 migrations incrementales (schema.sql + 002 a 006).
-Comme la base n'est pas en production reelle, on consolide **tout** en un seul `schema.sql`
-propre et on supprime les migrations individuelles.
-
-**Strategie** :
-1. Ecrire un nouveau `db/schema.sql` complet et optimise (toutes les tables)
-2. Supprimer `db/migrations/` (plus de migrations incrementales)
-3. Sur Scaleway : `DROP SCHEMA public CASCADE; CREATE SCHEMA public;` puis re-appliquer
-4. Les donnees operationnelles existantes (47k device_connections, 37k provisioning, etc.)
-   seront recreees naturellement par les plugins qui se reconnecteront
-
-### Nouveau `db/schema.sql` (remplace schema.sql + toutes les migrations)
-
-```sql
--- Device Management — Schema complet (v2, fresh start)
--- Usage: psql -v ON_ERROR_STOP=1 -d bootstrap -f db/schema.sql
-
--- Extensions
+-- Device Management — Schema v2 (fresh start)
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS citext;
 
--- Dev role (local)
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'dev') THEN
-    CREATE ROLE dev LOGIN PASSWORD 'dev';
-  END IF;
-EXCEPTION WHEN insufficient_privilege THEN NULL;
-END $$;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='dev') THEN CREATE ROLE dev LOGIN PASSWORD 'dev'; END IF;
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
 
--- Trigger function
 CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$
-BEGIN NEW.updated_at = now(); RETURN NEW; END;
-$$ LANGUAGE plpgsql;
+BEGIN NEW.updated_at=now(); RETURN NEW; END; $$ LANGUAGE plpgsql;
 
--- ═══════════════════════════════════════════════════════════════
--- CORE : enrollment, connections, relay, queue
--- ═══════════════════════════════════════════════════════════════
-
+-- CORE
 CREATE TABLE IF NOT EXISTS provisioning (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    email CITEXT NOT NULL,
-    device_name TEXT NOT NULL,
-    client_uuid UUID NOT NULL,
-    status TEXT NOT NULL DEFAULT 'PENDING'
-        CHECK (status IN ('PENDING','ENROLLED','REVOKED','FAILED')),
-    encryption_key TEXT NOT NULL,
-    comments TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_provisioning_active
-    ON provisioning (client_uuid) WHERE status IN ('PENDING','ENROLLED');
-CREATE INDEX IF NOT EXISTS idx_provisioning_email ON provisioning(email);
-CREATE INDEX IF NOT EXISTS idx_provisioning_client ON provisioning(client_uuid);
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), email CITEXT NOT NULL, device_name TEXT NOT NULL,
+  client_uuid UUID NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING'
+    CHECK (status IN ('PENDING','ENROLLED','REVOKED','FAILED')),
+  encryption_key TEXT NOT NULL, comments TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_prov_active ON provisioning(client_uuid) WHERE status IN ('PENDING','ENROLLED');
 
 CREATE TABLE IF NOT EXISTS device_connections (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    email CITEXT NOT NULL,
-    client_uuid UUID NOT NULL,
-    action TEXT NOT NULL DEFAULT 'UNKNOWN',
-    encryption_key_fingerprint TEXT NOT NULL,
-    connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    source_ip INET,
-    user_agent TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_dc_client_at ON device_connections(client_uuid, connected_at DESC);
-CREATE INDEX IF NOT EXISTS idx_dc_email_at ON device_connections(email, connected_at DESC);
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  email CITEXT NOT NULL, client_uuid UUID NOT NULL, action TEXT NOT NULL DEFAULT 'UNKNOWN',
+  encryption_key_fingerprint TEXT NOT NULL, connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  source_ip INET, user_agent TEXT);
+CREATE INDEX IF NOT EXISTS idx_dc_client ON device_connections(client_uuid, connected_at DESC);
 
 CREATE TABLE IF NOT EXISTS relay_clients (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    client_uuid UUID NOT NULL,
-    email CITEXT NOT NULL,
-    relay_client_id TEXT NOT NULL,
-    relay_key_hash TEXT NOT NULL,
-    allowed_targets TEXT[] NOT NULL DEFAULT ARRAY['keycloak']::text[],
-    expires_at TIMESTAMPTZ,
-    revoked_at TIMESTAMPTZ,
-    comments TEXT
-);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_active_client
-    ON relay_clients(client_uuid) WHERE revoked_at IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_active_id
-    ON relay_clients(relay_client_id) WHERE revoked_at IS NULL;
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), client_uuid UUID NOT NULL, email CITEXT NOT NULL,
+  relay_client_id TEXT NOT NULL, relay_key_hash TEXT NOT NULL,
+  allowed_targets TEXT[] NOT NULL DEFAULT ARRAY['keycloak']::text[],
+  expires_at TIMESTAMPTZ, revoked_at TIMESTAMPTZ, comments TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_active ON relay_clients(client_uuid) WHERE revoked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS queue_jobs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    topic TEXT NOT NULL,
-    payload JSONB NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending','processing','done','dead')),
-    attempts INT NOT NULL DEFAULT 0,
-    max_attempts INT NOT NULL DEFAULT 8,
-    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    locked_at TIMESTAMPTZ,
-    lock_owner TEXT,
-    dedupe_key TEXT,
-    completed_at TIMESTAMPTZ,
-    last_error TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_qj_poll ON queue_jobs(status, next_attempt_at, created_at);
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), topic TEXT NOT NULL, payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','done','dead')),
+  attempts INT NOT NULL DEFAULT 0, max_attempts INT NOT NULL DEFAULT 8,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(), locked_at TIMESTAMPTZ, lock_owner TEXT,
+  dedupe_key TEXT, completed_at TIMESTAMPTZ, last_error TEXT);
+CREATE INDEX IF NOT EXISTS idx_qj_poll ON queue_jobs(status, next_attempt_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_qj_dedupe ON queue_jobs(topic, dedupe_key);
 
 CREATE TABLE IF NOT EXISTS queue_job_dead_letters (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    job_id UUID NOT NULL,
-    topic TEXT NOT NULL,
-    payload JSONB NOT NULL,
-    dedupe_key TEXT,
-    attempts INT NOT NULL,
-    max_attempts INT NOT NULL,
-    last_error TEXT
-);
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(), created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  job_id UUID NOT NULL, topic TEXT NOT NULL, payload JSONB NOT NULL, dedupe_key TEXT,
+  attempts INT NOT NULL, max_attempts INT NOT NULL, last_error TEXT);
 
--- ═══════════════════════════════════════════════════════════════
--- CATALOGUE : plugins, versions, aliases, env overrides
--- ═══════════════════════════════════════════════════════════════
-
+-- CATALOGUE
 CREATE TABLE IF NOT EXISTS plugins (
-    id SERIAL PRIMARY KEY,
-    slug VARCHAR(100) UNIQUE NOT NULL,
-    name VARCHAR(200) NOT NULL,
-    description TEXT,
-    intent TEXT,
-    key_features JSONB DEFAULT '[]'::jsonb,
-    changelog TEXT,
-    icon_url TEXT,
-    device_type VARCHAR(50) NOT NULL,
-    category VARCHAR(100) DEFAULT 'productivity',
-    homepage_url TEXT,
-    source_url TEXT,
-    icon_path TEXT,                       -- chemin local du logo (ex: /data/content/icons/mirai-libreoffice.png)
-    support_email TEXT,
-    publisher VARCHAR(200) DEFAULT 'DNUM',
-    visibility VARCHAR(20) DEFAULT 'public'
-        CHECK (visibility IN ('public','internal','hidden')),
-    status VARCHAR(20) DEFAULT 'active'
-        CHECK (status IN ('draft','active','deprecated','removed')),
-    maturity VARCHAR(20) DEFAULT 'release'
-        CHECK (maturity IN ('dev','alpha','beta','pre-release','release')),
-    access_mode VARCHAR(20) DEFAULT 'open'
-        CHECK (access_mode IN ('open','waitlist','keycloak_group')),
-    required_group VARCHAR(200),
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
+  id SERIAL PRIMARY KEY, slug VARCHAR(100) UNIQUE NOT NULL, name VARCHAR(200) NOT NULL,
+  description TEXT, intent TEXT, key_features JSONB DEFAULT '[]'::jsonb, changelog TEXT,
+  icon_url TEXT, icon_path TEXT, source_url TEXT, device_type VARCHAR(50) NOT NULL,
+  category VARCHAR(100) DEFAULT 'productivity', homepage_url TEXT, support_email TEXT,
+  publisher VARCHAR(200) DEFAULT 'DNUM',
+  visibility VARCHAR(20) DEFAULT 'public' CHECK (visibility IN ('public','internal','hidden')),
+  status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('draft','active','deprecated','removed')),
+  maturity VARCHAR(20) DEFAULT 'release' CHECK (maturity IN ('dev','alpha','beta','pre-release','release')),
+  access_mode VARCHAR(20) DEFAULT 'open' CHECK (access_mode IN ('open','waitlist','keycloak_group')),
+  required_group VARCHAR(200),
+  created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now());
 
 CREATE TABLE IF NOT EXISTS plugin_aliases (
-    alias VARCHAR(100) PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE
-);
+  alias VARCHAR(100) PRIMARY KEY, plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE);
 
 CREATE TABLE IF NOT EXISTS plugin_env_overrides (
-    id SERIAL PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
-    environment VARCHAR(20) NOT NULL CHECK (environment IN ('dev','int','prod')),
-    key VARCHAR(200) NOT NULL,
-    value TEXT NOT NULL,
-    is_secret BOOLEAN DEFAULT false,
-    description TEXT,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (plugin_id, environment, key)
-);
+  id SERIAL PRIMARY KEY, plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+  environment VARCHAR(20) NOT NULL CHECK (environment IN ('dev','int','prod')),
+  key VARCHAR(200) NOT NULL, value TEXT NOT NULL, is_secret BOOLEAN DEFAULT false, description TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (plugin_id, environment, key));
 
 CREATE TABLE IF NOT EXISTS plugin_waitlist (
-    id SERIAL PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
-    email VARCHAR(255) NOT NULL,
-    client_uuid VARCHAR(255),
-    reason TEXT,
-    status VARCHAR(20) DEFAULT 'pending'
-        CHECK (status IN ('pending','approved','rejected')),
-    reviewed_by VARCHAR(255),
-    reviewed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (plugin_id, email)
-);
+  id SERIAL PRIMARY KEY, plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+  email VARCHAR(255) NOT NULL, client_uuid VARCHAR(255), reason TEXT,
+  status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  reviewed_by VARCHAR(255), reviewed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (plugin_id, email));
 
 CREATE TABLE IF NOT EXISTS alias_access_log (
-    id BIGSERIAL PRIMARY KEY,
-    alias VARCHAR(100) NOT NULL,
-    slug VARCHAR(100) NOT NULL,
-    plugin_id INT NOT NULL,
-    client_uuid VARCHAR(255),
-    source_ip INET,
-    accessed_at TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_aal_alias ON alias_access_log(alias, accessed_at DESC);
+  id BIGSERIAL PRIMARY KEY, alias VARCHAR(100) NOT NULL, slug VARCHAR(100) NOT NULL,
+  plugin_id INT NOT NULL, client_uuid VARCHAR(255), source_ip INET,
+  accessed_at TIMESTAMPTZ DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_aal ON alias_access_log(alias, accessed_at DESC);
 
--- ═══════════════════════════════════════════════════════════════
--- ARTIFACTS, VERSIONS, DEPLOYEMENT
--- ═══════════════════════════════════════════════════════════════
-
+-- ARTIFACTS & VERSIONS
 CREATE TABLE IF NOT EXISTS artifacts (
-    id SERIAL PRIMARY KEY,
-    device_type VARCHAR(50) NOT NULL,
-    platform_variant VARCHAR(50),
-    version VARCHAR(50) NOT NULL,
-    s3_path TEXT,
-    checksum VARCHAR(128),
-    min_host_version VARCHAR(50),
-    max_host_version VARCHAR(50),
-    changelog_url TEXT,
-    is_active BOOLEAN DEFAULT true,
-    released_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (device_type, platform_variant, version)
-);
+  id SERIAL PRIMARY KEY, device_type VARCHAR(50) NOT NULL, platform_variant VARCHAR(50),
+  version VARCHAR(50) NOT NULL, s3_path TEXT, checksum VARCHAR(128),
+  min_host_version VARCHAR(50), max_host_version VARCHAR(50), changelog_url TEXT,
+  is_active BOOLEAN DEFAULT true, released_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (device_type, platform_variant, version));
 
 CREATE TABLE IF NOT EXISTS plugin_versions (
-    id SERIAL PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
-    artifact_id INT REFERENCES artifacts(id),
-    version VARCHAR(50) NOT NULL,
-    release_notes TEXT,
-    download_url TEXT,
-    min_host_version VARCHAR(50),
-    max_host_version VARCHAR(50),
-    status VARCHAR(20) DEFAULT 'draft'
-        CHECK (status IN ('draft','published','deprecated','yanked')),
-    distribution_mode VARCHAR(20) DEFAULT 'managed'
-        CHECK (distribution_mode IN ('managed','download_link','store','manual')),
-    published_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (plugin_id, version)
-);
+  id SERIAL PRIMARY KEY, plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+  artifact_id INT REFERENCES artifacts(id), version VARCHAR(50) NOT NULL, release_notes TEXT,
+  download_url TEXT, min_host_version VARCHAR(50), max_host_version VARCHAR(50),
+  status VARCHAR(20) DEFAULT 'draft' CHECK (status IN ('draft','published','deprecated','yanked')),
+  distribution_mode VARCHAR(20) DEFAULT 'managed' CHECK (distribution_mode IN ('managed','download_link','store','manual')),
+  published_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT now(), UNIQUE (plugin_id, version));
 
 CREATE TABLE IF NOT EXISTS plugin_installations (
-    id SERIAL PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id),
-    client_uuid VARCHAR(255) NOT NULL,
-    email VARCHAR(255),
-    installed_version VARCHAR(50),
-    installed_at TIMESTAMPTZ DEFAULT now(),
-    last_seen_at TIMESTAMPTZ DEFAULT now(),
-    status VARCHAR(20) DEFAULT 'active'
-        CHECK (status IN ('active','inactive','uninstalled')),
-    UNIQUE (plugin_id, client_uuid)
-);
+  id SERIAL PRIMARY KEY, plugin_id INT NOT NULL REFERENCES plugins(id),
+  client_uuid VARCHAR(255) NOT NULL, email VARCHAR(255), installed_version VARCHAR(50),
+  installed_at TIMESTAMPTZ DEFAULT now(), last_seen_at TIMESTAMPTZ DEFAULT now(),
+  status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active','inactive','uninstalled')),
+  UNIQUE (plugin_id, client_uuid));
 
--- ═══════════════════════════════════════════════════════════════
--- CAMPAGNES, COHORTES, FEATURE FLAGS
--- ═══════════════════════════════════════════════════════════════
-
+-- CAMPAGNES & COHORTES
 CREATE TABLE IF NOT EXISTS cohorts (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) UNIQUE NOT NULL,
-    description TEXT,
-    type VARCHAR(20) NOT NULL CHECK (type IN ('manual','percentage','email_pattern','keycloak_group')),
-    config JSONB,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
+  id SERIAL PRIMARY KEY, name VARCHAR(100) UNIQUE NOT NULL, description TEXT,
+  type VARCHAR(20) NOT NULL CHECK (type IN ('manual','percentage','email_pattern','keycloak_group')),
+  config JSONB, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now());
 
 CREATE TABLE IF NOT EXISTS cohort_members (
-    cohort_id INT NOT NULL REFERENCES cohorts(id) ON DELETE CASCADE,
-    identifier_type VARCHAR(20) NOT NULL CHECK (identifier_type IN ('email','client_uuid')),
-    identifier_value VARCHAR(255) NOT NULL,
-    added_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (cohort_id, identifier_type, identifier_value)
-);
+  cohort_id INT NOT NULL REFERENCES cohorts(id) ON DELETE CASCADE,
+  identifier_type VARCHAR(20) NOT NULL CHECK (identifier_type IN ('email','client_uuid')),
+  identifier_value VARCHAR(255) NOT NULL, added_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (cohort_id, identifier_type, identifier_value));
 
 CREATE TABLE IF NOT EXISTS campaigns (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    description TEXT,
-    type VARCHAR(30) DEFAULT 'plugin_update'
-        CHECK (type IN ('plugin_update','config_patch','feature_set')),
-    status VARCHAR(20) DEFAULT 'draft'
-        CHECK (status IN ('draft','active','paused','completed','rolled_back')),
-    target_cohort_id INT REFERENCES cohorts(id),
-    artifact_id INT REFERENCES artifacts(id),
-    rollback_artifact_id INT REFERENCES artifacts(id),
-    rollout_config JSONB,
-    urgency VARCHAR(10) DEFAULT 'normal' CHECK (urgency IN ('low','normal','critical')),
-    deadline_at TIMESTAMPTZ,
-    created_by VARCHAR(255),
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
+  id SERIAL PRIMARY KEY, name VARCHAR(200) NOT NULL, description TEXT,
+  type VARCHAR(30) DEFAULT 'plugin_update' CHECK (type IN ('plugin_update','config_patch','feature_set')),
+  status VARCHAR(20) DEFAULT 'draft' CHECK (status IN ('draft','active','paused','completed','rolled_back')),
+  target_cohort_id INT REFERENCES cohorts(id), artifact_id INT REFERENCES artifacts(id),
+  rollback_artifact_id INT REFERENCES artifacts(id), rollout_config JSONB,
+  urgency VARCHAR(10) DEFAULT 'normal' CHECK (urgency IN ('low','normal','critical')),
+  deadline_at TIMESTAMPTZ, created_by VARCHAR(255),
+  created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now());
 
 CREATE TABLE IF NOT EXISTS campaign_device_status (
-    campaign_id INT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
-    client_uuid VARCHAR(255) NOT NULL,
-    email VARCHAR(255),
-    status VARCHAR(20) DEFAULT 'pending'
-        CHECK (status IN ('pending','notified','updated','failed','rolled_back')),
-    version_before VARCHAR(50),
-    version_after VARCHAR(50),
-    error_message TEXT,
-    last_contact_at TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (campaign_id, client_uuid)
-);
-CREATE INDEX IF NOT EXISTS idx_cds_campaign ON campaign_device_status(campaign_id, status);
+  campaign_id INT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  client_uuid VARCHAR(255) NOT NULL, email VARCHAR(255),
+  status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending','notified','updated','failed','rolled_back')),
+  version_before VARCHAR(50), version_after VARCHAR(50), error_message TEXT,
+  last_contact_at TIMESTAMPTZ, updated_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (campaign_id, client_uuid));
 
 CREATE TABLE IF NOT EXISTS feature_flags (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) UNIQUE NOT NULL,
-    description TEXT,
-    default_value BOOLEAN DEFAULT true,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
+  id SERIAL PRIMARY KEY, name VARCHAR(100) UNIQUE NOT NULL, description TEXT,
+  default_value BOOLEAN DEFAULT true, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now());
 
 CREATE TABLE IF NOT EXISTS feature_flag_overrides (
-    feature_id INT NOT NULL REFERENCES feature_flags(id) ON DELETE CASCADE,
-    cohort_id INT NOT NULL REFERENCES cohorts(id) ON DELETE CASCADE,
-    value BOOLEAN NOT NULL,
-    min_plugin_version VARCHAR(50),
-    PRIMARY KEY (feature_id, cohort_id)
-);
+  feature_id INT NOT NULL REFERENCES feature_flags(id) ON DELETE CASCADE,
+  cohort_id INT NOT NULL REFERENCES cohorts(id) ON DELETE CASCADE,
+  value BOOLEAN NOT NULL, min_plugin_version VARCHAR(50), PRIMARY KEY (feature_id, cohort_id));
 
--- ═══════════════════════════════════════════════════════════════
--- COMMUNICATIONS, SONDAGES
--- ═══════════════════════════════════════════════════════════════
-
+-- COMMUNICATIONS
 CREATE TABLE IF NOT EXISTS communications (
-    id SERIAL PRIMARY KEY,
-    type VARCHAR(20) NOT NULL CHECK (type IN ('announcement','alert','survey','changelog')),
-    title VARCHAR(300) NOT NULL,
-    body TEXT NOT NULL,
-    priority VARCHAR(10) DEFAULT 'normal' CHECK (priority IN ('low','normal','high','critical')),
-    target_plugin_id INT REFERENCES plugins(id),
-    target_cohort_id INT REFERENCES cohorts(id),
-    min_plugin_version VARCHAR(50),
-    max_plugin_version VARCHAR(50),
-    starts_at TIMESTAMPTZ DEFAULT now(),
-    expires_at TIMESTAMPTZ,
-    survey_question TEXT,
-    survey_choices JSONB,
-    survey_allow_multiple BOOLEAN DEFAULT false,
-    survey_allow_comment BOOLEAN DEFAULT false,
-    status VARCHAR(20) DEFAULT 'draft'
-        CHECK (status IN ('draft','active','paused','completed','expired')),
-    created_by VARCHAR(255),
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
+  id SERIAL PRIMARY KEY,
+  type VARCHAR(20) NOT NULL CHECK (type IN ('announcement','alert','survey','changelog')),
+  title VARCHAR(300) NOT NULL, body TEXT NOT NULL,
+  priority VARCHAR(10) DEFAULT 'normal' CHECK (priority IN ('low','normal','high','critical')),
+  target_plugin_id INT REFERENCES plugins(id), target_cohort_id INT REFERENCES cohorts(id),
+  min_plugin_version VARCHAR(50), max_plugin_version VARCHAR(50),
+  starts_at TIMESTAMPTZ DEFAULT now(), expires_at TIMESTAMPTZ,
+  survey_question TEXT, survey_choices JSONB, survey_allow_multiple BOOLEAN DEFAULT false,
+  survey_allow_comment BOOLEAN DEFAULT false,
+  status VARCHAR(20) DEFAULT 'draft' CHECK (status IN ('draft','active','paused','completed','expired')),
+  created_by VARCHAR(255), created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now());
 
 CREATE TABLE IF NOT EXISTS survey_responses (
-    id SERIAL PRIMARY KEY,
-    communication_id INT NOT NULL REFERENCES communications(id) ON DELETE CASCADE,
-    client_uuid VARCHAR(255) NOT NULL,
-    email VARCHAR(255),
-    choices JSONB NOT NULL,
-    comment TEXT,
-    responded_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (communication_id, client_uuid)
-);
+  id SERIAL PRIMARY KEY, communication_id INT NOT NULL REFERENCES communications(id) ON DELETE CASCADE,
+  client_uuid VARCHAR(255) NOT NULL, email VARCHAR(255), choices JSONB NOT NULL, comment TEXT,
+  responded_at TIMESTAMPTZ DEFAULT now(), UNIQUE (communication_id, client_uuid));
 
 CREATE TABLE IF NOT EXISTS communication_acks (
-    communication_id INT NOT NULL REFERENCES communications(id) ON DELETE CASCADE,
-    client_uuid VARCHAR(255) NOT NULL,
-    acked_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (communication_id, client_uuid)
-);
+  communication_id INT NOT NULL REFERENCES communications(id) ON DELETE CASCADE,
+  client_uuid VARCHAR(255) NOT NULL, acked_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (communication_id, client_uuid));
 
--- ═══════════════════════════════════════════════════════════════
--- KEYCLOAK CLIENTS
--- ═══════════════════════════════════════════════════════════════
-
+-- KEYCLOAK
 CREATE TABLE IF NOT EXISTS keycloak_clients (
-    id SERIAL PRIMARY KEY,
-    client_id VARCHAR(200) UNIQUE NOT NULL,
-    realm VARCHAR(100) NOT NULL,
-    description TEXT,
-    client_type VARCHAR(20) DEFAULT 'public' CHECK (client_type IN ('public','confidential')),
-    redirect_uris JSONB DEFAULT '[]'::jsonb,
-    web_origins JSONB DEFAULT '["*"]'::jsonb,
-    pkce_enabled BOOLEAN DEFAULT true,
-    direct_access_grants BOOLEAN DEFAULT false,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
+  id SERIAL PRIMARY KEY, client_id VARCHAR(200) UNIQUE NOT NULL, realm VARCHAR(100) NOT NULL,
+  description TEXT, client_type VARCHAR(20) DEFAULT 'public' CHECK (client_type IN ('public','confidential')),
+  redirect_uris JSONB DEFAULT '[]'::jsonb, web_origins JSONB DEFAULT '["*"]'::jsonb,
+  pkce_enabled BOOLEAN DEFAULT true, direct_access_grants BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now());
 
 CREATE TABLE IF NOT EXISTS plugin_keycloak_clients (
-    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
-    keycloak_client_id INT NOT NULL REFERENCES keycloak_clients(id) ON DELETE CASCADE,
-    environment VARCHAR(20) NOT NULL CHECK (environment IN ('dev','int','prod')),
-    PRIMARY KEY (plugin_id, keycloak_client_id, environment)
-);
+  plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+  keycloak_client_id INT NOT NULL REFERENCES keycloak_clients(id) ON DELETE CASCADE,
+  environment VARCHAR(20) NOT NULL CHECK (environment IN ('dev','int','prod')),
+  PRIMARY KEY (plugin_id, keycloak_client_id, environment));
 
--- ═══════════════════════════════════════════════════════════════
--- TELEMETRIE (events extraits)
--- ═══════════════════════════════════════════════════════════════
-
+-- TELEMETRIE
 CREATE TABLE IF NOT EXISTS device_telemetry_events (
-    id BIGSERIAL PRIMARY KEY,
-    client_uuid VARCHAR(255),
-    email VARCHAR(255),
-    span_name VARCHAR(100),
-    span_ts TIMESTAMPTZ,
-    attributes JSONB,
-    plugin_version VARCHAR(50),
-    source_ip INET,
-    created_at TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_dte_client ON device_telemetry_events(client_uuid, span_ts DESC);
+  id BIGSERIAL PRIMARY KEY, client_uuid VARCHAR(255), email VARCHAR(255),
+  span_name VARCHAR(100), span_ts TIMESTAMPTZ, attributes JSONB, plugin_version VARCHAR(50),
+  source_ip INET, created_at TIMESTAMPTZ DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_dte ON device_telemetry_events(client_uuid, span_ts DESC);
 
--- ═══════════════════════════════════════════════════════════════
 -- AUDIT
--- ═══════════════════════════════════════════════════════════════
-
 CREATE TABLE IF NOT EXISTS admin_audit_log (
-    id BIGSERIAL PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    actor_email TEXT,
-    actor_sub TEXT,
-    action TEXT NOT NULL,
-    resource_type TEXT,
-    resource_id TEXT,
-    payload JSONB,
-    ip_address INET,
-    user_agent TEXT
-);
+  id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  actor_email TEXT, actor_sub TEXT, action TEXT NOT NULL, resource_type TEXT,
+  resource_id TEXT, payload JSONB, ip_address INET, user_agent TEXT);
 CREATE INDEX IF NOT EXISTS idx_audit_at ON admin_audit_log(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_audit_actor ON admin_audit_log(actor_email);
 
--- ═══════════════════════════════════════════════════════════════
--- TRIGGERS updated_at
--- ═══════════════════════════════════════════════════════════════
-
-DO $$ BEGIN
-  FOR t IN SELECT unnest(ARRAY[
-    'provisioning','relay_clients','queue_jobs','plugins',
-    'plugin_env_overrides','cohorts','campaigns','feature_flags',
-    'communications','keycloak_clients'
-  ]) AS name LOOP
-    EXECUTE format(
-      'CREATE TRIGGER IF NOT EXISTS trg_%s_updated_at
-       BEFORE UPDATE ON %I FOR EACH ROW EXECUTE FUNCTION set_updated_at()',
-      t.name, t.name
-    );
-  END LOOP;
-EXCEPTION WHEN OTHERS THEN NULL;
-END $$;
-
--- ═══════════════════════════════════════════════════════════════
--- SEED DATA
--- ═══════════════════════════════════════════════════════════════
-
-INSERT INTO plugins (slug, name, device_type, intent, category, maturity, access_mode, status)
-VALUES
-  ('mirai-libreoffice', 'Assistant Mirai LibreOffice', 'libreoffice',
-   'Assistant IA integre a LibreOffice pour la redaction', 'productivity', 'release', 'open', 'active'),
-  ('mirai-matisse', 'Matisse Thunderbird', 'matisse',
-   'Extension IA pour Thunderbird', 'communication', 'beta', 'keycloak_group', 'active')
+-- SEED
+INSERT INTO plugins (slug, name, device_type, intent, category, maturity, access_mode, status) VALUES
+  ('mirai-libreoffice','Assistant Mirai LibreOffice','libreoffice','Assistant IA pour LibreOffice','productivity','release','open','active'),
+  ('mirai-matisse','Matisse Thunderbird','matisse','Extension IA pour Thunderbird','communication','beta','keycloak_group','active')
 ON CONFLICT (slug) DO NOTHING;
 
 INSERT INTO plugin_aliases (alias, plugin_id) VALUES
-  ('libreoffice', (SELECT id FROM plugins WHERE slug = 'mirai-libreoffice')),
-  ('matisse', (SELECT id FROM plugins WHERE slug = 'mirai-matisse'))
+  ('libreoffice', (SELECT id FROM plugins WHERE slug='mirai-libreoffice')),
+  ('matisse', (SELECT id FROM plugins WHERE slug='mirai-matisse'))
 ON CONFLICT DO NOTHING;
 
--- ═══════════════════════════════════════════════════════════════
--- GRANTS (dev role)
--- ═══════════════════════════════════════════════════════════════
-
+-- GRANTS
 DO $$ BEGIN
-  PERFORM 1 FROM pg_roles WHERE rolname = 'dev';
+  PERFORM 1 FROM pg_roles WHERE rolname='dev';
   IF FOUND THEN
     GRANT CONNECT ON DATABASE bootstrap TO dev;
     GRANT USAGE ON SCHEMA public TO dev;
     GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO dev;
     GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA public TO dev;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public
-      GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO dev;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public
-      GRANT USAGE,SELECT,UPDATE ON SEQUENCES TO dev;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO dev;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE,SELECT,UPDATE ON SEQUENCES TO dev;
   END IF;
-EXCEPTION WHEN insufficient_privilege THEN NULL;
-END $$;
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
+```
+</details>
+
+---
+
+## 3. Maturite et acces
+
+| Maturite | Badge DSFR | Description |
+|----------|------------|-------------|
+| `dev` | gris `fr-badge--neutral` | Equipe dev uniquement |
+| `alpha` | rouge `fr-badge--error` | Interne, experimental |
+| `beta` | orange `fr-badge--warning` | Early adopters |
+| `pre-release` | bleu `fr-badge--info` | Validation finale |
+| `release` | vert `fr-badge--success` | Stable, tous |
+
+| Mode d'acces | Verification |
+|-------------|--------------|
+| `open` | Aucune |
+| `waitlist` | `plugin_waitlist.status = 'approved'` |
+| `keycloak_group` | JWT `groups` contient `required_group` |
+
+---
+
+## 4. Dashboard admin (`/admin/`)
+
+En haut du tableau de bord existant, ajouter :
+
+**Encart disponibilite** (HTMX refresh 30s) : bandeau vert/orange/rouge avec detail par service + latence. Lien vers `/admin/debug`.
+
+**Metriques adoption** (Chart.js) : courbe enrollments + filtres (type: Tous/LO/Matisse, periode: 1J/1S/1M/3M/6M) + 4 tuiles (total, nouveaux, % actifs, plugins).
+
+Donnees depuis `/catalog/api/stats` (public, cache 5min) et `/admin/api/debug/health` (admin).
+
+---
+
+## 5. Onglets fiche plugin admin (`/admin/catalog/{id}`)
+
+```
+[Versions] [Changelog] [Environnements] [Keycloak] [Acces] [Alias] [Installations] [Editer]
 ```
 
-### Script de reset
+| Onglet | Contenu |
+|--------|---------|
+| **Versions** | Liste, publier/deprecier/retirer, bouton "Deployer (1-2-3)" par version |
+| **Changelog** | Markdown global du plugin |
+| **Environnements** | Surcharges cle/valeur par env (dev/int/prod), dropdown cles connues, preview JSON |
+| **Keycloak** | Clients par env, creer/associer, export JSON Keycloak, auto-gen `bootstrap-{slug}` |
+| **Acces** | Selecteur maturite + mode + groupe KC. Waitlist avec validation/refus en masse |
+| **Alias** | Tableau alias, appels 7j, devices uniques, tendance, estimation suppression (< 1%) |
+| **Installations** | Liste client_uuid/email/version/derniere activite |
+| **Editer** | Tous les champs + upload logo/mascotte (.png/.svg, max 2Mo, servi via `/catalog/icons/{slug}.png`) |
 
-```bash
-# Reset complet de la base (Scaleway)
-kubectl -n bootstrap exec deploy/device-management -- python -c "
-import psycopg2
-conn = psycopg2.connect('postgresql://postgres:postgres@postgres:5432/bootstrap')
-conn.autocommit = True
-cur = conn.cursor()
-cur.execute('DROP SCHEMA public CASCADE')
-cur.execute('CREATE SCHEMA public')
-with open('/app/db/schema.sql') as f:
-    cur.execute(f.read())
-cur.execute(\"SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename\")
-print([r[0] for r in cur.fetchall()])
-conn.close()
-"
-```
+---
 
-### Optimisations par rapport a l'ancien schema
+## 6. Page publique catalogue (`/catalog`)
 
-| Optimisation | Detail |
-|---|---|
-| **Pas d'enum Postgres** | `CHECK` constraints au lieu de `CREATE TYPE` (plus simple a modifier) |
-| **Pas de `disconnected_at`** | Supprime de device_connections (jamais utilise) |
-| **Tables bundles retirees** | `bundles` et `bundle_plugins` supprimees (pas utilise, a re-ajouter si besoin) |
-| **Indexes minimaux** | Seulement les indexes reellement utilises par les queries |
-| **Triggers consolides** | Un seul bloc DO pour tous les triggers `updated_at` |
-| **Seed data inclus** | Les 2 plugins + alias sont crees avec le schema |
-| **Grants robustes** | `ALTER DEFAULT PRIVILEGES` pour les futures tables |
-| `app/main.py` | `_resolve_device()`, `_apply_catalog_overrides()`, injection device_name, access control, supprimer DEVICE_ALLOWLIST |
-| `app/admin/router.py` | DEVICE_TYPES→2, routes env/keycloak/alias/acces/waitlist |
-| `app/admin/services/keycloak.py` | CRUD clients, export JSON, link/unlink |
-| `app/admin/services/catalog.py` | CRUD overrides, alias stats, preview config, waitlist |
-| `app/admin/templates/catalog_plugin.html` | 6 onglets (versions, changelog, env, keycloak, acces, alias) |
-| `app/admin/templates/catalog_plugin_new.html` | Animation spinner, slug intelligent, upload logo |
-| `app/admin/static/dm-admin.css` | Spinner, pulse, indeterminate progress |
-| `app/catalog_public/` | 3 templates DSFR (base, accueil, fiche plugin) |
-| `config/libreoffice/*.json` | config_path → mirai-libreoffice |
-| `config/matisse/*.json` | config_path → mirai-matisse |
-| k8s ConfigMap + deployment | Supprimer chrome/edge/firefox/misc |
+DSFR via CDN. Sans auth. Style mirai.interieur.gouv.fr.
 
-### Ordre d'implementation
+**Structure** : header gouv → encart disponibilite → hero + stats → metriques adoption (graphique + filtres) → grille plugins (cartes avec badges maturite, tags, version, installs, logo, lien code source) → prochainement → benefices → footer gouv.
 
-1. Migration 007 + seed data
-2. Supprimer config/chrome,edge,firefox,misc + nettoyer k8s
-3. `_resolve_device()` + `_apply_catalog_overrides()` + injection device_name dans main.py
-4. Access control (keycloak_group + waitlist) dans main.py
-5. Alias tracking + log + purge
-6. CSS animations (spinner, pulse, progress)
-7. Slug intelligent dans le formulaire catalogue
-8. Onglet Environnements (overrides + preview JSON)
-9. Onglet Keycloak (clients + export JSON)
-10. Onglet Acces (maturite + waitlist)
-11. Onglet Alias (metriques migration)
-12. Page publique catalogue DSFR (/catalog)
-13. Fiche publique plugin (/catalog/{slug}) avec mode d'emploi, changelog, feedback
-14. Formulaire waitlist public
-15. API JSON publique (/catalog/api/plugins)
-16. Mettre a jour config_path dans les templates config
-17. Deployer et tester
+**Fiche plugin** (`/catalog/{slug}`) : en-tete + stats → mode d'emploi (etapes par device_type) → telechargement → changelog → feedback utilisateurs → waitlist (si applicable).
+
+---
+
+## 7. API JSON publique
+
+CORS ouvert, cache 5min, Swagger sur `/catalog/api/docs`.
+
+| Route | Description |
+|-------|-------------|
+| `GET /catalog/api/plugins` | Liste plugins (slug, name, intent, maturity, version, installs, tags, urls) |
+| `GET /catalog/api/plugins/{slug}` | Detail (+ description, changelog, download_extension, guide_url) |
+| `GET /catalog/api/status` | Etat services (cache 30s) |
+| `GET /catalog/api/stats?device_type=&period=1M` | Metriques adoption (timeseries + summary) |
+
+Modeles Pydantic (`PluginSummary`, `PluginDetail`, `PluginListResponse`) avec exemples pour Swagger auto.
+
+---
+
+## 8. Assistance LLM
+
+Toutes les features partagent `_llm_assist(system_prompt, user_content) → str`.
+
+| Feature | Declencheur | Input → Output |
+|---------|-------------|----------------|
+| Analyse package | Upload dans "Nouveau plugin" | ZIP → nom, slug, intent, description, tags, categorie, changelog |
+| Release notes | Bouton dans creation version | Package + version precedente → markdown nouveautes |
+| Resume changelog | Auto a la publication | Release notes → 2-3 phrases |
+| Suggestion tags | Bouton dans Editer | Description + changelog → tags courts |
+| Redaction communication | Bouton dans formulaire comm | Type + plugin + version → titre + corps |
+| Synthese feedbacks | Bouton dans resultats sondage | Commentaires → 3-5 themes |
+| Triage waitlist | Bouton dans onglet Acces | Demandes → score pertinence + suggestion |
+
+---
+
+## 9. Page de debug (`/admin/debug`)
+
+Verifie en parallele (max 12s) : PostgreSQL, S3, Keycloak OIDC/JWKS, LLM, telemetrie upstream, relay-assistant, queue worker.
+
+4 panneaux : services (statut + latence), configuration (vars avec secrets masques), DB (lignes par table), systeme (version, uptime, hostname).
+
+Refresh auto 30s. Badge rouge dans la nav si un service est down.
+
+---
+
+## 10. Endpoints monitoring (Grafana / Prometheus)
+
+| Route | Format | Usage |
+|-------|--------|-------|
+| `GET /ops/health/full` | JSON | Sante detaillee, statut global ok/degraded/error |
+| `GET /ops/metrics` | Prometheus text | Scrape : `dm_service_up`, `dm_service_latency_ms`, `dm_devices_enrolled_total`, `dm_queue_pending`, etc. |
+| `GET /ops/metrics/adoption` | JSON | Timeseries adoption pour Grafana JSON datasource |
+
+Statut global : `ok` (tout OK), `degraded` (non-critique down), `error` (critique down).
+
+Alertes Grafana suggerees : DB down (critical), Keycloak down (high), latence > 2s (warning), dead letters > 10 (medium).
+
+---
+
+## 11. Nettoyage
+
+| Action | Detail |
+|--------|--------|
+| Supprimer | `config/chrome/`, `config/edge/`, `config/firefox/`, `config/misc/` |
+| Supprimer | `db/migrations/` (tout le dossier) |
+| ConfigMap k8s | Retirer 4 entrees + 4 volume mounts |
+| `main.py` | Supprimer `DEVICE_ALLOWLIST`, ajouter `_resolve_device()` |
+| `router.py` | `DEVICE_TYPES` → 2 entrees |
+| `schemas.py` | Pattern → `libreoffice\|matisse` |
+| `config/libreoffice/*.json` | `config_path` → `/config/mirai-libreoffice/config.json` |
+| `config/matisse/*.json` | `config_path` → `/config/mirai-matisse/config.json` |
+
+---
+
+## 12. Ordre d'implementation
+
+Chaque etape est testable independamment. Valide chaque etape avant de passer a la suivante.
+
+| # | Etape | Fichiers | Test |
+|---|-------|----------|------|
+| 1 | Remplacer `db/schema.sql`, supprimer `db/migrations/`, reset DB | `db/schema.sql` | `SELECT COUNT(*) FROM plugins` → 2 |
+| 2 | Supprimer config/chrome,edge,firefox,misc + nettoyer k8s | `config/`, ConfigMap, Deployment | `ls config/` → libreoffice, matisse |
+| 3 | `_resolve_device()` + injection device_name dans `main.py` | `app/main.py` | `GET /config/libreoffice/...` retourne `device_name: "mirai-libreoffice"` |
+| 4 | `_apply_catalog_overrides()` dans `main.py` | `app/main.py` | INSERT override → GET config → valeur surchargee |
+| 5 | Access control (keycloak_group + waitlist) | `app/main.py` | Plugin beta sans groupe → `access_denied: true` |
+| 6 | Alias tracking + log | `app/main.py` | `GET /config/libreoffice/...` → row dans alias_access_log |
+| 7 | CSS animations (spinner, pulse, progress) | `dm-admin.css` | Visuel sur `/admin/catalog/new` |
+| 8 | Slug intelligent + tags interactifs | `catalog_plugin_new.html`, `router.py` | Auto-slug + check dispo |
+| 9 | Upload logo plugin | `router.py`, `catalog_plugin.html` | Upload PNG → visible dans fiche |
+| 10 | Onglet Environnements + preview JSON | `router.py`, `catalog_plugin.html` | Ajouter override → preview reflète |
+| 11 | Onglet Keycloak + export JSON | `keycloak.py`, `router.py` | Creer client → telecharger JSON |
+| 12 | Onglet Acces + waitlist | `router.py`, `catalog_plugin.html` | Demande waitlist → valider → acces OK |
+| 13 | Onglet Alias + metriques migration | `router.py`, `catalog.py` | Stats alias affichees |
+| 14 | Dashboard admin (dispo + adoption) | `router.py`, `dashboard.html` | Encart vert + graphique |
+| 15 | Page debug `/admin/debug` | `router.py`, `debug.html` | Tous services verifies |
+| 16 | Page publique `/catalog` (DSFR) | `main.py`, templates | Page accessible sans auth |
+| 17 | Fiche publique `/catalog/{slug}` | `main.py`, templates | Mode d'emploi, changelog, feedback |
+| 18 | Waitlist public + download | `main.py` | POST waitlist → row en DB |
+| 19 | API JSON `/catalog/api/plugins` + Swagger | `main.py` | JSON retourne, `/catalog/api/docs` accessible |
+| 20 | Endpoints monitoring `/ops/metrics` | `main.py` | Prometheus text valide |
+| 21 | LLM assist (suggest, tags, notes, comm) | `router.py` | Upload plugin → champs pre-remplis |
+| 22 | Mettre a jour config_path dans templates | `config/*.json` | `config_path` contient le slug |
+| 23 | Build, deploy, tester E2E | `scripts/` | Rollout OK, `/healthz` 200 |
