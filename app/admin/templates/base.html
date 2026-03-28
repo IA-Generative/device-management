@@ -107,6 +107,15 @@
         <a href="/admin/" class="{% if request.url.path == '/admin/' %}active{% endif %}">Tableau de bord</a>
       </li>
       <li class="dm-nav__item">
+        <a href="/admin/catalog" class="{% if '/admin/catalog' in request.url.path %}active{% endif %}">Catalogue</a>
+      </li>
+      <li class="dm-nav__item">
+        <a href="/admin/deploy" class="{% if '/admin/deploy' in request.url.path %}active{% endif %}" style="font-weight:bold;">Deploiement 1-2-3</a>
+      </li>
+      <li class="dm-nav__item">
+        <a href="/admin/communications" class="{% if '/admin/communications' in request.url.path %}active{% endif %}">Communications</a>
+      </li>
+      <li class="dm-nav__item">
         <a href="/admin/devices" class="{% if '/admin/devices' in request.url.path %}active{% endif %}">Appareils</a>
       </li>
       <li class="dm-nav__item">

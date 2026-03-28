@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+{% block title %}{{ plugin.name }}{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb"><a href="/admin/catalog">Catalogue</a> &rsaquo; {{ plugin.name }}</div>
+{% endblock %}
+{% block content %}
+
+{# Header #}
+<div style="display:flex;gap:1.5rem;margin-bottom:1.5rem;align-items:flex-start;">
+  <div class="dm-plugin-icon-lg">{{ plugin.device_type[:2].upper() }}</div>
+  <div style="flex:1;">
+    <h1 class="dm-page-title" style="margin-bottom:0.25rem;">{{ plugin.name }}</h1>
+    <div style="font-size:0.875rem;color:#666;margin-bottom:0.5rem;">
+      {{ plugin.device_type }} &mdash; {{ plugin.category }} &mdash; {{ plugin.publisher }}
+      {% if plugin.status == 'active' %}<span class="dm-badge dm-badge--success">Actif</span>
+      {% elif plugin.status == 'deprecated' %}<span class="dm-badge dm-badge--warning">Obsolete</span>
+      {% elif plugin.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
+      {% elif plugin.status == 'removed' %}<span class="dm-badge dm-badge--error">Supprime</span>{% endif %}
+    </div>
+    {% if plugin.intent %}
+    <div style="font-size:0.9rem;color:#3a3a3a;margin-bottom:0.5rem;">{{ plugin.intent }}</div>
+    {% endif %}
+    {% if features %}
+    <div style="display:flex;flex-wrap:wrap;gap:0.25rem;">
+      {% for f in features %}
+      <span class="dm-badge dm-badge--info" style="font-weight:normal;">{{ f }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div style="display:flex;gap:0.5rem;">
+    {% if plugin.homepage_url %}<a href="{{ plugin.homepage_url }}" target="_blank" class="dm-btn dm-btn--ghost dm-btn--sm">Docs</a>{% endif %}
+    {% if plugin.status == 'active' %}
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/status" style="display:inline;">
+      <input type="hidden" name="status" value="deprecated">
+      <button class="dm-btn dm-btn--warning dm-btn--sm" onclick="return confirm('Deprecier ce plugin ?')">Deprecier</button>
+    </form>
+    {% elif plugin.status == 'deprecated' %}
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/status" style="display:inline;">
+      <input type="hidden" name="status" value="removed">
+      <button class="dm-btn dm-btn--danger dm-btn--sm" onclick="return confirm('Supprimer definitivement ?')">Supprimer</button>
+    </form>
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/status" style="display:inline;">
+      <input type="hidden" name="status" value="active">
+      <button class="dm-btn dm-btn--primary dm-btn--sm">Re-activer</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{# Stats tiles #}
+<div class="dm-grid-4">
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.active }}</div>
+    <div style="font-size:0.875rem;color:#666;">Installations actives</div>
+  </div>
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ versions|selectattr('status','eq','published')|list|length }}</div>
+    <div style="font-size:0.875rem;color:#666;">Versions publiees</div>
+  </div>
+  <div class="dm-metric-tile dm-metric-tile--success">
+    <div style="font-size:1.5rem;font-weight:bold;">
+      {% set latest = versions|selectattr('status','eq','published')|list %}
+      {{ latest[0].version if latest else '-' }}
+    </div>
+    <div style="font-size:0.875rem;">Derniere version</div>
+  </div>
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.inactive }}</div>
+    <div style="font-size:0.875rem;color:#666;">Inactifs / en retard</div>
+  </div>
+</div>
+
+{# Tabs #}
+<div class="dm-tabs">
+  <div class="dm-tabs__list">
+    <button class="dm-tabs__tab {% if tab == 'versions' %}dm-tabs__tab--active{% endif %}" data-tab="tab-versions">Versions</button>
+    <button class="dm-tabs__tab {% if tab == 'changelog' %}dm-tabs__tab--active{% endif %}" data-tab="tab-changelog">Changelog</button>
+    <button class="dm-tabs__tab {% if tab == 'installations' %}dm-tabs__tab--active{% endif %}" data-tab="tab-installations">Installations</button>
+    <button class="dm-tabs__tab {% if tab == 'edit' %}dm-tabs__tab--active{% endif %}" data-tab="tab-edit">Editer</button>
+  </div>
+</div>
+
+{# Tab: Versions #}
+<div id="tab-versions" class="dm-tabs__panel {% if tab == 'versions' %}dm-tabs__panel--active{% endif %}">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+    <h3 style="margin:0;">Versions</h3>
+    <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="document.getElementById('new-version-form').style.display='block'">+ Publier une version</button>
+  </div>
+
+  <div id="new-version-form" style="display:none;background:#F5F5FE;padding:1rem;border-radius:8px;margin-bottom:1rem;">
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/versions">
+      <div class="dm-grid-2">
+        <div class="dm-form-row">
+          <label class="dm-label">Version *</label>
+          <input type="text" name="version" required class="dm-input" placeholder="2.2.0">
+        </div>
+        <div class="dm-form-row">
+          <label class="dm-label">Mode de distribution</label>
+          <select name="distribution_mode" class="dm-select" style="width:100%;">
+            <option value="managed">Gere (deploiement 1-2-3)</option>
+            <option value="download_link">Lien de telechargement</option>
+            <option value="store">Store officiel</option>
+            <option value="manual">Manuel</option>
+          </select>
+        </div>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Artifact existant</label>
+        <select name="artifact_id" class="dm-select" style="width:100%;">
+          <option value="">-- Aucun (lien externe) --</option>
+          {% for a in artifacts %}
+          <option value="{{ a.id }}">{{ a.device_type }}/{{ a.version }} (ID:{{ a.id }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">URL de telechargement (si pas d'artifact)</label>
+        <input type="url" name="download_url" class="dm-input" placeholder="https://...">
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Notes de version (markdown)</label>
+        <textarea name="release_notes" class="dm-input" rows="4" placeholder="- Correction de bugs..."></textarea>
+      </div>
+      <div class="dm-grid-2">
+        <div class="dm-form-row">
+          <label class="dm-label">Version hote min</label>
+          <input type="text" name="min_host_version" class="dm-input" placeholder="7.4">
+        </div>
+        <div class="dm-form-row">
+          <label class="dm-label">Version hote max</label>
+          <input type="text" name="max_host_version" class="dm-input" placeholder="">
+        </div>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Statut initial</label>
+        <select name="status" class="dm-select">
+          <option value="draft">Brouillon</option>
+          <option value="published">Publie immediatement</option>
+        </select>
+      </div>
+      <div class="dm-form-actions">
+        <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="this.closest('#new-version-form').style.display='none'">Annuler</button>
+        <button type="submit" class="dm-btn dm-btn--primary dm-btn--sm">Creer la version</button>
+      </div>
+    </form>
+  </div>
+
+  <table>
+    <thead><tr><th>Version</th><th>Statut</th><th>Distribution</th><th>Date</th><th>Installs</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for v in versions %}
+      <tr>
+        <td><strong>{{ v.version }}</strong></td>
+        <td>
+          {% if v.status == 'published' %}<span class="dm-badge dm-badge--success">Publie</span>
+          {% elif v.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
+          {% elif v.status == 'deprecated' %}<span class="dm-badge dm-badge--warning">Obsolete</span>
+          {% elif v.status == 'yanked' %}<span class="dm-badge dm-badge--error">Retire</span>{% endif %}
+        </td>
+        <td>{{ v.distribution_mode }}</td>
+        <td>{{ v.published_at.strftime('%d/%m/%Y') if v.published_at else v.created_at.strftime('%d/%m/%Y') }}</td>
+        <td>{{ v.install_count or 0 }}</td>
+        <td style="display:flex;gap:0.25rem;">
+          {% if v.status == 'draft' %}
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/status" style="display:inline;">
+            <input type="hidden" name="status" value="published">
+            <button class="dm-btn dm-btn--primary dm-btn--sm">Publier</button>
+          </form>
+          {% endif %}
+          {% if v.status == 'published' %}
+          <a href="/admin/deploy?plugin_id={{ plugin.id }}&artifact_id={{ v.artifact_id }}&version={{ v.version }}" class="dm-btn dm-btn--primary dm-btn--sm">Deployer</a>
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/status" style="display:inline;">
+            <input type="hidden" name="status" value="deprecated">
+            <button class="dm-btn dm-btn--warning dm-btn--sm">Deprecier</button>
+          </form>
+          {% endif %}
+          {% if v.status in ('published', 'deprecated') %}
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/status" style="display:inline;">
+            <input type="hidden" name="status" value="yanked">
+            <button class="dm-btn dm-btn--danger dm-btn--sm" onclick="return confirm('Retirer cette version ?')">Retirer</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% if v.release_notes %}
+      <tr><td colspan="6" style="background:#f9f9f9;font-size:0.85rem;color:#555;padding:0.5rem 0.75rem;white-space:pre-line;">{{ v.release_notes }}</td></tr>
+      {% endif %}
+      {% endfor %}
+      {% if not versions %}
+      <tr><td colspan="6" style="color:#666;text-align:center;">Aucune version. Publiez la premiere ci-dessus.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{# Tab: Changelog #}
+<div id="tab-changelog" class="dm-tabs__panel {% if tab == 'changelog' %}dm-tabs__panel--active{% endif %}">
+  <div style="background:#f9f9f9;padding:1.5rem;border-radius:8px;white-space:pre-line;font-size:0.9rem;line-height:1.6;">{{ plugin.changelog or 'Aucun changelog. Editez le plugin pour en ajouter un.' }}</div>
+</div>
+
+{# Tab: Installations #}
+<div id="tab-installations" class="dm-tabs__panel {% if tab == 'installations' %}dm-tabs__panel--active{% endif %}">
+  <table>
+    <thead><tr><th>Client UUID</th><th>Email</th><th>Version</th><th>Derniere activite</th><th>Statut</th></tr></thead>
+    <tbody>
+      {% for i in installations %}
+      <tr>
+        <td><code>{{ i.client_uuid[:12] }}...</code></td>
+        <td>{{ i.email or '-' }}</td>
+        <td>{{ i.installed_version or '-' }}</td>
+        <td>{{ timeago(i.last_seen_at) }}</td>
+        <td>
+          {% if i.status == 'active' %}<span class="dm-badge dm-badge--success">Actif</span>
+          {% elif i.status == 'inactive' %}<span class="dm-badge dm-badge--warning">Inactif</span>
+          {% else %}<span class="dm-badge dm-badge--neutral">{{ i.status }}</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not installations %}
+      <tr><td colspan="5" style="color:#666;text-align:center;">Aucune installation enregistree.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{# Tab: Edit #}
+<div id="tab-edit" class="dm-tabs__panel {% if tab == 'edit' %}dm-tabs__panel--active{% endif %}">
+  <form method="post" action="/admin/catalog/{{ plugin.id }}/edit" style="max-width:700px;">
+    <div class="dm-form-row">
+      <label class="dm-label">Nom</label>
+      <input type="text" name="name" required class="dm-input" value="{{ plugin.name }}">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Intention</label>
+      <textarea name="intent" class="dm-input" rows="2">{{ plugin.intent or '' }}</textarea>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Description</label>
+      <textarea name="description" class="dm-input" rows="4">{{ plugin.description or '' }}</textarea>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Fonctionnalites cles (separees par des virgules)</label>
+      <input type="text" name="key_features" class="dm-input" value="{{ features|join(', ') }}">
+    </div>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Categorie</label>
+        <select name="category" class="dm-select" style="width:100%;">
+          {% for c in ['productivity','security','communication','tools','other'] %}
+          <option value="{{ c }}" {% if plugin.category == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Visibilite</label>
+        <select name="visibility" class="dm-select" style="width:100%;">
+          {% for v in ['public','internal','hidden'] %}
+          <option value="{{ v }}" {% if plugin.visibility == v %}selected{% endif %}>{{ v }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Editeur</label>
+      <input type="text" name="publisher" class="dm-input" value="{{ plugin.publisher or 'DNUM' }}">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">URL doc</label>
+      <input type="url" name="homepage_url" class="dm-input" value="{{ plugin.homepage_url or '' }}">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Email support</label>
+      <input type="email" name="support_email" class="dm-input" value="{{ plugin.support_email or '' }}">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Changelog (markdown)</label>
+      <textarea name="changelog" class="dm-input" rows="10">{{ plugin.changelog or '' }}</textarea>
+    </div>
+    <div class="dm-form-actions">
+      <button type="submit" class="dm-btn dm-btn--primary">Enregistrer</button>
+    </div>
+  </form>
+</div>
+
+{% endblock %}
