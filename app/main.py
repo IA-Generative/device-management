@@ -677,6 +677,7 @@ def _queue_worker_id(role: str) -> str:
 _SECRET_CONFIG_KEYS = {
     "llm_api_tokens",
     "tokenOWUI",
+    "telemetryKey",
     "keycloak_client_secret",
     "keycloakClientSecret",
 }
@@ -1337,19 +1338,27 @@ def _relay_auth_from_request(
     return _verify_relay_credentials(relay_client_id, relay_key, target=target)
 
 
+_AUTH_REQUIRED_MSG = "Authentification requise. Effectuez un enrollment (POST /enroll) pour obtenir vos credentials relay."
+
+
 def _scrub_secret_values(cfg: dict) -> dict:
     cfg_obj = dict(cfg)
     config_obj = cfg_obj.get("config")
     if not isinstance(config_obj, dict):
         return cfg_obj
 
+    has_secrets = False
     for secret_key in _SECRET_CONFIG_KEYS:
-        if secret_key in config_obj:
+        if secret_key in config_obj and config_obj[secret_key]:
+            has_secrets = True
             config_obj[secret_key] = ""
 
     # legacy aliases
     if "authHeaderKey" in config_obj:
         config_obj["authHeaderKey"] = ""
+
+    if has_secrets:
+        config_obj["_auth_notice"] = _AUTH_REQUIRED_MSG
 
     cfg_obj["config"] = config_obj
     return cfg_obj
