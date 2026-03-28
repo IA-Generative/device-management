@@ -498,11 +498,14 @@ def _check_plugin_access(plugin_row: dict | None, request: Request, cur) -> bool
     return True
 
 
-def _load_config_template(profile: str, device: str | None = None) -> dict:
+def _load_config_template(profile: str, device: str | None = None,
+                          device_name: str | None = None) -> dict:
     """Load a config template JSON from `config/`.
 
-    Resolution order (device-specific first when provided):
-    - config/<device>/config.<profile>.json
+    Resolution order:
+    - config/<device_name>/config.<profile>.json   (slug, ex: mirai-libreoffice)
+    - config/<device_name>/config.json
+    - config/<device>/config.<profile>.json        (device_type fallback, ex: libreoffice)
     - config/<device>/config.json
     - config/config.<profile>.json
     - config/config.json
@@ -514,19 +517,23 @@ def _load_config_template(profile: str, device: str | None = None) -> dict:
 
     for base in bases:
         candidates = []
+        # Try device_name first (slug)
+        if device_name and device_name != device:
+            candidates.extend([
+                os.path.join(base, device_name, f"config.{profile}.json"),
+                os.path.join(base, device_name, "config.json"),
+            ])
+        # Then device_type
         if device:
-            candidates.extend(
-                [
-                    os.path.join(base, device, f"config.{profile}.json"),
-                    os.path.join(base, device, "config.json"),
-                ]
-            )
-        candidates.extend(
-            [
-                os.path.join(base, f"config.{profile}.json"),
-                os.path.join(base, "config.json"),
-            ]
-        )
+            candidates.extend([
+                os.path.join(base, device, f"config.{profile}.json"),
+                os.path.join(base, device, "config.json"),
+            ])
+        # Generic fallback
+        candidates.extend([
+            os.path.join(base, f"config.{profile}.json"),
+            os.path.join(base, "config.json"),
+        ])
         for p in candidates:
             if os.path.isfile(p):
                 with open(p, "r", encoding="utf-8") as f:
@@ -1929,7 +1936,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
 
     # ── STEP 2: Load template via device_type (not slug) ──
     try:
-        cfg = _load_config_template(prof, device_type or None)
+        cfg = _load_config_template(prof, device=device_type or None, device_name=device_name or None)
     except FileNotFoundError as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
