@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker build:*)",
+      "Bash(docker run:*)",
+      "Bash(curl -s http://localhost:13001/livez)",
+      "Bash(docker stop:*)",
+      "Bash(docker rmi:*)",
+      "Bash(docker compose:*)",
+      "Bash(curl -s http://localhost:3001/livez)",
+      "Bash(python3 -m json.tool)",
+      "Bash(env)",
+      "Bash(sed s/=.*/=***/)",
+      "Read(//Users/etiquet/**)",
+      "Bash(curl -s http://localhost:3001/healthz)"
+    ]
+  }
+}
