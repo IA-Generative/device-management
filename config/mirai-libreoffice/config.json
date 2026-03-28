@@ -16,12 +16,7 @@
     "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
     "portal_url": "https://mirai.interieur.gouv.fr",
     "doc_url": "https://github.com/IA-Generative/AssistantMiraiLibreOffice/blob/master/docs/notice-utilisateur.md",
-    "proxy_allow_insecure_ssl": true,
-    "proxy_consistency_checked_once": false,
     "systemPrompt": "Tu es un assistant spécialisé dans la rédaction de documents le contenu doit est concis et professionnels. Ton rôle est d'assister le redacteur pour disposer d'une redaction impecable   Ne répète pas mot pour mot le texte, reformule. Uniquement en texte seul et en français",
-    "api_type": "chat",
-    "is_openwebui": true,
-    "openai_compatibility": false,
     "extend_selection_max_tokens": 15000,
     "extend_selection_system_prompt": "",
     "edit_selection_max_new_tokens": 15000,
@@ -42,6 +37,7 @@
     "telemetryEnabled": true,
     "telemetryEndpoint": "https://traces.cpin.numerique-interieur.com/v1/traces",
     "telemetryAuthorizationType": "Basic",
-    "telemetryKey": "${{TELEMETRY_KEY}}"
+    "telemetryKey": "${{TELEMETRY_KEY}}",
+    "telemetrylogJson": true
   }
 }
