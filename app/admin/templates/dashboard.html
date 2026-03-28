@@ -3,6 +3,57 @@
 {% block content %}
 <h1 class="dm-page-title">Tableau de bord</h1>
 
+<!-- Service availability banner -->
+<div id="service-status" hx-get="/admin/api/debug/status" hx-trigger="load, every 30s" hx-swap="innerHTML" style="margin-bottom:1rem;"></div>
+
+<!-- Adoption chart -->
+<div style="background:#F5F5FE;border-radius:8px;padding:1.25rem;margin-bottom:1.5rem;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+    <h2 style="font-size:1rem;margin:0;">Adoption des plugins</h2>
+    <div style="display:flex;gap:0.25rem;" id="period-btns">
+      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="loadAdoption('1J',this)">1J</button>
+      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="loadAdoption('1S',this)">1S</button>
+      <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="loadAdoption('1M',this)">1M</button>
+      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="loadAdoption('3M',this)">3M</button>
+    </div>
+  </div>
+  <canvas id="adoption-chart" height="150"></canvas>
+  <div class="dm-grid-4" id="adoption-tiles" style="margin-top:0.75rem;"></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script>
+let adoptionChart = null;
+function loadAdoption(period, btn) {
+  document.querySelectorAll('#period-btns button').forEach(b => {b.className='dm-btn dm-btn--ghost dm-btn--sm';});
+  if(btn) btn.className='dm-btn dm-btn--primary dm-btn--sm';
+  fetch('/admin/api/adoption?period=' + period, {credentials:'same-origin'})
+    .then(r => r.json()).then(data => {
+      const ctx = document.getElementById('adoption-chart').getContext('2d');
+      if(adoptionChart) adoptionChart.destroy();
+      adoptionChart = new Chart(ctx, {
+        type:'line',
+        data:{labels:data.timeseries.map(d=>d.date), datasets:[{
+          label:'Devices enrolles', data:data.timeseries.map(d=>d.enrolled),
+          borderColor:'#000091', borderWidth:2, fill:true,
+          backgroundColor:'rgba(0,0,145,0.08)', tension:0.3, pointRadius:0,
+        }]},
+        options:{responsive:true, maintainAspectRatio:false,
+          scales:{x:{type:'time',time:{unit:period==='1J'?'hour':'day'}},y:{beginAtZero:true}},
+          plugins:{legend:{display:false}}
+        }
+      });
+      const s = data.summary;
+      document.getElementById('adoption-tiles').innerHTML =
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.total+'</div><div style="font-size:0.8rem;color:#666;">enrolles</div></div>' +
+        '<div class="dm-metric-tile dm-metric-tile--success"><div style="font-size:1.25rem;font-weight:bold;">+'+s.new_period+'</div><div style="font-size:0.8rem;color:#666;">nouveaux</div></div>' +
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.active_pct+'%</div><div style="font-size:0.8rem;color:#666;">actifs (7j)</div></div>' +
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.plugins+'</div><div style="font-size:0.8rem;color:#666;">plugins</div></div>';
+    }).catch(()=>{});
+}
+loadAdoption('1M', document.querySelector('#period-btns button:nth-child(3)'));
+</script>
+
 <!-- Metric tiles — auto-refresh every 30s -->
 <div id="metrics-tiles" hx-get="/admin/api/metrics" hx-trigger="every 30s" hx-swap="innerHTML">
   <div class="dm-grid-4">

@@ -2626,6 +2626,238 @@ def catalog_icon(filename: str):
     return FileResponse(filepath, headers={"Cache-Control": "public, max-age=3600"})
 
 
+# ─── Public Catalog API ──────────────────────────────────────────────────
+
+@app.get("/catalog/api/plugins")
+def api_public_plugins():
+    """JSON public — list active plugins for external integration."""
+    public_base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        return JSONResponse({"plugins": [], "total": 0}, headers={"Access-Control-Allow-Origin": "*"})
+    conn = psycopg2.connect(db_url)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
+                       p.maturity, p.access_mode, p.icon_path, p.key_features, p.source_url,
+                       COUNT(DISTINCT pi.client_uuid) FILTER (WHERE pi.status='active') AS install_count,
+                       MAX(pv.version) FILTER (WHERE pv.status='published') AS latest_version
+                FROM plugins p
+                LEFT JOIN plugin_installations pi ON pi.plugin_id = p.id
+                LEFT JOIN plugin_versions pv ON pv.plugin_id = p.id
+                WHERE p.status = 'active' AND p.visibility IN ('public','internal')
+                GROUP BY p.id ORDER BY p.name
+            """)
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        maturity_labels = {"dev":"Dev","alpha":"Alpha","beta":"Beta","pre-release":"Pre-release","release":"Stable"}
+        plugins = []
+        for p in rows:
+            kf = p.get("key_features") or []
+            if isinstance(kf, str):
+                kf = json.loads(kf)
+            plugins.append({
+                "slug": p["slug"], "name": p["name"], "intent": p.get("intent") or "",
+                "device_type": p["device_type"], "category": p.get("category") or "",
+                "publisher": p.get("publisher") or "DNUM",
+                "maturity": p.get("maturity") or "release",
+                "maturity_label": maturity_labels.get(p.get("maturity"), "Stable"),
+                "access_mode": p.get("access_mode") or "open",
+                "latest_version": p.get("latest_version"),
+                "install_count": p.get("install_count") or 0,
+                "key_features": kf,
+                "source_url": p.get("source_url"),
+                "detail_url": f"{public_base}/catalog/{p['slug']}",
+                "download_url": f"{public_base}/catalog/{p['slug']}/download",
+            })
+        return JSONResponse(
+            {"plugins": plugins, "total": len(plugins),
+             "generated_at": datetime.now(timezone.utc).isoformat()},
+            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=300"},
+        )
+    finally:
+        conn.close()
+
+
+@app.get("/catalog/api/plugins/{slug}")
+def api_public_plugin_detail(slug: str):
+    """JSON public — plugin detail for external integration."""
+    public_base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        raise HTTPException(404)
+    conn = psycopg2.connect(db_url)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM plugins WHERE slug = %s AND status = 'active'", (slug,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404)
+            cols = [d[0] for d in cur.description]
+            p = dict(zip(cols, row))
+            # Latest version
+            cur.execute("""
+                SELECT version, release_notes FROM plugin_versions
+                WHERE plugin_id = %s AND status = 'published'
+                ORDER BY published_at DESC LIMIT 1
+            """, (p["id"],))
+            vrow = cur.fetchone()
+            cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations WHERE plugin_id=%s AND status='active'", (p["id"],))
+            installs = cur.fetchone()[0]
+        kf = p.get("key_features") or []
+        if isinstance(kf, str):
+            kf = json.loads(kf)
+        maturity_labels = {"dev":"Dev","alpha":"Alpha","beta":"Beta","pre-release":"Pre-release","release":"Stable"}
+        return JSONResponse({
+            "slug": p["slug"], "name": p["name"], "description": p.get("description") or "",
+            "intent": p.get("intent") or "", "device_type": p["device_type"],
+            "category": p.get("category") or "", "publisher": p.get("publisher") or "DNUM",
+            "maturity": p.get("maturity") or "release",
+            "maturity_label": maturity_labels.get(p.get("maturity"), "Stable"),
+            "access_mode": p.get("access_mode") or "open",
+            "latest_version": vrow[0] if vrow else None,
+            "changelog_summary": (vrow[1] or "")[:200] if vrow else "",
+            "install_count": installs,
+            "key_features": kf, "source_url": p.get("source_url"),
+            "homepage_url": p.get("homepage_url"), "support_email": p.get("support_email"),
+            "detail_url": f"{public_base}/catalog/{p['slug']}",
+            "download_url": f"{public_base}/catalog/{p['slug']}/download",
+        }, headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=300"})
+    finally:
+        conn.close()
+
+
+@app.get("/catalog/api/status")
+def api_catalog_status():
+    """Public status endpoint for catalog availability banner."""
+    import urllib.request as urlreq
+    services = {}
+    for name, check_fn in [
+        ("api", lambda: "ok"),
+        ("database", lambda: (psycopg2.connect(_db_url_bootstrap() or _db_url()).close() or "ok") if psycopg2 else "skip"),
+    ]:
+        try:
+            check_fn()
+            services[name] = "ok"
+        except Exception:
+            services[name] = "error"
+    all_ok = all(v == "ok" for v in services.values())
+    return JSONResponse({
+        "status": "ok" if all_ok else "degraded",
+        "status_label": "Tous les services sont operationnels" if all_ok else "Service degrade",
+        "services": services,
+    }, headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=30"})
+
+
+# ─── Monitoring Endpoints ────────────────────────────────────────────────
+
+@app.get("/ops/health/full")
+def ops_health_full():
+    """Detailed health for Grafana/alerting."""
+    import urllib.request as urlreq
+    import time as _time
+
+    checks = {}
+    critical_svcs = {"postgres"}
+
+    def _do(name, fn):
+        t0 = _time.monotonic()
+        try:
+            detail = fn()
+            checks[name] = {"status": "ok", "latency_ms": round((_time.monotonic()-t0)*1000), "detail": detail}
+        except Exception as e:
+            checks[name] = {"status": "error", "latency_ms": round((_time.monotonic()-t0)*1000), "detail": str(e)[:100]}
+
+    db_url = _db_url_bootstrap() or _db_url()
+    if psycopg2 and db_url:
+        def _db():
+            c = psycopg2.connect(db_url); c.cursor().execute("SELECT 1"); c.close(); return "ok"
+        _do("postgres", _db)
+
+    issuer = os.getenv("KEYCLOAK_ISSUER_URL", "")
+    if issuer:
+        _do("keycloak", lambda: (urlreq.urlopen(f"{issuer.rstrip('/')}/.well-known/openid-configuration", timeout=5).close() or "ok"))
+
+    llm_url = os.getenv("LLM_BASE_URL", "")
+    if llm_url:
+        _do("llm", lambda: (urlreq.urlopen(urlreq.Request(f"{llm_url.rstrip('/')}/models",
+             headers={"Authorization": f"Bearer {os.getenv('LLM_API_TOKEN','')}"}), timeout=10).close() or "ok"))
+
+    _do("relay", lambda: (urlreq.urlopen("http://relay-assistant:8080/healthz", timeout=3).close() or "ok"))
+
+    has_critical = any(checks.get(s, {}).get("status") == "error" for s in critical_svcs)
+    has_any_err = any(v.get("status") == "error" for v in checks.values())
+    global_status = "error" if has_critical else ("degraded" if has_any_err else "ok")
+
+    return JSONResponse({
+        "status": global_status,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "services": checks,
+    })
+
+
+@app.get("/ops/metrics")
+def ops_metrics():
+    """Prometheus text exposition format."""
+    lines = []
+    # Service checks (reuse health/full logic inline)
+    db_url = _db_url_bootstrap() or _db_url()
+    db_ok = 0
+    if psycopg2 and db_url:
+        try:
+            c = psycopg2.connect(db_url); c.cursor().execute("SELECT 1"); c.close(); db_ok = 1
+        except Exception:
+            pass
+    lines += ["# HELP dm_service_up Service health (1=ok, 0=error)", "# TYPE dm_service_up gauge",
+              f"dm_service_up{{service=\"postgres\"}} {db_ok}"]
+
+    # Business metrics
+    if psycopg2 and db_url:
+        try:
+            conn = psycopg2.connect(db_url); conn.autocommit = True; cur = conn.cursor()
+            cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM provisioning WHERE status='ENROLLED'")
+            enrolled = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM device_connections WHERE created_at > NOW() - INTERVAL '7 days'")
+            active = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM queue_jobs WHERE status='pending'")
+            pending = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM queue_job_dead_letters")
+            dead = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM campaigns WHERE status='active'")
+            campaigns = cur.fetchone()[0]
+            conn.close()
+            lines += [
+                "# HELP dm_devices_enrolled_total Total enrolled devices", "# TYPE dm_devices_enrolled_total gauge",
+                f"dm_devices_enrolled_total {enrolled}",
+                "# HELP dm_devices_active_7d Active devices last 7d", "# TYPE dm_devices_active_7d gauge",
+                f"dm_devices_active_7d {active}",
+                "# HELP dm_queue_pending Pending jobs", "# TYPE dm_queue_pending gauge",
+                f"dm_queue_pending {pending}",
+                "# HELP dm_queue_dead Dead letters", "# TYPE dm_queue_dead gauge",
+                f"dm_queue_dead {dead}",
+                "# HELP dm_campaigns_active Active campaigns", "# TYPE dm_campaigns_active gauge",
+                f"dm_campaigns_active {campaigns}",
+            ]
+        except Exception:
+            pass
+
+    return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.options("/catalog/api/{path:path}")
+def catalog_api_cors():
+    return Response(status_code=204, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Max-Age": "86400",
+    })
+
+
 @app.get("/binaries/{path:path}")
 def get_binary(path: str):
     try:
