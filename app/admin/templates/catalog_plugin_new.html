@@ -1,0 +1,356 @@
+{% extends "base.html" %}
+{% block title %}Nouveau plugin{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb"><a href="/admin/catalog">Catalogue</a> &rsaquo; Nouveau plugin</div>
+{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Nouveau plugin</h1>
+
+{# ── Step 1: Plugin file (required) ── #}
+<div style="background:#F5F5FE;border:2px solid #000091;border-radius:8px;padding:1.25rem;margin-bottom:1.5rem;">
+  <h3 style="margin:0 0 0.5rem 0;font-size:1rem;">1. Fichier du plugin *</h3>
+  <p style="font-size:0.85rem;color:#666;margin-bottom:0.75rem;">
+    Selectionnez le fichier plugin (.oxt, .xpi, .crx). Le contenu sera analyse automatiquement.
+  </p>
+  <input type="file" id="plugin-file" class="dm-input" accept=".oxt,.xpi,.crx" style="max-width:500px;">
+  <div id="analysis-status" style="margin-top:0.75rem;"></div>
+</div>
+
+{# ── Step 2: Optional README ── #}
+<div id="readme-section" style="display:none;background:#f9f9f9;border:1px solid #e5e5e5;border-radius:8px;padding:1rem;margin-bottom:1.5rem;">
+  <h3 style="margin:0 0 0.5rem 0;font-size:1rem;">2. Completer avec un README (optionnel)</h3>
+  <div class="dm-grid-2">
+    <div>
+      <label class="dm-label">Fichier README</label>
+      <input type="file" id="readme-file" class="dm-input" accept=".md,.txt,.rst,.html">
+    </div>
+    <div>
+      <label class="dm-label">ou URL du README</label>
+      <input type="url" id="readme-url" class="dm-input" placeholder="https://github.com/.../README.md">
+    </div>
+  </div>
+  <div style="margin-top:0.75rem;">
+    <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="enrichWithReadme()" id="enrich-btn">Enrichir avec le README</button>
+    <span id="enrich-status" style="font-size:0.85rem;color:#666;margin-left:0.5rem;"></span>
+  </div>
+</div>
+
+{# ── Step 3: Form ── #}
+<div id="form-section" style="display:none;">
+  <h3 style="font-size:1rem;margin-bottom:1rem;">3. Verifier et completer la fiche</h3>
+
+  <form method="post" action="/admin/catalog" style="max-width:700px;" id="catalog-form">
+    <div class="dm-form-row">
+      <label class="dm-label">Nom *</label>
+      <input type="text" name="name" id="f-name" required class="dm-input" placeholder="Assistant Mirai LibreOffice" oninput="autoSlug()">
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Slug *</label>
+      <div style="display:flex;gap:0.5rem;align-items:center;">
+        <input type="text" name="slug" id="f-slug" required class="dm-input" placeholder="mirai-libreoffice" pattern="[a-z0-9\-]+" style="max-width:300px;" oninput="checkSlug()">
+        <span id="slug-status" style="font-size:0.8rem;"></span>
+      </div>
+      <div id="slug-alternatives" style="display:none;margin-top:0.25rem;font-size:0.8rem;"></div>
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Intention / Proposition de valeur</label>
+      <textarea name="intent" id="f-intent" class="dm-input" rows="2" placeholder="Augmenter la productivite des agents..."></textarea>
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Description</label>
+      <textarea name="description" id="f-description" class="dm-input" rows="4" placeholder="Description detaillee..."></textarea>
+    </div>
+
+    {# Tags input for key features #}
+    <div class="dm-form-row">
+      <label class="dm-label">Fonctionnalites cles</label>
+      <input type="hidden" name="key_features" id="f-key_features">
+      <div id="tags-container" class="dm-tags-container">
+        <input type="text" id="tag-input" class="dm-tags-input" placeholder="Ajouter un tag + Entree">
+      </div>
+      <div class="dm-hint">Tapez un tag puis Entree. Cliquez sur x pour supprimer.</div>
+    </div>
+
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Type de plugin *</label>
+        <select name="device_type" id="f-device_type" class="dm-select" style="width:100%;" required>
+          {% for dt in device_types %}
+          <option value="{{ dt.id }}">{{ dt.label }} ({{ dt.ext }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Categorie</label>
+        <select name="category" id="f-category" class="dm-select" style="width:100%;">
+          {% for c in categories %}
+          <option value="{{ c }}">{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Editeur</label>
+        <input type="text" name="publisher" class="dm-input" value="DNUM">
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Visibilite</label>
+        <select name="visibility" class="dm-select" style="width:100%;">
+          <option value="public">Public</option>
+          <option value="internal">Interne</option>
+          <option value="hidden">Cache</option>
+        </select>
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">URL page d'accueil / doc</label>
+      <input type="url" name="homepage_url" class="dm-input" placeholder="https://...">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Email support</label>
+      <input type="email" name="support_email" class="dm-input" placeholder="support@example.com">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Changelog (markdown)</label>
+      <textarea name="changelog" id="f-changelog" class="dm-input" rows="5" placeholder="## v1.0.0&#10;- Premiere version..."></textarea>
+    </div>
+
+    <div class="dm-form-actions">
+      <a href="/admin/catalog" class="dm-btn dm-btn--secondary">Annuler</a>
+      <button type="submit" class="dm-btn dm-btn--primary">Creer le plugin</button>
+    </div>
+  </form>
+</div>
+
+<script>
+// ═══════ Tags system ═══════
+let tags = [];
+
+function renderTags() {
+  const container = document.getElementById('tags-container');
+  const input = document.getElementById('tag-input');
+  // Remove existing tag elements
+  container.querySelectorAll('.dm-tag').forEach(t => t.remove());
+  // Add tags before input
+  tags.forEach((tag, i) => {
+    const el = document.createElement('span');
+    el.className = 'dm-tag';
+    el.innerHTML = tag + ' <span class="dm-tag__remove" onclick="removeTag(' + i + ')">&times;</span>';
+    container.insertBefore(el, input);
+  });
+  // Update hidden field
+  document.getElementById('f-key_features').value = tags.join(', ');
+}
+
+function addTag(text) {
+  text = text.trim();
+  if (!text || tags.includes(text)) return;
+  tags.push(text);
+  renderTags();
+}
+
+function removeTag(index) {
+  tags.splice(index, 1);
+  renderTags();
+}
+
+document.getElementById('tag-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault();
+    addTag(this.value);
+    this.value = '';
+  }
+  if (e.key === 'Backspace' && !this.value && tags.length) {
+    removeTag(tags.length - 1);
+  }
+});
+
+// Also add on blur
+document.getElementById('tag-input').addEventListener('blur', function() {
+  if (this.value.trim()) { addTag(this.value); this.value = ''; }
+});
+
+// ═══════ Slug auto-generation ═══════
+let slugManuallyEdited = false;
+let slugCheckTimer = null;
+
+document.getElementById('f-slug').addEventListener('input', function() {
+  slugManuallyEdited = true;
+});
+
+function autoSlug() {
+  if (slugManuallyEdited) return;
+  const name = document.getElementById('f-name').value;
+  const slug = name.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  document.getElementById('f-slug').value = slug;
+  checkSlug();
+}
+
+function checkSlug() {
+  clearTimeout(slugCheckTimer);
+  const slug = document.getElementById('f-slug').value.trim();
+  if (!slug) {
+    document.getElementById('slug-status').innerHTML = '';
+    document.getElementById('slug-alternatives').style.display = 'none';
+    return;
+  }
+  slugCheckTimer = setTimeout(async () => {
+    try {
+      const resp = await fetch('/admin/api/catalog/check-slug?slug=' + encodeURIComponent(slug), {credentials:'same-origin'});
+      const data = await resp.json();
+      const statusEl = document.getElementById('slug-status');
+      const altEl = document.getElementById('slug-alternatives');
+      if (data.available) {
+        statusEl.innerHTML = '<span style="color:#18753C;">&#10003; Disponible</span>';
+        altEl.style.display = 'none';
+      } else {
+        statusEl.innerHTML = '<span style="color:#CE0500;">&#10007; Deja pris</span>';
+        if (data.alternatives && data.alternatives.length) {
+          altEl.style.display = 'block';
+          altEl.innerHTML = 'Suggestions : ' + data.alternatives.map(a =>
+            '<a href="#" onclick="pickSlug(\'' + a + '\');return false;" style="margin-right:0.5rem;">' + a + '</a>'
+          ).join('');
+        }
+      }
+    } catch {}
+  }, 400);
+}
+
+function pickSlug(s) {
+  document.getElementById('f-slug').value = s;
+  slugManuallyEdited = true;
+  checkSlug();
+}
+
+// ═══════ Plugin upload → auto-analyze ═══════
+document.getElementById('plugin-file').addEventListener('change', function() {
+  const file = this.files[0];
+  const statusEl = document.getElementById('analysis-status');
+  if (!file) return;
+
+  statusEl.innerHTML = '<div style="padding:0.5rem;background:#e8e8ff;border-radius:4px;">' +
+    '<strong>Fichier :</strong> ' + file.name + ' (' + (file.size/1024/1024).toFixed(1) + ' Mo)<br>' +
+    '<span style="color:#666;">Analyse en cours via IA...</span></div>';
+
+  analyzePlugin(file, statusEl);
+});
+
+async function analyzePlugin(file, statusEl) {
+  function progress(msg) {
+    const el = document.createElement('div');
+    el.style.cssText = 'font-size:0.8rem;color:#666;margin-top:0.25rem;';
+    el.textContent = '\u2192 ' + msg;
+    statusEl.appendChild(el);
+  }
+
+  const fd = new FormData();
+  fd.append('plugin_file', file);
+
+  try {
+    progress('Envoi au serveur...');
+    const resp = await fetch('/admin/api/catalog/suggest', {method:'POST', body:fd, credentials:'same-origin'});
+    progress('Reponse : HTTP ' + resp.status);
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch {
+      statusEl.innerHTML += '<div class="dm-flash dm-flash--error" style="margin-top:0.5rem;">Reponse invalide : ' + text.substring(0,200).replace(/</g,'&lt;') + '</div>';
+      showFormSections(true); return;
+    }
+    if (!resp.ok || data.error) {
+      statusEl.innerHTML += '<div class="dm-flash dm-flash--error" style="margin-top:0.5rem;">' + (data.error || 'Erreur ' + resp.status) + '</div>';
+      showFormSections(true); return;
+    }
+
+    fillForm(data);
+
+    let checks = [];
+    if (data.device_type) checks.push('Type : ' + data.device_type);
+    if (data.name) checks.push('Nom : ' + data.name);
+    if (tags.length) checks.push(tags.length + ' tags detectes');
+    if (data.changelog) checks.push('Changelog extrait');
+    const hasReadme = data._has_readme;
+    if (hasReadme) checks.push('README trouve dans le package');
+
+    statusEl.innerHTML = '<div class="dm-flash dm-flash--success" style="margin-bottom:0;">' +
+      checks.map(c => '<div>&#10003; ' + c + '</div>').join('') +
+      (!hasReadme ? '<div style="color:#B34000;">&#9888; Pas de README — completez ci-dessous</div>' : '') +
+      '</div>';
+
+    showFormSections(!hasReadme);
+  } catch (e) {
+    statusEl.innerHTML += '<div class="dm-flash dm-flash--error" style="margin-top:0.5rem;">Erreur : ' + e.message + '</div>';
+    showFormSections(true);
+  }
+}
+
+function showFormSections(showReadme) {
+  document.getElementById('readme-section').style.display = showReadme ? 'block' : 'none';
+  document.getElementById('form-section').style.display = 'block';
+}
+
+// ═══════ Enrich with README ═══════
+async function enrichWithReadme() {
+  const btn = document.getElementById('enrich-btn');
+  const status = document.getElementById('enrich-status');
+  const readmeFile = document.getElementById('readme-file').files[0];
+  const readmeUrl = document.getElementById('readme-url').value.trim();
+  if (!readmeFile && !readmeUrl) { status.innerHTML = '<span style="color:#CE0500;">Fournissez un fichier ou une URL.</span>'; return; }
+
+  btn.disabled = true;
+  status.textContent = 'Analyse du README (IA)...';
+  const fd = new FormData();
+  if (readmeFile) fd.append('readme_file', readmeFile);
+  if (readmeUrl) fd.append('readme_url', readmeUrl);
+  const pf = document.getElementById('plugin-file').files[0];
+  if (pf) fd.append('plugin_file', pf);
+
+  try {
+    const resp = await fetch('/admin/api/catalog/suggest', {method:'POST', body:fd, credentials:'same-origin'});
+    const data = await resp.json();
+    if (data.error) { status.innerHTML = '<span style="color:#CE0500;">' + data.error + '</span>'; }
+    else { fillForm(data); status.innerHTML = '<span style="color:#18753C;">Fiche enrichie.</span>'; }
+  } catch (e) { status.innerHTML = '<span style="color:#CE0500;">Erreur : ' + e.message + '</span>'; }
+  btn.disabled = false;
+}
+
+// ═══════ Fill form from AI data ═══════
+function fillForm(data) {
+  const fields = {name:'f-name', slug:'f-slug', intent:'f-intent', description:'f-description', changelog:'f-changelog'};
+  for (const [key, id] of Object.entries(fields)) {
+    const el = document.getElementById(id);
+    if (data[key] && el) {
+      el.value = data[key];
+      el.style.borderColor = '#18753C';
+      setTimeout(() => el.style.borderColor = '', 3000);
+    }
+  }
+  // Tags
+  if (data.key_features && Array.isArray(data.key_features)) {
+    tags = [];
+    data.key_features.forEach(f => addTag(f));
+  }
+  // Selects
+  if (data.device_type) {
+    const sel = document.getElementById('f-device_type');
+    for (const opt of sel.options) { if (opt.value === data.device_type) { opt.selected = true; break; } }
+  }
+  if (data.category) {
+    const sel = document.getElementById('f-category');
+    for (const opt of sel.options) { if (opt.value === data.category) { opt.selected = true; break; } }
+  }
+  // Auto-generate slug from name if not already set
+  if (data.name && !document.getElementById('f-slug').value) {
+    slugManuallyEdited = false;
+    autoSlug();
+  }
+  // Check slug availability
+  if (document.getElementById('f-slug').value) checkSlug();
+}
+</script>
+{% endblock %}

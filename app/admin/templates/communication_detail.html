@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}{{ comm.title }}{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb"><a href="/admin/communications">Communications</a> &rsaquo; {{ comm.title[:50] }}</div>
+{% endblock %}
+{% block content %}
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem;">
+  <div>
+    <h1 class="dm-page-title" style="margin-bottom:0.25rem;">{{ comm.title }}</h1>
+    <div style="font-size:0.875rem;color:#666;">
+      {% if comm.type == 'announcement' %}Annonce
+      {% elif comm.type == 'alert' %}Alerte
+      {% elif comm.type == 'survey' %}Sondage
+      {% elif comm.type == 'changelog' %}Changelog{% endif %}
+      &mdash;
+      {% if comm.status == 'active' %}<span class="dm-badge dm-badge--success">Actif</span>
+      {% elif comm.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
+      {% elif comm.status == 'completed' %}<span class="dm-badge dm-badge--info">Termine</span>
+      {% elif comm.status == 'paused' %}<span class="dm-badge dm-badge--warning">En pause</span>
+      {% else %}<span class="dm-badge dm-badge--neutral">{{ comm.status }}</span>{% endif %}
+      {% if comm.priority == 'critical' %}<span class="dm-badge dm-badge--error" style="margin-left:0.5rem;">Critique</span>{% endif %}
+      {% if comm.plugin_name %}&mdash; Plugin : {{ comm.plugin_name }}{% endif %}
+      {% if comm.cohort_name %}&mdash; Groupe : {{ comm.cohort_name }}{% endif %}
+    </div>
+  </div>
+  <div style="display:flex;gap:0.5rem;">
+    {% if comm.status == 'draft' %}
+    <form method="post" action="/admin/communications/{{ comm.id }}/status">
+      <input type="hidden" name="status" value="active">
+      <button class="dm-btn dm-btn--primary dm-btn--sm">Publier</button>
+    </form>
+    {% elif comm.status == 'active' %}
+    <form method="post" action="/admin/communications/{{ comm.id }}/status">
+      <input type="hidden" name="status" value="paused">
+      <button class="dm-btn dm-btn--warning dm-btn--sm">Pause</button>
+    </form>
+    <form method="post" action="/admin/communications/{{ comm.id }}/status">
+      <input type="hidden" name="status" value="completed">
+      <button class="dm-btn dm-btn--primary dm-btn--sm">Clore</button>
+    </form>
+    {% elif comm.status == 'paused' %}
+    <form method="post" action="/admin/communications/{{ comm.id }}/status">
+      <input type="hidden" name="status" value="active">
+      <button class="dm-btn dm-btn--primary dm-btn--sm">Reprendre</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{# Stats #}
+<div class="dm-grid-3" style="margin-bottom:1.5rem;">
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.ack_count }}</div>
+    <div style="font-size:0.875rem;color:#666;">Vus / acquittes</div>
+  </div>
+  {% if comm.type == 'survey' %}
+  <div class="dm-metric-tile dm-metric-tile--success">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.response_count }}</div>
+    <div style="font-size:0.875rem;">Reponses au sondage</div>
+  </div>
+  {% endif %}
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">
+      {% if comm.expires_at %}{{ comm.expires_at.strftime('%d/%m/%Y') }}{% else %}Pas d'expiration{% endif %}
+    </div>
+    <div style="font-size:0.875rem;color:#666;">Expiration</div>
+  </div>
+</div>
+
+{# Message content #}
+<div style="background:#f9f9f9;padding:1.5rem;border-radius:8px;margin-bottom:1.5rem;white-space:pre-line;line-height:1.6;">{{ comm.body }}</div>
+
+{# Survey results #}
+{% if comm.type == 'survey' and survey_results %}
+<h3 style="margin-bottom:1rem;">Resultats du sondage</h3>
+
+{% if comm.survey_question %}
+<p style="font-weight:600;margin-bottom:0.75rem;">{{ comm.survey_question }}</p>
+{% endif %}
+
+{% set choices = comm.survey_choices %}
+{% if choices is string %}{% set choices = choices | tojson | fromjson %}{% endif %}
+
+<div style="margin-bottom:1.5rem;">
+  {% set total = survey_results.total_responses %}
+  {% if choices is iterable %}
+  {% for choice in choices %}
+  {% set count = survey_results.choice_counts.get(choice, survey_results.choice_counts.get(loop.index0|string, 0)) %}
+  {% set pct = (count / total * 100) if total else 0 %}
+  <div style="margin-bottom:0.5rem;">
+    <div style="display:flex;justify-content:space-between;font-size:0.875rem;margin-bottom:0.25rem;">
+      <span>{{ choice }}</span>
+      <span>{{ count }} ({{ pct|round(1) }}%)</span>
+    </div>
+    <div class="dm-progress-bar">
+      <div class="dm-progress-bar__fill" style="width:{{ pct }}%;background:#000091;"></div>
+    </div>
+  </div>
+  {% endfor %}
+  {% endif %}
+  <div style="font-size:0.8rem;color:#666;margin-top:0.5rem;">{{ total }} reponse(s) au total</div>
+</div>
+
+{% if survey_results.comments %}
+<h4>Commentaires</h4>
+<div style="background:#f9f9f9;padding:1rem;border-radius:8px;">
+  {% for c in survey_results.comments[:20] %}
+  <div style="border-bottom:1px solid #e5e5e5;padding:0.5rem 0;font-size:0.875rem;">
+    <span style="color:#666;">{{ c.email[:25] if c.email else 'Anonyme' }}</span>
+    &mdash; {{ c.comment }}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endif %}
+
+{% endblock %}

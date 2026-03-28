@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Nouvelle communication{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb"><a href="/admin/communications">Communications</a> &rsaquo; Nouvelle</div>
+{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Nouvelle communication</h1>
+
+<form method="post" action="/admin/communications" style="max-width:700px;">
+
+  <div class="dm-form-row">
+    <label class="dm-label">Type *</label>
+    <div class="dm-grid-4" style="margin-top:0.25rem;">
+      {% for t, label in [('announcement','Annonce'), ('alert','Alerte'), ('survey','Sondage'), ('changelog','Changelog')] %}
+      <label class="dm-device-card" style="padding:0.75rem;" onclick="toggleSurvey()">
+        <input type="radio" name="type" value="{{ t }}" {% if comm_type == t %}checked{% endif %} style="display:none;" onchange="toggleSurvey()">
+        <div class="dm-device-card__name" style="font-size:0.9rem;">{{ label }}</div>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="dm-form-row">
+    <label class="dm-label">Titre *</label>
+    <input type="text" name="title" required class="dm-input" placeholder="Nouvelle version disponible">
+  </div>
+
+  <div class="dm-form-row">
+    <label class="dm-label">Message * (markdown)</label>
+    <textarea name="body" required class="dm-input" rows="6" placeholder="Contenu de la communication..."></textarea>
+  </div>
+
+  <div class="dm-form-row">
+    <label class="dm-label">Priorite</label>
+    <select name="priority" class="dm-select">
+      <option value="low">Basse</option>
+      <option value="normal" selected>Normale</option>
+      <option value="high">Haute</option>
+      <option value="critical">Critique</option>
+    </select>
+  </div>
+
+  <div class="dm-grid-2">
+    <div class="dm-form-row">
+      <label class="dm-label">Plugin cible</label>
+      <select name="target_plugin_id" class="dm-select" style="width:100%;">
+        <option value="">Tous les plugins</option>
+        {% for p in plugins %}
+        <option value="{{ p.id }}">{{ p.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Groupe cible</label>
+      <select name="target_cohort_id" class="dm-select" style="width:100%;">
+        <option value="">Tous les utilisateurs</option>
+        {% for c in cohorts %}
+        <option value="{{ c.id }}">{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+
+  <div class="dm-grid-2">
+    <div class="dm-form-row">
+      <label class="dm-label">Debut</label>
+      <input type="datetime-local" name="starts_at" class="dm-input">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Expiration (optionnel)</label>
+      <input type="datetime-local" name="expires_at" class="dm-input">
+    </div>
+  </div>
+
+  {# Survey fields #}
+  <div id="survey-fields" style="display:none;background:#F5F5FE;padding:1rem;border-radius:8px;margin-bottom:1rem;">
+    <h3 style="font-size:1rem;margin-top:0;">Sondage express</h3>
+    <div class="dm-form-row">
+      <label class="dm-label">Question</label>
+      <input type="text" name="survey_question" class="dm-input" placeholder="Etes-vous satisfait de la nouvelle interface ?">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Choix (un par ligne)</label>
+      <textarea name="survey_choices" class="dm-input" rows="5" placeholder="Tres satisfait&#10;Satisfait&#10;Neutre&#10;Insatisfait&#10;Tres insatisfait"></textarea>
+    </div>
+    <div class="dm-form-row">
+      <label><input type="checkbox" name="survey_allow_multiple"> Autoriser la selection multiple</label>
+    </div>
+    <div class="dm-form-row">
+      <label><input type="checkbox" name="survey_allow_comment"> Ajouter un champ commentaire libre</label>
+    </div>
+  </div>
+
+  <div class="dm-form-row">
+    <label class="dm-label">Publier immediatement ?</label>
+    <select name="start_status" class="dm-select">
+      <option value="draft">Brouillon (publier plus tard)</option>
+      <option value="active">Publier maintenant</option>
+    </select>
+  </div>
+
+  <div class="dm-form-actions">
+    <a href="/admin/communications" class="dm-btn dm-btn--secondary">Annuler</a>
+    <button type="submit" class="dm-btn dm-btn--primary">Creer</button>
+  </div>
+</form>
+
+<script>
+function toggleSurvey() {
+  const isSurvey = document.querySelector('input[name=type]:checked')?.value === 'survey';
+  document.getElementById('survey-fields').style.display = isSurvey ? 'block' : 'none';
+  // Card selection visual
+  document.querySelectorAll('.dm-device-card').forEach(c => c.classList.remove('dm-device-card--selected'));
+  const checked = document.querySelector('input[name=type]:checked');
+  if (checked) checked.closest('.dm-device-card')?.classList.add('dm-device-card--selected');
+}
+toggleSurvey();
+</script>
+{% endblock %}

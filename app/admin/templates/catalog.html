@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Catalogue{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+  <h1 class="dm-page-title" style="margin:0;">Catalogue de plugins</h1>
+  <a href="/admin/catalog/new" class="dm-btn dm-btn--primary">+ Nouveau plugin</a>
+</div>
+
+<div class="dm-search">
+  <form method="get" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <select name="category" class="dm-select" onchange="this.form.submit()">
+      <option value="">Toutes categories</option>
+      {% for c in categories %}
+      <option value="{{ c }}" {% if filters.category == c %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+    <select name="status" class="dm-select" onchange="this.form.submit()">
+      <option value="">Tous statuts</option>
+      <option value="active" {% if filters.status == 'active' %}selected{% endif %}>Actif</option>
+      <option value="draft" {% if filters.status == 'draft' %}selected{% endif %}>Brouillon</option>
+      <option value="deprecated" {% if filters.status == 'deprecated' %}selected{% endif %}>Obsolete</option>
+    </select>
+  </form>
+</div>
+
+{% if plugins %}
+<div class="dm-grid-3">
+  {% for p in plugins %}
+  <a href="/admin/catalog/{{ p.id }}" class="dm-plugin-card">
+    <div class="dm-plugin-card__header">
+      <div class="dm-plugin-card__icon">{{ p.device_type[:2].upper() }}</div>
+      <div>
+        <div class="dm-plugin-card__name">{{ p.name }}</div>
+        <div class="dm-plugin-card__meta">{{ p.device_type }} &mdash; {{ p.category }}</div>
+      </div>
+    </div>
+    {% if p.intent %}
+    <div class="dm-plugin-card__intent">{{ p.intent[:120] }}{% if p.intent|length > 120 %}...{% endif %}</div>
+    {% endif %}
+    <div class="dm-plugin-card__footer">
+      <span>{{ p.install_count or 0 }} installs</span>
+      <span>{{ p.latest_version or 'aucune version' }}</span>
+      {% if p.status == 'active' %}<span class="dm-badge dm-badge--success">Actif</span>
+      {% elif p.status == 'deprecated' %}<span class="dm-badge dm-badge--warning">Obsolete</span>
+      {% elif p.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
+      {% else %}<span class="dm-badge dm-badge--error">{{ p.status }}</span>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p style="color:#666;">Aucun plugin dans le catalogue. <a href="/admin/catalog/new">Creer le premier</a>.</p>
+{% endif %}
+{% endblock %}

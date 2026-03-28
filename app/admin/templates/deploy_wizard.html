@@ -1,0 +1,540 @@
+{% extends "base.html" %}
+{% block title %}Deploiement 1-2-3{% endblock %}
+
+{% block content %}
+
+{% if mode == "wizard" %}
+{# ════════════════ WIZARD (3 steps) ════════════════ #}
+
+<h1 class="dm-page-title">Deploiement 1-2-3</h1>
+
+<div class="dm-steps" id="step-indicator">
+  <div class="dm-step dm-step--active dm-step--arrow" id="si-1">1. Plugin</div>
+  <div class="dm-step dm-step--arrow" id="si-2">2. Cible</div>
+  <div class="dm-step" id="si-3">3. Lancer</div>
+</div>
+
+<form action="/admin/deploy/create" method="post" enctype="multipart/form-data" id="deploy-form" style="margin-top:1.5rem;">
+
+  {# ── Step 1: Plugin ── #}
+  <div class="wizard-step" id="step-1">
+    <h2 style="font-size:1.125rem;margin-bottom:1rem;">Quel type de plugin ?</h2>
+
+    <div class="dm-grid-3" style="margin-bottom:1.5rem;">
+      {% for dt in device_types %}
+      <label class="dm-device-card" data-type="{{ dt.id }}">
+        <input type="radio" name="device_type" value="{{ dt.id }}" {% if loop.first %}checked{% endif %} style="display:none;">
+        <div class="dm-device-card__name">{{ dt.label }}</div>
+        <div class="dm-device-card__ext">{{ dt.ext }}</div>
+      </label>
+      {% endfor %}
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Fichier du plugin</label>
+      <input type="file" name="binary" required class="dm-input" accept=".oxt,.xpi,.crx,.exe" id="file-input">
+      <div id="file-validation" style="margin-top:0.5rem;"></div>
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Version</label>
+      <input type="text" name="version" required class="dm-input" placeholder="ex: 2.1.0" id="version-input" style="max-width:200px;">
+      <div class="dm-hint" id="version-hint"></div>
+    </div>
+
+    <div class="dm-form-actions">
+      <button type="button" class="dm-btn dm-btn--primary" onclick="goStep(2)" id="btn-step2" disabled>Suivant</button>
+    </div>
+  </div>
+
+  {# ── Step 2: Target ── #}
+  <div class="wizard-step" id="step-2" style="display:none;">
+    <h2 style="font-size:1.125rem;margin-bottom:1rem;">Qui recoit la mise a jour ?</h2>
+
+    <div class="dm-form-row">
+      <label style="display:block;margin-bottom:0.75rem;">
+        <input type="radio" name="target_mode" value="all" checked onchange="toggleTarget()">
+        Tous les utilisateurs (deploiement progressif)
+      </label>
+      <label style="display:block;margin-bottom:0.75rem;">
+        <input type="radio" name="target_mode" value="existing" onchange="toggleTarget()">
+        Un groupe existant
+      </label>
+      <label style="display:block;margin-bottom:0.75rem;">
+        <input type="radio" name="target_mode" value="percent" onchange="toggleTarget()">
+        Un pourcentage d'utilisateurs
+      </label>
+      <label style="display:block;margin-bottom:0.75rem;">
+        <input type="radio" name="target_mode" value="emails" onchange="toggleTarget()">
+        Des adresses email specifiques
+      </label>
+    </div>
+
+    <div id="target-existing" style="display:none;margin-left:1.5rem;" class="dm-form-row">
+      <label class="dm-label">Groupe</label>
+      <select name="cohort_id" class="dm-select" style="width:100%;max-width:400px;">
+        <option value="">-- Choisir --</option>
+        {% for c in cohorts %}
+        <option value="{{ c.id }}">{{ c.name }} ({{ c.member_count }} membres)</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div id="target-percent" style="display:none;margin-left:1.5rem;" class="dm-form-row">
+      <label class="dm-label">Pourcentage</label>
+      <div style="display:flex;align-items:center;gap:0.5rem;">
+        <input type="number" name="percent" value="10" min="1" max="100" class="dm-input" style="max-width:100px;">
+        <span>% des utilisateurs</span>
+      </div>
+    </div>
+
+    <div id="target-emails" style="display:none;margin-left:1.5rem;" class="dm-form-row">
+      <label class="dm-label">Adresses email (une par ligne)</label>
+      <textarea name="emails" class="dm-input" rows="5" placeholder="alice@example.com&#10;bob@example.com"></textarea>
+    </div>
+
+    <div class="dm-form-actions">
+      <button type="button" class="dm-btn dm-btn--secondary" onclick="goStep(1)">Retour</button>
+      <button type="button" class="dm-btn dm-btn--primary" onclick="goStep(3)">Suivant</button>
+    </div>
+  </div>
+
+  {# ── Step 3: Configure & Launch ── #}
+  <div class="wizard-step" id="step-3" style="display:none;">
+    <h2 style="font-size:1.125rem;margin-bottom:1rem;">Recapitulatif</h2>
+
+    <div class="dm-metric-tile" style="margin-bottom:1.5rem;" id="summary-box">
+      <div id="summary-text" style="font-size:0.9rem;"></div>
+    </div>
+
+    <h3 style="font-size:1rem;margin-bottom:0.75rem;">Type de deploiement</h3>
+
+    <div class="dm-form-row">
+      <label style="display:block;margin-bottom:0.75rem;">
+        <input type="radio" name="deploy_type" value="progressive" checked onchange="toggleDeployType()">
+        <strong>Progressif</strong> (recommande) — paliers 5% / 25% / 50% / 100%
+      </label>
+      <div id="progressive-options" style="margin-left:1.5rem;margin-bottom:1rem;">
+        <label class="dm-label">Duree entre paliers</label>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <input type="number" name="stage_hours" value="24" min="1" max="720" class="dm-input" style="max-width:100px;" id="stage-hours" oninput="updateEstimate()">
+          <span>heures</span>
+          <span style="margin-left:1rem;color:#666;font-size:0.875rem;" id="duration-estimate">Duree totale estimee : ~3 jours</span>
+        </div>
+      </div>
+
+      <label style="display:block;margin-bottom:0.75rem;">
+        <input type="radio" name="deploy_type" value="urgent" onchange="toggleDeployType()">
+        <strong>Patch urgent</strong> — 100% immediat, pas de paliers
+      </label>
+    </div>
+
+    <details style="margin-bottom:1.5rem;">
+      <summary style="cursor:pointer;color:#000091;font-size:0.875rem;">Options avancees</summary>
+      <div style="margin-top:0.75rem;">
+        <div class="dm-form-row">
+          <label class="dm-label">Nom du deploiement</label>
+          <input type="text" name="name" class="dm-input" placeholder="Auto-genere si vide" style="max-width:400px;">
+        </div>
+        <div class="dm-form-row">
+          <label class="dm-label">Artifact de rollback</label>
+          <select name="rollback_artifact_id" class="dm-select" style="max-width:400px;">
+            <option value="">Aucun</option>
+            {% for a in artifacts %}
+            <option value="{{ a.id }}">{{ a.device_type }}/{{ a.version }} (ID:{{ a.id }})</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </details>
+
+    <div class="dm-form-actions">
+      <button type="button" class="dm-btn dm-btn--secondary" onclick="goStep(2)">Retour</button>
+      <button type="submit" class="dm-btn dm-btn--primary" style="font-size:1rem;padding:0.75rem 2rem;">
+        Lancer le deploiement
+      </button>
+    </div>
+  </div>
+
+</form>
+
+<script>
+function goStep(n) {
+  document.querySelectorAll('.wizard-step').forEach(s => s.style.display = 'none');
+  document.getElementById('step-' + n).style.display = 'block';
+  // Update indicator
+  for (let i = 1; i <= 3; i++) {
+    const el = document.getElementById('si-' + i);
+    el.classList.remove('dm-step--active', 'dm-step--done');
+    if (i < n) el.classList.add('dm-step--done');
+    if (i === n) el.classList.add('dm-step--active');
+  }
+  if (n === 3) updateSummary();
+}
+
+function toggleTarget() {
+  ['existing','percent','emails'].forEach(id => {
+    document.getElementById('target-' + id).style.display = 'none';
+  });
+  const mode = document.querySelector('input[name=target_mode]:checked').value;
+  if (mode !== 'all') {
+    document.getElementById('target-' + mode).style.display = 'block';
+  }
+}
+
+function toggleDeployType() {
+  const prog = document.querySelector('input[name=deploy_type]:checked').value === 'progressive';
+  document.getElementById('progressive-options').style.display = prog ? 'block' : 'none';
+}
+
+function updateEstimate() {
+  const h = parseInt(document.getElementById('stage-hours').value) || 24;
+  const totalH = h * 3; // 3 stages before 100%
+  const days = (totalH / 24).toFixed(1);
+  document.getElementById('duration-estimate').textContent =
+    'Duree totale estimee : ~' + days + ' jours';
+}
+
+function updateSummary() {
+  const dt = document.querySelector('input[name=device_type]:checked');
+  const file = document.getElementById('file-input').files[0];
+  const ver = document.getElementById('version-input').value;
+  const mode = document.querySelector('input[name=target_mode]:checked').value;
+  const modeLabels = {all:'Tous les utilisateurs', existing:'Groupe existant',
+                      percent:'Pourcentage', emails:'Emails specifiques'};
+  let html = '<strong>Plugin :</strong> ' + (dt ? dt.value : '?') + ' — ' +
+             (file ? file.name : '?') + ' (v' + ver + ')<br>';
+  html += '<strong>Cible :</strong> ' + (modeLabels[mode] || mode);
+  document.getElementById('summary-text').innerHTML = html;
+}
+
+// Analyze uploaded file: validate format, extract version, detect type
+document.getElementById('file-input').addEventListener('change', function() {
+  const file = this.files[0];
+  const vBox = document.getElementById('file-validation');
+  const hint = document.getElementById('version-hint');
+  const versionInput = document.getElementById('version-input');
+  const btnNext = document.getElementById('btn-step2');
+
+  if (!file) { vBox.innerHTML = ''; btnNext.disabled = true; return; }
+
+  // Show loading
+  vBox.innerHTML = '<span style="color:#666;">Analyse du fichier en cours...</span>';
+  btnNext.disabled = true;
+  hint.textContent = '';
+
+  const fd = new FormData();
+  fd.append('binary', file);
+  fetch('/admin/api/deploy/extract-version', {method: 'POST', body: fd})
+    .then(r => r.json())
+    .then(data => {
+      let html = '';
+      const sizeMB = (data.file_size / (1024*1024)).toFixed(1);
+
+      if (!data.valid) {
+        // Errors
+        html += '<div class="dm-flash dm-flash--error" style="margin-bottom:0;">';
+        html += data.errors.map(e => '<div>' + e + '</div>').join('');
+        html += '</div>';
+        btnNext.disabled = true;
+      } else {
+        // Success
+        const checks = [
+          'Format : .' + data.extension + (data.is_valid_zip ? ' (archive ZIP valide)' : ''),
+          'Taille : ' + sizeMB + ' Mo',
+        ];
+        if (data.version && data.source === 'package') {
+          checks.push('Version : ' + data.version + ' (extraite du package)');
+        } else if (data.version) {
+          checks.push('Version : ' + data.version + ' (depuis le nom de fichier)');
+        }
+        if (data.device_type) {
+          const typeLabels = {libreoffice:'LibreOffice', firefox:'Firefox', chrome:'Chrome', edge:'Edge', matisse:'Thunderbird (Matisse)'};
+          checks.push('Type detecte : ' + (typeLabels[data.device_type] || data.device_type));
+        }
+        html += '<div class="dm-flash dm-flash--success" style="margin-bottom:0;">';
+        html += checks.map(c => '<div>&#10003; ' + c + '</div>').join('');
+        if (data.warnings.length) {
+          html += data.warnings.map(w => '<div style="color:#B34000;">&#9888; ' + w + '</div>').join('');
+        }
+        html += '</div>';
+        btnNext.disabled = false;
+      }
+      vBox.innerHTML = html;
+
+      // Fill version
+      if (data.version) {
+        versionInput.value = data.version;
+        hint.textContent = data.source === 'package' ? 'Extraite du package' : 'Extraite du nom de fichier';
+        hint.style.color = data.source === 'package' ? '#18753C' : '#666';
+      }
+
+      // Auto-select device type card
+      if (data.device_type) {
+        const card = document.querySelector('.dm-device-card[data-type="' + data.device_type + '"]');
+        if (card) {
+          document.querySelectorAll('.dm-device-card').forEach(c => c.classList.remove('dm-device-card--selected'));
+          card.classList.add('dm-device-card--selected');
+          card.querySelector('input[type=radio]').checked = true;
+        }
+      }
+    })
+    .catch(() => {
+      vBox.innerHTML = '<div class="dm-flash dm-flash--warning" style="margin-bottom:0;">Impossible d\'analyser le fichier — verification manuelle requise</div>';
+      btnNext.disabled = false;
+      const m = file.name.match(/(\d+\.\d+(?:\.\d+)?)/);
+      if (m && !versionInput.value) versionInput.value = m[1];
+    });
+});
+
+// Card selection visual
+document.querySelectorAll('.dm-device-card').forEach(card => {
+  card.addEventListener('click', () => {
+    document.querySelectorAll('.dm-device-card').forEach(c => c.classList.remove('dm-device-card--selected'));
+    card.classList.add('dm-device-card--selected');
+  });
+});
+// Init first card
+document.querySelector('.dm-device-card')?.classList.add('dm-device-card--selected');
+</script>
+
+{% elif mode == "tracking" %}
+{# ════════════════ TRACKING PAGE ════════════════ #}
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+  <div>
+    <h1 class="dm-page-title" style="margin-bottom:0.25rem;">{{ campaign.name }}</h1>
+    <div style="font-size:0.875rem;color:#666;">
+      {% if campaign.status == 'active' %}
+        <span class="dm-badge dm-badge--success">Actif</span>
+      {% elif campaign.status == 'paused' %}
+        <span class="dm-badge dm-badge--warning">En pause</span>
+      {% elif campaign.status == 'completed' %}
+        <span class="dm-badge dm-badge--info">Termine</span>
+      {% elif campaign.status == 'rolled_back' %}
+        <span class="dm-badge dm-badge--error">Annule</span>
+      {% else %}
+        <span class="dm-badge dm-badge--neutral">{{ campaign.status }}</span>
+      {% endif %}
+      &mdash; {{ campaign.device_type }} v{{ campaign.artifact_version }}
+      {% if campaign.urgency == 'critical' %}
+        <span class="dm-badge dm-badge--error" style="margin-left:0.5rem;">Urgent</span>
+      {% endif %}
+    </div>
+  </div>
+  <div style="display:flex;gap:0.5rem;">
+    {% if campaign.status == 'active' %}
+    <form method="post" action="/admin/deploy/{{ campaign.id }}/pause" style="display:inline;">
+      <button class="dm-btn dm-btn--warning dm-btn--sm" onclick="return confirm('Mettre en pause ?')">Pause</button>
+    </form>
+    {% elif campaign.status == 'paused' %}
+    <form method="post" action="/admin/deploy/{{ campaign.id }}/resume" style="display:inline;">
+      <button class="dm-btn dm-btn--primary dm-btn--sm">Reprendre</button>
+    </form>
+    {% endif %}
+    {% if campaign.status in ('active', 'paused') %}
+    <form method="post" action="/admin/deploy/{{ campaign.id }}/abort" style="display:inline;">
+      <button class="dm-btn dm-btn--danger dm-btn--sm" onclick="return confirm('Annuler et rollback ?')">Rollback</button>
+    </form>
+    {% endif %}
+    {% if campaign.status == 'active' and stats.progress_pct >= 95 %}
+    <form method="post" action="/admin/deploy/{{ campaign.id }}/complete" style="display:inline;">
+      <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="return confirm('Marquer comme termine ?')">Terminer</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{# Progress chart #}
+<div style="background:#F5F5FE;border-radius:8px;padding:1.5rem;margin-bottom:1.5rem;">
+  <canvas id="progress-chart" height="200"></canvas>
+</div>
+
+{# Metric tiles #}
+<div class="dm-grid-4" id="stats-tiles"
+     hx-get="/admin/api/deploy/{{ campaign.id }}/progress" hx-trigger="every 15s"
+     hx-swap="none">
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.total }}</div>
+    <div style="font-size:0.875rem;color:#666;">Cible</div>
+  </div>
+  <div class="dm-metric-tile dm-metric-tile--success">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.updated }}</div>
+    <div style="font-size:0.875rem;">Mis a jour</div>
+    <div class="dm-progress-bar" style="margin-top:0.5rem;">
+      <div class="dm-progress-bar__fill" style="width:{{ stats.progress_pct }}%;"></div>
+    </div>
+  </div>
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.pending + stats.notified }}</div>
+    <div style="font-size:0.875rem;">En attente</div>
+  </div>
+  <div class="dm-metric-tile {% if stats.error_pct > 5 %}dm-metric-tile--error{% endif %}">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.failed }}</div>
+    <div style="font-size:0.875rem;">Erreurs</div>
+  </div>
+</div>
+
+{# Event log #}
+<h3 style="font-size:1rem;margin-bottom:0.5rem;">Derniers evenements</h3>
+<table class="dm-table-compact" id="event-table">
+  <thead><tr><th>Horodatage</th><th>Utilisateur</th><th>Version</th><th>Statut</th></tr></thead>
+  <tbody>
+    {% for e in events %}
+    <tr>
+      <td>{{ e.updated_at.strftime('%d/%m %H:%M') if e.updated_at else '-' }}</td>
+      <td>{{ e.email[:25] if e.email else e.client_uuid[:12] }}...</td>
+      <td>{{ e.version_before or '?' }} &rarr; {{ e.version_after or '?' }}</td>
+      <td>
+        {% if e.status == 'updated' %}<span class="dm-badge dm-badge--success">Mis a jour</span>
+        {% elif e.status == 'failed' %}<span class="dm-badge dm-badge--error">Echec</span>
+        {% elif e.status == 'notified' %}<span class="dm-badge dm-badge--info">Notifie</span>
+        {% else %}<span class="dm-badge dm-badge--neutral">{{ e.status }}</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not events %}
+    <tr><td colspan="4" style="color:#666;text-align:center;">Aucun evenement pour l'instant.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+<div style="margin-top:1.5rem;">
+  <a href="/admin/campaigns/{{ campaign.id }}" class="dm-btn dm-btn--ghost" style="font-size:0.8rem;">Voir les details avances (campagnes)</a>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+  const campaignId = {{ campaign.id }};
+  let chart = null;
+
+  function buildChart(data) {
+    const ctx = document.getElementById('progress-chart').getContext('2d');
+    const stages = data.stages || [];
+    const created = new Date(data.created_at);
+    const now = new Date();
+
+    // Build planned stages line (step)
+    const plannedPoints = [{x: created, y: 0}];
+    let cursor = new Date(created);
+    for (const s of stages) {
+      plannedPoints.push({x: new Date(cursor), y: s.percent});
+      if (s.duration_hours > 0) {
+        cursor = new Date(cursor.getTime() + s.duration_hours * 3600000);
+      }
+      plannedPoints.push({x: new Date(cursor), y: s.percent});
+    }
+
+    // Build actual line from stats
+    const pct = data.stats.progress_pct || 0;
+    const actualPoints = [
+      {x: created, y: 0},
+      {x: now, y: pct}
+    ];
+
+    // End time for X axis
+    const endTime = new Date(Math.max(cursor.getTime(), now.getTime() + 3600000));
+
+    if (chart) chart.destroy();
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        datasets: [
+          {
+            label: 'Paliers prevus',
+            data: plannedPoints,
+            borderColor: '#929292',
+            borderDash: [6,4],
+            borderWidth: 2,
+            pointRadius: 0,
+            stepped: 'before',
+            fill: false,
+          },
+          {
+            label: 'Deploiement reel',
+            data: actualPoints,
+            borderColor: '#000091',
+            borderWidth: 3,
+            pointRadius: 4,
+            pointBackgroundColor: '#000091',
+            fill: false,
+            tension: 0.3,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            type: 'time',
+            min: created,
+            max: endTime,
+            time: { unit: 'hour', displayFormats: { hour: 'dd/MM HH:mm' } },
+            title: { display: false }
+          },
+          y: {
+            min: 0, max: 105,
+            title: { display: true, text: '% deploye' },
+            ticks: { callback: v => v + '%' }
+          }
+        },
+        plugins: {
+          legend: { position: 'bottom' },
+          tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(1) + '%' } }
+        }
+      }
+    });
+  }
+
+  function refresh() {
+    fetch('/admin/api/deploy/' + campaignId + '/progress')
+      .then(r => r.json())
+      .then(data => {
+        buildChart(data);
+        // Update tiles
+        const s = data.stats;
+        const tiles = document.getElementById('stats-tiles');
+        if (tiles) {
+          const divs = tiles.querySelectorAll('.dm-metric-tile');
+          if (divs[0]) divs[0].querySelector('div').textContent = s.total;
+          if (divs[1]) divs[1].querySelector('div').textContent = s.updated;
+          if (divs[2]) divs[2].querySelector('div').textContent = (s.pending || 0) + (s.notified || 0);
+          if (divs[3]) divs[3].querySelector('div').textContent = s.failed;
+        }
+        // Update events
+        const tbody = document.querySelector('#event-table tbody');
+        if (tbody && data.events && data.events.length) {
+          let rows = '';
+          for (const e of data.events) {
+            const ts = e.updated_at ? new Date(e.updated_at).toLocaleString('fr-FR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '-';
+            const who = (e.email || '').substring(0, 25) || '...';
+            const ver = (e.version_before || '?') + ' \u2192 ' + (e.version_after || '?');
+            let badge = '<span class="dm-badge dm-badge--neutral">' + e.status + '</span>';
+            if (e.status === 'updated') badge = '<span class="dm-badge dm-badge--success">Mis a jour</span>';
+            if (e.status === 'failed') badge = '<span class="dm-badge dm-badge--error">Echec</span>';
+            if (e.status === 'notified') badge = '<span class="dm-badge dm-badge--info">Notifie</span>';
+            rows += '<tr><td>' + ts + '</td><td>' + who + '</td><td>' + ver + '</td><td>' + badge + '</td></tr>';
+          }
+          tbody.innerHTML = rows;
+        }
+      })
+      .catch(() => {});
+  }
+
+  // Chart.js needs the time adapter
+  const adapterScript = document.createElement('script');
+  adapterScript.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js';
+  adapterScript.onload = function() {
+    refresh();
+    {% if campaign.status in ('active', 'paused') %}
+    setInterval(refresh, 15000);
+    {% endif %}
+  };
+  document.head.appendChild(adapterScript);
+})();
+</script>
+
+{% endif %}
+{% endblock %}

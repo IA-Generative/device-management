@@ -1,155 +1,180 @@
 # Device Management (FastAPI)
 
-Replacement of the Nginx/Lua implementation with a FastAPI API.
+Backend de gestion de plugins pour les outils bureautiques (LibreOffice, Thunderbird).
+Configuration centralisee, deploiement progressif, telemetrie et relay securise.
+
+## Plugins supportes
+
+| Plugin | device_name | device_type | Extension |
+|--------|-------------|-------------|-----------|
+| Assistant Mirai LibreOffice | `mirai-libreoffice` | libreoffice | .oxt |
+| Matisse Thunderbird | `mirai-matisse` | matisse | .xpi |
+
+Le `device_name` est l'identifiant universel du plugin. Il est utilise dans les URLs,
+le catalogue, l'enrollment et le matching de configuration.
 
 ## Documentation
-- `developer-readme.md`: operations guide (dev/infra)
-- `consumer-readme.md`: client integration (PKCE, endpoints, cURL)
+
+- `developer-readme.md` : guide operations (dev/infra)
+- `consumer-readme.md` : integration client (PKCE, endpoints, cURL)
+- `prompts/` : prompts executables pour l'IA (admin UI, deploy wizard, catalogue)
 
 ## Endpoints
 
-- `GET /config/config.json`: returns configuration (dynamic via environment variables)
-- `GET /config/<device>/config.json`: device-specific configuration (matisse, libreoffice, chrome, edge, firefox, misc)
-- `POST|PUT /enroll`: records a JSON payload (local storage and/or S3)
-- `GET /telemetry/token`: returns a short-lived telemetry Bearer token (rotation)
-- `POST /telemetry/v1/traces` (or `/v1/traces`): telemetry relay endpoint to upstream collector
-- `GET /healthz`: returns health status (200 if OK, 412 if prerequisites missing)
-- `GET /binaries/{path}`: serves binaries stored in S3
-  - `presign` mode (default): redirects to a presigned URL
-  - `proxy` mode: proxy/streaming via the API (client does not see S3)
+### Configuration
+- `GET /config/config.json` : configuration generique (dynamique via variables d'environnement)
+- `GET /config/{device_name}/config.json` : configuration specifique au plugin
+  - `device_name` : slug du catalogue (`mirai-libreoffice`, `mirai-matisse`) ou alias (`libreoffice`, `matisse`)
+  - `?profile=dev|int|prod` : profil d'environnement
 
-## Environment variables (`DM_` prefix)
+### Enrollment et relay
+- `POST|PUT /enroll` : enregistrement d'un plugin (JSON payload)
+- `GET /relay/authorize` : autorisation relay (interne, utilise par nginx)
+- `/relay-assistant/{path}` : proxy vers le service relay-assistant (nginx)
 
-### Public URL (used in config/config.json)
+### Telemetrie
+- `GET /telemetry/token` : token Bearer court-duree pour la telemetrie
+- `POST /telemetry/v1/traces` : relay telemetrie vers le collecteur upstream
+
+### Binaires
+- `GET /binaries/{path}` : binaires stockes en S3
+  - `presign` (defaut) : redirection vers une URL pre-signee
+  - `proxy` : streaming via l'API
+
+### Sante
+- `GET /healthz` : verification des dependances (DB, S3, stockage local)
+- `GET /livez` : probe de liveness (toujours 200)
+
+### Administration
+- `GET /admin/` : tableau de bord (OIDC, groupe `admin-dm` requis)
+- `GET /admin/deploy` : assistant de deploiement 1-2-3
+- `GET /admin/catalog` : catalogue de plugins
+- `GET /admin/communications` : campagnes de communication et sondages
+- `GET /admin/devices` : liste des appareils enregistres
+- `GET /admin/campaigns` : campagnes de deploiement (avance)
+- `GET /admin/cohorts` : groupes de ciblage
+- `GET /admin/flags` : feature flags
+- `GET /admin/artifacts` : artefacts binaires
+- `GET /admin/audit` : journal d'audit
+
+## Architecture
+
+```
+app/
+  main.py              # API FastAPI (config, enroll, relay, telemetrie, binaires)
+  admin/
+    router.py          # Admin UI (Jinja2 + HTMX)
+    auth.py            # OIDC session + CSRF
+    services/          # Couche service (DB)
+    templates/         # Templates HTML
+    static/            # CSS
+
+config/
+  libreoffice/         # Templates config LibreOffice (dev/int/prod)
+  matisse/             # Templates config Matisse (dev/int/prod)
+
+deploy/
+  docker/              # Docker Compose (dev local)
+  k8s/
+    base/              # Manifests Kubernetes (base)
+    overlays/          # Overlays par environnement (local, scaleway, dgx)
+
+db/
+  schema.sql           # Schema initial
+  migrations/          # Migrations SQL incrementales
+
+scripts/
+  build-local.sh       # Build Docker arm64 (dev rapide)
+  build-k8s.sh         # Build multi-arch amd64+arm64 + push registry
+  k8s/                 # Scripts deploiement Kubernetes
+```
+
+## Variables d'environnement (`DM_` prefix)
+
+### URL publique
 - `PUBLIC_BASE_URL=https://server.com`
 
-The `config/config.json` file supports placeholders `${VARNAME}` (e.g. `${PUBLIC_BASE_URL}`).
+Les templates config supportent `${{VARNAME}}` (substitution au runtime).
 
 ### API / CORS
-- `DM_ALLOW_ORIGINS="*"` or CSV list of origins
+- `DM_ALLOW_ORIGINS="*"` ou liste CSV
 - `DM_MAX_BODY_SIZE_MB=10`
 
-### /config/config.json
+### Configuration
 - `DM_CONFIG_ENABLED=true`
+- `DM_CONFIG_PROFILE=prod` (defaut, utilise si `?profile=` absent)
 - `DM_APP_ENV=dev`
-- `DM_ENROLL_URL=/enroll`
 
-### Telemetry relay and rotation
+### Telemetrie
 - `DM_TELEMETRY_ENABLED=true`
-- `DM_TELEMETRY_PUBLIC_ENDPOINT=/telemetry/v1/traces`
-- `DM_TELEMETRY_AUTHORIZATION_TYPE=Bearer`
-- `DM_TELEMETRY_UPSTREAM_ENDPOINT=https://telemetry.minint.fr/v1/traces`
-- `DM_TELEMETRY_UPSTREAM_AUTH_TYPE=Bearer`
-- `DM_TELEMETRY_UPSTREAM_KEY=...` (optional if upstream requires auth)
 - `DM_TELEMETRY_TOKEN_TTL_SECONDS=300`
-- `DM_TELEMETRY_TOKEN_SIGNING_KEY=...` (required when `DM_TELEMETRY_REQUIRE_TOKEN=true`)
+- `DM_TELEMETRY_TOKEN_SIGNING_KEY=...`
 - `DM_TELEMETRY_REQUIRE_TOKEN=true`
-- `DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS=false` (default: keep Keycloak issuer/token endpoints from config template)
+- `DM_TELEMETRY_UPSTREAM_ENDPOINT=https://telemetry.minint.fr/v1/traces`
 
-### Enroll storage
+### Relay
+- `DM_RELAY_ENABLED=true`
+- `DM_RELAY_KEY_TTL_SECONDS=2592000`
+- `DM_RELAY_ALLOWED_TARGETS_CSV=keycloak,config,llm,mcr-api,telemetry`
+- `DM_RELAY_REQUIRE_KEY_FOR_SECRETS=true`
+
+### Keycloak
+- `KEYCLOAK_ISSUER_URL=https://sso.example.com/realms/myrealm`
+- `KEYCLOAK_REALM=myrealm`
+- `KEYCLOAK_CLIENT_ID=bootstrap-iassistant`
+
+### LLM (analyse IA du catalogue)
+- `LLM_BASE_URL=https://api.scaleway.ai/.../v1`
+- `LLM_API_TOKEN=...`
+- `DEFAULT_MODEL_NAME=deepseek-r1-distill-llama-70b`
+
+### Stockage
 - `DM_STORE_ENROLL_LOCALLY=true`
-- `DM_ENROLL_DIR=/data/enroll`
 - `DM_STORE_ENROLL_S3=false`
-- `DM_S3_BUCKET=...`
-- `DM_S3_PREFIX_ENROLL=enroll/`
+- `DM_S3_BUCKET=bootstrap`
+- `DM_BINARIES_MODE=presign` (ou `proxy`)
+- `DATABASE_URL=postgresql://dev:dev@postgres:5432/bootstrap`
 
-### S3 binaries
-- `DM_S3_PREFIX_BINARIES=binaries/`
-- `DM_BINARIES_MODE=presign` (or `proxy`)
-- `DM_PRESIGN_TTL_SECONDS=300`
+## Lancer en local
 
-### AWS
-The app uses standard mechanisms (IAM role, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, etc.)
+### Docker Compose (recommande)
 
-## Load environment variables and secrets
+```bash
+cp .env.example .env
+cp .env.secrets.example .env.secrets
+cd deploy/docker
+docker compose up --build
+```
 
-- Docker Compose: `.env` + `.env.secrets`
-- Kubernetes: Helm (`values.yaml` → `env:` and `secrets:`)
+Services : DM (3001), relay-assistant (8088), postgres (5432), adminer (8080)
 
-## TODO (Enrollment)
-
-Goal: secure enrollment with **PKCE**, enable **silent provisioning** (refresh token), and **secure parameter retrieval** in applications.
-
-### 1) PKCE authentication (public client)
-- Create a **public** Keycloak client with mandatory PKCE.
-- Disable ROPC (Direct Access Grants).
-- Strict redirect URL (localhost + allowed port).
-
-### 2) Application enrollment
-- The plugin retrieves the token via PKCE.
-- Checks the token’s `email` field (and `email_verified` if available).
-- Stores the refresh token in the system vault (Keychain/SecretService/Windows CredMan).
-
-### 3) Silent provisioning
-- Renew `access_token` via `refresh_token` without user interaction.
-- If refresh fails → force re-auth.
-
-### 4) Settings and configuration
-- Fetch config via `/config/<device>/config.json`.
-- Use `dm_bootstrap_url` to point to the source (prod vs dev).
-- Keep secrets server-side (not in the plugin).
-
-## Run locally
+### Python direct
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8088
+uvicorn app.main:app --host 0.0.0.0 --port 3001
 ```
 
-## Run with Docker
+## Build et deploiement
 
+### Local (arm64, rapide)
 ```bash
-docker build -t device-management-fastapi .
-docker run --rm -p 8088:8088 -e DM_APP_ENV=dev -v "$(pwd)/data:/data" device-management-fastapi
+./scripts/build-local.sh [tag]
+docker compose -f deploy/docker/docker-compose.yml up -d
 ```
 
-## Run with docker-compose
-
+### Kubernetes (multi-arch amd64+arm64)
 ```bash
-cp .env.example .env
-cp .env.secrets.example .env.secrets
-# Edit .env and .env.secrets (PUBLIC_BASE_URL, S3, secrets...)
-docker compose up --build
+./scripts/build-k8s.sh 0.1.0-my-feature
+./scripts/k8s/deploy.sh scaleway
 ```
 
-## Kubernetes deployment (Helm)
-
-The Helm chart is available in `helm/device-management`.
-
-Example install:
-
-```bash
-helm upgrade --install device-management ./helm/device-management \
-  --set env.PUBLIC_BASE_URL=https://server.com \
-  --set env.DM_APP_ENV=prod
-```
-
-### Configuration / secrets via Helm
-
-- Non-sensitive variables: `values.yaml` → `env:`
-- Secrets: `values.yaml` → `secrets:` or `existingSecretName`
-- `config.json` file: `values.yaml` → `config.configJson`
-
-Minimal `values.yaml` example:
-
-```yaml
-env:
-  PUBLIC_BASE_URL: https://server.com
-  DM_APP_ENV: prod
-secrets:
-  TELEMETRY_SALT: "super-secret"
-  TELEMETRY_KEY: "super-secret-key"
-```
-
-## TODO (Cloud Pi Native)
-
-- Convert all Kubernetes manifests into a **Helm chart** (single entry point, centralized values, environment profiles).
-- Externalize secrets in an **environment vault** compliant with **Cloud Pi Native** (www.cloud-pi-native.fr):
-  - avoid plaintext secrets in Git,
-  - define a rotation and access policy (least privilege),
-  - inject secrets via native mechanisms (external-secrets / CSI / vault provider).
+### Profils Kubernetes
+- `local` : `http://bootstrap.home`
+- `scaleway` : `https://bootstrap.fake-domain.name`
+- `dgx` : `https://internal-domain/bootstrap`
 
 ## Secure Relay Flow (PKCE -> enroll -> relay)
 
@@ -157,13 +182,13 @@ secrets:
 sequenceDiagram
   autonumber
   participant U as User
-  participant P as LibreOffice Plugin
+  participant P as Plugin
   participant KC as Keycloak
   participant DM as Device Management
   participant R as relay-assistant (nginx)
-  participant API as Upstream APIs (Keycloak/LLM/MCR)
+  participant API as Upstream APIs
 
-  P->>DM: GET /config/libreoffice/config.json (no relay headers)
+  P->>DM: GET /config/mirai-libreoffice/config.json
   DM-->>P: public config (secrets scrubbed)
 
   U->>P: Click Login (PKCE)
@@ -175,189 +200,50 @@ sequenceDiagram
   P->>DM: POST /enroll (Authorization: Bearer access_token)
   DM-->>P: relayClientId + relayClientKey + expiry
 
-  P->>DM: GET /config/libreoffice/config.json + X-Relay-Client/X-Relay-Key
-  DM-->>P: config with secret values (llm_api_tokens, etc.)
+  P->>DM: GET /config/mirai-libreoffice/config.json + X-Relay-Client/X-Relay-Key
+  DM-->>P: config with secret values
 
   P->>R: /relay-assistant/keycloak/... + relay headers
   R->>DM: GET /relay/authorize?target=keycloak
   DM-->>R: 200/403
-  R->>API: proxied request only if authorized + whitelisted target/path
+  R->>API: proxied request
   API-->>R: response
   R-->>P: response
 ```
 
-### Security model summary
-- Enrollment requires a user PKCE access token.
-- Relay credentials are generated server-side at enroll and rotated on re-enroll.
-- Secret config values are returned only with valid relay credentials.
-- `relay-assistant` is a standard nginx proxy with strict path whitelist.
-- Authorization is delegated to DM (`/relay/authorize`) with an internal shared token.
-- No free-form URL forwarding: target is constrained to allowed prefixes (`keycloak`, `llm`, `mcr-api`).
+### Modele de securite
+- L'enrollment requiert un token PKCE valide.
+- Les credentials relay sont generes cote serveur et tournes au re-enrollment.
+- Les valeurs secretes de config ne sont retournees qu'avec des relay credentials valides.
+- `relay-assistant` est un proxy nginx avec whitelist stricte de paths.
+- Pas de forwarding libre : la cible est contrainte aux prefixes autorises.
 
-## Auto-Update Workflow (TB60 / LibreOffice / MV2 / MV3)
+## Auto-Update (deploiement progressif)
 
-Progressive rollout summary: the plugin sends `plugin_uuid`, current version, and (after PKCE login) a Keycloak token; Device Management validates the JWT (JWKS/signature, `iss`, `aud`, `exp`), derives user identity (`sub`) and `groups`, then applies rollout targeting priority (first the 5 management-wired deployment groups, then mapped Keycloak groups). DM returns a campaign policy (`none/update/rollback`, target version, artifact URL, checksum/signature, rollout percentage). The client installs only if policy allows and cryptographic verification succeeds, then reports status (`success/failure`) so campaigns can be started, paused, promoted, or rolled back with per-group tracking.
-
-```mermaid
-flowchart TD
-  A[Plugin check-in: plugin_uuid + plugin_version + optional Keycloak token] --> B[DM validates JWT via JWKS]
-  B --> C[Extract sub + groups]
-  C --> D{Group resolution}
-  D -->|Priority 1| E[Management wired groups g1..g5]
-  D -->|Priority 2| F[Mapped Keycloak groups]
-  D -->|Fallback| G[Global default policy]
-  E --> H[Campaign policy evaluation]
-  F --> H
-  G --> H
-  H --> I{Action}
-  I -->|none| J[No update]
-  I -->|update| K[Return targetVersion + artifact + sha256 + signature]
-  I -->|rollback| L[Return rollback target]
-  K --> M[Plugin verifies crypto and installs]
-  L --> M
-  M --> N[Telemetry: success/failure by campaign/group]
-```
-
-### 1) Unified release and progressive rollout
-
-```mermaid
-flowchart TD
-  A[CI Build] --> B[Unit/Integration/Security checks]
-  B --> C[Sign artifacts + generate checksums]
-  C --> D[Publish release metadata]
-  D --> E[Canary rollout 5 percent]
-  E --> F{Error budget and SLO OK?}
-  F -- No --> R[Rollback to previous stable version]
-  F -- Yes --> G[Progressive rollout 25 to 50 to 100 percent]
-```
-
-### 2) Client-side update cycle via Device Management
+Le DM supporte le deploiement progressif par paliers (5% → 25% → 50% → 100%)
+avec gating base sur un hash deterministe du device UUID.
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant C as Client (TB60/LO/MV2/MV3)
+  participant C as Plugin
   participant DM as Device Management
-  participant U as Update Repository/CDN
-  participant T as Telemetry
 
-  C->>DM: GET update policy/channel (bootstrap config)
-  DM-->>C: target version, manifest URL, rollout gate
-  C->>U: GET manifest
-  C->>C: verify signature + sha256 + compatibility
-  alt update available and valid
-    C->>U: download package
-    C->>C: install update
-    C->>T: update_success(version)
-  else no update or invalid
-    C->>T: update_skipped_or_failed(reason)
-  end
+  C->>DM: GET /config/mirai-libreoffice/config.json (+ version headers)
+  DM-->>C: config + update directive (target version, artifact URL, checksum)
+  C->>C: verify checksum + install
+  C->>DM: telemetry: update_success/failure
 ```
 
-### 3) Platform tracks
+L'admin UI propose un assistant **"Deploiement 1-2-3"** (`/admin/deploy`) :
+1. Choisir le plugin et uploader le fichier
+2. Definir la cible (tous, groupe de test, pourcentage)
+3. Configurer le rythme (progressif ou patch urgent) et lancer
 
-```mermaid
-flowchart LR
-  subgraph TB60[Thunderbird 60]
-    T1[Check update manifest URL] --> T2[Download signed XPI]
-    T2 --> T3[Verify signature and compatibility]
-    T3 --> T4[Install and restart if needed]
-  end
-
-  subgraph LO[LibreOffice]
-    L1[Read DM update policy] --> L2[Download OXT package]
-    L2 --> L3[Verify checksum and signature]
-    L3 --> L4[Install extension update and reload]
-  end
-
-  subgraph MV2[Browser Extension MV2]
-    M21[Store or self-hosted update URL] --> M22[Browser auto-update cycle]
-    M22 --> M23[Background page reload + migration]
-  end
-
-  subgraph MV3[Browser Extension MV3]
-    M31[Store staged rollout] --> M32[Service worker update]
-    M32 --> M33[Storage schema migration + health ping]
-  end
-```
-
-## Validation scripts
-
-### Full validation (all targets)
+## Validation
 
 ```bash
-./scripts/test-all.sh
+./scripts/test-all.sh                    # Tous les tests
+./scripts/k8s/validate-all.sh            # Manifests k8s
+curl -sS http://localhost:3001/healthz   # Health check local
 ```
-
-### DM (Docker / infra-minimal)
-
-```bash
-./infra-minimal/validate-all.sh
-```
-
-### DM (deploy-dgx)
-
-```bash
-./deploy-dgx/validate-all.sh
-./deploy-dgx/scripts/smoke-test-dgx.sh
-```
-
-### Kubernetes manifest sanity (client-side)
-
-```bash
-kubectl apply --dry-run=client -f infra-minimal/bootstrap-app.yaml
-kubectl apply --dry-run=client -k deploy-dgx
-```
-
-### Reset from zero
-
-```bash
-FORCE=1 RESET_K8S=1 ./scripts/reset-from-scratch.sh
-```
-
-### Plugin-side validation (from plugin repo)
-
-```bash
-cd ../AssistantMiraiLibreOffice
-./scripts/03-test-local.sh
-```
-
-## Kubernetes agnostique (nouveau socle)
-
-Le déploiement Kubernetes est maintenant structuré en **base + overlays**:
-
-- `deploy/k8s/base`
-- `deploy/k8s/overlays/local`
-- `deploy/k8s/overlays/scaleway`
-- `deploy/k8s/overlays/dgx`
-
-Profils cibles:
-
-- `local`: `http://bootstrap.home`
-- `scaleway`: `https://bootstrap.change-me.domain`
-- `dgx`: `https://internal-domain/bootstrap`
-
-Commandes unifiées:
-
-```bash
-cp .env.registry.example .env.registry
-./scripts/k8s/create-registry-secret.sh local
-./scripts/k8s/render.sh local
-./scripts/k8s/deploy.sh local
-./scripts/k8s/validate.sh local
-./scripts/k8s/validate-all.sh
-```
-
-Notes HTTP/HTTPS:
-
-- `local` en HTTP est strictement réservé au dev local (réseau de confiance).
-- `scaleway` et `dgx` doivent rester en HTTPS avec certificats valides.
-- En production, ne pas désactiver la vérification TLS.
-
-### Dépréciation `infra-minimal`
-
-`infra-minimal` est désormais un chemin legacy. La cible est:
-
-1. valider la parité fonctionnelle via `deploy/k8s/overlays/*`,
-2. basculer CI/CD et opérations sur `scripts/k8s/*`,
-3. supprimer `infra-minimal` une fois la parité confirmée.
