@@ -1,312 +1,443 @@
--- Schema bootstrap for device management (idempotent).
--- Usage (psql): psql -v ON_ERROR_STOP=1 -d bootstrap -f infra-minimal/db-schema.sql
+-- Device Management — Schema v2 (fresh start)
+-- Usage: psql -v ON_ERROR_STOP=1 -d bootstrap -f db/schema.sql
 
--- Extensions
-CREATE EXTENSION IF NOT EXISTS pgcrypto; -- for gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS citext;   -- case-insensitive email
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS citext;
 
--- Ensure dev role exists for local/dev usage (best-effort).
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'dev') THEN
-    CREATE ROLE dev LOGIN PASSWORD 'dev' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
-  END IF;
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'Skipping role creation (insufficient privilege).';
-END
-$$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='dev') THEN CREATE ROLE dev LOGIN PASSWORD 'dev'; END IF;
+EXCEPTION WHEN insufficient_privilege THEN NULL; END $$;
 
--- Enum for provisioning status
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'provisioning_status') THEN
-    CREATE TYPE provisioning_status AS ENUM (
-      'PENDING',
-      'ENROLLED',
-      'REVOKED',
-      'FAILED'
-    );
-  END IF;
-END
-$$;
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$
+BEGIN NEW.updated_at = now(); RETURN NEW; END; $$ LANGUAGE plpgsql;
 
--- Trigger function for updated_at
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+-- ═══════════════════════════════════════════════════════════════
+-- CORE : enrollment, connections, relay, queue
+-- ═══════════════════════════════════════════════════════════════
 
--- Table: provisioning
 CREATE TABLE IF NOT EXISTS provisioning (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  email citext NOT NULL,
-  device_name text NOT NULL,
-  client_uuid UUID NOT NULL,
-  status provisioning_status NOT NULL,
-  encryption_key text NOT NULL,
-  comments text
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    email CITEXT NOT NULL,
+    device_name TEXT NOT NULL,
+    client_uuid UUID NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING','ENROLLED','REVOKED','FAILED')),
+    encryption_key TEXT NOT NULL,
+    comments TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_prov_active ON provisioning(client_uuid) WHERE status IN ('PENDING','ENROLLED');
+CREATE INDEX IF NOT EXISTS idx_prov_email ON provisioning(email);
+CREATE INDEX IF NOT EXISTS idx_prov_client ON provisioning(client_uuid);
 
-COMMENT ON TABLE provisioning IS 'Enrollment/provisioning records for devices.';
-COMMENT ON COLUMN provisioning.email IS 'User email (citext for case-insensitive matching).';
-COMMENT ON COLUMN provisioning.device_name IS 'Human-readable device/plugin name.';
-COMMENT ON COLUMN provisioning.client_uuid IS 'Device/client UUID (logical device identity).';
-COMMENT ON COLUMN provisioning.status IS 'Provisioning lifecycle status.';
-COMMENT ON COLUMN provisioning.encryption_key IS 'Store only safe material (encrypted key/envelope/KMS key id).';
-
--- updated_at trigger
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_trigger
-    WHERE tgname = 'trg_provisioning_set_updated_at'
-  ) THEN
-    CREATE TRIGGER trg_provisioning_set_updated_at
-    BEFORE UPDATE ON provisioning
-    FOR EACH ROW
-    EXECUTE FUNCTION set_updated_at();
-  END IF;
-END
-$$;
-
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_provisioning_email ON provisioning (email);
-CREATE INDEX IF NOT EXISTS idx_provisioning_device_name ON provisioning (device_name);
-CREATE INDEX IF NOT EXISTS idx_provisioning_client_uuid ON provisioning (client_uuid);
-CREATE INDEX IF NOT EXISTS idx_provisioning_status ON provisioning (status);
-CREATE INDEX IF NOT EXISTS idx_provisioning_updated_at ON provisioning (updated_at DESC);
-
--- Backfill/compat: add new columns for existing deployments
-ALTER TABLE provisioning
-  ADD COLUMN IF NOT EXISTS device_name text;
-
--- One active provisioning per device (PENDING or ENROLLED)
-CREATE UNIQUE INDEX IF NOT EXISTS uq_provisioning_active_client
-  ON provisioning (client_uuid)
-  WHERE status IN ('PENDING', 'ENROLLED');
-
--- Optional uniqueness of (email, client_uuid) intentionally NOT enforced
--- to allow historical records and email changes over time.
-
--- Table: device_connections
 CREATE TABLE IF NOT EXISTS device_connections (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  created_at timestamptz NOT NULL DEFAULT now(),
-  email citext NOT NULL,
-  client_uuid UUID NOT NULL,
-  action text NOT NULL DEFAULT 'UNKNOWN',
-  encryption_key_fingerprint text NOT NULL,
-  connected_at timestamptz NOT NULL DEFAULT now(),
-  disconnected_at timestamptz,
-  source_ip inet,
-  user_agent text
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    email CITEXT NOT NULL,
+    client_uuid UUID NOT NULL,
+    action TEXT NOT NULL DEFAULT 'UNKNOWN',
+    encryption_key_fingerprint TEXT NOT NULL,
+    connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    source_ip INET,
+    user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dc_client ON device_connections(client_uuid, connected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dc_email ON device_connections(email, connected_at DESC);
+
+CREATE TABLE IF NOT EXISTS relay_clients (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    client_uuid UUID NOT NULL,
+    email CITEXT NOT NULL,
+    relay_client_id TEXT NOT NULL,
+    relay_key_hash TEXT NOT NULL,
+    allowed_targets TEXT[] NOT NULL DEFAULT ARRAY['keycloak']::text[],
+    expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    comments TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_active_client ON relay_clients(client_uuid) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_active_id ON relay_clients(relay_client_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_relay_email ON relay_clients(email);
+
+CREATE TABLE IF NOT EXISTS queue_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    topic TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','processing','done','dead')),
+    attempts INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 8,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    locked_at TIMESTAMPTZ,
+    lock_owner TEXT,
+    dedupe_key TEXT,
+    completed_at TIMESTAMPTZ,
+    last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_qj_poll ON queue_jobs(status, next_attempt_at, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_qj_dedupe ON queue_jobs(topic, dedupe_key);
+
+CREATE TABLE IF NOT EXISTS queue_job_dead_letters (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    job_id UUID NOT NULL,
+    topic TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    dedupe_key TEXT,
+    attempts INT NOT NULL,
+    max_attempts INT NOT NULL,
+    last_error TEXT
 );
 
-COMMENT ON TABLE device_connections IS 'Lightweight audit of device connections.';
-COMMENT ON COLUMN device_connections.action IS 'Action/endpoint requested (e.g. ENROLL, CONFIG_GET).';
-COMMENT ON COLUMN device_connections.encryption_key_fingerprint IS 'Identifier/fingerprint of the key used (never store raw key).';
-COMMENT ON COLUMN device_connections.connected_at IS 'Connection start time (kept separate from created_at for clarity).';
-COMMENT ON COLUMN device_connections.source_ip IS 'Client source IP at connection time.';
+-- ═══════════════════════════════════════════════════════════════
+-- CATALOGUE : plugins, versions, aliases, env overrides
+-- ═══════════════════════════════════════════════════════════════
 
--- We do NOT add a FK to provisioning.client_uuid because client_uuid is not unique
--- (historical provisioning records are allowed). If you later add a dedicated device table
--- or enforce uniqueness on client_uuid, you can add a FK safely.
+CREATE TABLE IF NOT EXISTS plugins (
+    id SERIAL PRIMARY KEY,
+    slug VARCHAR(100) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    description TEXT,
+    intent TEXT,
+    key_features JSONB DEFAULT '[]'::jsonb,
+    changelog TEXT,
+    icon_url TEXT,
+    icon_path TEXT,
+    source_url TEXT,
+    device_type VARCHAR(50) NOT NULL,
+    category VARCHAR(100) DEFAULT 'productivity',
+    homepage_url TEXT,
+    support_email TEXT,
+    publisher VARCHAR(200) DEFAULT 'DNUM',
+    visibility VARCHAR(20) DEFAULT 'public'
+        CHECK (visibility IN ('public','internal','hidden')),
+    status VARCHAR(20) DEFAULT 'active'
+        CHECK (status IN ('draft','active','deprecated','removed')),
+    maturity VARCHAR(20) DEFAULT 'release'
+        CHECK (maturity IN ('dev','alpha','beta','pre-release','release')),
+    access_mode VARCHAR(20) DEFAULT 'open'
+        CHECK (access_mode IN ('open','waitlist','keycloak_group')),
+    required_group VARCHAR(200),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins(status);
+CREATE INDEX IF NOT EXISTS idx_plugins_device_type ON plugins(device_type);
 
--- Indexes for last connections
-CREATE INDEX IF NOT EXISTS idx_device_connections_client_connected_at
-  ON device_connections (client_uuid, connected_at DESC);
+CREATE TABLE IF NOT EXISTS plugin_aliases (
+    alias VARCHAR(100) PRIMARY KEY,
+    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_pa_plugin ON plugin_aliases(plugin_id);
 
-CREATE INDEX IF NOT EXISTS idx_device_connections_email_connected_at
-  ON device_connections (email, connected_at DESC);
+CREATE TABLE IF NOT EXISTS plugin_env_overrides (
+    id SERIAL PRIMARY KEY,
+    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+    environment VARCHAR(20) NOT NULL CHECK (environment IN ('dev','int','prod')),
+    key VARCHAR(200) NOT NULL,
+    value TEXT NOT NULL,
+    is_secret BOOLEAN DEFAULT false,
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (plugin_id, environment, key)
+);
+CREATE INDEX IF NOT EXISTS idx_peo ON plugin_env_overrides(plugin_id, environment);
 
--- Additional useful indexes
-CREATE INDEX IF NOT EXISTS idx_device_connections_client_uuid
-  ON device_connections (client_uuid);
+CREATE TABLE IF NOT EXISTS plugin_waitlist (
+    id SERIAL PRIMARY KEY,
+    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    client_uuid VARCHAR(255),
+    reason TEXT,
+    status VARCHAR(20) DEFAULT 'pending'
+        CHECK (status IN ('pending','approved','rejected')),
+    reviewed_by VARCHAR(255),
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (plugin_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_wl ON plugin_waitlist(plugin_id, status);
 
--- Grants for dev role (least privilege)
-DO $$
-BEGIN
+CREATE TABLE IF NOT EXISTS alias_access_log (
+    id BIGSERIAL PRIMARY KEY,
+    alias VARCHAR(100) NOT NULL,
+    slug VARCHAR(100) NOT NULL,
+    plugin_id INT NOT NULL,
+    client_uuid VARCHAR(255),
+    source_ip INET,
+    accessed_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_aal ON alias_access_log(alias, accessed_at DESC);
+
+-- ═══════════════════════════════════════════════════════════════
+-- ARTIFACTS, VERSIONS, INSTALLATIONS
+-- ═══════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id SERIAL PRIMARY KEY,
+    device_type VARCHAR(50) NOT NULL,
+    platform_variant VARCHAR(50),
+    version VARCHAR(50) NOT NULL,
+    s3_path TEXT,
+    checksum VARCHAR(128),
+    min_host_version VARCHAR(50),
+    max_host_version VARCHAR(50),
+    changelog_url TEXT,
+    is_active BOOLEAN DEFAULT true,
+    released_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (device_type, platform_variant, version)
+);
+
+CREATE TABLE IF NOT EXISTS plugin_versions (
+    id SERIAL PRIMARY KEY,
+    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+    artifact_id INT REFERENCES artifacts(id),
+    version VARCHAR(50) NOT NULL,
+    release_notes TEXT,
+    download_url TEXT,
+    min_host_version VARCHAR(50),
+    max_host_version VARCHAR(50),
+    status VARCHAR(20) DEFAULT 'draft'
+        CHECK (status IN ('draft','published','deprecated','yanked')),
+    distribution_mode VARCHAR(20) DEFAULT 'managed'
+        CHECK (distribution_mode IN ('managed','download_link','store','manual')),
+    published_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (plugin_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_pv_plugin ON plugin_versions(plugin_id);
+
+CREATE TABLE IF NOT EXISTS plugin_installations (
+    id SERIAL PRIMARY KEY,
+    plugin_id INT NOT NULL REFERENCES plugins(id),
+    client_uuid VARCHAR(255) NOT NULL,
+    email VARCHAR(255),
+    installed_version VARCHAR(50),
+    installed_at TIMESTAMPTZ DEFAULT now(),
+    last_seen_at TIMESTAMPTZ DEFAULT now(),
+    status VARCHAR(20) DEFAULT 'active'
+        CHECK (status IN ('active','inactive','uninstalled')),
+    UNIQUE (plugin_id, client_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_pi_plugin ON plugin_installations(plugin_id);
+
+-- ═══════════════════════════════════════════════════════════════
+-- CAMPAGNES, COHORTES, FEATURE FLAGS
+-- ═══════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS cohorts (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    description TEXT,
+    type VARCHAR(20) NOT NULL CHECK (type IN ('manual','percentage','email_pattern','keycloak_group')),
+    config JSONB,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS cohort_members (
+    cohort_id INT NOT NULL REFERENCES cohorts(id) ON DELETE CASCADE,
+    identifier_type VARCHAR(20) NOT NULL CHECK (identifier_type IN ('email','client_uuid')),
+    identifier_value VARCHAR(255) NOT NULL,
+    added_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (cohort_id, identifier_type, identifier_value)
+);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    description TEXT,
+    type VARCHAR(30) DEFAULT 'plugin_update'
+        CHECK (type IN ('plugin_update','config_patch','feature_set')),
+    status VARCHAR(20) DEFAULT 'draft'
+        CHECK (status IN ('draft','active','paused','completed','rolled_back')),
+    target_cohort_id INT REFERENCES cohorts(id),
+    artifact_id INT REFERENCES artifacts(id),
+    rollback_artifact_id INT REFERENCES artifacts(id),
+    rollout_config JSONB,
+    urgency VARCHAR(10) DEFAULT 'normal' CHECK (urgency IN ('low','normal','critical')),
+    deadline_at TIMESTAMPTZ,
+    created_by VARCHAR(255),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS campaign_device_status (
+    campaign_id INT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    client_uuid VARCHAR(255) NOT NULL,
+    email VARCHAR(255),
+    status VARCHAR(20) DEFAULT 'pending'
+        CHECK (status IN ('pending','notified','updated','failed','rolled_back')),
+    version_before VARCHAR(50),
+    version_after VARCHAR(50),
+    error_message TEXT,
+    last_contact_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (campaign_id, client_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_cds ON campaign_device_status(campaign_id, status);
+
+CREATE TABLE IF NOT EXISTS feature_flags (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    description TEXT,
+    default_value BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS feature_flag_overrides (
+    feature_id INT NOT NULL REFERENCES feature_flags(id) ON DELETE CASCADE,
+    cohort_id INT NOT NULL REFERENCES cohorts(id) ON DELETE CASCADE,
+    value BOOLEAN NOT NULL,
+    min_plugin_version VARCHAR(50),
+    PRIMARY KEY (feature_id, cohort_id)
+);
+
+-- ═══════════════════════════════════════════════════════════════
+-- COMMUNICATIONS, SONDAGES
+-- ═══════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS communications (
+    id SERIAL PRIMARY KEY,
+    type VARCHAR(20) NOT NULL CHECK (type IN ('announcement','alert','survey','changelog')),
+    title VARCHAR(300) NOT NULL,
+    body TEXT NOT NULL,
+    priority VARCHAR(10) DEFAULT 'normal' CHECK (priority IN ('low','normal','high','critical')),
+    target_plugin_id INT REFERENCES plugins(id),
+    target_cohort_id INT REFERENCES cohorts(id),
+    min_plugin_version VARCHAR(50),
+    max_plugin_version VARCHAR(50),
+    starts_at TIMESTAMPTZ DEFAULT now(),
+    expires_at TIMESTAMPTZ,
+    survey_question TEXT,
+    survey_choices JSONB,
+    survey_allow_multiple BOOLEAN DEFAULT false,
+    survey_allow_comment BOOLEAN DEFAULT false,
+    status VARCHAR(20) DEFAULT 'draft'
+        CHECK (status IN ('draft','active','paused','completed','expired')),
+    created_by VARCHAR(255),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_comm_status ON communications(status, starts_at);
+
+CREATE TABLE IF NOT EXISTS survey_responses (
+    id SERIAL PRIMARY KEY,
+    communication_id INT NOT NULL REFERENCES communications(id) ON DELETE CASCADE,
+    client_uuid VARCHAR(255) NOT NULL,
+    email VARCHAR(255),
+    choices JSONB NOT NULL,
+    comment TEXT,
+    responded_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (communication_id, client_uuid)
+);
+
+CREATE TABLE IF NOT EXISTS communication_acks (
+    communication_id INT NOT NULL REFERENCES communications(id) ON DELETE CASCADE,
+    client_uuid VARCHAR(255) NOT NULL,
+    acked_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (communication_id, client_uuid)
+);
+
+-- ═══════════════════════════════════════════════════════════════
+-- KEYCLOAK CLIENTS
+-- ═══════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS keycloak_clients (
+    id SERIAL PRIMARY KEY,
+    client_id VARCHAR(200) UNIQUE NOT NULL,
+    realm VARCHAR(100) NOT NULL,
+    description TEXT,
+    client_type VARCHAR(20) DEFAULT 'public' CHECK (client_type IN ('public','confidential')),
+    redirect_uris JSONB DEFAULT '[]'::jsonb,
+    web_origins JSONB DEFAULT '["*"]'::jsonb,
+    pkce_enabled BOOLEAN DEFAULT true,
+    direct_access_grants BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS plugin_keycloak_clients (
+    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+    keycloak_client_id INT NOT NULL REFERENCES keycloak_clients(id) ON DELETE CASCADE,
+    environment VARCHAR(20) NOT NULL CHECK (environment IN ('dev','int','prod')),
+    PRIMARY KEY (plugin_id, keycloak_client_id, environment)
+);
+
+-- ═══════════════════════════════════════════════════════════════
+-- TELEMETRIE (events extraits)
+-- ═══════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS device_telemetry_events (
+    id BIGSERIAL PRIMARY KEY,
+    client_uuid VARCHAR(255),
+    email VARCHAR(255),
+    span_name VARCHAR(100),
+    span_ts TIMESTAMPTZ,
+    attributes JSONB,
+    plugin_version VARCHAR(50),
+    source_ip INET,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dte ON device_telemetry_events(client_uuid, span_ts DESC);
+
+-- ═══════════════════════════════════════════════════════════════
+-- AUDIT
+-- ═══════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    actor_email TEXT,
+    actor_sub TEXT,
+    action TEXT NOT NULL,
+    resource_type TEXT,
+    resource_id TEXT,
+    payload JSONB,
+    ip_address INET,
+    user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON admin_audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON admin_audit_log(actor_email);
+
+-- ═══════════════════════════════════════════════════════════════
+-- SEED DATA
+-- ═══════════════════════════════════════════════════════════════
+
+INSERT INTO plugins (slug, name, device_type, intent, category, maturity, access_mode, status) VALUES
+  ('mirai-libreoffice', 'Assistant Mirai LibreOffice', 'libreoffice',
+   'Assistant IA integre a LibreOffice pour la redaction', 'productivity', 'release', 'open', 'active'),
+  ('mirai-matisse', 'Matisse Thunderbird', 'matisse',
+   'Extension IA pour Thunderbird', 'communication', 'beta', 'keycloak_group', 'active')
+ON CONFLICT (slug) DO NOTHING;
+
+INSERT INTO plugin_aliases (alias, plugin_id) VALUES
+  ('libreoffice', (SELECT id FROM plugins WHERE slug = 'mirai-libreoffice')),
+  ('matisse', (SELECT id FROM plugins WHERE slug = 'mirai-matisse'))
+ON CONFLICT DO NOTHING;
+
+-- ═══════════════════════════════════════════════════════════════
+-- GRANTS (dev role)
+-- ═══════════════════════════════════════════════════════════════
+
+DO $$ BEGIN
   PERFORM 1 FROM pg_roles WHERE rolname = 'dev';
   IF FOUND THEN
     GRANT CONNECT ON DATABASE bootstrap TO dev;
     GRANT USAGE ON SCHEMA public TO dev;
     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO dev;
     GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO dev;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO dev;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO dev;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO dev;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO dev;
   END IF;
-EXCEPTION
-  WHEN insufficient_privilege THEN
-    RAISE NOTICE 'Skipping dev grants (insufficient privilege).';
-END
-$$;
-
--- Add action column for existing deployments (idempotent)
-ALTER TABLE device_connections
-  ADD COLUMN IF NOT EXISTS action text NOT NULL DEFAULT 'UNKNOWN';
-
--- -----------------------------
--- Example queries (safe to copy/paste)
--- -----------------------------
-
--- 1) Insert a provisioning
--- INSERT INTO provisioning (email, client_uuid, status, encryption_key, comments)
--- VALUES (
---   'user@example.com',
---   gen_random_uuid(),
---   'PENDING',
---   'enc:base64-or-kms-key-id',
---   'Initial enrollment request'
--- );
-
--- 2) Update status
--- UPDATE provisioning
--- SET status = 'ENROLLED'
--- WHERE client_uuid = '00000000-0000-0000-0000-000000000000'
---   AND status IN ('PENDING', 'FAILED');
-
--- 3) Get current provisioning for a client_uuid
--- SELECT *
--- FROM provisioning
--- WHERE client_uuid = '00000000-0000-0000-0000-000000000000'
---   AND status IN ('PENDING', 'ENROLLED')
--- ORDER BY updated_at DESC
--- LIMIT 1;
-
--- 4) Insert a connection
--- INSERT INTO device_connections (
---   email,
---   client_uuid,
---   action,
---   encryption_key_fingerprint,
---   connected_at,
---   source_ip,
---   user_agent
--- ) VALUES (
---   'user@example.com',
---   '00000000-0000-0000-0000-000000000000',
---   'ENROLL',
---   'sha256:abcdef...',
---   now(),
---   '203.0.113.10',
---   'ExampleClient/1.0'
--- );
-
--- 5) Get last 10 connections for a device
--- SELECT *
--- FROM device_connections
--- WHERE client_uuid = '00000000-0000-0000-0000-000000000000'
--- ORDER BY connected_at DESC
--- LIMIT 10;
-
--- Relay credentials per enrolled client (for /relay-assistant authorization)
-CREATE TABLE IF NOT EXISTS relay_clients (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  client_uuid UUID NOT NULL,
-  email citext NOT NULL,
-  relay_client_id text NOT NULL,
-  relay_key_hash text NOT NULL,
-  allowed_targets text[] NOT NULL DEFAULT ARRAY['keycloak']::text[],
-  expires_at timestamptz,
-  revoked_at timestamptz,
-  comments text
-);
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_trigger
-    WHERE tgname = 'trg_relay_clients_set_updated_at'
-  ) THEN
-    CREATE TRIGGER trg_relay_clients_set_updated_at
-    BEFORE UPDATE ON relay_clients
-    FOR EACH ROW
-    EXECUTE FUNCTION set_updated_at();
-  END IF;
-END
-$$;
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_clients_client_uuid_active
-  ON relay_clients (client_uuid)
-  WHERE revoked_at IS NULL;
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_clients_relay_client_id_active
-  ON relay_clients (relay_client_id)
-  WHERE revoked_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_relay_clients_email
-  ON relay_clients (email);
-
-CREATE INDEX IF NOT EXISTS idx_relay_clients_expires_at
-  ON relay_clients (expires_at);
-
--- Postgres queue for asynchronous processing (idempotent jobs + dead letters)
-CREATE TABLE IF NOT EXISTS queue_jobs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  topic text NOT NULL,
-  payload jsonb NOT NULL,
-  status text NOT NULL DEFAULT 'pending',
-  attempts integer NOT NULL DEFAULT 0,
-  max_attempts integer NOT NULL DEFAULT 8,
-  next_attempt_at timestamptz NOT NULL DEFAULT now(),
-  locked_at timestamptz,
-  lock_owner text,
-  dedupe_key text,
-  completed_at timestamptz,
-  last_error text,
-  CHECK (status IN ('pending', 'processing', 'done', 'dead'))
-);
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_trigger
-    WHERE tgname = 'trg_queue_jobs_set_updated_at'
-  ) THEN
-    CREATE TRIGGER trg_queue_jobs_set_updated_at
-    BEFORE UPDATE ON queue_jobs
-    FOR EACH ROW
-    EXECUTE FUNCTION set_updated_at();
-  END IF;
-END
-$$;
-
-CREATE INDEX IF NOT EXISTS idx_queue_jobs_status_next_attempt
-  ON queue_jobs (status, next_attempt_at, created_at);
-
-CREATE INDEX IF NOT EXISTS idx_queue_jobs_lock
-  ON queue_jobs (status, locked_at);
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_queue_jobs_topic_dedupe
-  ON queue_jobs (topic, dedupe_key);
-
-CREATE TABLE IF NOT EXISTS queue_job_dead_letters (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  created_at timestamptz NOT NULL DEFAULT now(),
-  job_id UUID NOT NULL,
-  topic text NOT NULL,
-  payload jsonb NOT NULL,
-  dedupe_key text,
-  attempts integer NOT NULL,
-  max_attempts integer NOT NULL,
-  last_error text
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_queue_dead_letters_job_id
-  ON queue_job_dead_letters (job_id);
-
-CREATE INDEX IF NOT EXISTS idx_queue_dead_letters_created_at
-  ON queue_job_dead_letters (created_at DESC);
+EXCEPTION WHEN insufficient_privilege THEN NULL;
+END $$;
