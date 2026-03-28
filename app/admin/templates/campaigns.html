@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Campagnes{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Campagnes</h1>
+
+<div style="margin-bottom: 1.5rem;">
+  <a href="/admin/campaigns/new" class="dm-btn dm-btn--primary">+ Nouvelle campagne</a>
+</div>
+
+<!-- Filters -->
+<div class="dm-search">
+  <select class="dm-select" onchange="window.location='/admin/campaigns?status='+this.value">
+    <option value="">Tous les statuts</option>
+    <option value="draft" {% if filters.status == 'draft' %}selected{% endif %}>Brouillon</option>
+    <option value="active" {% if filters.status == 'active' %}selected{% endif %}>Actif</option>
+    <option value="paused" {% if filters.status == 'paused' %}selected{% endif %}>En pause</option>
+    <option value="completed" {% if filters.status == 'completed' %}selected{% endif %}>Termine</option>
+    <option value="rolled_back" {% if filters.status == 'rolled_back' %}selected{% endif %}>Rollback</option>
+  </select>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Statut</th>
+      <th>Nom</th>
+      <th>Cohorte</th>
+      <th>Artifact</th>
+      <th>Urgence</th>
+      <th>Creee le</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for c in campaigns %}
+    <tr>
+      <td>
+        {% if c.status == 'active' %}
+        <span class="dm-badge dm-badge--success">Actif</span>
+        {% elif c.status == 'draft' %}
+        <span class="dm-badge dm-badge--info">Brouillon</span>
+        {% elif c.status == 'paused' %}
+        <span class="dm-badge dm-badge--warning">Pause</span>
+        {% elif c.status == 'completed' %}
+        <span class="dm-badge dm-badge--neutral">Termine</span>
+        {% elif c.status == 'rolled_back' %}
+        <span class="dm-badge dm-badge--error">Rollback</span>
+        {% endif %}
+      </td>
+      <td><a href="/admin/campaigns/{{ c.id }}">{{ c.name }}</a></td>
+      <td>{{ c.cohort_name or '-' }}</td>
+      <td>{{ c.device_type or '' }} {{ c.artifact_version or '-' }}</td>
+      <td>{{ c.urgency }}</td>
+      <td>{{ c.created_at.strftime('%d/%m/%Y') if c.created_at else '-' }}</td>
+      <td>
+        {% if c.status == 'draft' %}
+        <form hx-post="/admin/campaigns/{{ c.id }}/activate" style="display:inline;">
+          <button type="submit" class="dm-btn dm-btn--sm dm-btn--primary">Activer</button>
+        </form>
+        {% elif c.status == 'active' %}
+        <a href="/admin/campaigns/{{ c.id }}" class="dm-btn dm-btn--sm dm-btn--secondary">Monitorer</a>
+        <form hx-post="/admin/campaigns/{{ c.id }}/pause" style="display:inline;">
+          <button type="submit" class="dm-btn dm-btn--sm dm-btn--warning">Pause</button>
+        </form>
+        {% elif c.status == 'paused' %}
+        <form hx-post="/admin/campaigns/{{ c.id }}/resume" style="display:inline;">
+          <button type="submit" class="dm-btn dm-btn--sm dm-btn--primary">Reprendre</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not campaigns %}
+    <tr><td colspan="7" style="text-align: center; color: #666;">Aucune campagne.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{% endblock %}

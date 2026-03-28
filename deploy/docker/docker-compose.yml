@@ -51,6 +51,18 @@ services:
       DM_PRESIGN_TTL_SECONDS: ${DM_PRESIGN_TTL_SECONDS:-300}
       DM_S3_ENDPOINT_URL: ${DM_S3_ENDPOINT_URL:-}
       AWS_REGION: ${AWS_REGION:-}
+      # Credentials AWS/Scaleway — héritées de l'hôte, jamais écrites dans un fichier
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-${SCW_ACCESS_KEY:-}}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-${SCW_SECRET_KEY:-}}
+
+      # Admin UI OIDC
+      ADMIN_OIDC_ISSUER_URL: ${ADMIN_OIDC_ISSUER_URL:-}
+      ADMIN_OIDC_PUBLIC_ISSUER_URL: ${ADMIN_OIDC_PUBLIC_ISSUER_URL:-}
+      ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-admin-dm-ui}
+      ADMIN_OIDC_CLIENT_SECRET: ${ADMIN_OIDC_CLIENT_SECRET:-}
+      ADMIN_OIDC_REDIRECT_URI: ${ADMIN_OIDC_REDIRECT_URI:-http://localhost:3001/admin/callback}
+      ADMIN_REQUIRED_GROUP: ${ADMIN_REQUIRED_GROUP:-admin-dm}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-changeme-dev-only}
 
       # Database
       DATABASE_URL: ${DATABASE_URL:-postgresql://dev:dev@postgres:5432/bootstrap}

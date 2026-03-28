@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Campagne {{ campaign.name }}{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb">
+  <a href="/admin/campaigns">Campagnes</a> &rsaquo; {{ campaign.name }}
+</div>
+{% endblock %}
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 1rem;">
+  <div>
+    <h1 class="dm-page-title" style="margin-bottom: 0.5rem;">{{ campaign.name }}</h1>
+    <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem;">
+      {% if campaign.status == 'active' %}
+      <span class="dm-badge dm-badge--success">Actif</span>
+      {% elif campaign.status == 'draft' %}
+      <span class="dm-badge dm-badge--info">Brouillon</span>
+      {% elif campaign.status == 'paused' %}
+      <span class="dm-badge dm-badge--warning">En pause</span>
+      {% elif campaign.status == 'completed' %}
+      <span class="dm-badge dm-badge--neutral">Termine</span>
+      {% elif campaign.status == 'rolled_back' %}
+      <span class="dm-badge dm-badge--error">Rollback</span>
+      {% endif %}
+      <span style="color: #666; font-size: 0.875rem;">
+        Cohorte: {{ campaign.cohort_name or '-' }}
+        | Artifact: {{ campaign.device_type or '' }} {{ campaign.artifact_version or '-' }}
+        | Urgence: {{ campaign.urgency }}
+      </span>
+    </div>
+  </div>
+  <div style="display: flex; gap: 0.5rem;">
+    {% if campaign.status == 'draft' %}
+    <form hx-post="/admin/campaigns/{{ campaign.id }}/activate">
+      <button type="submit" class="dm-btn dm-btn--primary">Activer</button>
+    </form>
+    {% elif campaign.status == 'active' %}
+    <form hx-post="/admin/campaigns/{{ campaign.id }}/pause">
+      <button type="submit" class="dm-btn dm-btn--warning">Pause</button>
+    </form>
+    <form hx-post="/admin/campaigns/{{ campaign.id }}/complete">
+      <button type="submit" class="dm-btn dm-btn--secondary">Terminer</button>
+    </form>
+    <form hx-post="/admin/campaigns/{{ campaign.id }}/rollback"
+          hx-confirm="Confirmer le rollback de cette campagne ?">
+      <button type="submit" class="dm-btn dm-btn--danger">Rollback</button>
+    </form>
+    {% elif campaign.status == 'paused' %}
+    <form hx-post="/admin/campaigns/{{ campaign.id }}/resume">
+      <button type="submit" class="dm-btn dm-btn--primary">Reprendre</button>
+    </form>
+    <form hx-post="/admin/campaigns/{{ campaign.id }}/rollback"
+          hx-confirm="Confirmer le rollback de cette campagne ?">
+      <button type="submit" class="dm-btn dm-btn--danger">Rollback</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Stats — auto-refresh -->
+<div id="campaign-stats" hx-get="/admin/api/campaigns/{{ campaign.id }}/stats"
+     hx-trigger="every 15s" hx-swap="innerHTML">
+  <div class="dm-grid-4" style="margin-top: 1rem;">
+    <div class="dm-metric-tile dm-metric-tile--success">
+      <div style="font-size: 1.5rem; font-weight: bold;">{{ stats.updated }}/{{ stats.total }}</div>
+      <div style="font-size: 0.875rem;">Mis a jour</div>
+      <div class="dm-progress-bar" style="margin-top: 0.5rem;">
+        <div class="dm-progress-bar__fill" style="width: {{ stats.progress_pct }}%;"></div>
+      </div>
+    </div>
+    <div class="dm-metric-tile {% if stats.error_pct >= 10 %}dm-metric-tile--error{% elif stats.error_pct > 2 %}dm-metric-tile--warning{% endif %}">
+      <div style="font-size: 1.5rem; font-weight: bold;">{{ stats.error_pct }}%</div>
+      <div style="font-size: 0.875rem;">Taux erreur</div>
+    </div>
+    <div class="dm-metric-tile">
+      <div style="font-size: 1.5rem; font-weight: bold;">{{ stats.notified }}</div>
+      <div style="font-size: 0.875rem;">Notifies</div>
+    </div>
+    <div class="dm-metric-tile">
+      <div style="font-size: 1.5rem; font-weight: bold;">{{ stats.pending }}</div>
+      <div style="font-size: 0.875rem;">En attente</div>
+    </div>
+  </div>
+</div>
+
+<!-- Recent events -->
+<h2 style="font-size: 1.125rem; margin-top: 2rem;">Derniers evenements</h2>
+{% if events %}
+<table class="dm-table-compact">
+  <thead>
+    <tr><th>Device</th><th>Email</th><th>Statut</th><th>Version</th><th>Erreur</th><th>Heure</th></tr>
+  </thead>
+  <tbody>
+    {% for e in events %}
+    <tr>
+      <td><code>{{ e.client_uuid[:8] }}...</code></td>
+      <td>{{ e.email or '-' }}</td>
+      <td>
+        {% if e.status == 'updated' %}
+        <span class="dm-badge dm-badge--success">{{ e.status }}</span>
+        {% elif e.status == 'failed' %}
+        <span class="dm-badge dm-badge--error">{{ e.status }}</span>
+        {% elif e.status == 'notified' %}
+        <span class="dm-badge dm-badge--info">{{ e.status }}</span>
+        {% else %}
+        <span class="dm-badge dm-badge--neutral">{{ e.status }}</span>
+        {% endif %}
+      </td>
+      <td>{{ e.version_before or '-' }} &rarr; {{ e.version_after or '-' }}</td>
+      <td style="color: #CE0500;">{{ e.error_message or '' }}</td>
+      <td>{{ e.updated_at.strftime('%H:%M') if e.updated_at else '-' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color: #666;">Aucun evenement.</p>
+{% endif %}
+
+<!-- Campaign details -->
+<h2 style="font-size: 1.125rem; margin-top: 2rem;">Details</h2>
+<table class="dm-table-compact" style="max-width: 600px;">
+  <tr><th>ID</th><td>{{ campaign.id }}</td></tr>
+  <tr><th>Type</th><td>{{ campaign.type }}</td></tr>
+  <tr><th>Cree par</th><td>{{ campaign.created_by or '-' }}</td></tr>
+  <tr><th>Cree le</th><td>{{ campaign.created_at.strftime('%d/%m/%Y %H:%M') if campaign.created_at else '-' }}</td></tr>
+  <tr><th>Deadline</th><td>{{ campaign.deadline_at.strftime('%d/%m/%Y %H:%M') if campaign.deadline_at else 'Aucune' }}</td></tr>
+  {% if campaign.rollback_version %}
+  <tr><th>Rollback vers</th><td>{{ campaign.rollback_version }}</td></tr>
+  {% endif %}
+</table>
+{% endblock %}
