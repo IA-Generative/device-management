@@ -19,7 +19,7 @@ spec:
         - name: regcred
       containers:
         - name: queue-worker
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.2.2-server-cleanup
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.3.0-catalog-v2-full
           imagePullPolicy: Always
           command:
             - python
