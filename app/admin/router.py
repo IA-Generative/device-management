@@ -44,6 +44,47 @@ templates.env.globals["timeago"] = timeago
 templates.env.globals["span_label"] = span_label
 
 
+# ─── dm-config.json helpers ──────────────────────────────────────────────
+
+_PLATFORM_DEFAULTS = {
+    "llm_base_urls": "${{LLM_BASE_URL}}",
+    "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
+    "llm_api_tokens": "${{LLM_API_TOKEN}}",
+    "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
+    "keycloakRealm": "${{KEYCLOAK_REALM}}",
+    "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+    "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
+    "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
+}
+_LOCAL_PROFILES = {"local"}
+
+
+def _apply_platform_defaults(template: dict) -> dict:
+    """Add ${{VAR}} placeholders to server profiles where keys are missing."""
+    for section_name, section in template.items():
+        if section_name in ("configVersion", "default") or section_name in _LOCAL_PROFILES:
+            continue
+        if not isinstance(section, dict):
+            continue
+        for key, placeholder in _PLATFORM_DEFAULTS.items():
+            if section.get(key) is None or section.get(key) == "":
+                section[key] = placeholder
+    return template
+
+
+def _strip_dm_config_from_zip(data: bytes) -> bytes:
+    """Remove dm-config.json from a ZIP archive (OXT/XPI/CRX) before storage."""
+    import zipfile
+    src = zipfile.ZipFile(io.BytesIO(data))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            if item.filename.lower() in ("dm-config.json", "dm_config.json"):
+                continue
+            dst.writestr(item, src.read(item.filename))
+    return buf.getvalue()
+
+
 # ─── OIDC callback / logout ──────────────────────────────────────────────
 
 @router.get("/callback")
@@ -998,6 +1039,23 @@ async def deploy_create(request: Request,
     if len(data) > artifacts_svc.MAX_UPLOAD_SIZE:
         raise HTTPException(400, "Fichier trop volumineux (>100 Mo)")
 
+    # Extract dm-config.json from the package before stripping it
+    deploy_config_template = None
+    try:
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for name in zf.namelist():
+                if name.rsplit("/", 1)[-1].lower() in ("dm-config.json", "dm_config.json"):
+                    raw = zf.read(name).decode("utf-8", errors="replace")
+                    deploy_config_template = json.loads(raw)
+                    deploy_config_template = _apply_platform_defaults(deploy_config_template)
+                    break
+    except Exception:
+        pass
+
+    # Strip dm-config.json from the binary before storage (users shouldn't see placeholders)
+    data = _strip_dm_config_from_zip(data)
+
     checksum = artifacts_svc.compute_checksum(data)
     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
     os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
@@ -1063,10 +1121,21 @@ async def deploy_create(request: Request,
                 created_by=actor.get("email"),
             )
 
+            # Store dm-config.json template in the plugin record if extracted
+            if deploy_config_template:
+                try:
+                    cur.execute(
+                        "UPDATE plugins SET config_template = %s WHERE device_type = %s",
+                        (json.dumps(deploy_config_template), device_type),
+                    )
+                except Exception as ct_err:
+                    logger.warning("deploy: config_template store failed: %s", ct_err)
+
             audit_log(cur, actor=actor, action="deploy.create",
                       resource_type="campaign", resource_id=str(campaign_id),
                       payload={"name": campaign_name, "device_type": device_type,
-                               "version": version, "deploy_type": deploy_type},
+                               "version": version, "deploy_type": deploy_type,
+                               "has_config_template": bool(deploy_config_template)},
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/deploy/{campaign_id}", status_code=303)
@@ -1255,16 +1324,26 @@ async def api_catalog_suggest(request: Request):
             "notice-utilisateur.md", "notice-utilisateur.txt",
             "notice_utilisateur.md", "notice_utilisateur.txt",
             "changelog.md", "changelog.txt", "changes.md", "history.md",
+            "dm-config.json", "dm_config.json",
         }
+        config_template = None
+        has_config_template = False
         try:
             with zipfile.ZipFile(io.BytesIO(pdata)) as zf:
                 for name in zf.namelist():
                     basename = name.rsplit("/", 1)[-1].lower()
                     if basename in interesting_files:
-                        content = zf.read(name).decode("utf-8", errors="replace")[:8000]
-                        extracted.append(f"--- {name} ---\n{content}")
-                        if basename.startswith(("readme", "notice")):
-                            has_readme = True
+                        raw = zf.read(name).decode("utf-8", errors="replace")
+                        if basename in ("dm-config.json", "dm_config.json"):
+                            try:
+                                config_template = json.loads(raw)
+                                has_config_template = True
+                            except json.JSONDecodeError:
+                                pass
+                        else:
+                            extracted.append(f"--- {name} ---\n{raw[:8000]}")
+                            if basename.startswith(("readme", "notice")):
+                                has_readme = True
         except zipfile.BadZipFile:
             pass
         if extracted:
@@ -1313,6 +1392,9 @@ async def api_catalog_suggest(request: Request):
                 content = content[4:]
         suggestion = json.loads(content.strip())
         suggestion["_has_readme"] = has_readme
+        suggestion["_has_config_template"] = has_config_template
+        if config_template:
+            suggestion["config_template"] = config_template
         return JSONResponse(suggestion)
     except Exception as e:
         logger.error("LLM suggest failed: %s", e)

@@ -498,18 +498,49 @@ def _check_plugin_access(plugin_row: dict | None, request: Request, cur) -> bool
     return True
 
 
+def _build_config_from_template(template: dict, profile: str) -> dict:
+    """Merge default + profile section from a dm-config.json template."""
+    default = dict(template.get("default", {}))
+    env_section = template.get(profile, {})
+    if isinstance(env_section, dict):
+        merged = {**default, **env_section}
+    else:
+        merged = default
+    # Remove inline documentation fields
+    merged.pop("_description", None)
+    return {"configVersion": template.get("configVersion", 1), "config": merged}
+
+
 def _load_config_template(profile: str, device: str | None = None,
-                          device_name: str | None = None) -> dict:
-    """Load a config template JSON from `config/`.
+                          device_name: str | None = None,
+                          cur=None) -> dict:
+    """Load a config template — DB first, then filesystem fallback.
 
     Resolution order:
-    - config/<device_name>/config.<profile>.json   (slug, ex: mirai-libreoffice)
-    - config/<device_name>/config.json
-    - config/<device>/config.<profile>.json        (device_type fallback, ex: libreoffice)
-    - config/<device>/config.json
-    - config/config.<profile>.json
-    - config/config.json
+    1. DB: plugins.config_template (dm-config.json format, merged default+profile)
+    2. File: config/<device_name>/config.<profile>.json (legacy)
+    3. File: config/<device>/config.<profile>.json
+    4. File: config/config.<profile>.json
     """
+    # 1. Try DB (dm-config.json stored in plugins.config_template)
+    if cur:
+        try:
+            slug = device_name or device
+            if slug:
+                cur.execute(
+                    "SELECT config_template FROM plugins WHERE slug = %s OR device_type = %s LIMIT 1",
+                    (slug, device or slug),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    template = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                    result = _build_config_from_template(template, profile)
+                    logger.info("Config loaded from DB (plugins.config_template) for %s profile=%s", slug, profile)
+                    return result
+        except Exception as e:
+            logger.warning("DB config_template load failed (non-fatal): %s", e)
+
+    # 2. Filesystem fallback (legacy)
     bases: list[str] = []
     if settings.config_dir:
         bases.append(settings.config_dir)
@@ -517,19 +548,16 @@ def _load_config_template(profile: str, device: str | None = None,
 
     for base in bases:
         candidates = []
-        # Try device_name first (slug)
         if device_name and device_name != device:
             candidates.extend([
                 os.path.join(base, device_name, f"config.{profile}.json"),
                 os.path.join(base, device_name, "config.json"),
             ])
-        # Then device_type
         if device:
             candidates.extend([
                 os.path.join(base, device, f"config.{profile}.json"),
                 os.path.join(base, device, "config.json"),
             ])
-        # Generic fallback
         candidates.extend([
             os.path.join(base, f"config.{profile}.json"),
             os.path.join(base, "config.json"),
@@ -1943,11 +1971,28 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                 else:
                     return JSONResponse(status_code=400, content={"ok": False, "error": "device inconnu"})
 
-    # ── STEP 2: Load template via device_type (not slug) ──
+    # ── STEP 2: Load template (DB first, filesystem fallback) ──
+    _step2_cur = None
+    _step2_conn = None
+    if psycopg2 is not None:
+        _step2_db_url = _db_url_bootstrap() or _db_url()
+        if _step2_db_url:
+            try:
+                _step2_conn = psycopg2.connect(_step2_db_url)
+                _step2_conn.autocommit = True
+                _step2_cur = _step2_conn.cursor()
+            except Exception:
+                _step2_cur = None
     try:
-        cfg = _load_config_template(prof, device=device_type or None, device_name=device_name or None)
+        cfg = _load_config_template(prof, device=device_type or None, device_name=device_name or None, cur=_step2_cur)
     except FileNotFoundError as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+    finally:
+        if _step2_conn:
+            try:
+                _step2_conn.close()
+            except Exception:
+                pass
 
     # ── STEP 3: Substitution + DM overrides ──
     cfg = _substitute_env(cfg)
