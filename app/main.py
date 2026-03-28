@@ -369,7 +369,133 @@ def _log_device_connection(
         conn.close()
 
 
-DEVICE_ALLOWLIST = {"matisse", "libreoffice", "chrome", "edge", "firefox", "misc"}
+# Legacy fallback — only used when DB is unreachable
+_DEVICE_TYPE_FALLBACK = {"matisse", "libreoffice"}
+
+
+def _resolve_device(device: str, cur) -> tuple[str | None, str | None, int | None, str]:
+    """Resolve slug/alias → (device_name, device_type, plugin_id, resolved_via).
+
+    resolved_via: 'slug' | 'alias' | 'fallback' | 'unknown'
+    """
+    # 1. Slug exact (= device_name)
+    try:
+        cur.execute(
+            "SELECT slug, device_type, id FROM plugins WHERE slug = %s AND status = 'active'",
+            (device,),
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0], row[1], row[2], "slug"
+    except Exception:
+        pass
+
+    # 2. Alias
+    try:
+        cur.execute("""
+            SELECT p.slug, p.device_type, p.id
+            FROM plugin_aliases a JOIN plugins p ON p.id = a.plugin_id
+            WHERE a.alias = %s AND p.status = 'active'
+        """, (device,))
+        row = cur.fetchone()
+        if row:
+            return row[0], row[1], row[2], "alias"
+    except Exception:
+        pass
+
+    # 3. Fallback legacy device_type (no catalog entry)
+    if device in _DEVICE_TYPE_FALLBACK:
+        return device, device, None, "fallback"
+
+    return None, None, None, "unknown"
+
+
+def _log_alias_access(cur, *, alias: str, slug: str, plugin_id: int,
+                      client_uuid: str = "", source_ip: str | None = None):
+    """Log alias-based config access for migration tracking."""
+    try:
+        cur.execute("""
+            INSERT INTO alias_access_log (alias, slug, plugin_id, client_uuid, source_ip)
+            VALUES (%s, %s, %s, %s, %s::inet)
+        """, (alias, slug, plugin_id, client_uuid or None, source_ip))
+    except Exception:
+        pass  # best-effort logging
+
+
+def _apply_catalog_overrides(cfg: dict, *, plugin_id: int, profile: str, cur) -> dict:
+    """Apply plugin-specific env overrides + Keycloak client from catalog."""
+    config_obj = cfg.get("config")
+    if not isinstance(config_obj, dict):
+        return cfg
+
+    # Env overrides
+    try:
+        cur.execute("""
+            SELECT key, value FROM plugin_env_overrides
+            WHERE plugin_id = %s AND environment = %s
+        """, (plugin_id, profile))
+        for key, value in cur.fetchall():
+            config_obj[key] = value
+    except Exception:
+        pass
+
+    # Keycloak client
+    try:
+        cur.execute("""
+            SELECT kc.client_id, kc.realm
+            FROM plugin_keycloak_clients pkc
+            JOIN keycloak_clients kc ON kc.id = pkc.keycloak_client_id
+            WHERE pkc.plugin_id = %s AND pkc.environment = %s LIMIT 1
+        """, (plugin_id, profile))
+        kc = cur.fetchone()
+        if kc:
+            config_obj["keycloakClientId"] = kc[0]
+            config_obj["keycloakRealm"] = kc[1]
+    except Exception:
+        pass
+
+    return cfg
+
+
+def _check_plugin_access(plugin_row: dict | None, request: Request, cur) -> bool:
+    """Check if the caller has access to a restricted plugin. Returns True if access OK."""
+    if not plugin_row:
+        return True
+    access_mode = plugin_row.get("access_mode", "open")
+    if access_mode == "open":
+        return True
+
+    if access_mode == "keycloak_group":
+        required = plugin_row.get("required_group", "")
+        if not required:
+            return True
+        # Try to extract groups from Bearer token (unverified, best-effort)
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            try:
+                token_str = auth[7:]
+                payload_b64 = token_str.split(".")[1] + "=="
+                claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+                user_groups = claims.get("groups", [])
+                return required in user_groups
+            except Exception:
+                pass
+        return False
+
+    if access_mode == "waitlist":
+        email = request.headers.get("X-User-Email", "").strip()
+        if email:
+            try:
+                cur.execute("""
+                    SELECT 1 FROM plugin_waitlist
+                    WHERE plugin_id = %s AND email = %s AND status = 'approved'
+                """, (plugin_row["id"], email))
+                return cur.fetchone() is not None
+            except Exception:
+                pass
+        return False
+
+    return True
 
 
 def _load_config_template(profile: str, device: str | None = None) -> dict:
@@ -1770,20 +1896,87 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     if prof not in ("dev", "prod", "int", "llama", "gptoss"):
         return JSONResponse(status_code=400, content={"ok": False, "error": "profile must be 'dev' or 'prod' or 'int' "})
     dev = (device or "").strip().lower()
-    if dev and dev not in DEVICE_ALLOWLIST:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "device is not supported"})
+    device_name = dev
+    device_type = dev
+    plugin_id = None
+    resolved_via = "unknown"
 
+    # ── STEP 1: Resolve device_name / alias / fallback ──
+    if dev:
+        db_url = _db_url_bootstrap() or _db_url()
+        if psycopg2 is not None and db_url:
+            try:
+                resolve_conn = psycopg2.connect(db_url)
+                resolve_conn.autocommit = True
+                with resolve_conn.cursor() as rcur:
+                    device_name, device_type, plugin_id, resolved_via = _resolve_device(dev, rcur)
+                    if not device_name:
+                        resolve_conn.close()
+                        return JSONResponse(status_code=400, content={"ok": False, "error": "device inconnu"})
+                    # Log alias access for migration tracking
+                    if resolved_via == "alias" and plugin_id:
+                        client_uuid_hdr = request.headers.get("X-Client-UUID", "")
+                        _log_alias_access(rcur, alias=dev, slug=device_name,
+                                          plugin_id=plugin_id, client_uuid=client_uuid_hdr,
+                                          source_ip=request.client.host if request.client else None)
+                resolve_conn.close()
+            except Exception:
+                # DB unreachable — fallback to legacy behavior
+                if dev in _DEVICE_TYPE_FALLBACK:
+                    device_name, device_type, plugin_id, resolved_via = dev, dev, None, "fallback"
+                else:
+                    return JSONResponse(status_code=400, content={"ok": False, "error": "device inconnu"})
+
+    # ── STEP 2: Load template via device_type (not slug) ──
     try:
-        cfg = _load_config_template(prof, dev or None)
+        cfg = _load_config_template(prof, device_type or None)
     except FileNotFoundError as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
-    # 1) generic substitution ${VARNAME}
+    # ── STEP 3: Substitution + DM overrides ──
     cfg = _substitute_env(cfg)
+    cfg = _apply_overrides(cfg, profile=prof, device=device_type or None)
 
-    # 2) targeted overrides (e.g. telemetrySel)
-    cfg = _apply_overrides(cfg, profile=prof, device=dev or None)
+    # ── STEP 4: Catalog overrides (env-specific) ──
+    if plugin_id and psycopg2 is not None:
+        db_url = _db_url_bootstrap() or _db_url()
+        if db_url:
+            try:
+                cat_conn = psycopg2.connect(db_url)
+                cat_conn.autocommit = True
+                with cat_conn.cursor() as ccur:
+                    cfg = _apply_catalog_overrides(cfg, plugin_id=plugin_id, profile=prof, cur=ccur)
 
+                    # ── STEP 5: Access control ──
+                    try:
+                        ccur.execute("SELECT id, access_mode, required_group FROM plugins WHERE id = %s", (plugin_id,))
+                        plugin_row = None
+                        row = ccur.fetchone()
+                        if row:
+                            plugin_row = {"id": row[0], "access_mode": row[1], "required_group": row[2]}
+                        if not _check_plugin_access(plugin_row, request, ccur):
+                            cat_conn.close()
+                            return JSONResponse({
+                                "meta": {"schema_version": 2, "access_denied": True},
+                                "config": {
+                                    "device_name": device_name,
+                                    "access_mode": plugin_row.get("access_mode") if plugin_row else "open",
+                                    "message": "Acces restreint. Contactez votre administrateur.",
+                                }
+                            })
+                    except Exception:
+                        pass  # degrade gracefully
+                cat_conn.close()
+            except Exception:
+                pass  # degrade gracefully
+
+    # ── STEP 6: Inject real device_name + config_path ──
+    config_obj = cfg.get("config")
+    if isinstance(config_obj, dict) and device_name:
+        config_obj["device_name"] = device_name
+        config_obj["config_path"] = f"/config/{device_name}/config.json"
+
+    # ── Relay auth + scrub secrets ──
     relay_ok, relay_meta = _relay_auth_from_request(request, target="config")
     if settings.relay_require_key_for_secrets and not relay_ok:
         cfg = _scrub_secret_values(cfg)
@@ -1842,7 +2035,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                     campaign = _resolve_active_campaign(
                         cur,
                         device_cohort_ids=device_cohort_ids,
-                        device_type=dev or "misc",
+                        device_type=device_type or "misc",
                         platform_version=platform_version,
                     )
 
@@ -1880,7 +2073,8 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         "meta": {
             "schema_version": 2,
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "device_type": dev or "misc",
+            "device_type": device_type or "misc",
+            "device_name": device_name or dev or "misc",
             "platform_variant": platform_variant,
             "client_uuid": client_uuid,
             "profile": prof,
