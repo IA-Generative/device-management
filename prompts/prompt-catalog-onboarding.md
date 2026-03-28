@@ -89,26 +89,20 @@ les overrides sont specifiques par profil :
      (vide)    (LLM local) (KC int)  (KC prod, LLM prod)
 ```
 
-Le `dm-config.json` contient les cles que le plugin attend, avec des valeurs
-par defaut raisonnables et des champs vides pour les valeurs serveur :
+### Format du `dm-config.json`
+
+Le fichier utilise une structure `default` + sections par environnement.
+Les environnements sont **libres** — le developpeur peut en creer autant qu'il veut.
 
 ```json
 {
   "configVersion": 1,
-  "config": {
-    "llm_base_urls": "",
-    "llm_default_models": "",
-    "llm_api_tokens": "",
+  "default": {
     "authHeaderName": "Authorization",
     "authHeaderPrefix": "Bearer ",
-    "keycloakIssuerUrl": "",
-    "keycloakRealm": "",
-    "keycloakClientId": "",
-    "keycloak_redirect_uri": "",
-    "keycloak_allowed_redirect_uri": "",
     "portal_url": "https://mirai.interieur.gouv.fr",
-    "doc_url": "",
-    "systemPrompt": "",
+    "doc_url": "https://github.com/IA-Generative/AssistantMiraiLibreOffice/blob/master/docs/notice-utilisateur.md",
+    "systemPrompt": "Tu es un assistant specialise...",
     "extend_selection_max_tokens": 15000,
     "extend_selection_system_prompt": "",
     "edit_selection_max_new_tokens": 15000,
@@ -120,33 +114,78 @@ par defaut raisonnables et des champs vides pour les valeurs serveur :
     "analyze_range_max_tokens": 4000,
     "llm_request_timeout_seconds": 45,
     "enabled": true,
-    "bootstrap_url": "",
-    "config_path": "",
-    "device_name": "",
     "telemetryEnabled": true,
-    "telemetryEndpoint": "",
-    "telemetryAuthorizationType": "Bearer",
-    "telemetryKey": "",
     "telemetrylogJson": true
+  },
+  "local": {
+    "llm_base_urls": "http://localhost:11434/api",
+    "keycloakIssuerUrl": "http://localhost:8082/realms/openwebui",
+    "keycloakRealm": "openwebui",
+    "keycloakClientId": "bootstrap-mirai-lo-dev"
+  },
+  "dev": {
+    "llm_base_urls": "http://localhost:11434/api"
+  },
+  "int": {
+    "llm_base_urls": "https://api.scaleway.ai/.../v1",
+    "keycloakIssuerUrl": "https://sso-int.domain/realms/openwebui"
+  },
+  "prod": {
+    "llm_base_urls": "https://chat.mirai.interieur.gouv.fr/api/",
+    "keycloakIssuerUrl": "https://sso.mirai.interieur.gouv.fr/realms/mirai"
+  },
+  "dgx": {
+    "llm_base_urls": "https://api.gpu.minint.fr/v1"
   }
 }
 ```
 
-Les champs vides (`""`) seront remplis par le DM au serving :
-- `bootstrap_url` → `PUBLIC_BASE_URL`
-- `config_path` → `/config/{slug}/config.json`
-- `device_name` → slug du plugin
-- `keycloak*` → variables systeme ou overrides catalogue
-- `llm_*` → variables systeme ou overrides catalogue
-- `telemetry*` → generes dynamiquement par le DM
+**Regles** :
+- `default` contient les valeurs communes a tous les environnements
+- Chaque section environnement contient **seulement** les valeurs qui different
+- Le DM merge : `default` + section du profil demande
+- Les champs non definis (ni dans default ni dans la section) restent absents — le plugin utilise ses defauts locaux
+- Les champs vides (`""`) sont remplis par le serveur au runtime :
+  `bootstrap_url`, `config_path`, `device_name`, `telemetryEndpoint`, `telemetryKey`
+
+**Environnements libres** : pas de liste fermee. Le developpeur cree les sections
+qu'il veut. L'admin peut en ajouter d'autres via les overrides catalogue.
+`?profile=staging` fonctionne meme si `staging` n'est pas dans le `dm-config.json`
+— le DM appliquera juste le `default` + les overrides catalogue.
+
+### Pipeline de merge au serving
+
+```python
+def _build_config_from_template(template: dict, profile: str) -> dict:
+    """Merge default + profile section from dm-config.json."""
+    default = dict(template.get("default", {}))
+    env_section = template.get(profile, {})
+    # Profile overrides default
+    merged = {**default, **env_section}
+    return {"configVersion": template.get("configVersion", 1), "config": merged}
+```
+
+```
+GET /config/mirai-libreoffice/config.json?profile=int
+
+1. Charger plugins.config_template (dm-config.json stocke en DB)
+2. Merger : default + section "int"
+3. Injecter : bootstrap_url, config_path, device_name, telemetry*
+4. Overrides catalogue : plugin_env_overrides WHERE environment='int'
+5. Keycloak client : plugin_keycloak_clients WHERE environment='int'
+6. Overrides DM : telemetrie, relay
+7. Access control
+8. Scrub secrets
+```
 
 ### Nouveau modele de donnees
 
 ```sql
--- Ajout a la table plugins :
-ALTER TABLE plugins ADD COLUMN IF NOT EXISTS config_template JSONB;
--- Le template extrait du package (dm-config.json) ou saisi manuellement.
--- Sert de base pour le serving — les overrides (systeme + catalogue) s'appliquent par-dessus.
+-- Deja dans le schema :
+-- plugins.config_template JSONB
+-- Le JSON complet du dm-config.json (avec default + sections env).
+-- Les overrides catalogue (plugin_env_overrides) s'appliquent par-dessus.
+-- Les environnements sont libres (VARCHAR(50), pas de CHECK constraint).
 ```
 
 ### Nouveau pipeline de configuration

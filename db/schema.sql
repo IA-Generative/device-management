@@ -139,7 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_pa_plugin ON plugin_aliases(plugin_id);
 CREATE TABLE IF NOT EXISTS plugin_env_overrides (
     id SERIAL PRIMARY KEY,
     plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
-    environment VARCHAR(20) NOT NULL CHECK (environment IN ('local','dev','int','prod')),
+    environment VARCHAR(50) NOT NULL,
     key VARCHAR(200) NOT NULL,
     value TEXT NOT NULL,
     is_secret BOOLEAN DEFAULT false,
@@ -368,7 +368,7 @@ CREATE TABLE IF NOT EXISTS keycloak_clients (
 CREATE TABLE IF NOT EXISTS plugin_keycloak_clients (
     plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
     keycloak_client_id INT NOT NULL REFERENCES keycloak_clients(id) ON DELETE CASCADE,
-    environment VARCHAR(20) NOT NULL CHECK (environment IN ('local','dev','int','prod')),
+    environment VARCHAR(50) NOT NULL,
     PRIMARY KEY (plugin_id, keycloak_client_id, environment)
 );
 
