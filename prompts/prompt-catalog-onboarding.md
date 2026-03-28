@@ -153,6 +153,81 @@ qu'il veut. L'admin peut en ajouter d'autres via les overrides catalogue.
 `?profile=staging` fonctionne meme si `staging` n'est pas dans le `dm-config.json`
 — le DM appliquera juste le `default` + les overrides catalogue.
 
+### Environnements normalises (recommandation)
+
+4 profils standards sont recommandes. Les developpeurs de plugins sont encourages
+a utiliser ces noms pour une coherence inter-plugins.
+
+| Profil | Intention | DM present ? | Reseau | LLM | Keycloak |
+|--------|-----------|-------------|--------|-----|----------|
+| `local` | Dev en autonomie sur le poste du developpeur | **Non** | localhost uniquement | Ollama local (`http://localhost:11434`) ou mock | Aucun ou Keycloak Docker local (`localhost:8082`) |
+| `dev` | Dev avec DM Docker Compose local | Oui (localhost:3001) | localhost | Ollama ou Scaleway dev | Keycloak Docker (`localhost:8082`) |
+| `int` | Integration / recette sur un cluster partage | Oui (serveur int) | Interne | Scaleway ou GPU partage | Keycloak int |
+| `prod` | Production | Oui (serveur prod) | Internet / VPN | LLM production (Scaleway, GPU minint) | Keycloak production |
+
+#### Valeurs par defaut recommandees
+
+```json
+{
+  "configVersion": 1,
+  "default": {
+    "authHeaderName": "Authorization",
+    "authHeaderPrefix": "Bearer ",
+    "enabled": true,
+    "telemetryEnabled": true,
+    "telemetrylogJson": true,
+    "telemetryAuthorizationType": "Bearer",
+    "extend_selection_max_tokens": 15000,
+    "edit_selection_max_new_tokens": 15000,
+    "summarize_selection_max_tokens": 15000,
+    "simplify_selection_max_tokens": 15000,
+    "analyze_range_max_tokens": 4000,
+    "llm_request_timeout_seconds": 45
+  },
+  "local": {
+    "_description": "Developpement autonome, sans DM, sans Keycloak",
+    "llm_base_urls": "http://localhost:11434/api",
+    "llm_default_models": "llama3.2",
+    "llm_api_tokens": "not-needed",
+    "telemetryEnabled": false,
+    "bootstrap_url": "",
+    "config_path": ""
+  },
+  "dev": {
+    "_description": "Dev avec DM Docker Compose local",
+    "llm_base_urls": "http://localhost:11434/api",
+    "llm_default_models": "llama3.2",
+    "keycloakIssuerUrl": "http://localhost:8082/realms/openwebui",
+    "keycloakRealm": "openwebui",
+    "keycloakClientId": "bootstrap-iassistant"
+  },
+  "int": {
+    "_description": "Integration / recette (cluster partage)",
+    "llm_base_urls": "",
+    "keycloakIssuerUrl": "",
+    "keycloakRealm": "",
+    "keycloakClientId": ""
+  },
+  "prod": {
+    "_description": "Production",
+    "llm_base_urls": "",
+    "keycloakIssuerUrl": "",
+    "keycloakRealm": "",
+    "keycloakClientId": ""
+  }
+}
+```
+
+**Conventions** :
+- `local` desactive la telemetrie et laisse `bootstrap_url` vide (pas de DM)
+- `local` et `dev` ont des valeurs concretes pour fonctionner immediatement
+- `int` et `prod` ont des champs vides — remplis par le serveur ou les overrides admin
+- Les champs `_description` sont ignores par le DM (documentation inline)
+- Le developpeur peut ajouter des profils supplementaires (`staging`, `dgx`, `preprod`)
+
+**Avantage** : un developpeur qui clone le repo plugin et lance en `local`
+a un LLM fonctionnel (Ollama) sans aucune configuration serveur.
+
 ### Pipeline de merge au serving
 
 ```python
