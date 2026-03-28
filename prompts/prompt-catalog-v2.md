@@ -496,7 +496,150 @@ fetch('https://bootstrap.fake-domain.name/catalog/api/plugins')
 
 ---
 
-## 7. Nettoyage (supprimer chrome/edge/firefox/misc)
+## 7. Assistance LLM (automatisation et simplification)
+
+Le systeme utilise un LLM (endpoint OpenAI-compatible, configurable via `LLM_BASE_URL`)
+pour assister l'administrateur a chaque etape du cycle de vie d'un plugin.
+
+### Fonctionnalites existantes
+
+| Feature | Declencheur | Action LLM |
+|---------|-------------|------------|
+| Analyse de package | Upload fichier dans "Nouveau plugin" | Extrait manifest + README du ZIP, genere nom, slug, intent, description, features, categorie, changelog |
+| Detection type/version | Upload fichier dans deploy wizard | Identifie device_type et version depuis manifest.json/description.xml |
+
+### Nouvelles fonctionnalites a implementer
+
+#### A. Generation automatique des release notes
+
+Quand une nouvelle version est publiee, le LLM peut generer les release notes
+a partir du diff entre deux versions (changelog du package ou description des commits).
+
+```
+Declencheur : bouton "Generer les notes" dans le formulaire de creation de version
+Input : release_notes de la version precedente + contenu du nouveau package (manifest, readme, changelog)
+Output : markdown des nouveautes, corrections, breaking changes
+```
+
+#### B. Resume intelligent du changelog
+
+Le changelog complet peut etre long. Le LLM genere un resume court (2-3 lignes)
+pour l'affichage dans les cartes du catalogue et l'API JSON (`changelog_summary`).
+
+```
+Declencheur : automatique a la publication d'une version
+Input : release_notes completes
+Output : 2-3 phrases de resume pour changelog_summary
+```
+
+#### C. Suggestion de tags/fonctionnalites cles
+
+Quand l'admin edite la fiche plugin, un bouton "Suggerer des tags" analyse
+la description, l'intent et le changelog pour proposer des tags metier pertinents.
+
+```
+Declencheur : bouton dans l'onglet Editer
+Input : name, intent, description, changelog, tags existants
+Output : liste de tags courts (2-3 mots) a ajouter ou remplacer
+```
+
+#### D. Redaction des communications
+
+Quand l'admin cree une annonce, alerte ou changelog, le LLM pre-remplit le message
+a partir du contexte (nouvelle version, correctif, etc.).
+
+```
+Declencheur : bouton "Rediger avec l'IA" dans le formulaire communication
+Input : type (annonce/alerte/changelog), plugin concern, derniere version, release notes
+Output : titre + corps du message en francais, ton professionnel adapte au type
+```
+
+#### E. Analyse des feedbacks sondage
+
+Le LLM synthetise les commentaires libres des sondages pour degager les tendances
+sans que l'admin ait a lire chaque reponse.
+
+```
+Declencheur : bouton "Synthetiser" dans la page resultats du sondage
+Input : tous les commentaires libres du sondage
+Output : 3-5 themes principaux avec citations representatives
+```
+
+#### F. Validation intelligente de la waitlist
+
+Pour les plugins en acces restreint, le LLM peut aider a trier les demandes
+d'acces en analysant la raison fournie par l'utilisateur.
+
+```
+Declencheur : bouton "Analyser les demandes" dans l'onglet Acces
+Input : liste des demandes en attente (email, raison)
+Output : score de pertinence (haute/moyenne/faible) + suggestion accept/reject pour chaque demande
+```
+
+#### G. Description de la fiche publique pour le SEO
+
+Le LLM genere une meta-description optimisee pour la fiche publique
+du catalogue (balise `<meta name="description">`).
+
+```
+Declencheur : automatique a la publication du plugin
+Input : name, intent, key_features
+Output : meta description 150-160 caracteres
+```
+
+### Implementation technique
+
+Toutes les fonctionnalites LLM partagent le meme pattern :
+
+```python
+async def _llm_assist(system_prompt: str, user_content: str) -> str:
+    """Appel LLM generique. Retourne le texte genere ou "" en cas d'erreur."""
+    llm_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
+    llm_token = os.getenv("LLM_API_TOKEN", "")
+    model = os.getenv("DEFAULT_MODEL_NAME", "")
+    if not llm_url or not llm_token:
+        return ""
+
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content[:20000]},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 2000,
+    }).encode()
+
+    req = urllib.request.Request(
+        f"{llm_url}/chat/completions", data=payload,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {llm_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            result = json.loads(r.read())
+        return result["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return ""
+```
+
+### Routes API admin
+
+| Route | Feature |
+|-------|---------|
+| `POST /admin/api/catalog/suggest` | A. Analyse package (existant) |
+| `POST /admin/api/catalog/{id}/suggest-tags` | C. Suggestion tags |
+| `POST /admin/api/catalog/{id}/versions/{vid}/generate-notes` | A. Release notes |
+| `POST /admin/api/communications/draft` | D. Redaction communication |
+| `POST /admin/api/communications/{id}/summarize` | E. Synthese feedbacks |
+| `POST /admin/api/catalog/{id}/waitlist/analyze` | F. Analyse waitlist |
+
+Chaque bouton LLM dans l'interface affiche un spinner pendant l'appel,
+pre-remplit le champ concerne, et laisse l'admin modifier avant de valider.
+Le LLM ne publie jamais directement — il propose, l'humain decide.
+
+---
+
+## 8. Nettoyage (supprimer chrome/edge/firefox/misc)
 
 | Action | Fichiers |
 |--------|----------|

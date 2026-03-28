@@ -4,15 +4,19 @@ Guide pour les developpeurs integrant un plugin avec l'API Device Management.
 
 ## Plugins supportes
 
-| Plugin | device_name | Extension |
-|--------|-------------|-----------|
-| Assistant Mirai LibreOffice | `mirai-libreoffice` | .oxt |
-| Matisse Thunderbird | `mirai-matisse` | .xpi |
+| Plugin | device_name | Extension | Alias |
+|--------|-------------|-----------|-------|
+| Assistant Mirai LibreOffice | `mirai-libreoffice` | .oxt | `libreoffice` |
+| Matisse Thunderbird | `mirai-matisse` | .xpi | `matisse` |
 
-Le `device_name` est l'identifiant unique du plugin. Il est utilise dans toutes
-les interactions avec le serveur (config, enrollment, telemetrie).
+Le `device_name` est l'identifiant unique du plugin. Utilisez-le dans toutes les
+interactions avec le serveur.
 
-## Flow d'integration (sequence ideale)
+> **Retrocompatibilite** : les anciens chemins via alias (`/config/libreoffice/...`)
+> fonctionnent toujours. La reponse contiendra le vrai `device_name` et `config_path`
+> pour migrer automatiquement au prochain cycle.
+
+## Flow d'integration
 
 ```mermaid
 sequenceDiagram
@@ -48,9 +52,9 @@ GET /config/{device_name}/config.json?profile=dev|int|prod
 
 Le `device_name` peut etre :
 - Le slug du plugin : `mirai-libreoffice`, `mirai-matisse`
-- Un alias retrocompatible : `libreoffice`, `matisse`
+- Un alias : `libreoffice`, `matisse`
 
-Reponse (extrait) :
+Reponse :
 ```json
 {
   "meta": {
@@ -69,7 +73,7 @@ Reponse (extrait) :
     "telemetryEnabled": true,
     "telemetryEndpoint": "https://bootstrap.fake-domain.name/telemetry/v1/traces",
     "telemetryAuthorizationType": "Bearer",
-    "telemetryKey": "<short-lived-jwt>"
+    "telemetryKey": "<jwt-court-duree>"
   },
   "update": null,
   "features": {},
@@ -77,7 +81,26 @@ Reponse (extrait) :
 }
 ```
 
+> **Important** : meme si vous appelez `/config/libreoffice/...` (alias), la reponse
+> contient `device_name: "mirai-libreoffice"` et `config_path: "/config/mirai-libreoffice/..."`.
+> Utilisez ces valeurs pour les appels suivants.
+
 Sans relay headers, les valeurs secretes (`llm_api_tokens`, etc.) sont vides.
+
+#### Acces restreint
+
+Si le plugin est en beta/alpha avec controle d'acces, la reponse peut etre :
+```json
+{
+  "meta": { "schema_version": 2, "access_denied": true },
+  "config": {
+    "device_name": "mirai-matisse",
+    "access_mode": "keycloak_group",
+    "maturity": "beta",
+    "message": "Acces restreint. Contactez votre administrateur."
+  }
+}
+```
 
 ### 2) Enrollment
 
@@ -114,12 +137,11 @@ X-Relay-Client: abc123...
 X-Relay-Key: xyz789...
 ```
 
-Retourne la config **complete** avec les valeurs secretes (tokens LLM, etc.).
+Retourne la config complete avec les valeurs secretes.
 
 ### 4) Telemetrie
 
-Le token telemetrie est fourni dans la config (`telemetryKey`). Il est court-duree (300s)
-et renouvele a chaque fetch de config.
+Le token est fourni dans la config (`telemetryKey`, 300s TTL, renouvele a chaque fetch).
 
 ```
 POST /telemetry/v1/traces
@@ -131,40 +153,72 @@ Content-Type: application/json
 {
   "resourceSpans": [{
     "resource": {},
-    "scopeSpans": [{"spans": [{"name": "ExtensionLoaded", "...": "..."}]}]
+    "scopeSpans": [{"spans": [{"name": "ExtensionLoaded"}]}]
   }]
 }
 ```
 
-### 5) Relay (acces aux services upstream)
-
-Apres enrollment, le plugin peut acceder aux services via le relay :
+### 5) Relay (services upstream)
 
 ```
 POST /relay-assistant/llm/chat/completions
 X-Relay-Client: abc123...
 X-Relay-Key: xyz789...
 Authorization: Bearer <keycloak_token>
-Content-Type: application/json
 ```
 
-Targets autorises : `keycloak`, `llm`, `mcr-api`, `telemetry`.
+Targets : `keycloak`, `llm`, `mcr-api`, `telemetry`.
+
+### 6) Mises a jour automatiques
+
+Le serveur peut inclure une directive de mise a jour dans la config :
+```json
+{
+  "update": {
+    "action": "update",
+    "current_version": "2.0.3",
+    "target_version": "2.1.0",
+    "artifact_url": "/binaries/libreoffice/2.1.0_mirai.oxt",
+    "checksum": "sha256:...",
+    "urgency": "normal"
+  }
+}
+```
+
+Le plugin doit verifier le checksum avant d'installer.
+
+### 7) Communications
+
+Le serveur peut inclure des messages pour l'utilisateur :
+```json
+{
+  "communications": [
+    {
+      "id": 42,
+      "type": "announcement",
+      "title": "Nouvelle version disponible",
+      "body": "La v2.1 corrige le freeze au demarrage.",
+      "priority": "normal"
+    }
+  ]
+}
+```
+
+Pour acquitter (ne plus afficher) : `POST /communications/42/ack`
+Pour repondre a un sondage : `POST /communications/43/survey/respond`
 
 ## Keycloak : Authorization Code + PKCE
 
-### Configuration client recommandee
+### Configuration client
 
 | Parametre | Valeur |
 |-----------|--------|
 | Client ID | `bootstrap-mirai-libreoffice` (genere par le catalogue) |
 | Access type | `public` |
 | Standard Flow | ON |
-| Implicit Flow | OFF |
-| Direct Access Grants (ROPC) | OFF |
+| Direct Access Grants | OFF |
 | PKCE | `required` (S256) |
-| Redirect URIs | `http://localhost:28443/callback` (dev) |
-
-### Import JSON Keycloak
+| Redirect URIs | `http://localhost:28443/callback` |
 
 Le catalogue admin peut generer un fichier JSON d'import pour Keycloak :
 
@@ -176,84 +230,78 @@ Le catalogue admin peut generer un fichier JSON d'import pour Keycloak :
   "publicClient": true,
   "standardFlowEnabled": true,
   "directAccessGrantsEnabled": false,
-  "redirectUris": ["http://localhost:28443/callback", "http://localhost:*/callback"],
+  "redirectUris": ["http://localhost:28443/callback"],
   "webOrigins": ["*"],
-  "attributes": {
-    "pkce.code.challenge.method": "S256",
-    "post.logout.redirect.uris": "+"
-  },
+  "attributes": { "pkce.code.challenge.method": "S256" },
   "defaultClientScopes": ["web-origins", "profile", "roles", "email"],
   "optionalClientScopes": ["offline_access", "groups"]
 }
 ```
 
-### Token settings recommandes
+### Token settings
 
-- Access token : 10-15 minutes
+- Access token : 10-15 min
 - Refresh token : 7-30 jours
-- Rotation refresh token : ON
-- Reutilisation refresh : OFF
+- Rotation refresh : ON
 
-### Test PKCE manuel
+### Test PKCE
 
 ```bash
-# 1. Generer PKCE
 CODE_VERIFIER=$(python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('='))")
 CODE_CHALLENGE=$(python3 -c "import hashlib,base64,os; print(base64.urlsafe_b64encode(hashlib.sha256(os.environ['CODE_VERIFIER'].encode()).digest()).decode().rstrip('='))")
 
-# 2. Ouvrir dans le navigateur
+# Ouvrir dans le navigateur
 echo "https://sso.example.com/realms/openwebui/protocol/openid-connect/auth?response_type=code&client_id=bootstrap-mirai-libreoffice&redirect_uri=http%3A%2F%2Flocalhost%3A28443%2Fcallback&scope=openid%20email&code_challenge_method=S256&code_challenge=${CODE_CHALLENGE}"
 
-# 3. Echanger le code
-curl -sS -X POST \
-  https://sso.example.com/realms/openwebui/protocol/openid-connect/token \
-  -d "grant_type=authorization_code" \
-  -d "client_id=bootstrap-mirai-libreoffice" \
-  -d "redirect_uri=http://localhost:28443/callback" \
-  -d "code=${CODE}" \
-  -d "code_verifier=${CODE_VERIFIER}"
+# Echanger le code
+curl -sS -X POST https://sso.example.com/realms/openwebui/protocol/openid-connect/token \
+  -d "grant_type=authorization_code&client_id=bootstrap-mirai-libreoffice&redirect_uri=http://localhost:28443/callback&code=${CODE}&code_verifier=${CODE_VERIFIER}"
 ```
 
-## Silent Authentication (Refresh Token)
+## Stockage securise des tokens
 
-```
-Token expire ?
-  → refresh_token grant → nouveau access_token
-  → si echec refresh → forcer re-login PKCE
-```
-
-Stockage securise des tokens :
 - Windows : Credential Manager
 - macOS : Keychain
 - Linux : Secret Service (libsecret)
 
+## Catalogue public
+
+La page publique du catalogue est accessible sans authentification :
+
+- `/catalog` : page d'accueil (grille de plugins)
+- `/catalog/{slug}` : fiche plugin (mode d'emploi, changelog, feedback, telechargement)
+- `/catalog/{slug}/download` : telechargement direct de la derniere version
+- `/catalog/api/plugins` : API JSON (CORS ouvert, pour integration externe)
+- `/catalog/api/docs` : documentation Swagger/OpenAPI
+
 ## cURL Examples
 
-### Config
 ```bash
+# Config
 curl -sS 'https://bootstrap.fake-domain.name/config/mirai-libreoffice/config.json?profile=dev' | python3 -m json.tool
-```
 
-### Enroll
-```bash
-curl -sS -X POST \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+# Config via alias (retrocompatible)
+curl -sS 'https://bootstrap.fake-domain.name/config/libreoffice/config.json?profile=dev' | python3 -m json.tool
+
+# Enroll
+curl -sS -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN}" \
   -d '{"device_name":"mirai-libreoffice","plugin_uuid":"b9bdf6ad-...","email":"user@example.com"}' \
   https://bootstrap.fake-domain.name/enroll
-```
 
-### Health check
-```bash
+# Health check
 curl -sS https://bootstrap.fake-domain.name/healthz
+
+# API catalogue (JSON public)
+curl -sS https://bootstrap.fake-domain.name/catalog/api/plugins | python3 -m json.tool
 ```
 
 ## Troubleshooting
 
 | Erreur | Cause | Solution |
 |--------|-------|----------|
-| 400 `device inconnu` | device_name invalide | Verifier le slug ou alias |
+| 400 `device inconnu` | device_name ou alias invalide | Verifier le slug |
 | 400 `Body is not valid JSON` | Payload enroll invalide | Verifier le JSON |
-| 401/403 sur config | Relay credentials invalides | Re-enrollment |
-| 401 sur telemetrie | Token expire | Re-fetch config pour nouveau token |
+| 401 sur config | Relay credentials invalides | Re-enrollment |
+| 401 sur telemetrie | Token expire | Re-fetch config (nouveau token inclus) |
+| 403 `access_denied` | Plugin en beta/alpha, acces restreint | Contacter l'admin ou s'inscrire waitlist |
 | 500 `S3 bucket not configured` | Variable serveur manquante | Contacter l'admin |
