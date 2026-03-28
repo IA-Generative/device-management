@@ -715,7 +715,9 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
               a.max_host_version,
               ra.s3_path  AS rollback_s3_path,
               ra.version  AS rollback_version,
-              ra.checksum AS rollback_checksum
+              ra.checksum AS rollback_checksum,
+              c.rollout_config,
+              c.created_at AS campaign_created_at
             FROM campaigns c
             LEFT JOIN artifacts a  ON a.id  = c.artifact_id
             LEFT JOIN artifacts ra ON ra.id = c.rollback_artifact_id
@@ -739,6 +741,7 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         artifact_version, artifact_s3_path, artifact_checksum, changelog_url,
         min_host_version, max_host_version,
         rollback_s3_path, rollback_version, rollback_checksum,
+        rollout_config, campaign_created_at,
     ) = row
 
     # Filter by host (platform) version compatibility
@@ -770,13 +773,38 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         "rollback_s3_path": rollback_s3_path,
         "rollback_version": str(rollback_version or ""),
         "rollback_checksum": str(rollback_checksum or ""),
+        "rollout_config": rollout_config if isinstance(rollout_config, dict) else None,
+        "campaign_created_at": campaign_created_at,
     }
+
+
+def _get_current_rollout_percent(campaign: dict, stages: list) -> int:
+    """Return the active rollout percent based on elapsed time since campaign start."""
+    import datetime
+    start = campaign.get("campaign_created_at")
+    if start is None:
+        return 100
+    if hasattr(start, "timestamp"):
+        start_ts = start.timestamp()
+    else:
+        try:
+            start_ts = datetime.datetime.fromisoformat(str(start)).timestamp()
+        except Exception:
+            return 100
+    elapsed_hours = (time.time() - start_ts) / 3600
+    cumulative_hours = 0
+    for stage in stages:
+        cumulative_hours += stage.get("duration_hours", 0)
+        if elapsed_hours < cumulative_hours or stage.get("percent", 100) == 100:
+            return stage.get("percent", 100)
+    return 100
 
 
 def _build_update_directive(
     *,
     plugin_version: str,
     campaign: dict | None,
+    client_uuid: str = "",
 ) -> dict | None:
     """Build the update directive dict, or return None if no action needed."""
     if not plugin_version or not campaign:
@@ -791,6 +819,17 @@ def _build_update_directive(
 
     pv = _parse_version_tuple(plugin_version)
     av = _parse_version_tuple(artifact_version)
+
+    # Check rollout percentage gating
+    rollout_config = campaign.get("rollout_config")
+    if rollout_config and isinstance(rollout_config, dict) and client_uuid:
+        stages = rollout_config.get("stages", [])
+        if stages:
+            current_percent = _get_current_rollout_percent(campaign, stages)
+            if current_percent < 100:
+                device_hash = int(hashlib.md5(client_uuid.encode()).hexdigest()[:8], 16) % 100
+                if device_hash >= current_percent:
+                    return None  # Not yet eligible for this rollout stage
 
     if pv < av:
         return {
@@ -1811,6 +1850,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                     update_directive = _build_update_directive(
                         plugin_version=plugin_version,
                         campaign=campaign,
+                        client_uuid=client_uuid,
                     )
 
                     # Step 9: UPSERT campaign_device_status (only when we have an update)
@@ -2089,6 +2129,280 @@ async def enroll(request: Request):
             "relayKeyExpiresAt": relay_data.get("expires_at", 0),
         },
     )
+
+
+# ── Update status reporting ─────────────────────────────────────────────
+
+
+@app.post("/update/status")
+async def report_update_status(request: Request):
+    """Receive update status report from a plugin after install/failure."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+
+    campaign_id = body.get("campaign_id")
+    client_uuid = body.get("client_uuid", "")
+    status = body.get("status", "")
+    version_before = body.get("version_before", "")
+    version_after = body.get("version_after", "")
+    error_detail = body.get("error_detail", "")
+
+    allowed = ("installed", "failed", "checksum_error", "download_error", "deferred")
+    if status not in allowed:
+        return JSONResponse({"ok": False, "error": f"status must be one of {allowed}"}, status_code=400)
+    if not client_uuid:
+        return JSONResponse({"ok": False, "error": "client_uuid required"}, status_code=400)
+
+    db_url = _db_url()
+    if db_url:
+        try:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                # Map plugin status to DB enum
+                db_status = "updated" if status == "installed" else "failed"
+                cur.execute(
+                    """
+                    INSERT INTO campaign_device_status
+                        (campaign_id, client_uuid, status, version_before, version_after, error_message, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (campaign_id, client_uuid)
+                    DO UPDATE SET status = EXCLUDED.status,
+                                  version_after = EXCLUDED.version_after,
+                                  error_message = EXCLUDED.error_message,
+                                  updated_at = NOW()
+                    """,
+                    (campaign_id, client_uuid, db_status,
+                     version_before, version_after or None, error_detail or None),
+                )
+            conn.close()
+        except Exception as e:
+            logger.warning(f"update/status DB error: {e}")
+
+    return JSONResponse({"ok": True, "status": status})
+
+
+# ── Campaign REST API ───────────────────────────────────────────────────
+
+
+def _verify_admin_token(request: Request) -> bool:
+    """Check X-Admin-Token header against DM_QUEUE_ADMIN_TOKEN."""
+    expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
+    if not expected:
+        return False
+    token = request.headers.get("X-Admin-Token", "")
+    return token == expected
+
+
+@app.post("/api/campaigns")
+async def api_create_campaign(request: Request):
+    """Create a new campaign via REST API."""
+    if not _verify_admin_token(request):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
+
+    db_url = _db_url()
+    if not db_url:
+        return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
+
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO campaigns (name, description, type, artifact_id, rollback_artifact_id,
+                    target_cohort_id, urgency, status, rollout_config, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    body.get("name", "API Campaign"),
+                    body.get("description", ""),
+                    body.get("type", "plugin_update"),
+                    body.get("artifact_id"),
+                    body.get("rollback_artifact_id"),
+                    body.get("target_cohort_id"),
+                    body.get("urgency", "normal"),
+                    body.get("status", "draft"),
+                    json.dumps(body["rollout_config"]) if body.get("rollout_config") else None,
+                    "api",
+                ),
+            )
+            campaign_id = cur.fetchone()[0]
+        conn.close()
+        return JSONResponse({"ok": True, "campaign_id": campaign_id}, status_code=201)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.patch("/api/campaigns/{campaign_id}/start")
+async def api_start_campaign(campaign_id: int, request: Request):
+    if not _verify_admin_token(request):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return _api_campaign_action(campaign_id, "active")
+
+
+@app.patch("/api/campaigns/{campaign_id}/pause")
+async def api_pause_campaign(campaign_id: int, request: Request):
+    if not _verify_admin_token(request):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return _api_campaign_action(campaign_id, "paused")
+
+
+@app.patch("/api/campaigns/{campaign_id}/resume")
+async def api_resume_campaign(campaign_id: int, request: Request):
+    if not _verify_admin_token(request):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return _api_campaign_action(campaign_id, "active")
+
+
+@app.patch("/api/campaigns/{campaign_id}/abort")
+async def api_abort_campaign(campaign_id: int, request: Request):
+    if not _verify_admin_token(request):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return _api_campaign_action(campaign_id, "rolled_back")
+
+
+def _api_campaign_action(campaign_id: int, new_status: str):
+    db_url = _db_url()
+    if not db_url:
+        return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE campaigns SET status = %s, updated_at = NOW() WHERE id = %s RETURNING id",
+                (new_status, campaign_id),
+            )
+            row = cur.fetchone()
+        conn.close()
+        if not row:
+            return JSONResponse({"ok": False, "error": "Campaign not found"}, status_code=404)
+        return JSONResponse({"ok": True, "campaign_id": campaign_id, "status": new_status})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/campaigns/{campaign_id}/progress")
+async def api_campaign_progress(campaign_id: int, request: Request):
+    if not _verify_admin_token(request):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+    db_url = _db_url()
+    if not db_url:
+        return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
+
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT status, rollout_config FROM campaigns WHERE id = %s", (campaign_id,))
+            camp_row = cur.fetchone()
+            if not camp_row:
+                conn.close()
+                return JSONResponse({"ok": False, "error": "Campaign not found"}, status_code=404)
+
+            camp_status, rollout_config = camp_row
+
+            cur.execute(
+                """
+                SELECT status, COUNT(*) FROM campaign_device_status
+                WHERE campaign_id = %s GROUP BY status
+                """,
+                (campaign_id,),
+            )
+            stats = dict(cur.fetchall())
+        conn.close()
+
+        total = sum(stats.values())
+        installed = stats.get("updated", 0)
+        failed = stats.get("failed", 0)
+        notified = stats.get("notified", 0)
+        pending = stats.get("pending", 0)
+
+        failure_rate = round(failed / max(installed + failed, 1), 4)
+
+        # Determine current stage label
+        current_stage = "unknown"
+        if isinstance(rollout_config, dict):
+            stages = rollout_config.get("stages", [])
+            current_percent = _get_current_rollout_percent({"campaign_created_at": None, "rollout_config": rollout_config}, stages)
+            for s in stages:
+                if s.get("percent", 100) >= current_percent:
+                    current_stage = s.get("label", "unknown")
+                    break
+
+        return JSONResponse({
+            "ok": True,
+            "campaign_id": campaign_id,
+            "status": camp_status,
+            "current_stage": current_stage,
+            "total_devices": total,
+            "installed": installed,
+            "failed": failed,
+            "notified": notified,
+            "pending": pending,
+            "failure_rate": failure_rate,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/artifacts")
+async def api_upload_artifact(request: Request):
+    """Upload an artifact binary via REST API."""
+    if not _verify_admin_token(request):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+    form = await request.form()
+    device_type = form.get("device_type", "libreoffice")
+    version = form.get("version", "")
+    changelog_url = form.get("changelog_url", "")
+    binary = form.get("binary")
+
+    if not version or not binary:
+        return JSONResponse({"ok": False, "error": "version and binary required"}, status_code=400)
+
+    data = await binary.read()
+    checksum = "sha256:" + hashlib.sha256(data).hexdigest()
+    filename = binary.filename or f"mirai-{version}.oxt"
+
+    # Save locally
+    binaries_dir = os.path.join(os.getenv("DM_CONFIG_DIR", "/app/config"), "binaries", device_type)
+    os.makedirs(binaries_dir, exist_ok=True)
+    local_path = os.path.join(device_type, f"{version}_{filename}")
+    full_path = os.path.join(os.getenv("DM_CONFIG_DIR", "/app/config"), "binaries", local_path)
+    with open(full_path, "wb") as f:
+        f.write(data)
+
+    db_url = _db_url()
+    if not db_url:
+        return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
+
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO artifacts (device_type, version, s3_path, checksum, changelog_url)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (device_type, version, local_path, checksum, changelog_url),
+            )
+            artifact_id = cur.fetchone()[0]
+        conn.close()
+        return JSONResponse({"ok": True, "artifact_id": artifact_id, "checksum": checksum}, status_code=201)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.get("/binaries/{path:path}")
