@@ -1,7 +1,8 @@
 # Prompt — Onboarding de plugins : decouplage cluster / catalogue
 
-> Version : 1.0 — 2026-03-28
+> Version : 1.1 — 2026-03-28
 > Perimetre : device-management
+> Environnements : **local**, **dev**, **int**, **prod**
 > Objectif : separer le deploiement du cluster de l'enregistrement des plugins
 
 ---
@@ -36,20 +37,60 @@ Temps 2 : Enregistrer un plugin via l'admin UI ou l'API
 
 ### Concept
 
-Le fichier de configuration par defaut est **bundlé dans le package du plugin** (le .oxt, .xpi, .crx).
-Le DM l'extrait a l'enregistrement et le stocke en base.
+Le template de configuration est fourni de **deux manieres** (au choix) :
+
+**Option A — Bundle dans le package** : `dm-config.json` est inclus dans le ZIP du plugin.
+Le DM l'extrait automatiquement a l'enregistrement, le stocke en base, puis
+**retire le fichier du binaire** distribue aux utilisateurs (les cles serveur
+n'ont pas a etre dans l'artifact installe).
 
 ```
-mirai-2.1.0.oxt (ZIP)
+mirai-2.1.0.oxt (upload par l'admin)
   ├── manifest.xml
-  ├── META-INF/
   ├── src/
   ├── readme.md
-  └── dm-config.json          ← NOUVEAU : template config par defaut
+  └── dm-config.json          ← extrait puis retire du binaire distribue
+```
+
+**Option B — Upload separe** : l'admin uploade le binaire ET le `dm-config.json`
+separement dans le formulaire. Utile quand le developpeur du plugin ne veut pas
+modifier son package, ou quand l'admin veut fournir un template personnalise.
+
+```
+Formulaire admin :
+  [1. Fichier plugin (.oxt)]     ← binaire tel quel
+  [2. dm-config.json (optionnel)] ← template config separe
+```
+
+### 4 environnements
+
+Le DM gere 4 profils d'environnement. Le template config est commun,
+les overrides sont specifiques par profil :
+
+| Profil | Usage | Exemple base URL |
+|--------|-------|------------------|
+| `local` | Dev poste developpeur | `http://localhost:3001` |
+| `dev` | Environnement de dev partage | `http://localhost:3001` ou serveur dev |
+| `int` | Integration / recette | `https://bootstrap-int.domain.name` |
+| `prod` | Production | `https://bootstrap.domain.name` |
+
+```
+                    Template config (commun)
+                    ┌─────────────────────┐
+                    │  dm-config.json      │
+                    │  (valeurs par defaut)│
+                    └──────────┬──────────┘
+                               │
+          ┌────────┬───────────┼───────────┬──────────┐
+          │        │           │           │          │
+      local      dev         int        prod
+          │        │           │           │
+     overrides overrides  overrides  overrides
+     (vide)    (LLM local) (KC int)  (KC prod, LLM prod)
 ```
 
 Le `dm-config.json` contient les cles que le plugin attend, avec des valeurs
-par defaut raisonnables et des placeholders pour les valeurs serveur :
+par defaut raisonnables et des champs vides pour les valeurs serveur :
 
 ```json
 {
@@ -273,16 +314,75 @@ volumes:
           path: config.json              ← config generique seulement
 ```
 
+### Nettoyage du binaire distribue
+
+Quand `dm-config.json` est bundle dans le package (option A), le DM :
+1. Extrait `dm-config.json` et le stocke dans `plugins.config_template`
+2. **Retire le fichier du ZIP** avant de stocker l'artifact
+3. L'artifact distribue aux utilisateurs ne contient plus `dm-config.json`
+
+Cela evite que les valeurs par defaut (qui peuvent contenir des placeholders
+ou des infos sur l'infrastructure) ne soient visibles dans le plugin installe.
+
+```python
+def _strip_dm_config_from_zip(data: bytes) -> bytes:
+    """Remove dm-config.json from ZIP archive before storing."""
+    import zipfile, io
+    src = zipfile.ZipFile(io.BytesIO(data))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            if item.filename.lower() in ('dm-config.json', 'dm_config.json'):
+                continue
+            dst.writestr(item, src.read(item.filename))
+    return buf.getvalue()
+```
+
 ### Convention `dm-config.json` dans le package plugin
 
-Le developpeur du plugin ajoute `dm-config.json` a la racine de son archive.
+Le developpeur du plugin peut ajouter `dm-config.json` a la racine de son archive,
+ou le fournir separement lors de l'enregistrement.
+
 Ce fichier est la **source de verite** pour les cles de configuration attendues.
 
 Il sert a :
 1. **Documenter** les cles que le plugin lit (contrat d'interface)
 2. **Initialiser** le template dans le catalogue DM
 3. **Fournir des valeurs par defaut** raisonnables
-4. **Valider** que le DM sert toutes les cles attendues (comparaison template vs override)
+4. **Valider** que le DM sert toutes les cles attendues
+
+### Interface d'upload dans le formulaire "Nouveau plugin"
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  1. Fichier du plugin *                                          │
+│  [Choisir un fichier .oxt/.xpi]                                 │
+│                                                                  │
+│  2. Template de configuration (optionnel)                        │
+│  [Choisir dm-config.json]                                        │
+│  Si le package contient dm-config.json, il sera extrait          │
+│  automatiquement. Sinon, un template par defaut sera genere.    │
+│                                                                  │
+│  [Analyser avec l'IA]                                            │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 4 environnements dans les overrides
+
+Les CHECK constraints de la DB supportent 4 profils :
+
+```sql
+CHECK (environment IN ('local','dev','int','prod'))
+```
+
+| Profil | Config path appele par le plugin | Overrides typiques |
+|--------|---|----|
+| `local` | `?profile=local` | LLM localhost, KC localhost |
+| `dev` | `?profile=dev` | LLM dev, KC dev |
+| `int` | `?profile=int` | LLM int, KC int |
+| `prod` | `?profile=prod` (ou defaut) | LLM prod, KC prod |
+
+L'admin peut ajouter des overrides pour chaque profil dans l'onglet Environnements.
 
 ### Implementation dans l'endpoint suggest (existant)
 

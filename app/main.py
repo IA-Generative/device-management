@@ -1909,7 +1909,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     - Default: DM_CONFIG_PROFILE (defaults to "prod")
     """
     prof = (profile or os.getenv("DM_CONFIG_PROFILE", "prod")).strip().lower()
-    if prof not in ("dev", "prod", "int", "llama", "gptoss"):
+    if prof not in ("local", "dev", "prod", "int"):
         return JSONResponse(status_code=400, content={"ok": False, "error": "profile must be 'dev' or 'prod' or 'int' "})
     dev = (device or "").strip().lower()
     device_name = dev
