@@ -234,9 +234,11 @@ document.getElementById('plugin-file').addEventListener('change', function() {
   const statusEl = document.getElementById('analysis-status');
   if (!file) return;
 
-  statusEl.innerHTML = '<div style="padding:0.5rem;background:#e8e8ff;border-radius:4px;">' +
-    '<strong>Fichier :</strong> ' + file.name + ' (' + (file.size/1024/1024).toFixed(1) + ' Mo)<br>' +
-    '<span style="color:#666;">Analyse en cours via IA...</span></div>';
+  statusEl.innerHTML = '<div style="padding:0.75rem;background:#e8e8ff;border-radius:4px;">' +
+    '<div style="display:flex;align-items:center;gap:0.5rem;"><span class="dm-spinner"></span>' +
+    '<strong>' + file.name + '</strong> (' + (file.size/1024/1024).toFixed(1) + ' Mo)</div>' +
+    '<div class="dm-pulse" style="color:#666;font-size:0.85rem;margin-top:0.25rem;">Analyse en cours via IA...</div>' +
+    '<div class="dm-progress-indeterminate"></div></div>';
 
   analyzePlugin(file, statusEl);
 });

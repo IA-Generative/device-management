@@ -7,7 +7,12 @@
 
 {# Header #}
 <div style="display:flex;gap:1.5rem;margin-bottom:1.5rem;align-items:flex-start;">
+  {% if plugin.icon_path %}
+  <img src="/catalog/icons/{{ plugin.slug }}.{{ plugin.icon_path.rsplit('.', 1)[-1] if plugin.icon_path else 'png' }}"
+       alt="{{ plugin.name }}" style="width:60px;height:60px;border-radius:12px;object-fit:cover;">
+  {% else %}
   <div class="dm-plugin-icon-lg">{{ plugin.device_type[:2].upper() }}</div>
+  {% endif %}
   <div style="flex:1;">
     <h1 class="dm-page-title" style="margin-bottom:0.25rem;">{{ plugin.name }}</h1>
     <div style="font-size:0.875rem;color:#666;margin-bottom:0.5rem;">
@@ -226,6 +231,25 @@
 
 {# Tab: Edit #}
 <div id="tab-edit" class="dm-tabs__panel {% if tab == 'edit' %}dm-tabs__panel--active{% endif %}">
+
+  {# Logo upload (separate form with enctype) #}
+  <div class="dm-form-row" style="margin-bottom:1.5rem;max-width:700px;">
+    <label class="dm-label">Logo / Mascotte</label>
+    <div style="display:flex;align-items:center;gap:1rem;">
+      {% if plugin.icon_path %}
+      <img src="/catalog/icons/{{ plugin.slug }}{{ plugin.icon_path.split('.')[-1] if '.' in (plugin.icon_path or '') else '.png' }}"
+           alt="{{ plugin.name }}" style="width:64px;height:64px;border-radius:12px;object-fit:cover;">
+      {% else %}
+      <div class="dm-plugin-icon-lg">{{ plugin.device_type[:2]|upper }}</div>
+      {% endif %}
+      <form method="post" action="/admin/catalog/{{ plugin.id }}/logo" enctype="multipart/form-data" style="display:flex;gap:0.5rem;align-items:center;">
+        <input type="file" name="logo" accept=".png,.jpg,.jpeg,.svg,.webp" class="dm-input" style="max-width:300px;">
+        <button type="submit" class="dm-btn dm-btn--secondary dm-btn--sm">Uploader</button>
+      </form>
+    </div>
+    <div class="dm-hint">PNG, JPG, SVG ou WebP. Max 2 Mo. 256x256 px recommande.</div>
+  </div>
+
   <form method="post" action="/admin/catalog/{{ plugin.id }}/edit" style="max-width:700px;">
     <div class="dm-form-row">
       <label class="dm-label">Nom</label>
