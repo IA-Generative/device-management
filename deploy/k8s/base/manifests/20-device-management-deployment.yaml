@@ -22,7 +22,7 @@ spec:
         - name: regcred
       containers:
         - name: device-management
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.1.1-catalog
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.2.0-catalog-v2
           imagePullPolicy: Always
           ports:
             - containerPort: 3001
@@ -403,11 +403,3 @@ spec:
                       path: libreoffice/config.json
                     - key: libreoffice-config-int.json
                       path: libreoffice/config.int.json
-                    - key: chrome-config.json
-                      path: chrome/config.json
-                    - key: edge-config.json
-                      path: edge/config.json
-                    - key: firefox-config.json
-                      path: firefox/config.json
-                    - key: misc-config.json
-                      path: misc/config.json
