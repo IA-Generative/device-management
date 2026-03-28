@@ -50,7 +50,21 @@ alias        = retrocompatibilite              ex: "libreoffice" → "mirai-libr
 ```
 
 Un plugin appelle `/config/mirai-libreoffice/config.json` (ou `/config/libreoffice/...` via alias).
-Le serveur resout le slug/alias, charge le template via device_type, applique les overrides catalogue.
+Le serveur resout le slug/alias, charge le template config, applique les overrides catalogue.
+
+### Environnements (profils)
+
+Les environnements sont **libres** — pas de liste fermee. 4 profils standards sont recommandes :
+
+| Profil | DM present ? | LLM | Usage |
+|--------|-------------|-----|-------|
+| `local` | Non | Ollama localhost | Dev autonome, zero infra |
+| `dev` | Docker local | `${{LLM_BASE_URL}}` | Dev avec DM Docker Compose |
+| `int` | Serveur int | `${{LLM_BASE_URL}}` | Integration / recette |
+| `prod` | Serveur prod | `${{LLM_BASE_URL}}` | Production |
+
+Les valeurs `${{VAR}}` sont des **placeholders plateforme** substitues au runtime
+par les variables d'environnement du serveur DM.
 
 ### Maturite et acces
 
@@ -76,7 +90,7 @@ Le catalogue est le hub central de gestion des plugins. Il permet de :
 - **Gerer le cycle de vie** des versions : draft → published → deprecated → yanked
 - **Definir la maturite** du produit : dev → alpha → beta → pre-release → release
 - **Controler l'acces** : ouvert a tous, liste d'attente avec validation admin, ou groupe Keycloak requis
-- **Configurer par environnement** (dev/int/prod) : surcharges de variables specifiques au plugin (Keycloak, LLM, telemetrie, etc.)
+- **Configurer par environnement** (local/dev/int/prod et profils libres) : surcharges de variables specifiques au plugin
 - **Gerer les clients Keycloak** par environnement avec export JSON pour import direct dans Keycloak
 - **Suivre les alias** avec metriques de migration (% de devices encore sur l'ancien chemin)
 - **Deployer** via l'assistant 1-2-3 directement depuis la fiche d'une version
@@ -100,21 +114,46 @@ a des sites externes (ex: mirai.interieur.gouv.fr) d'afficher les plugins :
 - `/catalog/api/plugins/{slug}` : detail complet d'un plugin
 - `/catalog/api/docs` : documentation Swagger/OpenAPI interactive
 
+### Onboarding d'un plugin (decouplage cluster / catalogue)
+
+Le deploiement se fait en **2 temps** :
+
+1. **Deployer le cluster DM** (une fois, generique, aucune connaissance des plugins)
+2. **Enregistrer un plugin** via l'admin UI (upload package, zero redeploy)
+
+Le template de configuration vient du **plugin** lui-meme via un fichier `dm-config.json` :
+- **Bundle dans le package** (.oxt/.xpi) : extrait automatiquement, retire du binaire distribue
+- **Ou upload separe** dans le formulaire admin
+
+Format `dm-config.json` (default + sections par environnement) :
+```json
+{
+  "configVersion": 1,
+  "default": { "systemPrompt": "...", "telemetryEnabled": true },
+  "local":   { "llm_base_urls": "http://localhost:11434/api" },
+  "dev":     { "llm_base_urls": "${{LLM_BASE_URL}}" },
+  "prod":    { "llm_base_urls": "${{LLM_BASE_URL}}" }
+}
+```
+
+Les placeholders `${{VAR}}` sont substitues par les variables de la plateforme DM.
+Les sections serveur sont **auto-completees** avec les placeholders si le dev ne les fournit pas.
+
 ### Creation assistee par IA
 
-Lors de la creation d'un plugin dans le catalogue, le systeme analyse automatiquement
-le fichier plugin uploade (.oxt, .xpi, .crx) et extrait :
-- Le type de plugin (LibreOffice, Thunderbird, etc.)
-- La version depuis le manifest
-- Les fichiers README/notice-utilisateur/changelog contenus dans le package
-- Via un LLM, genere automatiquement : nom, intention, description, fonctionnalites cles, categorie
+Lors de la creation d'un plugin, le systeme analyse le package uploade et extrait :
+- Le type de plugin, la version, le README, le changelog
+- Le `dm-config.json` (template config)
+- Via un LLM : nom, intention, description, fonctionnalites cles, categorie
 
 ## Endpoints
 
 ### Configuration
-- `GET /config/{device_name}/config.json?profile=dev|int|prod` : config specifique au plugin
+- `GET /config/{device_name}/config.json?profile=local|dev|int|prod|...` : config specifique au plugin
   - Accepte le slug (`mirai-libreoffice`) ou un alias (`libreoffice`)
-  - Les overrides catalogue sont appliques par environnement
+  - Profils libres (local, dev, int, prod, staging, dgx, etc.)
+  - Template depuis `plugins.config_template` (DB) avec fallback fichier
+  - Pipeline : merge default+profil → placeholders → overrides catalogue → keycloak → scrub
 
 ### Enrollment et relay
 - `POST|PUT /enroll` : enregistrement d'un plugin (PKCE Bearer token)
@@ -139,12 +178,21 @@ le fichier plugin uploade (.oxt, .xpi, .crx) et extrait :
 - `/admin/communications` : campagnes de communication et sondages
 - `/admin/devices` : appareils enregistres
 - `/admin/campaigns` : campagnes de deploiement (avance)
+- `/admin/debug` : sante des services (DB, Keycloak, LLM, relay, telemetrie)
 - `/admin/cohorts`, `/admin/flags`, `/admin/artifacts`, `/admin/audit`
 
 ### Catalogue public (`/catalog/`)
 - `/catalog` : page d'accueil (DSFR, style mirai.interieur.gouv.fr)
 - `/catalog/{slug}` : fiche plugin (mode d'emploi, changelog, feedback, telechargement)
 - `/catalog/{slug}/download` : telechargement derniere version
+- `/catalog/api/plugins` : API JSON publique (CORS ouvert)
+- `/catalog/api/plugins/{slug}` : detail JSON d'un plugin
+- `/catalog/api/status` : disponibilite des services
+- `/catalog/api/docs` : documentation Swagger/OpenAPI
+
+### Monitoring (`/ops/`)
+- `/ops/health/full` : sante detaillee (JSON, pour Grafana/alerting)
+- `/ops/metrics` : metriques Prometheus (text exposition)
 - `/catalog/api/plugins` : API JSON publique (CORS ouvert, pour integration mirai)
 - `/catalog/api/plugins/{slug}` : detail JSON d'un plugin
 - `/catalog/api/docs` : documentation Swagger/OpenAPI
@@ -168,8 +216,10 @@ app/
   catalog_public/      # Templates DSFR publics (catalogue)
 
 config/
-  libreoffice/         # Templates config LibreOffice (dev/int/prod)
-  matisse/             # Templates config Matisse (dev/int/prod)
+  mirai-libreoffice/   # Templates config LibreOffice (fallback fichier)
+  matisse/             # Templates config Matisse (fallback fichier)
+  # Note : a terme les templates config vivent dans plugins.config_template (DB)
+  # et les dossiers config/ deviennent un fallback pour la retrocompatibilite
 
 db/
   schema.sql           # Schema unique consolide (toutes les tables)
