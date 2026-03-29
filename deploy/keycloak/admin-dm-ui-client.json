@@ -1,0 +1,37 @@
+{
+  "clientId": "admin-dm-ui",
+  "name": "DM Admin UI",
+  "description": "Device Management Administration Interface",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "standardFlowEnabled": true,
+  "directAccessGrantsEnabled": false,
+  "implicitFlowEnabled": false,
+  "serviceAccountsEnabled": false,
+  "authorizationServicesEnabled": false,
+  "rootUrl": "https://<SCALEWAY_HOSTNAME>",
+  "baseUrl": "/admin/",
+  "redirectUris": [
+    "https://<SCALEWAY_HOSTNAME>/admin/callback",
+    "http://localhost:3001/admin/callback",
+    "http://localhost:3002/admin/callback"
+  ],
+  "webOrigins": [
+    "https://<SCALEWAY_HOSTNAME>",
+    "http://localhost:3001",
+    "http://localhost:3002"
+  ],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "post.logout.redirect.uris": "https://<SCALEWAY_HOSTNAME>/admin/+||http://localhost:3001/admin/+"
+  },
+  "defaultClientScopes": [
+    "openid",
+    "profile",
+    "email"
+  ],
+  "optionalClientScopes": [
+    "groups"
+  ]
+}

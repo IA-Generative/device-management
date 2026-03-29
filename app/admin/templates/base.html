@@ -64,11 +64,17 @@
     .dm-breadcrumb a { color: #000091; }
     /* Tabs */
     .dm-tabs { border-bottom: 1px solid #e5e5e5; margin-bottom: 1rem; }
-    .dm-tabs__list { list-style: none; padding: 0; margin: 0; display: flex; gap: 0; }
+    .dm-tabs__list { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0; }
     .dm-tabs__tab { padding: 0.75rem 1.25rem; cursor: pointer; border: none; background: none; font-size: 0.875rem; border-bottom: 3px solid transparent; }
     .dm-tabs__tab--active { border-bottom-color: #000091; font-weight: 600; color: #000091; }
     .dm-tabs__panel { display: none; }
     .dm-tabs__panel--active { display: block; }
+    /* Environment cards */
+    .dm-env-card { display:block; cursor:pointer; border:2px solid #e5e5e5; border-radius:8px; padding:0.75rem 1rem; min-width:100px; text-align:center; transition:border-color 0.15s, background 0.15s; }
+    .dm-env-card:hover { border-color:#000091; background:#F5F5FE; }
+    .dm-env-card--selected, .dm-env-card--selected:hover { border-color:#000091; background:#E3E3FD; }
+    .dm-env-card__name { font-weight:600; font-size:0.95rem; }
+    .dm-env-card__hint { font-size:0.75rem; color:#666; margin-top:0.15rem; }
     /* Search bar */
     .dm-search { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
     .dm-search input { flex: 1; min-width: 200px; }
@@ -110,9 +116,6 @@
         <a href="/admin/catalog" class="{% if '/admin/catalog' in request.url.path %}active{% endif %}">Catalogue</a>
       </li>
       <li class="dm-nav__item">
-        <a href="/admin/deploy" class="{% if '/admin/deploy' in request.url.path %}active{% endif %}" style="font-weight:bold;">Deploiement 1-2-3</a>
-      </li>
-      <li class="dm-nav__item">
         <a href="/admin/communications" class="{% if '/admin/communications' in request.url.path %}active{% endif %}">Communications</a>
       </li>
       <li class="dm-nav__item">
@@ -125,13 +128,10 @@
         <a href="/admin/flags" class="{% if '/admin/flags' in request.url.path %}active{% endif %}">Feature flags</a>
       </li>
       <li class="dm-nav__item">
-        <a href="/admin/artifacts" class="{% if '/admin/artifacts' in request.url.path %}active{% endif %}">Artifacts</a>
-      </li>
-      <li class="dm-nav__item">
-        <a href="/admin/campaigns" class="{% if '/admin/campaigns' in request.url.path %}active{% endif %}">Campagnes</a>
-      </li>
-      <li class="dm-nav__item">
         <a href="/admin/audit" class="{% if '/admin/audit' in request.url.path %}active{% endif %}">Journal d'audit</a>
+      </li>
+      <li class="dm-nav__item">
+        <a href="/admin/files" class="{% if '/admin/files' in request.url.path %}active{% endif %}">Fichiers</a>
       </li>
       <li class="dm-nav__item">
         <a href="/admin/debug" class="{% if '/admin/debug' in request.url.path %}active{% endif %}">Debug</a>

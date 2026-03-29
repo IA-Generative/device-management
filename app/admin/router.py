@@ -11,8 +11,10 @@ import logging
 import os
 import time
 
+from pathlib import Path, PurePosixPath
+
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
 from .auth import (
@@ -34,10 +36,26 @@ from .services import (
     keycloak as keycloak_svc,
 )
 
+from ..settings import settings
+
 logger = logging.getLogger("dm-admin-router")
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/admin/templates")
+
+
+def _get_deploy_environments() -> list[dict]:
+    """Return the list of deploy environments from settings."""
+    try:
+        return json.loads(settings.deploy_environments_json)
+    except (json.JSONDecodeError, TypeError):
+        return [
+            {"name": "dev", "label": "Dev", "strategy": "patch_all", "confirm_name": False},
+            {"name": "int", "label": "Integration", "strategy": "patch_all", "confirm_name": False},
+            {"name": "beta", "label": "Beta", "strategy": "choice", "confirm_name": False},
+            {"name": "preview", "label": "Preview", "strategy": "choice", "confirm_name": False},
+            {"name": "prod", "label": "Production", "strategy": "progressive", "confirm_name": True},
+        ]
 
 # Register custom Jinja2 filters
 templates.env.globals["timeago"] = timeago
@@ -72,14 +90,15 @@ def _apply_platform_defaults(template: dict) -> dict:
     return template
 
 
-def _strip_dm_config_from_zip(data: bytes) -> bytes:
-    """Remove dm-config.json from a ZIP archive (OXT/XPI/CRX) before storage."""
+def _strip_dm_metadata_from_zip(data: bytes) -> bytes:
+    """Remove dm-config.json and dm-manifest.json from a ZIP archive (OXT/XPI/CRX) before storage."""
     import zipfile
+    strip_names = {"dm-config.json", "dm_config.json", "dm-manifest.json", "dm_manifest.json"}
     src = zipfile.ZipFile(io.BytesIO(data))
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
         for item in src.infolist():
-            if item.filename.lower() in ("dm-config.json", "dm_config.json"):
+            if item.filename.lower() in strip_names:
                 continue
             dst.writestr(item, src.read(item.filename))
     return buf.getvalue()
@@ -104,13 +123,19 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
 
     # Use internal token endpoint for server-side exchange (Docker-safe)
     token_url = _get_token_endpoint()
-    data = urllib.parse.urlencode({
+    token_params = {
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": REDIRECT_URI,
         "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-    }).encode()
+    }
+    if CLIENT_SECRET:
+        token_params["client_secret"] = CLIENT_SECRET
+    # PKCE: include code_verifier if present
+    code_verifier = request.cookies.get("dm_pkce_verifier")
+    if code_verifier:
+        token_params["code_verifier"] = code_verifier
+    data = urllib.parse.urlencode(token_params).encode()
     req = urllib.request.Request(
         token_url, data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -979,8 +1004,9 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
     if not version and not errors:
         warnings.append("Version non detectee dans le package — saisie manuelle requise")
 
-    # Detect device type
+    # Detect device type + extract dm-manifest.json release notes
     device_type = None
+    release_notes = ""
 
     if ext == "oxt":
         device_type = "libreoffice"
@@ -1003,6 +1029,20 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
         except zipfile.BadZipFile:
             device_type = "firefox" if ext == "xpi" else "chrome"
 
+    # Extract release notes from dm-manifest.json for the detected version
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf3:
+            for zname in zf3.namelist():
+                if zname.rsplit("/", 1)[-1].lower() in ("dm-manifest.json", "dm_manifest.json"):
+                    dm_m = json.loads(zf3.read(zname).decode("utf-8", errors="replace"))
+                    for entry in dm_m.get("changelog", []):
+                        if entry.get("version") == version:
+                            release_notes = "\n".join(f"- {c}" for c in entry.get("changes", []))
+                            break
+                    break
+    except Exception:
+        pass
+
     return JSONResponse({
         "version": version or "",
         "source": "package" if version else "filename",
@@ -1013,6 +1053,7 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
         "extension": ext,
         "errors": errors,
         "warnings": warnings,
+        "release_notes": release_notes,
     })
 
 
@@ -1039,22 +1080,26 @@ async def deploy_create(request: Request,
     if len(data) > artifacts_svc.MAX_UPLOAD_SIZE:
         raise HTTPException(400, "Fichier trop volumineux (>100 Mo)")
 
-    # Extract dm-config.json from the package before stripping it
+    # Extract dm-config.json and dm-manifest.json from the package before stripping
     deploy_config_template = None
+    deploy_dm_manifest = None
     try:
         import zipfile
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for name in zf.namelist():
-                if name.rsplit("/", 1)[-1].lower() in ("dm-config.json", "dm_config.json"):
+                basename = name.rsplit("/", 1)[-1].lower()
+                if basename in ("dm-config.json", "dm_config.json"):
                     raw = zf.read(name).decode("utf-8", errors="replace")
                     deploy_config_template = json.loads(raw)
                     deploy_config_template = _apply_platform_defaults(deploy_config_template)
-                    break
+                elif basename in ("dm-manifest.json", "dm_manifest.json"):
+                    raw = zf.read(name).decode("utf-8", errors="replace")
+                    deploy_dm_manifest = json.loads(raw)
     except Exception:
         pass
 
     # Strip dm-config.json from the binary before storage (users shouldn't see placeholders)
-    data = _strip_dm_config_from_zip(data)
+    data = _strip_dm_metadata_from_zip(data)
 
     checksum = artifacts_svc.compute_checksum(data)
     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
@@ -1131,6 +1176,18 @@ async def deploy_create(request: Request,
                 except Exception as ct_err:
                     logger.warning("deploy: config_template store failed: %s", ct_err)
 
+            # Store changelog from dm-manifest.json if present
+            if deploy_dm_manifest:
+                manifest_changelog = deploy_dm_manifest.get("changelog", [])
+                if isinstance(manifest_changelog, list) and manifest_changelog:
+                    try:
+                        cur.execute(
+                            "UPDATE plugins SET changelog = %s WHERE device_type = %s",
+                            (json.dumps(manifest_changelog), device_type),
+                        )
+                    except Exception as cl_err:
+                        logger.warning("deploy: changelog update failed: %s", cl_err)
+
             audit_log(cur, actor=actor, action="deploy.create",
                       resource_type="campaign", resource_id=str(campaign_id),
                       payload={"name": campaign_name, "device_type": device_type,
@@ -1158,12 +1215,27 @@ async def deploy_tracking(request: Request, campaign_id: int):
                 raise HTTPException(404, "Deploiement non trouve")
             stats = campaigns_svc.get_campaign_stats(cur, campaign_id)
             events = campaigns_svc.get_campaign_events(cur, campaign_id, limit=10)
+            # Resolve plugin info for icon display
+            plugin = None
+            pid = campaign.get("plugin_id")
+            if pid:
+                plugin = catalog_svc.get_plugin(cur, pid)
+            if not plugin:
+                # Fallback: find plugin by device_type
+                dt = campaign.get("device_type", "")
+                if dt:
+                    cur.execute("SELECT * FROM plugins WHERE device_type = %s AND status = 'active' LIMIT 1", (dt,))
+                    row = cur.fetchone()
+                    if row:
+                        cols = [d[0] for d in cur.description]
+                        plugin = dict(zip(cols, row))
         return templates.TemplateResponse("deploy_wizard.html", {
             "request": request,
             "mode": "tracking",
             "campaign": campaign,
             "stats": stats,
             "events": events,
+            "plugin": plugin,
         })
     finally:
         conn.close()
@@ -1314,6 +1386,12 @@ async def api_catalog_suggest(request: Request):
 
     # 3. Plugin file — extract manifest/description from ZIP
     has_readme = False
+    has_manifest = False
+    dm_manifest = None
+    oxt_version = ""
+    oxt_identifier = ""
+    icon_data = None
+    icon_filename = None
     plugin_file = form.get("plugin_file")
     if plugin_file and getattr(plugin_file, "filename", None):
         pdata = await plugin_file.read()
@@ -1325,13 +1403,20 @@ async def api_catalog_suggest(request: Request):
             "notice_utilisateur.md", "notice_utilisateur.txt",
             "changelog.md", "changelog.txt", "changes.md", "history.md",
             "dm-config.json", "dm_config.json",
+            "dm-manifest.json", "dm_manifest.json",
         }
+        icon_basenames = {"logo.png", "icon128.png", "icon48.png"}
         config_template = None
         has_config_template = False
         try:
             with zipfile.ZipFile(io.BytesIO(pdata)) as zf:
                 for name in zf.namelist():
                     basename = name.rsplit("/", 1)[-1].lower()
+                    # Extract icon from assets/ directory
+                    if basename in icon_basenames and "assets/" in name.lower():
+                        icon_data = zf.read(name)
+                        icon_filename = basename
+                        continue
                     if basename in interesting_files:
                         raw = zf.read(name).decode("utf-8", errors="replace")
                         if basename in ("dm-config.json", "dm_config.json"):
@@ -1340,6 +1425,26 @@ async def api_catalog_suggest(request: Request):
                                 has_config_template = True
                             except json.JSONDecodeError:
                                 pass
+                        elif basename in ("dm-manifest.json", "dm_manifest.json"):
+                            try:
+                                dm_manifest = json.loads(raw)
+                                has_manifest = True
+                            except json.JSONDecodeError:
+                                pass
+                        elif basename == "description.xml":
+                            try:
+                                import xml.etree.ElementTree as ET
+                                root = ET.fromstring(raw)
+                                ns = {"d": "http://openoffice.org/extensions/description/2006"}
+                                ver_el = root.find(".//d:version", ns)
+                                if ver_el is not None:
+                                    oxt_version = ver_el.get("value", "")
+                                ident_el = root.find(".//d:identifier", ns)
+                                if ident_el is not None:
+                                    oxt_identifier = ident_el.get("value", "")
+                            except Exception:
+                                pass
+                            extracted.append(f"--- {name} ---\n{raw[:8000]}")
                         else:
                             extracted.append(f"--- {name} ---\n{raw[:8000]}")
                             if basename.startswith(("readme", "notice")):
@@ -1349,13 +1454,52 @@ async def api_catalog_suggest(request: Request):
         if extracted:
             texts.append(f"=== Plugin ({plugin_file.filename}) ===\n" + "\n\n".join(extracted))
 
+    # If dm-manifest.json found, use it directly as suggestion (skip LLM)
+    if has_manifest and dm_manifest:
+        suggestion = {
+            "slug": dm_manifest.get("slug", ""),
+            "name": dm_manifest.get("name", ""),
+            "description": dm_manifest.get("description", ""),
+            "intent": dm_manifest.get("intent", ""),
+            "device_type": dm_manifest.get("device_type", "libreoffice"),
+            "category": dm_manifest.get("category", "productivity"),
+            "publisher": dm_manifest.get("publisher", ""),
+            "visibility": dm_manifest.get("visibility", "public"),
+            "homepage_url": dm_manifest.get("homepage_url", ""),
+            "support_email": dm_manifest.get("support_email", ""),
+            "icon_url": dm_manifest.get("icon_url", ""),
+            "doc_url": dm_manifest.get("doc_url", ""),
+            "license": dm_manifest.get("license", ""),
+            "key_features": dm_manifest.get("key_features", []),
+            "changelog": dm_manifest.get("changelog", []),
+            "_has_readme": has_readme,
+            "_has_manifest": True,
+            "_has_config_template": has_config_template,
+            "_source": "dm-manifest.json",
+        }
+        if oxt_version:
+            suggestion["oxt_version"] = oxt_version
+        if oxt_identifier:
+            suggestion["oxt_identifier"] = oxt_identifier
+        if config_template:
+            suggestion["config_template"] = config_template
+        # Store icon as base64 data URL (no shared filesystem needed)
+        if icon_data and icon_filename:
+            import base64 as _b64
+            ext = icon_filename.rsplit(".", 1)[-1].lower()
+            mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "svg": "image/svg+xml", "webp": "image/webp"}.get(ext, "image/png")
+            data_url = f"data:{mime};base64,{_b64.b64encode(icon_data).decode()}"
+            suggestion["icon_url"] = data_url
+            suggestion["icon_data_url"] = data_url
+        return JSONResponse(suggestion)
+
     if not texts:
         return JSONResponse({"error": "Aucune source fournie"}, status_code=400)
 
     combined = "\n\n".join(texts)[:20000]
 
     # Call LLM (OpenAI-compatible)
-    import os
     llm_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
     llm_token = os.getenv("LLM_API_TOKEN", "")
     llm_model = os.getenv("DEFAULT_MODEL_NAME", "gpt-oss-120b")
@@ -1393,12 +1537,47 @@ async def api_catalog_suggest(request: Request):
         suggestion = json.loads(content.strip())
         suggestion["_has_readme"] = has_readme
         suggestion["_has_config_template"] = has_config_template
+        if oxt_version:
+            suggestion["oxt_version"] = oxt_version
+        if oxt_identifier:
+            suggestion["oxt_identifier"] = oxt_identifier
         if config_template:
             suggestion["config_template"] = config_template
+        # Store icon as base64 data URL (even for LLM path)
+        if icon_data and icon_filename:
+            import base64 as _b64
+            ext = icon_filename.rsplit(".", 1)[-1].lower()
+            mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "svg": "image/svg+xml", "webp": "image/webp"}.get(ext, "image/png")
+            data_url = f"data:{mime};base64,{_b64.b64encode(icon_data).decode()}"
+            suggestion["icon_url"] = data_url
+            suggestion["icon_data_url"] = data_url
         return JSONResponse(suggestion)
     except Exception as e:
         logger.error("LLM suggest failed: %s", e)
         return JSONResponse({"error": f"Erreur LLM: {e}"}, status_code=502)
+
+
+@router.post("/catalog/purge-removed")
+@require_admin
+async def catalog_purge_removed(request: Request):
+    """Permanently delete all plugins in 'removed' status."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            count = catalog_svc.purge_removed(cur)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="plugin.purge_removed",
+                      resource_type="plugin", resource_id="*",
+                      payload={"deleted_count": count},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog?purged={count}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
 
 
 @router.get("/catalog", response_class=HTMLResponse)
@@ -1424,10 +1603,26 @@ async def catalog_list(request: Request, status: str = "", device_type: str = ""
 @router.get("/catalog/new", response_class=HTMLResponse)
 @require_admin
 async def catalog_new(request: Request):
+    # Provide real env var values for config preview substitutions
+    secret_vars = {"LLM_API_TOKEN", "TELEMETRY_SALT", "TELEMETRY_KEY"}
+    sub_vars = [
+        "LLM_BASE_URL", "DEFAULT_MODEL_NAME", "LLM_API_TOKEN",
+        "KEYCLOAK_ISSUER_URL", "KEYCLOAK_REALM", "KEYCLOAK_CLIENT_ID",
+        "KEYCLOAK_REDIRECT_URI", "KEYCLOAK_ALLOWED_REDIRECT_URI",
+        "PUBLIC_BASE_URL", "TELEMETRY_SALT",
+    ]
+    substitution_values = {}
+    for var in sub_vars:
+        val = os.getenv(var, "")
+        if var in secret_vars and val:
+            substitution_values[var] = val[:4] + "***"
+        else:
+            substitution_values[var] = val
     return templates.TemplateResponse("catalog_plugin_new.html", {
         "request": request,
         "device_types": DEVICE_TYPES,
         "categories": PLUGIN_CATEGORIES,
+        "substitution_values": substitution_values,
     })
 
 
@@ -1442,27 +1637,90 @@ async def catalog_create(request: Request,
                          category: str = Form("productivity"),
                          icon_url: str = Form(""),
                          homepage_url: str = Form(""),
+                         doc_url: str = Form(""),
                          support_email: str = Form(""),
                          publisher: str = Form("DNUM"),
-                         visibility: str = Form("public")):
+                         visibility: str = Form("public"),
+                         license: str = Form(""),
+                         config_template: str = Form(""),
+                         alias: str = Form(""),
+                         initial_version: str = Form(""),
+                         initial_release_notes: str = Form(""),
+                         binary: UploadFile | None = File(None)):
     features = [f.strip() for f in key_features.split(",") if f.strip()] if key_features else []
+    # Parse changelog: accept JSON array or markdown text
+    parsed_changelog = None
+    if changelog and changelog.strip():
+        try:
+            parsed_changelog = json.loads(changelog)
+        except (json.JSONDecodeError, ValueError):
+            # Store markdown as a single-entry changelog
+            parsed_changelog = [{"version": "0.0.0", "changes": [changelog.strip()]}]
+    # Parse config_template JSON if provided (from dm-config.json extraction)
+    parsed_template = None
+    if config_template and config_template.strip():
+        try:
+            parsed_template = json.loads(config_template)
+            parsed_template = _apply_platform_defaults(parsed_template)
+        except json.JSONDecodeError:
+            logger.warning("Invalid config_template JSON in create form, ignoring")
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             plugin_id = catalog_svc.create_plugin(
                 cur, slug=slug, name=name, description=description,
-                intent=intent, key_features=features, changelog=changelog,
+                intent=intent, key_features=features, changelog=json.dumps(parsed_changelog or []),
                 device_type=device_type, category=category, icon_url=icon_url,
-                homepage_url=homepage_url, support_email=support_email,
-                publisher=publisher, visibility=visibility,
+                homepage_url=homepage_url, doc_url=doc_url, support_email=support_email,
+                license=license, publisher=publisher, visibility=visibility,
+                config_template=parsed_template,
             )
             actor = getattr(request.state, "admin_session", {})
+            # Create alias if provided
+            if alias and alias.strip():
+                try:
+                    cur.execute(
+                        "INSERT INTO plugin_aliases (alias, plugin_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (alias.strip().lower(), plugin_id),
+                    )
+                except Exception:
+                    logger.warning("alias creation failed for %s", alias)
+            # Auto-create initial version + artifact if binary provided
+            version_created = ""
+            if initial_version and binary and binary.filename:
+                try:
+                    bin_data = await binary.read()
+                    if bin_data:
+                        bin_data = _strip_dm_metadata_from_zip(bin_data)
+                        checksum = artifacts_svc.compute_checksum(bin_data)
+                        binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+                        os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
+                        local_path = f"{binaries_dir}/{device_type}/{initial_version}_{binary.filename}"
+                        with open(local_path, "wb") as f:
+                            f.write(bin_data)
+                        artifact_id = artifacts_svc.create_artifact(
+                            cur, device_type=device_type, platform_variant="",
+                            version=initial_version, s3_path=local_path, checksum=checksum,
+                        )
+                        catalog_svc.create_version(
+                            cur, plugin_id=plugin_id, version=initial_version,
+                            artifact_id=artifact_id,
+                            release_notes=initial_release_notes,
+                            download_url="", distribution_mode="managed",
+                            min_host_version="", max_host_version="",
+                            status="published",
+                        )
+                        version_created = initial_version
+                except Exception as ver_err:
+                    logger.warning("auto-version creation failed: %s", ver_err)
+
             audit_log(cur, actor=actor, action="plugin.create",
                       resource_type="plugin", resource_id=str(plugin_id),
-                      payload={"slug": slug, "name": name},
+                      payload={"slug": slug, "name": name, "alias": alias,
+                               "initial_version": version_created},
                       ip=request.client.host if request.client else None)
             conn.commit()
-        return RedirectResponse(f"/admin/catalog/{plugin_id}", status_code=303)
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?created=1", status_code=303)
     except Exception as e:
         conn.rollback()
         logger.error("plugin create failed: %s", e)
@@ -1508,6 +1766,56 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
         features = plugin.get("key_features") or []
         if isinstance(features, str):
             features = json.loads(features)
+        # Prepare config_template for the Configuration tab
+        ct = plugin.get("config_template")
+        if ct and isinstance(ct, str):
+            try:
+                ct = json.loads(ct)
+            except (json.JSONDecodeError, TypeError):
+                ct = None
+        config_template_json = json.dumps(ct, indent=2, ensure_ascii=False) if ct else ""
+        # Format changelog: if it's a JSON array, render as readable text
+        raw_changelog = plugin.get("changelog")
+        if raw_changelog:
+            if isinstance(raw_changelog, str):
+                try:
+                    raw_changelog = json.loads(raw_changelog)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if isinstance(raw_changelog, list):
+                lines = []
+                for entry in raw_changelog:
+                    if isinstance(entry, dict):
+                        header = f"v{entry.get('version', '?')}"
+                        if entry.get("date"):
+                            header += f"  ({entry['date']})"
+                        lines.append(header)
+                        for c in entry.get("changes", []):
+                            lines.append(f"  - {c}")
+                        lines.append("")
+                plugin["changelog"] = "\n".join(lines).strip()
+        # Deploy environments
+        deploy_environments = _get_deploy_environments()
+        # Cohorts for targeting
+        with conn.cursor() as cur2:
+            cohort_list = cohorts_svc.list_cohorts(cur2)
+            # Deployments for this plugin
+            cur2.execute("""
+                SELECT c.*, pv.version
+                FROM campaigns c
+                LEFT JOIN plugin_versions pv ON pv.id = c.version_id
+                WHERE c.plugin_id = %s
+                ORDER BY c.created_at DESC LIMIT 50
+            """, (plugin_id,))
+            dep_cols = [d[0] for d in cur2.description]
+            deployments = [dict(zip(dep_cols, r)) for r in cur2.fetchall()]
+            # Add progress_pct
+            for d in deployments:
+                try:
+                    s = campaigns_svc.get_campaign_stats(cur2, d["id"])
+                    d["progress_pct"] = s.get("progress_pct", 0)
+                except Exception:
+                    d["progress_pct"] = 0
         return templates.TemplateResponse("catalog_plugin.html", {
             "request": request, "plugin": plugin, "versions": versions,
             "stats": stats, "installations": installations,
@@ -1515,6 +1823,11 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             "env_overrides": env_overrides, "kc_clients": kc_clients,
             "all_kc_clients": all_kc_clients, "kc_defaults": kc_defaults,
             "waitlist": waitlist, "aliases": aliases,
+            "config_template_json": config_template_json,
+            "config_from_package": bool(ct),
+            "deploy_environments": deploy_environments,
+            "cohorts": cohort_list,
+            "deployments": deployments,
             "tab": tab, "timeago": timeago,
         })
     finally:
@@ -1578,6 +1891,60 @@ async def catalog_plugin_status(request: Request, plugin_id: int,
         conn.close()
 
 
+@router.post("/catalog/{plugin_id}/duplicate")
+@require_admin
+async def catalog_plugin_duplicate(request: Request, plugin_id: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            src = catalog_svc.get_plugin(cur, plugin_id)
+            if not src:
+                raise HTTPException(404, "Plugin introuvable")
+            # Find unique slug
+            base_slug = src["slug"] + "-copy"
+            slug = base_slug
+            n = 1
+            while catalog_svc.get_plugin_by_slug(cur, slug):
+                n += 1
+                slug = f"{base_slug}-{n}"
+            config_tpl = src.get("config_template")
+            if isinstance(config_tpl, str):
+                import json as _json
+                config_tpl = _json.loads(config_tpl)
+            features = src.get("key_features") or []
+            if isinstance(features, str):
+                import json as _json
+                features = _json.loads(features)
+            new_id = catalog_svc.create_plugin(
+                cur, slug=slug, name=f"{src['name']} (copie)",
+                description=src.get("description", ""),
+                intent=src.get("intent", ""),
+                key_features=features,
+                changelog=src.get("changelog", ""),
+                device_type=src.get("device_type", "libreoffice"),
+                category=src.get("category", "productivity"),
+                homepage_url=src.get("homepage_url", ""),
+                support_email=src.get("support_email", ""),
+                publisher=src.get("publisher", "DNUM"),
+                visibility=src.get("visibility", "public"),
+                config_template=config_tpl,
+            )
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="plugin.duplicate",
+                      resource_type="plugin", resource_id=str(new_id),
+                      payload={"source_plugin_id": plugin_id, "slug": slug},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{new_id}?tab=edit", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
 @router.post("/catalog/{plugin_id}/versions")
 @require_admin
 async def catalog_version_create(request: Request, plugin_id: int,
@@ -1589,6 +1956,8 @@ async def catalog_version_create(request: Request, plugin_id: int,
                                  min_host_version: str = Form(""),
                                  max_host_version: str = Form(""),
                                  status: str = Form("draft")):
+    if not artifact_id and not download_url.strip():
+        raise HTTPException(400, "Un artifact ou une URL de téléchargement est requis.")
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -1634,6 +2003,244 @@ async def catalog_version_status(request: Request, plugin_id: int,
         raise HTTPException(400, str(e))
     finally:
         conn.close()
+
+
+@router.post("/catalog/{plugin_id}/versions/upload")
+@require_admin
+async def catalog_version_upload(request: Request, plugin_id: int,
+                                 version: str = Form(...),
+                                 release_notes: str = Form(""),
+                                 distribution_mode: str = Form("managed"),
+                                 min_host_version: str = Form(""),
+                                 max_host_version: str = Form(""),
+                                 environment: str = Form("dev"),
+                                 deploy_strategy: str = Form("patch_all"),
+                                 stage_hours: str = Form("24"),
+                                 target_mode: str = Form("all"),
+                                 cohort_id: str = Form(""),
+                                 percent: str = Form("10"),
+                                 emails: str = Form(""),
+                                 action: str = Form("deploy"),
+                                 binary: UploadFile = File(...)):
+    """Upload binary → create artifact + version → optionally deploy."""
+    # 1. Validate & read binary
+    error = artifacts_svc.validate_upload(binary.filename or "", binary.size or 0)
+    if error:
+        raise HTTPException(400, error)
+    data = await binary.read()
+    if len(data) > artifacts_svc.MAX_UPLOAD_SIZE:
+        raise HTTPException(400, "Fichier trop volumineux (>100 Mo)")
+
+    # 2. Extract dm-config.json and dm-manifest.json before stripping
+    deploy_config_template = None
+    dm_manifest = None
+    try:
+        import zipfile as _zf
+        with _zf.ZipFile(io.BytesIO(data)) as zf:
+            for name in zf.namelist():
+                basename = name.rsplit("/", 1)[-1].lower()
+                if basename in ("dm-config.json", "dm_config.json"):
+                    raw = zf.read(name).decode("utf-8", errors="replace")
+                    deploy_config_template = json.loads(raw)
+                    deploy_config_template = _apply_platform_defaults(deploy_config_template)
+                elif basename in ("dm-manifest.json", "dm_manifest.json"):
+                    raw = zf.read(name).decode("utf-8", errors="replace")
+                    dm_manifest = json.loads(raw)
+    except Exception:
+        pass
+
+    # 3. Strip dm-config.json from binary, store artifact
+    data = _strip_dm_metadata_from_zip(data)
+    checksum = artifacts_svc.compute_checksum(data)
+
+    conn = get_db_connection()
+    try:
+        plugin = None
+        with conn.cursor() as cur:
+            plugin = catalog_svc.get_plugin(cur, plugin_id)
+            if not plugin:
+                raise HTTPException(404, "Plugin introuvable")
+            device_type = plugin.get("device_type", "libreoffice")
+
+            binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+            os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
+            local_path = f"{binaries_dir}/{device_type}/{version}_{binary.filename}"
+            with open(local_path, "wb") as f:
+                f.write(data)
+
+            # 4. Create artifact
+            artifact_id = artifacts_svc.create_artifact(
+                cur, device_type=device_type, platform_variant="",
+                version=version, s3_path=local_path, checksum=checksum,
+            )
+
+            # 5. Create version (published immediately)
+            vid = catalog_svc.create_version(
+                cur, plugin_id=plugin_id, version=version,
+                artifact_id=artifact_id,
+                release_notes=release_notes, download_url="",
+                distribution_mode=distribution_mode,
+                min_host_version=min_host_version,
+                max_host_version=max_host_version,
+                status="published",
+            )
+
+            # 6. Store config_template if extracted
+            if deploy_config_template:
+                try:
+                    catalog_svc.update_plugin(cur, plugin_id, config_template=deploy_config_template)
+                except Exception as ct_err:
+                    logger.warning("version upload: config_template store failed: %s", ct_err)
+
+            # 6b. Extract release_notes + update plugin changelog from dm-manifest.json
+            if dm_manifest:
+                manifest_changelog = dm_manifest.get("changelog", [])
+                if isinstance(manifest_changelog, list) and manifest_changelog:
+                    # Find release notes for this specific version
+                    if not release_notes:
+                        for entry in manifest_changelog:
+                            if entry.get("version") == version:
+                                changes = entry.get("changes", [])
+                                release_notes = "\n".join(f"- {c}" for c in changes)
+                                # Update the version record with extracted notes
+                                try:
+                                    cur.execute(
+                                        "UPDATE plugin_versions SET release_notes = %s WHERE id = %s",
+                                        (release_notes, vid),
+                                    )
+                                except Exception:
+                                    pass
+                                break
+                    # Update plugin changelog with the full manifest changelog
+                    try:
+                        catalog_svc.update_plugin(cur, plugin_id,
+                                                  changelog=json.dumps(manifest_changelog))
+                    except Exception as cl_err:
+                        logger.warning("version upload: changelog update failed: %s", cl_err)
+
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="version.upload",
+                      resource_type="plugin_version", resource_id=str(vid),
+                      payload={"plugin_id": plugin_id, "version": version,
+                               "has_config_template": bool(deploy_config_template)},
+                      ip=request.client.host if request.client else None)
+
+            # 7. Deploy if requested
+            campaign_id = None
+            if action == "deploy":
+                # Cohort
+                target_cohort_id = None
+                if target_mode == "existing" and cohort_id:
+                    target_cohort_id = int(cohort_id)
+                elif target_mode == "percent":
+                    pct = max(1, min(100, int(percent)))
+                    cid = cohorts_svc.create_cohort(
+                        cur, name=f"auto-{device_type}-{version}-{environment}-{pct}pct",
+                        description=f"Auto: {pct}% rollout on {environment}",
+                        type="percentage",
+                    )
+                    target_cohort_id = cid
+                elif target_mode == "emails":
+                    email_list = [e.strip() for e in emails.strip().splitlines() if e.strip()]
+                    if email_list:
+                        cid = cohorts_svc.create_cohort(
+                            cur, name=f"auto-{device_type}-{version}-{environment}-manual",
+                            description=f"Auto: {len(email_list)} emails on {environment}",
+                            type="manual",
+                        )
+                        cohorts_svc.add_members(cur, cid, [("email", e) for e in email_list])
+                        target_cohort_id = cid
+
+                # Rollout config
+                rollout_config = None
+                urgency = "normal"
+                if deploy_strategy == "progressive":
+                    hours = max(1, int(stage_hours))
+                    rollout_config = {
+                        "stages": [
+                            {"percent": 5, "duration_hours": hours, "label": "Canary (5%)"},
+                            {"percent": 25, "duration_hours": hours, "label": "Early adopters (25%)"},
+                            {"percent": 50, "duration_hours": hours, "label": "Moitie (50%)"},
+                            {"percent": 100, "duration_hours": 0, "label": "Deploiement complet"},
+                        ]
+                    }
+                else:
+                    urgency = "critical"
+
+                campaign_name = f"MaJ {plugin['name']} {version} [{environment}]"
+                campaign_id = campaigns_svc.create_campaign(
+                    cur, name=campaign_name, type="plugin_update",
+                    artifact_id=artifact_id,
+                    target_cohort_id=target_cohort_id,
+                    urgency=urgency, status="active",
+                    rollout_config=rollout_config,
+                    created_by=actor.get("email"),
+                )
+                # Set environment and plugin_id on campaign
+                cur.execute(
+                    "UPDATE campaigns SET environment = %s, plugin_id = %s, version_id = %s WHERE id = %s",
+                    (environment, plugin_id, vid, campaign_id),
+                )
+                audit_log(cur, actor=actor, action="deploy.create",
+                          resource_type="campaign", resource_id=str(campaign_id),
+                          payload={"plugin_id": plugin_id, "version": version,
+                                   "environment": environment, "strategy": deploy_strategy},
+                          ip=request.client.host if request.client else None)
+
+            conn.commit()
+
+        if campaign_id:
+            return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments", status_code=303)
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        logger.error("catalog version upload failed: %s", e)
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+# ─── Deployment actions (from catalog) ──────────────────────────────
+
+def _catalog_deploy_action(plugin_id: int, campaign_id: int, new_status: str,
+                           action_name: str, request: Request):
+    """Campaign lifecycle action with redirect back to catalog deployments tab."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            campaigns_svc.update_campaign_status(cur, campaign_id, new_status)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action=f"campaign.{action_name}",
+                      resource_type="campaign", resource_id=str(campaign_id),
+                      payload={"new_status": new_status, "plugin_id": plugin_id},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/deployments/{campaign_id}/pause")
+@require_admin
+async def catalog_deploy_pause(request: Request, plugin_id: int, campaign_id: int):
+    return _catalog_deploy_action(plugin_id, campaign_id, "paused", "pause", request)
+
+
+@router.post("/catalog/{plugin_id}/deployments/{campaign_id}/resume")
+@require_admin
+async def catalog_deploy_resume(request: Request, plugin_id: int, campaign_id: int):
+    return _catalog_deploy_action(plugin_id, campaign_id, "active", "resume", request)
+
+
+@router.post("/catalog/{plugin_id}/deployments/{campaign_id}/abort")
+@require_admin
+async def catalog_deploy_abort(request: Request, plugin_id: int, campaign_id: int):
+    return _catalog_deploy_action(plugin_id, campaign_id, "rolled_back", "rollback", request)
 
 
 # ─── Communications ──────────────────────────────────────────────────
@@ -1825,6 +2432,88 @@ async def catalog_env_delete(request: Request, plugin_id: int, override_id: int)
         conn.close()
 
 
+@router.post("/api/catalog/migrate-config-templates")
+@require_admin
+async def catalog_migrate_config_templates(request: Request):
+    """One-shot migration: read config templates from filesystem, store in DB."""
+    from app.main import _load_config_template
+    conn = get_db_connection()
+    migrated = []
+    errors = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, slug, device_type, config_template FROM plugins")
+            cols = [d[0] for d in cur.description]
+            plugins = [dict(zip(cols, r)) for r in cur.fetchall()]
+            for p in plugins:
+                if p["config_template"]:
+                    migrated.append({"slug": p["slug"], "status": "skipped (already has template)"})
+                    continue
+                try:
+                    # Try loading from filesystem for each standard profile to build a dm-config.json
+                    template = {"configVersion": 1, "default": {}}
+                    for profile in ("dev", "int", "prod"):
+                        try:
+                            cfg = _load_config_template(profile, device=p["device_type"],
+                                                        device_name=p["slug"])
+                            config_obj = cfg.get("config", cfg)
+                            if profile == "dev":
+                                template["default"] = config_obj
+                            else:
+                                # Only keep keys that differ from default
+                                diff = {}
+                                for k, v in config_obj.items():
+                                    if template["default"].get(k) != v:
+                                        diff[k] = v
+                                if diff:
+                                    template[profile] = diff
+                        except FileNotFoundError:
+                            pass
+                    template = _apply_platform_defaults(template)
+                    cur.execute("UPDATE plugins SET config_template = %s WHERE id = %s",
+                                (json.dumps(template), p["id"]))
+                    migrated.append({"slug": p["slug"], "status": "migrated"})
+                except Exception as e:
+                    errors.append({"slug": p["slug"], "error": str(e)})
+            conn.commit()
+        actor = getattr(request.state, "admin_session", {})
+        return JSONResponse({"migrated": migrated, "errors": errors})
+    except Exception as e:
+        conn.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        conn.close()
+
+
+@router.post("/api/catalog/{plugin_id}/config-template")
+@require_admin
+async def catalog_save_config_template(request: Request, plugin_id: int):
+    """Save or update the dm-config.json template for a plugin."""
+    body = await request.json()
+    template = body.get("config_template")
+    if not template or not isinstance(template, dict):
+        return JSONResponse({"error": "config_template manquant ou invalide"}, status_code=400)
+    # Apply platform defaults to server profiles
+    template = _apply_platform_defaults(template)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            ok = catalog_svc.update_plugin(cur, plugin_id, config_template=json.dumps(template))
+            if not ok:
+                return JSONResponse({"error": "Plugin non trouve"}, status_code=404)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="plugin.config_template.update",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        conn.rollback()
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        conn.close()
+
+
 @router.get("/api/catalog/{plugin_id}/preview")
 @require_admin
 async def catalog_preview_config(request: Request, plugin_id: int, profile: str = "dev"):
@@ -1838,7 +2527,7 @@ async def catalog_preview_config(request: Request, plugin_id: int, profile: str 
             # Simulate config loading
             from app.main import _load_config_template, _substitute_env, _apply_overrides, _apply_catalog_overrides
             cfg = _load_config_template(profile, device=plugin["device_type"],
-                                        device_name=plugin["slug"])
+                                        device_name=plugin["slug"], cur=cur)
             cfg = _substitute_env(cfg)
             cfg = _apply_overrides(cfg, profile=profile, device=plugin["device_type"])
             cfg = _apply_catalog_overrides(cfg, plugin_id=plugin_id, profile=profile, cur=cur)
@@ -2103,8 +2792,10 @@ async def catalog_upload_logo(request: Request, plugin_id: int,
     if len(data) > 2 * 1024 * 1024:
         return HTMLResponse('<div class="dm-flash dm-flash--error">Fichier trop volumineux (max 2 Mo).</div>')
 
-    icons_dir = os.getenv("DM_ICONS_DIR", "/data/content/icons")
-    os.makedirs(icons_dir, exist_ok=True)
+    import base64 as _b64
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".svg": "image/svg+xml", ".webp": "image/webp"}.get(ext, "image/png")
+    data_url = f"data:{mime};base64,{_b64.b64encode(data).decode()}"
 
     conn = get_db_connection()
     try:
@@ -2113,12 +2804,7 @@ async def catalog_upload_logo(request: Request, plugin_id: int,
             if not plugin:
                 raise HTTPException(404, "Plugin non trouve")
 
-            icon_filename = f"{plugin['slug']}{ext}"
-            icon_path = os.path.join(icons_dir, icon_filename)
-            with open(icon_path, "wb") as f:
-                f.write(data)
-
-            catalog_svc.update_plugin(cur, plugin_id, icon_path=icon_path)
+            catalog_svc.update_plugin(cur, plugin_id, icon_url=data_url)
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="plugin.logo.upload",
                       resource_type="plugin", resource_id=str(plugin_id),
@@ -2153,30 +2839,37 @@ async def api_debug_status(request: Request):
     except Exception:
         checks["db"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
 
-    # Keycloak
-    issuer = os.getenv("KEYCLOAK_ISSUER_URL", "")
-    if issuer:
+    # Keycloak — use JWKS endpoint (cluster-internal, no auth required)
+    import urllib.error as _urllib_error
+    jwks_url = os.getenv("DM_AUTH_JWKS_URL", "")
+    if jwks_url:
         t0 = _time.monotonic()
         try:
-            urlreq.urlopen(f"{issuer.rstrip('/')}/.well-known/openid-configuration", timeout=5)
+            urlreq.urlopen(jwks_url, timeout=5)
             checks["keycloak"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
         except Exception:
             checks["keycloak"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
 
-    # LLM
+    # LLM — tolerate 401/403 (relay auth required, but service is reachable)
     llm_url = os.getenv("LLM_BASE_URL", "")
     if llm_url:
         t0 = _time.monotonic()
         try:
-            urlreq.urlopen(f"{llm_url.rstrip('/')}/models", timeout=5)
+            token = os.getenv("LLM_API_TOKEN", "")
+            req = urlreq.Request(f"{llm_url.rstrip('/')}/models",
+                                 headers={"Authorization": f"Bearer {token}"})
+            urlreq.urlopen(req, timeout=5)
             checks["llm"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
+        except _urllib_error.HTTPError as e:
+            checks["llm"] = {"ok": e.code in (401, 403), "ms": round((_time.monotonic()-t0)*1000)}
         except Exception:
             checks["llm"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
 
     # Relay
+    relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant")
     t0 = _time.monotonic()
     try:
-        urlreq.urlopen("http://relay-assistant:8080/healthz", timeout=3)
+        urlreq.urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3)
         checks["relay"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
     except Exception:
         checks["relay"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
@@ -2250,6 +2943,7 @@ async def api_adoption(request: Request, period: str = "1M"):
 async def debug_page(request: Request):
     """Full debug page with all service health checks."""
     import urllib.request as urlreq
+    import urllib.error as urllib_error
     import time as _time
     import socket
     import concurrent.futures
@@ -2271,7 +2965,15 @@ async def debug_page(request: Request):
         return f"{n} tables"
 
     def check_keycloak():
-        issuer = os.getenv("KEYCLOAK_ISSUER_URL", "")
+        # Use JWKS URL (cluster-internal, no auth required) as primary check
+        jwks_url = os.getenv("DM_AUTH_JWKS_URL", "")
+        if jwks_url:
+            with urlreq.urlopen(jwks_url, timeout=5) as r:
+                data = json.loads(r.read())
+            n_keys = len(data.get("keys", []))
+            return f"{os.getenv('KEYCLOAK_REALM','?')}, {n_keys} keys"
+        # Fallback: openid-configuration via issuer
+        issuer = os.getenv("ADMIN_OIDC_ISSUER_URL") or os.getenv("KEYCLOAK_ISSUER_URL", "")
         if not issuer: return "non configure"
         with urlreq.urlopen(f"{issuer.rstrip('/')}/.well-known/openid-configuration", timeout=5) as r:
             data = json.loads(r.read())
@@ -2284,19 +2986,29 @@ async def debug_page(request: Request):
         model = os.getenv("DEFAULT_MODEL_NAME", "?")
         req = urlreq.Request(f"{llm_url.rstrip('/')}/models",
                              headers={"Authorization": f"Bearer {token}"})
-        with urlreq.urlopen(req, timeout=10) as r:
-            pass
-        return f"{model}"
+        try:
+            with urlreq.urlopen(req, timeout=5) as r:
+                pass
+            return f"{model}"
+        except urllib_error.HTTPError as e:
+            if e.code in (401, 403):
+                return f"{model} (accessible, auth relay requise)"
+            raise
+        except OSError:
+            return f"{model} (upstream injoignable)"
 
     def check_relay():
-        with urlreq.urlopen("http://relay-assistant:8080/healthz", timeout=3) as r:
+        relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant")
+        with urlreq.urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3) as r:
             pass
         return "nginx OK"
 
     def check_telemetry():
         url = os.getenv("DM_TELEMETRY_UPSTREAM_ENDPOINT", "")
         if not url: return "non configure"
-        req = urlreq.Request(url, method="HEAD")
+        payload = b'{"resourceSpans":[]}'
+        req = urlreq.Request(url, data=payload, method="POST",
+                             headers={"Content-Type": "application/json"})
         with urlreq.urlopen(req, timeout=5) as r:
             pass
         return "accessible"
@@ -2353,9 +3065,23 @@ async def debug_page(request: Request):
         "uptime": "N/A",
     }
 
+    # Telemetry info
+    from app.main import _resolve_public_telemetry_endpoint
+    telemetry_info = {
+        "enabled": os.getenv("DM_TELEMETRY_ENABLED", "true"),
+        "public_endpoint": _resolve_public_telemetry_endpoint(),
+        "upstream_endpoint": os.getenv("DM_TELEMETRY_UPSTREAM_ENDPOINT", "(vide)"),
+        "upstream_auth_type": os.getenv("DM_TELEMETRY_UPSTREAM_AUTH_TYPE", ""),
+        "token_ttl": os.getenv("DM_TELEMETRY_TOKEN_TTL_SECONDS", "300"),
+        "require_token": os.getenv("DM_TELEMETRY_REQUIRE_TOKEN", "true"),
+        "max_body_size_mb": os.getenv("DM_TELEMETRY_MAX_BODY_SIZE_MB", "2"),
+        "grafana_url": os.getenv("DM_TELEMETRY_GRAFANA_URL", ""),
+    }
+
     return templates.TemplateResponse("debug.html", {
         "request": request, "checks": checks, "config_vars": config_vars,
         "db_stats": db_stats, "system_info": system_info,
+        "telemetry_info": telemetry_info,
     })
 
 
@@ -2416,3 +3142,145 @@ async def audit_export(request: Request, actor: str = "", action: str = "",
         )
     finally:
         conn.close()
+
+
+# ─── File browser ───────────────────────────────────────────────────────
+
+_DATA_ROOT = Path(os.getenv("DM_DATA_ROOT", "/data"))
+
+_FILE_ROOTS = {
+    "enroll": lambda: Path(os.getenv("DM_ENROLL_DIR", "/data/enroll")),
+    "binaries": lambda: Path(os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")),
+    "config": lambda: Path(os.getenv("DM_CONFIG_DIR", "/data/content/config")),
+}
+
+
+def _human_size(size_bytes: int) -> str:
+    for unit in ("o", "Ko", "Mo", "Go"):
+        if abs(size_bytes) < 1024:
+            return f"{size_bytes:.0f} {unit}" if unit == "o" else f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} To"
+
+
+def _safe_resolve(root: Path, subpath: str) -> Path:
+    """Resolve subpath under root, preventing directory traversal."""
+    resolved = (root / subpath).resolve()
+    if not str(resolved).startswith(str(root.resolve())):
+        raise HTTPException(403, "Acces interdit")
+    return resolved
+
+
+def _list_dir(directory: Path) -> list[dict]:
+    if not directory.is_dir():
+        return []
+    entries = []
+    for item in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+        stat = item.stat()
+        entries.append({
+            "name": item.name,
+            "is_dir": item.is_dir(),
+            "size": stat.st_size if item.is_file() else 0,
+            "size_human": _human_size(stat.st_size) if item.is_file() else "-",
+            "mtime": stat.st_mtime,
+        })
+    return entries
+
+
+@router.get("/files", response_class=HTMLResponse)
+@require_admin
+async def files_index(request: Request):
+    """File browser — shows root directories."""
+    roots = []
+    for name, path_fn in _FILE_ROOTS.items():
+        p = path_fn()
+        count = len(list(p.iterdir())) if p.is_dir() else 0
+        roots.append({"name": name, "path": name, "exists": p.is_dir(), "count": count})
+    return templates.TemplateResponse("files.html", {
+        "request": request,
+        "mode": "roots",
+        "roots": roots,
+        "entries": [],
+        "current_path": "",
+        "breadcrumbs": [],
+    })
+
+
+@router.get("/files/{path:path}", response_class=HTMLResponse)
+@require_admin
+async def files_browse(request: Request, path: str):
+    """File browser — browse a subdirectory or show file info."""
+    parts = PurePosixPath(path).parts
+    if not parts:
+        return RedirectResponse("/admin/files", status_code=303)
+
+    root_name = parts[0]
+    if root_name not in _FILE_ROOTS:
+        raise HTTPException(404, f"Repertoire inconnu: {root_name}")
+
+    root = _FILE_ROOTS[root_name]()
+    subpath = str(PurePosixPath(*parts[1:])) if len(parts) > 1 else ""
+    resolved = _safe_resolve(root, subpath)
+
+    if not resolved.exists():
+        raise HTTPException(404, "Fichier ou repertoire introuvable")
+
+    # Build breadcrumbs
+    breadcrumbs = [{"name": root_name, "path": root_name}]
+    accumulated = root_name
+    for part in parts[1:]:
+        accumulated = f"{accumulated}/{part}"
+        breadcrumbs.append({"name": part, "path": accumulated})
+
+    if resolved.is_dir():
+        entries = _list_dir(resolved)
+        return templates.TemplateResponse("files.html", {
+            "request": request,
+            "mode": "list",
+            "roots": [],
+            "entries": entries,
+            "current_path": path,
+            "breadcrumbs": breadcrumbs,
+        })
+
+    # File detail
+    stat = resolved.stat()
+    file_info = {
+        "name": resolved.name,
+        "size": stat.st_size,
+        "size_human": _human_size(stat.st_size),
+        "mtime": stat.st_mtime,
+        "suffix": resolved.suffix,
+        "preview": None,
+    }
+    if resolved.suffix in (".json", ".txt", ".log", ".yaml", ".yml", ".conf", ".md", ".csv"):
+        try:
+            file_info["preview"] = resolved.read_text(errors="replace")[:10_000]
+        except Exception:
+            pass
+
+    return templates.TemplateResponse("files.html", {
+        "request": request,
+        "mode": "detail",
+        "roots": [],
+        "entries": [],
+        "file": file_info,
+        "current_path": path,
+        "breadcrumbs": breadcrumbs,
+        "download_url": f"/admin/files-dl/{path}",
+    })
+
+
+@router.get("/files-dl/{path:path}")
+@require_admin
+async def files_download(request: Request, path: str):
+    """Download a file."""
+    parts = PurePosixPath(path).parts
+    if not parts or parts[0] not in _FILE_ROOTS:
+        raise HTTPException(404)
+    root = _FILE_ROOTS[parts[0]]()
+    subpath = str(PurePosixPath(*parts[1:])) if len(parts) > 1 else ""
+    resolved = _safe_resolve(root, subpath)
+    if not resolved.is_file():
+        raise HTTPException(404, "Fichier introuvable")
+    return FileResponse(resolved, filename=resolved.name)
