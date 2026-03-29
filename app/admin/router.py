@@ -1157,7 +1157,7 @@ async def deploy_create(request: Request,
                     ]
                 }
             else:
-                urgency = "critical"
+                urgency = "normal"
 
             campaign_name = name.strip() or f"MaJ {device_type} {version}"
             # Resolve plugin_id from device_type for auto-completion of older campaigns
@@ -2180,7 +2180,7 @@ async def catalog_version_upload(request: Request, plugin_id: int,
                         ]
                     }
                 else:
-                    urgency = "critical"
+                    urgency = "normal"
 
                 campaign_name = f"MaJ {plugin['name']} {version} [{environment}]"
                 campaign_id = campaigns_svc.create_campaign(
