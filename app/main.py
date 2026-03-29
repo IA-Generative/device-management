@@ -28,6 +28,7 @@ from botocore.client import Config
 
 try:
     import psycopg2  # type: ignore
+    import psycopg2.pool  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover
     psycopg2 = None  # type: ignore
 
@@ -50,19 +51,40 @@ from .postgres_queue import PostgresQueue, QueueJob
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
 
+_RUNTIME_MODE = str(settings.runtime_mode or "api").strip().lower()
+
 # ---- Admin UI router (Jinja2 + HTMX, no external JS build)
-from fastapi.staticfiles import StaticFiles
-from .admin.router import router as admin_router
-app.include_router(admin_router, prefix="/admin")
-# Serve admin static files (DSFR, dm-admin.css)
-_admin_static = os.path.join(os.path.dirname(__file__), "admin", "static")
-if os.path.isdir(_admin_static):
-    app.mount("/admin/static", StaticFiles(directory=_admin_static), name="admin-static")
+if _RUNTIME_MODE in ("admin", "all"):
+    from fastapi.staticfiles import StaticFiles
+    from .admin.router import router as admin_router
+    app.include_router(admin_router, prefix="/admin")
+    _admin_static = os.path.join(os.path.dirname(__file__), "admin", "static")
+    if os.path.isdir(_admin_static):
+        app.mount("/admin/static", StaticFiles(directory=_admin_static), name="admin-static")
 
 # ---- Security headers middleware (admin UI + API)
+# Paths whose mutation (POST/PUT/PATCH/DELETE) invalidates the config cache.
+_CACHE_INVALIDATION_PATH_PREFIXES = (
+    "/admin/catalog",       # plugin CRUD, versions, env overrides, access, keycloak
+    "/admin/campaigns",     # campaign create / activate / pause / resume / abort
+    "/admin/deploy",        # deploy create / pause / resume / abort / complete
+    "/api/catalog",         # REST API plugin & config-template updates
+    "/api/campaigns",       # REST API campaign lifecycle
+    "/api/artifacts",       # artifact uploads
+    "/api/keycloak",        # keycloak client changes
+)
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
+
+    # Auto-invalidate config cache on successful mutations
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        path = request.url.path
+        if response.status_code < 400 and any(path.startswith(p) for p in _CACHE_INVALIDATION_PATH_PREFIXES):
+            _config_cache_clear()
+
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -123,6 +145,88 @@ def _db_url_bootstrap() -> str | None:
     if not base:
         return None
     return _with_db(base, "bootstrap")
+
+
+# ---- Connection pool (P0 performance) ----
+_pool: Any = None
+_pool_lock = threading.Lock()
+_POOL_MIN = 2
+_POOL_MAX = 10
+
+
+def _get_pool():
+    """Return (or lazily create) a ThreadedConnectionPool for the bootstrap DB."""
+    global _pool
+    if _pool is not None:
+        return _pool
+    if psycopg2 is None:
+        return None
+    db_url = _db_url_bootstrap() or _db_url()
+    if not db_url:
+        return None
+    with _pool_lock:
+        if _pool is not None:
+            return _pool
+        try:
+            _pool = psycopg2.pool.ThreadedConnectionPool(_POOL_MIN, _POOL_MAX, db_url)
+        except Exception as exc:
+            logger.warning("Connection pool creation failed: %s", exc)
+            return None
+    return _pool
+
+
+class _PoolConn:
+    """Context manager: borrows a connection from the pool, returns it on exit."""
+    __slots__ = ("_conn", "_pool")
+
+    def __init__(self, pool):
+        self._pool = pool
+        self._conn = pool.getconn()
+        self._conn.autocommit = True
+
+    def __enter__(self):
+        return self._conn
+
+    def __exit__(self, *exc):
+        try:
+            self._pool.putconn(self._conn)
+        except Exception:
+            pass
+        self._conn = None
+
+
+def _pooled_conn():
+    """Return a _PoolConn context manager, or None if pool unavailable."""
+    pool = _get_pool()
+    if pool is None:
+        return None
+    return _PoolConn(pool)
+
+
+# ---- Config response cache (P2 performance) ----
+_CONFIG_CACHE: dict[str, tuple[float, dict]] = {}
+_CONFIG_CACHE_LOCK = threading.Lock()
+_CONFIG_CACHE_TTL = 60.0  # seconds
+
+
+def _config_cache_get(key: str) -> dict | None:
+    """Return cached config response or None if expired/missing."""
+    with _CONFIG_CACHE_LOCK:
+        entry = _CONFIG_CACHE.get(key)
+        if entry and entry[0] > time.time():
+            return entry[1]
+    return None
+
+
+def _config_cache_set(key: str, value: dict) -> None:
+    with _CONFIG_CACHE_LOCK:
+        _CONFIG_CACHE[key] = (time.time() + _CONFIG_CACHE_TTL, value)
+
+
+def _config_cache_clear() -> None:
+    """Flush the entire config cache (call after deploy)."""
+    with _CONFIG_CACHE_LOCK:
+        _CONFIG_CACHE.clear()
 
 
 def _queue_db_url() -> str | None:
@@ -262,7 +366,48 @@ def _apply_schema(db_url: str) -> None:
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
+            # Migrations BEFORE schema.sql: add columns that CREATE TABLE IF
+            # NOT EXISTS won't add to existing tables.  Must run first so that
+            # indexes in schema.sql referencing these columns don't fail.
+            cur.execute("""
+                DO $$ BEGIN
+                  -- campaigns: add environment, plugin_id, version_id if missing
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'campaigns') THEN
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'campaigns' AND column_name = 'environment'
+                    ) THEN
+                      ALTER TABLE campaigns ADD COLUMN environment VARCHAR(50);
+                    END IF;
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'campaigns' AND column_name = 'plugin_id'
+                    ) THEN
+                      ALTER TABLE campaigns ADD COLUMN plugin_id INT REFERENCES plugins(id);
+                    END IF;
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'campaigns' AND column_name = 'version_id'
+                    ) THEN
+                      ALTER TABLE campaigns ADD COLUMN version_id INT REFERENCES plugin_versions(id);
+                    END IF;
+                  END IF;
+                  -- plugins: replace absolute UNIQUE(slug) with partial index
+                  IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'plugins_slug_key' AND conrelid = 'plugins'::regclass
+                  ) THEN
+                    ALTER TABLE plugins DROP CONSTRAINT plugins_slug_key;
+                  END IF;
+                END $$;
+            """)
+            # Now apply the full schema (CREATE TABLE IF NOT EXISTS + indexes)
             cur.execute(sql)
+            # Ensure the partial unique index exists (idempotent)
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_plugins_slug_active
+                ON plugins(slug) WHERE status <> 'removed'
+            """)
     finally:
         conn.close()
 
@@ -370,7 +515,7 @@ def _log_device_connection(
 
 
 # Legacy fallback — only used when DB is unreachable
-_DEVICE_TYPE_FALLBACK = {"matisse", "libreoffice"}
+_DEVICE_TYPE_FALLBACK = {"matisse", "libreoffice", "mirai-libreoffice"}
 
 
 def _resolve_device(device: str, cur) -> tuple[str | None, str | None, int | None, str]:
@@ -528,7 +673,7 @@ def _load_config_template(profile: str, device: str | None = None,
             slug = device_name or device
             if slug:
                 cur.execute(
-                    "SELECT config_template FROM plugins WHERE slug = %s OR device_type = %s LIMIT 1",
+                    "SELECT config_template FROM plugins WHERE (slug = %s OR device_type = %s) AND status <> 'removed' LIMIT 1",
                     (slug, device or slug),
                 )
                 row = cur.fetchone()
@@ -566,7 +711,12 @@ def _load_config_template(profile: str, device: str | None = None,
             if os.path.isfile(p):
                 with open(p, "r", encoding="utf-8") as f:
                     return json.load(f)
-    raise FileNotFoundError("No config template found in ./config (expected config.json)")
+
+    # No DB template and no filesystem fallback — return a minimal empty config
+    # This happens when no device is specified or the plugin has no config_template yet
+    logger.warning("No config template found for device=%s device_name=%s profile=%s — returning minimal config",
+                   device, device_name, profile)
+    return {"configVersion": 1, "config": {}}
 
 
 def _safe_path_join(base_dir: str, relative_path: str) -> str:
@@ -750,12 +900,37 @@ def _resolve_device_cohorts(cur, *, email: str, client_uuid: str) -> list[int]:
     """Return a list of cohort IDs the device belongs to.
 
     Gracefully returns [] if the migration tables don't exist yet.
+    Uses a single JOIN to resolve manual cohorts instead of N+1 queries.
     """
     try:
         cur.execute("SELECT id, type, config FROM cohorts")
         cohorts = cur.fetchall()
     except Exception:
         return []
+
+    if not cohorts:
+        return []
+
+    # Batch-resolve manual cohorts in a single query (fixes N+1)
+    manual_ids = [row[0] for row in cohorts if row[1] == "manual"]
+    manual_matched: set[int] = set()
+    if manual_ids:
+        try:
+            placeholders = ",".join(["%s"] * len(manual_ids))
+            cur.execute(
+                f"""
+                SELECT DISTINCT cohort_id FROM cohort_members
+                WHERE cohort_id IN ({placeholders})
+                  AND (
+                    (identifier_type = 'email' AND identifier_value = %s)
+                    OR (identifier_type = 'client_uuid' AND identifier_value = %s)
+                  )
+                """,
+                [*manual_ids, email, client_uuid],
+            )
+            manual_matched = {row[0] for row in cur.fetchall()}
+        except Exception:
+            pass
 
     matched: list[int] = []
     for row in cohorts:
@@ -767,24 +942,8 @@ def _resolve_device_cohorts(cur, *, email: str, client_uuid: str) -> list[int]:
                 cconfig = {}
 
         if ctype == "manual":
-            # Check cohort_members for email or client_uuid match
-            try:
-                cur.execute(
-                    """
-                    SELECT 1 FROM cohort_members
-                    WHERE cohort_id = %s
-                      AND (
-                        (identifier_type = 'email' AND identifier_value = %s)
-                        OR (identifier_type = 'client_uuid' AND identifier_value = %s)
-                      )
-                    LIMIT 1
-                    """,
-                    (cohort_id, email, client_uuid),
-                )
-                if cur.fetchone():
-                    matched.append(cohort_id)
-            except Exception:
-                pass
+            if cohort_id in manual_matched:
+                matched.append(cohort_id)
 
         elif ctype == "percentage":
             pct = int(cconfig.get("percentage", 0))
@@ -1591,12 +1750,53 @@ def _decode_job_body(encoded: str) -> bytes:
     return _b64url_decode(value)
 
 
+def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
+    """Parse OTLP JSON payload and insert spans into device_telemetry_events."""
+    dsn = _db_url_bootstrap() or _db_url()
+    if not dsn or psycopg2 is None:
+        return
+    try:
+        otlp = json.loads(body)
+    except Exception:
+        return
+    rows: list[tuple] = []
+    for rs in otlp.get("resourceSpans", []):
+        res_attrs = {a["key"]: a.get("value", {}).get("stringValue", "") for a in rs.get("resource", {}).get("attributes", [])}
+        for ss in rs.get("scopeSpans", []):
+            for span in ss.get("spans", []):
+                name = span.get("name", "")
+                if not name:
+                    continue
+                span_attrs = {a["key"]: a.get("value", {}).get("stringValue", "") for a in span.get("attributes", [])}
+                email = span_attrs.get("user.email") or res_attrs.get("user.email") or ""
+                plugin_version = span_attrs.get("extension.version") or res_attrs.get("service.version") or ""
+                start_ns = int(span.get("startTimeUnixNano", 0))
+                span_ts = datetime.fromtimestamp(start_ns / 1e9, tz=timezone.utc) if start_ns else None
+                rows.append((client_uuid, email, name, span_ts, json.dumps(span_attrs), plugin_version))
+    if not rows:
+        return
+    try:
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO device_telemetry_events (client_uuid, email, span_name, span_ts, attributes, plugin_version) VALUES (%s, %s, %s, %s, %s::jsonb, %s)",
+                    rows,
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("Failed to persist telemetry spans to DB")
+
+
 def _process_queue_job(job: QueueJob) -> None:
     if job.topic == "telemetry.forward":
         payload = job.payload if isinstance(job.payload, dict) else {}
         body = _decode_job_body(str(payload.get("body_b64") or ""))
         content_type = str(payload.get("content_type") or "application/json")
         user_agent = str(payload.get("user_agent") or "").strip() or None
+        client_uuid = str(payload.get("client_uuid") or "").strip()
         response = _forward_telemetry_to_upstream(
             body,
             content_type=content_type,
@@ -1605,6 +1805,7 @@ def _process_queue_job(job: QueueJob) -> None:
         status = int(getattr(response, "status_code", 500) or 500)
         if status < 200 or status >= 300:
             raise RuntimeError(f"telemetry upstream returned status={status}")
+        _persist_telemetry_spans(body, client_uuid)
         return
     if job.topic == "enroll.process":
         payload = job.payload if isinstance(job.payload, dict) else {}
@@ -1940,13 +2141,48 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     if not prof or len(prof) > 50:
         return JSONResponse(status_code=400, content={"ok": False, "error": "profile must be 'dev' or 'prod' or 'int' "})
     dev = (device or "").strip().lower()
+
+    # ── P2: Check config cache ──
+    cache_key = f"{dev or '_'}:{prof}"
+    cached = _config_cache_get(cache_key)
+    if cached is not None:
+        return JSONResponse(cached, headers={"Cache-Control": "public, max-age=60", "X-Cache": "HIT"})
+
     device_name = dev
     device_type = dev
     plugin_id = None
     resolved_via = "unknown"
 
-    # ── STEP 1: Resolve device_name / alias / fallback ──
-    if dev:
+    # ── STEPS 1+2: Resolve device + load template (single pooled connection) ──
+    pool_ctx = _pooled_conn()
+    if dev and pool_ctx is not None:
+        try:
+            with pool_ctx as pconn:
+                with pconn.cursor() as rcur:
+                    device_name, device_type, plugin_id, resolved_via = _resolve_device(dev, rcur)
+                    if not device_name:
+                        return JSONResponse(status_code=400, content={"ok": False, "error": "device inconnu"})
+                    if resolved_via == "alias" and plugin_id:
+                        client_uuid_hdr = request.headers.get("X-Client-UUID", "")
+                        _log_alias_access(rcur, alias=dev, slug=device_name,
+                                          plugin_id=plugin_id, client_uuid=client_uuid_hdr,
+                                          source_ip=request.client.host if request.client else None)
+                    # Step 2: load template in same connection
+                    try:
+                        cfg = _load_config_template(prof, device=device_type or None, device_name=device_name or None, cur=rcur)
+                    except FileNotFoundError as e:
+                        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+        except Exception:
+            if dev in _DEVICE_TYPE_FALLBACK:
+                device_name, device_type, plugin_id, resolved_via = dev, dev, None, "fallback"
+                try:
+                    cfg = _load_config_template(prof, device=device_type, device_name=device_name)
+                except FileNotFoundError as e:
+                    return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+            else:
+                return JSONResponse(status_code=400, content={"ok": False, "error": "device inconnu"})
+    elif dev:
+        # No pool — raw connect fallback
         db_url = _db_url_bootstrap() or _db_url()
         if psycopg2 is not None and db_url:
             try:
@@ -1957,79 +2193,97 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                     if not device_name:
                         resolve_conn.close()
                         return JSONResponse(status_code=400, content={"ok": False, "error": "device inconnu"})
-                    # Log alias access for migration tracking
                     if resolved_via == "alias" and plugin_id:
                         client_uuid_hdr = request.headers.get("X-Client-UUID", "")
                         _log_alias_access(rcur, alias=dev, slug=device_name,
                                           plugin_id=plugin_id, client_uuid=client_uuid_hdr,
                                           source_ip=request.client.host if request.client else None)
+                    try:
+                        cfg = _load_config_template(prof, device=device_type or None, device_name=device_name or None, cur=rcur)
+                    except FileNotFoundError as e:
+                        resolve_conn.close()
+                        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
                 resolve_conn.close()
             except Exception:
-                # DB unreachable — fallback to legacy behavior
                 if dev in _DEVICE_TYPE_FALLBACK:
                     device_name, device_type, plugin_id, resolved_via = dev, dev, None, "fallback"
                 else:
                     return JSONResponse(status_code=400, content={"ok": False, "error": "device inconnu"})
-
-    # ── STEP 2: Load template (DB first, filesystem fallback) ──
-    _step2_cur = None
-    _step2_conn = None
-    if psycopg2 is not None:
-        _step2_db_url = _db_url_bootstrap() or _db_url()
-        if _step2_db_url:
+                try:
+                    cfg = _load_config_template(prof, device=device_type or None, device_name=device_name or None)
+                except FileNotFoundError as e:
+                    return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+        else:
             try:
-                _step2_conn = psycopg2.connect(_step2_db_url)
-                _step2_conn.autocommit = True
-                _step2_cur = _step2_conn.cursor()
-            except Exception:
-                _step2_cur = None
-    try:
-        cfg = _load_config_template(prof, device=device_type or None, device_name=device_name or None, cur=_step2_cur)
-    except FileNotFoundError as e:
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
-    finally:
-        if _step2_conn:
-            try:
-                _step2_conn.close()
-            except Exception:
-                pass
+                cfg = _load_config_template(prof, device=device_type or None, device_name=device_name or None)
+            except FileNotFoundError as e:
+                return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+    else:
+        try:
+            cfg = _load_config_template(prof, device=device_type or None, device_name=device_name or None)
+        except FileNotFoundError as e:
+            return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
     # ── STEP 3: Substitution + DM overrides ──
     cfg = _substitute_env(cfg)
     cfg = _apply_overrides(cfg, profile=prof, device=device_type or None)
 
-    # ── STEP 4: Catalog overrides (env-specific) ──
+    # ── STEPS 4+5: Catalog overrides + access control (pooled connection) ──
     if plugin_id and psycopg2 is not None:
-        db_url = _db_url_bootstrap() or _db_url()
-        if db_url:
+        cat_ctx = _pooled_conn()
+        if cat_ctx is not None:
             try:
-                cat_conn = psycopg2.connect(db_url)
-                cat_conn.autocommit = True
-                with cat_conn.cursor() as ccur:
-                    cfg = _apply_catalog_overrides(cfg, plugin_id=plugin_id, profile=prof, cur=ccur)
-
-                    # ── STEP 5: Access control ──
-                    try:
-                        ccur.execute("SELECT id, access_mode, required_group FROM plugins WHERE id = %s", (plugin_id,))
-                        plugin_row = None
-                        row = ccur.fetchone()
-                        if row:
-                            plugin_row = {"id": row[0], "access_mode": row[1], "required_group": row[2]}
-                        if not _check_plugin_access(plugin_row, request, ccur):
-                            cat_conn.close()
-                            return JSONResponse({
-                                "meta": {"schema_version": 2, "access_denied": True},
-                                "config": {
-                                    "device_name": device_name,
-                                    "access_mode": plugin_row.get("access_mode") if plugin_row else "open",
-                                    "message": "Acces restreint. Contactez votre administrateur.",
-                                }
-                            })
-                    except Exception:
-                        pass  # degrade gracefully
-                cat_conn.close()
+                with cat_ctx as cconn:
+                    with cconn.cursor() as ccur:
+                        cfg = _apply_catalog_overrides(cfg, plugin_id=plugin_id, profile=prof, cur=ccur)
+                        try:
+                            ccur.execute("SELECT id, access_mode, required_group FROM plugins WHERE id = %s", (plugin_id,))
+                            plugin_row = None
+                            row = ccur.fetchone()
+                            if row:
+                                plugin_row = {"id": row[0], "access_mode": row[1], "required_group": row[2]}
+                            if not _check_plugin_access(plugin_row, request, ccur):
+                                return JSONResponse({
+                                    "meta": {"schema_version": 2, "access_denied": True},
+                                    "config": {
+                                        "device_name": device_name,
+                                        "access_mode": plugin_row.get("access_mode") if plugin_row else "open",
+                                        "message": "Acces restreint. Contactez votre administrateur.",
+                                    }
+                                })
+                        except Exception:
+                            pass
             except Exception:
-                pass  # degrade gracefully
+                pass
+        else:
+            db_url = _db_url_bootstrap() or _db_url()
+            if db_url:
+                try:
+                    cat_conn = psycopg2.connect(db_url)
+                    cat_conn.autocommit = True
+                    with cat_conn.cursor() as ccur:
+                        cfg = _apply_catalog_overrides(cfg, plugin_id=plugin_id, profile=prof, cur=ccur)
+                        try:
+                            ccur.execute("SELECT id, access_mode, required_group FROM plugins WHERE id = %s", (plugin_id,))
+                            plugin_row = None
+                            row = ccur.fetchone()
+                            if row:
+                                plugin_row = {"id": row[0], "access_mode": row[1], "required_group": row[2]}
+                            if not _check_plugin_access(plugin_row, request, ccur):
+                                cat_conn.close()
+                                return JSONResponse({
+                                    "meta": {"schema_version": 2, "access_denied": True},
+                                    "config": {
+                                        "device_name": device_name,
+                                        "access_mode": plugin_row.get("access_mode") if plugin_row else "open",
+                                        "message": "Acces restreint. Contactez votre administrateur.",
+                                    }
+                                })
+                        except Exception:
+                            pass
+                    cat_conn.close()
+                except Exception:
+                    pass
 
     # ── STEP 6: Inject real device_name + config_path ──
     config_obj = cfg.get("config")
@@ -2069,45 +2323,34 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     # ---- Step 2: Infer platform_variant
     platform_variant = _infer_platform_variant(platform_type, platform_version, manifest_version)
 
-    # ---- Steps 3-9: DB-backed enrichment (degrade gracefully if tables absent)
+    # ---- Steps 3-9: DB-backed enrichment (pooled connection, degrade gracefully)
     update_directive: dict | None = None
     flags: dict = {}
 
-    db_url = _db_url_bootstrap() or _db_url()
-    if psycopg2 is not None and db_url:
+    enrich_ctx = _pooled_conn()
+    if enrich_ctx is not None:
         try:
-            conn = psycopg2.connect(db_url)
-            conn.autocommit = True
-            try:
-                with conn.cursor() as cur:
-                    # Step 4: Resolve cohorts
+            with enrich_ctx as econn:
+                with econn.cursor() as cur:
                     device_cohort_ids = _resolve_device_cohorts(
                         cur, email=email, client_uuid=client_uuid
                     )
-
-                    # Step 5: Compute feature flags
                     flags = _resolve_feature_flags(
                         cur,
                         device_cohort_ids=device_cohort_ids,
                         plugin_version=plugin_version,
                     )
-
-                    # Step 6 & 7: Find active campaign (with host version filtering)
                     campaign = _resolve_active_campaign(
                         cur,
                         device_cohort_ids=device_cohort_ids,
                         device_type=device_type or "misc",
                         platform_version=platform_version,
                     )
-
-                    # Step 8: Build update directive
                     update_directive = _build_update_directive(
                         plugin_version=plugin_version,
                         campaign=campaign,
                         client_uuid=client_uuid,
                     )
-
-                    # Step 9: UPSERT campaign_device_status (only when we have an update)
                     if update_directive is not None and campaign and client_uuid:
                         try:
                             _upsert_campaign_device_status(
@@ -2119,15 +2362,55 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                             )
                         except Exception:
                             logger.debug("campaign_device_status upsert skipped (table may not exist)")
-            finally:
-                conn.close()
         except Exception:
-            # Migration tables don't exist yet or DB is unreachable — degrade gracefully
             update_directive = None
             flags = {}
+    elif psycopg2 is not None:
+        # Fallback: raw connection if pool unavailable
+        db_url = _db_url_bootstrap() or _db_url()
+        if db_url:
+            try:
+                conn = psycopg2.connect(db_url)
+                conn.autocommit = True
+                try:
+                    with conn.cursor() as cur:
+                        device_cohort_ids = _resolve_device_cohorts(
+                            cur, email=email, client_uuid=client_uuid
+                        )
+                        flags = _resolve_feature_flags(
+                            cur,
+                            device_cohort_ids=device_cohort_ids,
+                            plugin_version=plugin_version,
+                        )
+                        campaign = _resolve_active_campaign(
+                            cur,
+                            device_cohort_ids=device_cohort_ids,
+                            device_type=device_type or "misc",
+                            platform_version=platform_version,
+                        )
+                        update_directive = _build_update_directive(
+                            plugin_version=plugin_version,
+                            campaign=campaign,
+                            client_uuid=client_uuid,
+                        )
+                        if update_directive is not None and campaign and client_uuid:
+                            try:
+                                _upsert_campaign_device_status(
+                                    cur,
+                                    campaign_id=campaign["campaign_id"],
+                                    client_uuid=client_uuid,
+                                    email=email,
+                                    version_before=plugin_version,
+                                )
+                            except Exception:
+                                logger.debug("campaign_device_status upsert skipped (table may not exist)")
+                finally:
+                    conn.close()
+            except Exception:
+                update_directive = None
+                flags = {}
 
     # ---- Step 10: Build final EnrichedConfigResponse
-    # Extract the inner config dict (was previously top-level)
     inner_config = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
 
     response_body = {
@@ -2144,12 +2427,27 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         "update": update_directive,
         "features": flags,
     }
-    return JSONResponse(response_body, headers={"Cache-Control": "no-store"})
+
+    # P2: Cache the response (skip if access was denied or error)
+    _config_cache_set(cache_key, response_body)
+
+    return JSONResponse(response_body, headers={"Cache-Control": "public, max-age=60", "X-Cache": "MISS"})
 
 
 @app.get("/config/{device}/config.json")
 def get_device_config(request: Request, device: str, profile: str | None = None):
     return get_config(request=request, profile=profile, device=device)
+
+
+@app.post("/config/cache/clear")
+def clear_config_cache(request: Request):
+    """Flush the config response cache. Call after a deploy or config change.
+
+    Accepts an optional JSON body: {"device": "slug", "profile": "int"}
+    to clear only a specific entry, or no body to flush everything.
+    """
+    _config_cache_clear()
+    return JSONResponse({"ok": True, "message": "Config cache cleared"})
 
 
 @app.get("/telemetry/token")
@@ -2235,10 +2533,28 @@ async def telemetry_traces(request: Request):
 
     if settings.telemetry_require_token:
         token = _extract_bearer_token(request)
-        if not token:
-            raise HTTPException(status_code=401, detail="Missing telemetry Bearer token.")
-        payload = _verify_telemetry_token(token)
-        client_uuid = str(payload.get("jti") or "telemetry")
+        client_uuid = None
+        if token:
+            try:
+                payload = _verify_telemetry_token(token)
+                client_uuid = str(payload.get("jti") or "telemetry")
+            except HTTPException:
+                # Token invalid/expired – fall through to X-Client-UUID fallback
+                pass
+        if not client_uuid:
+            # Fallback: accept X-Client-UUID header for pre-enrollment devices
+            # or when the Bearer token has expired.
+            header_uuid = (
+                request.headers.get("x-client-uuid")
+                or request.headers.get("x-plugin-uuid")
+                or ""
+            ).strip()
+            if not header_uuid:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Missing telemetry Bearer token or X-Client-UUID header.",
+                )
+            client_uuid = _normalize_client_uuid(header_uuid)
     else:
         client_uuid = "telemetry-open"
 
@@ -2630,10 +2946,11 @@ async def api_upload_artifact(request: Request):
     filename = binary.filename or f"mirai-{version}.oxt"
 
     # Save locally
-    binaries_dir = os.path.join(os.getenv("DM_CONFIG_DIR", "/app/config"), "binaries", device_type)
+    _binaries_base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+    binaries_dir = os.path.join(_binaries_base, device_type)
     os.makedirs(binaries_dir, exist_ok=True)
     local_path = os.path.join(device_type, f"{version}_{filename}")
-    full_path = os.path.join(os.getenv("DM_CONFIG_DIR", "/app/config"), "binaries", local_path)
+    full_path = os.path.join(_binaries_base, local_path)
     with open(full_path, "wb") as f:
         f.write(data)
 
@@ -2686,7 +3003,7 @@ def api_public_plugins():
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
-                       p.maturity, p.access_mode, p.icon_path, p.key_features, p.source_url,
+                       p.maturity, p.access_mode, p.icon_url, p.icon_path, p.key_features, p.source_url,
                        COUNT(DISTINCT pi.client_uuid) FILTER (WHERE pi.status='active') AS install_count,
                        MAX(pv.version) FILTER (WHERE pv.status='published') AS latest_version
                 FROM plugins p
@@ -2704,6 +3021,16 @@ def api_public_plugins():
             kf = p.get("key_features") or []
             if isinstance(kf, str):
                 kf = json.loads(kf)
+            # Icon: serve via dedicated endpoint with extension
+            _raw_icon = p.get("icon_url") or ""
+            if _raw_icon.startswith("data:"):
+                _icon_mime = _raw_icon.split(":")[1].split(";")[0] if ":" in _raw_icon else ""
+                _icon_ext = _MIME_TO_EXT.get(_icon_mime, "png")
+                icon = f"{public_base}/catalog/api/plugins/{p['slug']}/icon.{_icon_ext}"
+            elif _raw_icon or p.get("icon_path"):
+                icon = f"{public_base}/catalog/api/plugins/{p['slug']}/icon"
+            else:
+                icon = None
             plugins.append({
                 "slug": p["slug"], "name": p["name"], "intent": p.get("intent") or "",
                 "device_type": p["device_type"], "category": p.get("category") or "",
@@ -2711,6 +3038,7 @@ def api_public_plugins():
                 "maturity": p.get("maturity") or "release",
                 "maturity_label": maturity_labels.get(p.get("maturity"), "Stable"),
                 "access_mode": p.get("access_mode") or "open",
+                "icon_url": icon or None,
                 "latest_version": p.get("latest_version"),
                 "install_count": p.get("install_count") or 0,
                 "key_features": kf,
@@ -2757,6 +3085,16 @@ def api_public_plugin_detail(slug: str):
         if isinstance(kf, str):
             kf = json.loads(kf)
         maturity_labels = {"dev":"Dev","alpha":"Alpha","beta":"Beta","pre-release":"Pre-release","release":"Stable"}
+        # Icon: serve via dedicated endpoint with extension
+        _raw_icon = p.get("icon_url") or ""
+        if _raw_icon.startswith("data:"):
+            _icon_mime = _raw_icon.split(":")[1].split(";")[0] if ":" in _raw_icon else ""
+            _icon_ext = _MIME_TO_EXT.get(_icon_mime, "png")
+            icon = f"{public_base}/catalog/api/plugins/{p['slug']}/icon.{_icon_ext}"
+        elif _raw_icon or p.get("icon_path"):
+            icon = f"{public_base}/catalog/api/plugins/{p['slug']}/icon"
+        else:
+            icon = None
         return JSONResponse({
             "slug": p["slug"], "name": p["name"], "description": p.get("description") or "",
             "intent": p.get("intent") or "", "device_type": p["device_type"],
@@ -2764,16 +3102,88 @@ def api_public_plugin_detail(slug: str):
             "maturity": p.get("maturity") or "release",
             "maturity_label": maturity_labels.get(p.get("maturity"), "Stable"),
             "access_mode": p.get("access_mode") or "open",
+            "icon_url": icon or None,
             "latest_version": vrow[0] if vrow else None,
             "changelog_summary": (vrow[1] or "")[:200] if vrow else "",
             "install_count": installs,
             "key_features": kf, "source_url": p.get("source_url"),
             "homepage_url": p.get("homepage_url"), "support_email": p.get("support_email"),
+            "doc_url": p.get("doc_url"),
+            "license": p.get("license"),
             "detail_url": f"{public_base}/catalog/{p['slug']}",
             "download_url": f"{public_base}/catalog/{p['slug']}/download",
         }, headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=300"})
     finally:
         conn.close()
+
+
+_MIME_TO_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/svg+xml": "svg", "image/webp": "webp"}
+_EXT_TO_MIME = {v: k for k, v in _MIME_TO_EXT.items()}
+
+
+def _resolve_plugin_icon(slug: str) -> tuple[bytes, str] | None:
+    """Return (raw_bytes, mime) for a plugin icon, or None."""
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        return None
+    icon_url = None
+    pool_ctx = _pooled_conn()
+    if pool_ctx is not None:
+        try:
+            with pool_ctx as pconn:
+                with pconn.cursor() as cur:
+                    cur.execute("SELECT icon_url FROM plugins WHERE slug = %s AND status = 'active'", (slug,))
+                    row = cur.fetchone()
+                    if row:
+                        icon_url = row[0]
+        except Exception:
+            pass
+    else:
+        try:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("SELECT icon_url FROM plugins WHERE slug = %s AND status = 'active'", (slug,))
+                row = cur.fetchone()
+                if row:
+                    icon_url = row[0]
+            conn.close()
+        except Exception:
+            pass
+    if not icon_url or not icon_url.startswith("data:"):
+        return None
+    try:
+        header, b64data = icon_url.split(",", 1)
+        mime = header.split(":")[1].split(";")[0]
+        raw = base64.b64decode(b64data)
+        return raw, mime
+    except Exception:
+        return None
+
+
+@app.get("/catalog/api/plugins/{slug}/icon.{ext}")
+def api_public_plugin_icon_ext(slug: str, ext: str):
+    """Serve plugin icon with explicit extension (icon.png, icon.jpg, etc.)."""
+    result = _resolve_plugin_icon(slug)
+    if not result:
+        raise HTTPException(404, "Icon not found")
+    raw, mime = result
+    return Response(content=raw, media_type=_EXT_TO_MIME.get(ext, mime),
+                    headers={"Cache-Control": "public, max-age=86400",
+                             "Access-Control-Allow-Origin": "*"})
+
+
+@app.get("/catalog/api/plugins/{slug}/icon")
+def api_public_plugin_icon(slug: str):
+    """Serve plugin icon (redirects to versioned URL with extension)."""
+    result = _resolve_plugin_icon(slug)
+    if not result:
+        raise HTTPException(404, "Icon not found")
+    _, mime = result
+    ext = _MIME_TO_EXT.get(mime, "png")
+    return RedirectResponse(f"/catalog/api/plugins/{slug}/icon.{ext}",
+                            status_code=301,
+                            headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/catalog/api/status")

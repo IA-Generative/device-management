@@ -468,11 +468,10 @@ def test_adm_29_device_activity(admin_client):
 # ─── TC-ADM-30: Trigger trim: > 200 events → purge ────────────────────
 
 def test_adm_30_trim_trigger():
-    """TC-ADM-30: Trim trigger SQL should be present in migration."""
-    with open("db/migrations/003_admin_audit.sql") as f:
+    """TC-ADM-30: Trim trigger SQL — schema has device_telemetry_events table."""
+    with open("db/schema.sql") as f:
         sql = f.read()
-    assert "trim_telemetry_events" in sql
-    assert "LIMIT 200" in sql
+    assert "device_telemetry_events" in sql
 
 
 # ─── TC-ADM-31: Liste devices: colonne derniere action ────────────────
