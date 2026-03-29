@@ -58,8 +58,13 @@ def create_artifact(cur, *, device_type: str, platform_variant: str,
         INSERT INTO artifacts (device_type, platform_variant, version,
                               s3_path, checksum, changelog_url)
         VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (device_type, platform_variant, version) DO UPDATE SET
+            s3_path = EXCLUDED.s3_path,
+            checksum = EXCLUDED.checksum,
+            changelog_url = COALESCE(EXCLUDED.changelog_url, artifacts.changelog_url),
+            released_at = NOW()
         RETURNING id
-    """, (device_type, platform_variant or None, version, s3_path,
+    """, (device_type, platform_variant or "", version, s3_path,
           checksum, changelog_url or None))
     return cur.fetchone()[0]
 

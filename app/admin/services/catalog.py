@@ -148,6 +148,12 @@ def create_version(cur, *, plugin_id: int, version: str, artifact_id: int = None
                    min_host_version: str = "", max_host_version: str = "",
                    distribution_mode: str = "managed",
                    status: str = "draft") -> int:
+    # Deprecate older published versions when publishing a new one
+    if status == "published":
+        cur.execute("""
+            UPDATE plugin_versions SET status = 'deprecated'
+            WHERE plugin_id = %s AND status = 'published' AND version <> %s
+        """, (plugin_id, version))
     cur.execute("""
         INSERT INTO plugin_versions
             (plugin_id, version, artifact_id, release_notes, download_url,

@@ -2811,6 +2811,208 @@ def _verify_admin_token(request: Request) -> bool:
     return token == expected
 
 
+@app.post("/api/plugins/{slug}/deploy")
+async def api_plugin_deploy(slug: str, request: Request):
+    """Unified deploy endpoint: upload binary + create version + create campaign.
+
+    Multipart form fields:
+      - binary (file): the plugin package (.oxt, .xpi, .crx)
+      - version (str, optional): version string (auto-detected from package if omitted)
+      - strategy (str): "immediate" or "canary" (default: "canary")
+      - urgency (str): "low", "normal", "critical" (default: "normal")
+      - cohort_id (int, optional): target cohort
+    """
+    if not _verify_admin_token(request):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+    form = await request.form()
+    binary = form.get("binary")
+    if not binary or not hasattr(binary, "read"):
+        return JSONResponse({"ok": False, "error": "binary file required"}, status_code=400)
+
+    data = await binary.read()
+    if not data:
+        return JSONResponse({"ok": False, "error": "empty file"}, status_code=400)
+
+    version = str(form.get("version", "")).strip()
+    strategy = str(form.get("strategy", "canary")).strip()
+    urgency = str(form.get("urgency", "normal")).strip()
+    cohort_id = form.get("cohort_id")
+
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
+
+    import zipfile as _zf
+    import io as _io
+
+    # 1. Resolve plugin
+    conn = psycopg2.connect(db_url)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, device_type, name FROM plugins WHERE slug = %s AND status = 'active'", (slug,))
+            prow = cur.fetchone()
+            if not prow:
+                return JSONResponse({"ok": False, "error": f"Plugin '{slug}' not found"}, status_code=404)
+            plugin_id, device_type, plugin_name = prow
+
+            # 2. Auto-detect version from package if not provided
+            if not version:
+                try:
+                    with _zf.ZipFile(_io.BytesIO(data)) as zf:
+                        if "manifest.json" in zf.namelist():
+                            mf = json.loads(zf.read("manifest.json"))
+                            version = mf.get("version", "")
+                        if not version and "description.xml" in zf.namelist():
+                            desc = zf.read("description.xml").decode("utf-8", errors="replace")
+                            m = re.search(r'value="(\d+\.\d+(?:\.\d+)*)"', desc)
+                            if m:
+                                version = m.group(1)
+                        if not version:
+                            for name in zf.namelist():
+                                if name.rsplit("/", 1)[-1].lower() in ("dm-manifest.json", "dm_manifest.json"):
+                                    dm = json.loads(zf.read(name).decode("utf-8", errors="replace"))
+                                    cl = dm.get("changelog", [])
+                                    if cl and isinstance(cl, list):
+                                        version = cl[0].get("version", "")
+                                    break
+                except Exception:
+                    pass
+            if not version:
+                return JSONResponse({"ok": False, "error": "version required (not detected in package)"}, status_code=400)
+
+            # 3. Extract dm-config.json and dm-manifest.json
+            deploy_config_template = None
+            dm_manifest = None
+            try:
+                with _zf.ZipFile(_io.BytesIO(data)) as zf:
+                    for zname in zf.namelist():
+                        basename = zname.rsplit("/", 1)[-1].lower()
+                        if basename in ("dm-config.json", "dm_config.json") and not deploy_config_template:
+                            raw = zf.read(zname).decode("utf-8", errors="replace")
+                            deploy_config_template = json.loads(raw)
+                        elif basename in ("dm-manifest.json", "dm_manifest.json") and not dm_manifest:
+                            raw = zf.read(zname).decode("utf-8", errors="replace")
+                            dm_manifest = json.loads(raw)
+            except Exception:
+                pass
+
+            # 4. Strip dm metadata from binary, compute checksum, store
+            try:
+                strip_names = {"dm-config.json", "dm_config.json", "dm-manifest.json", "dm_manifest.json"}
+                src = _zf.ZipFile(_io.BytesIO(data))
+                buf = _io.BytesIO()
+                with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as dst:
+                    for item in src.infolist():
+                        if item.filename.lower() in strip_names:
+                            continue
+                        dst.writestr(item, src.read(item.filename))
+                data = buf.getvalue()
+            except Exception:
+                pass
+
+            checksum = "sha256:" + hashlib.sha256(data).hexdigest()
+            _binaries_base = settings.local_binaries_dir
+            os.makedirs(os.path.join(_binaries_base, device_type), exist_ok=True)
+            filename = binary.filename or f"{slug}-{version}.oxt"
+            rel_path = f"{device_type}/{version}_{filename}"
+            full_path = os.path.join(_binaries_base, rel_path)
+            with open(full_path, "wb") as f:
+                f.write(data)
+
+            # 5. Upsert artifact
+            cur.execute("""
+                INSERT INTO artifacts (device_type, platform_variant, version, s3_path, checksum)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (device_type, platform_variant, version) DO UPDATE SET
+                    s3_path = EXCLUDED.s3_path, checksum = EXCLUDED.checksum, released_at = NOW()
+                RETURNING id
+            """, (device_type, "", version, full_path, checksum))
+            artifact_id = cur.fetchone()[0]
+
+            # 6. Deprecate old versions + upsert new version
+            cur.execute("UPDATE plugin_versions SET status = 'deprecated' WHERE plugin_id = %s AND status = 'published' AND version <> %s", (plugin_id, version))
+            release_notes = ""
+            if dm_manifest:
+                for entry in dm_manifest.get("changelog", []):
+                    if entry.get("version") == version:
+                        release_notes = "\n".join(f"- {c}" for c in entry.get("changes", []))
+                        break
+            cur.execute("""
+                INSERT INTO plugin_versions (plugin_id, version, artifact_id, release_notes, status, published_at, distribution_mode)
+                VALUES (%s, %s, %s, %s, 'published', NOW(), 'managed')
+                ON CONFLICT (plugin_id, version) DO UPDATE SET
+                    artifact_id = EXCLUDED.artifact_id,
+                    release_notes = CASE WHEN EXCLUDED.release_notes <> '' THEN EXCLUDED.release_notes ELSE plugin_versions.release_notes END,
+                    status = 'published',
+                    published_at = COALESCE(plugin_versions.published_at, NOW())
+                RETURNING id
+            """, (plugin_id, version, artifact_id, release_notes))
+            version_id = cur.fetchone()[0]
+
+            # 7. Update config_template + changelog from manifest
+            if deploy_config_template:
+                try:
+                    cur.execute("UPDATE plugins SET config_template = %s WHERE id = %s",
+                                (json.dumps(deploy_config_template), plugin_id))
+                except Exception:
+                    pass
+            if dm_manifest and dm_manifest.get("changelog"):
+                try:
+                    cur.execute("UPDATE plugins SET changelog = %s WHERE id = %s",
+                                (json.dumps(dm_manifest["changelog"]), plugin_id))
+                except Exception:
+                    pass
+
+            # 8. Auto-complete old campaigns + create new one
+            cur.execute("""
+                UPDATE campaigns SET status = 'completed', updated_at = NOW()
+                WHERE status IN ('active', 'paused') AND type = 'plugin_update'
+                  AND (plugin_id = %s OR plugin_id IS NULL)
+            """, (plugin_id,))
+
+            rollout_config = None
+            if strategy == "canary":
+                rollout_config = {
+                    "stages": [
+                        {"percent": 5, "duration_hours": 24, "label": "Canary (5%)"},
+                        {"percent": 25, "duration_hours": 48, "label": "Early adopters (25%)"},
+                        {"percent": 100, "duration_hours": 0, "label": "General availability"},
+                    ]
+                }
+
+            cur.execute("""
+                INSERT INTO campaigns (name, type, artifact_id, plugin_id, version_id,
+                    target_cohort_id, urgency, status, rollout_config, created_by)
+                VALUES (%s, 'plugin_update', %s, %s, %s, %s, %s, 'active', %s, 'api')
+                RETURNING id
+            """, (
+                f"Release {plugin_name} v{version}",
+                artifact_id, plugin_id, version_id,
+                int(cohort_id) if cohort_id else None,
+                urgency,
+                json.dumps(rollout_config) if rollout_config else None,
+            ))
+            campaign_id = cur.fetchone()[0]
+
+        return JSONResponse({
+            "ok": True,
+            "plugin_id": plugin_id,
+            "version": version,
+            "version_id": version_id,
+            "artifact_id": artifact_id,
+            "campaign_id": campaign_id,
+            "checksum": checksum,
+            "strategy": strategy,
+        }, status_code=201)
+    except Exception as e:
+        logger.exception("api_plugin_deploy failed")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    finally:
+        conn.close()
+
+
 @app.post("/api/campaigns")
 async def api_create_campaign(request: Request):
     """Create a new campaign via REST API."""
@@ -2821,7 +3023,7 @@ async def api_create_campaign(request: Request):
     except Exception:
         return JSONResponse({"ok": False, "error": "Invalid JSON"}, status_code=400)
 
-    db_url = _db_url()
+    db_url = _db_url_bootstrap() or _db_url()
     if not db_url:
         return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
 
@@ -2829,24 +3031,48 @@ async def api_create_campaign(request: Request):
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
         with conn.cursor() as cur:
+            # Resolve plugin_id from artifact's device_type
+            plugin_id = body.get("plugin_id")
+            artifact_id = body.get("artifact_id")
+            if not plugin_id and artifact_id:
+                cur.execute("""
+                    SELECT p.id FROM plugins p
+                    JOIN artifacts a ON a.device_type = p.device_type
+                    WHERE a.id = %s AND p.status = 'active' LIMIT 1
+                """, (artifact_id,))
+                prow = cur.fetchone()
+                if prow:
+                    plugin_id = prow[0]
+
+            status = body.get("status", "draft")
+
+            # Auto-complete older active campaigns
+            if status == "active":
+                cur.execute("""
+                    UPDATE campaigns SET status = 'completed', updated_at = NOW()
+                    WHERE status = 'active' AND type = %s
+                      AND (%s IS NULL OR plugin_id = %s OR plugin_id IS NULL)
+                """, (body.get("type", "plugin_update"), plugin_id, plugin_id))
+
             cur.execute(
                 """
                 INSERT INTO campaigns (name, description, type, artifact_id, rollback_artifact_id,
-                    target_cohort_id, urgency, status, rollout_config, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    target_cohort_id, urgency, status, rollout_config, created_by, plugin_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     body.get("name", "API Campaign"),
                     body.get("description", ""),
                     body.get("type", "plugin_update"),
-                    body.get("artifact_id"),
+                    artifact_id,
                     body.get("rollback_artifact_id"),
                     body.get("target_cohort_id"),
                     body.get("urgency", "normal"),
-                    body.get("status", "draft"),
+                    status,
                     json.dumps(body["rollout_config"]) if body.get("rollout_config") else None,
                     "api",
+                    plugin_id,
                 ),
             )
             campaign_id = cur.fetchone()[0]

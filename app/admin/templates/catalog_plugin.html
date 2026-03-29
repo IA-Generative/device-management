@@ -456,7 +456,7 @@ document.getElementById('nv-file-input').addEventListener('change', function() {
 
   if (!file) { box.innerHTML = ''; info.style.display = 'none'; btn.disabled = true; return; }
 
-  box.innerHTML = '<span style="color:#666;">Analyse du fichier...</span>';
+  box.innerHTML = '<div style="display:flex;align-items:center;gap:0.5rem;color:#666;"><span class="dm-spinner" style="width:16px;height:16px;border-width:2px;"></span>Analyse du fichier...</div>';
   btn.disabled = true;
 
   const fd = new FormData();
