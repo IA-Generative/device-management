@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Catalogue de plugins{% endblock %} - Device Management</title>
+  <style>
+    @font-face {
+      font-family: 'Marianne';
+      src: url('https://cdn.jsdelivr.net/npm/@gouvfr/dsfr/dist/fonts/Marianne-Regular.woff2') format('woff2');
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Marianne';
+      src: url('https://cdn.jsdelivr.net/npm/@gouvfr/dsfr/dist/fonts/Marianne-Bold.woff2') format('woff2');
+      font-weight: 700;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Marianne', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #F5F5FE;
+      color: #1e1e1e;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    a { color: #000091; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .header {
+      background: #000091;
+      color: #fff;
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .header-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .header-title a { color: #fff; }
+    .header-title a:hover { text-decoration: none; opacity: 0.9; }
+
+    .main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    .footer {
+      text-align: center;
+      padding: 1.5rem;
+      color: #666;
+      font-size: 0.85rem;
+      border-top: 1px solid #ddd;
+      background: #fff;
+      margin-top: auto;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.6rem 1.2rem;
+      border: none;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+    .btn-primary { background: #000091; color: #fff; }
+    .btn-primary:hover { background: #1212ff; text-decoration: none; }
+    .btn-secondary { background: #fff; color: #000091; border: 1px solid #000091; }
+    .btn-secondary:hover { background: #F5F5FE; text-decoration: none; }
+
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.55rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.4;
+    }
+    .badge-dev { background: #ce0500; }
+    .badge-alpha { background: #e67e22; }
+    .badge-beta { background: #c9b800; color: #1e1e1e; }
+    .badge-pre-release { background: #0078f3; }
+    .badge-release { background: #18753c; }
+
+    .pill {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 12px;
+      font-size: 0.8rem;
+      background: #e3e3fd;
+      color: #000091;
+      margin: 0.15rem 0.1rem;
+    }
+
+    {% block extra_css %}{% endblock %}
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-title">
+      <a href="/catalog">Catalogue de plugins</a>
+    </div>
+    {% block header_extra %}{% endblock %}
+  </header>
+
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    Propulse par Device Management
+  </footer>
+</body>
+</html>

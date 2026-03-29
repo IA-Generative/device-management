@@ -17,7 +17,7 @@ from urllib.parse import urlparse, urlunparse
 from urllib import request as urllib_request
 from urllib import error as urllib_error
 
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, File, Request, Response, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -221,6 +221,40 @@ def _config_cache_get(key: str) -> dict | None:
 def _config_cache_set(key: str, value: dict) -> None:
     with _CONFIG_CACHE_LOCK:
         _CONFIG_CACHE[key] = (time.time() + _CONFIG_CACHE_TTL, value)
+
+
+def _pull_binary_from_admin(s3_path: str) -> bool:
+    """Pull a binary from the admin pod's files API and cache it locally.
+
+    Called on download-miss: the API pod doesn't have the file yet.
+    """
+    token = (settings.queue_admin_token or "").strip()
+    admin_url = os.getenv("DM_ADMIN_INTERNAL_URL", "http://device-management-admin").rstrip("/")
+    if not token:
+        return False
+    # Extract relative path from s3_path (strip any /data/content/binaries/ or /data/binaries/ prefix)
+    rel = s3_path
+    for prefix in ("/data/content/binaries/", "/data/binaries/"):
+        if rel.startswith(prefix):
+            rel = rel[len(prefix):]
+            break
+    else:
+        rel = rel.lstrip("/")
+    url = f"{admin_url}/admin/api/files/{rel}"
+    try:
+        logger.info("pull_binary_from_admin: fetching %s", url)
+        resp = httpx.get(url, headers={"x-admin-token": token}, timeout=60, follow_redirects=True)
+        logger.info("pull_binary_from_admin: got %d (%d bytes)", resp.status_code, len(resp.content))
+        if resp.status_code == 200 and resp.content:
+            os.makedirs(os.path.dirname(s3_path), exist_ok=True)
+            with open(s3_path, "wb") as f:
+                f.write(resp.content)
+            logger.info("pull_binary_from_admin: cached %s (%d bytes)", rel, len(resp.content))
+            return True
+        logger.warning("pull_binary_from_admin: unexpected status %d for %s", resp.status_code, url)
+    except Exception as exc:
+        logger.warning("pull_binary_from_admin: %s failed: %s", url, exc)
+    return False
 
 
 def _config_cache_clear() -> None:
@@ -3311,6 +3345,351 @@ def catalog_api_cors():
         "Access-Control-Allow-Headers": "Content-Type",
         "Access-Control-Max-Age": "86400",
     })
+
+
+# ─── Public Catalog HTML Pages ──────────────────────────────────────────
+
+from fastapi.templating import Jinja2Templates as _Jinja2Templates
+
+_catalog_templates = _Jinja2Templates(
+    directory=os.path.join(os.path.dirname(__file__), "catalog", "templates")
+)
+
+_DEVICE_TYPE_EXT = {"libreoffice": "oxt", "firefox": "xpi", "chrome": "crx", "edge": "crx", "matisse": "xpi"}
+
+
+@app.get("/catalog", response_class=Response)
+def catalog_index(request: Request, category: str | None = None):
+    """Public HTML — plugin catalog grid."""
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        return _catalog_templates.TemplateResponse("catalog_index.html", {
+            "request": request, "plugins": [], "categories": [], "current_category": None,
+        })
+    maturity_labels = {"dev": "Dev", "alpha": "Alpha", "beta": "Beta",
+                       "pre-release": "Pre-release", "release": "Stable"}
+    conn = None
+    pool_ctx = _pooled_conn()
+    try:
+        if pool_ctx is not None:
+            conn = pool_ctx.__enter__()
+        else:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
+                       p.maturity, p.icon_url, p.icon_path, p.key_features,
+                       COUNT(DISTINCT pi.client_uuid) FILTER (WHERE pi.status='active') AS install_count,
+                       MAX(pv.version) FILTER (WHERE pv.status='published') AS latest_version
+                FROM plugins p
+                LEFT JOIN plugin_installations pi ON pi.plugin_id = p.id
+                LEFT JOIN plugin_versions pv ON pv.plugin_id = p.id
+                WHERE p.status = 'active' AND p.visibility IN ('public','internal')
+                GROUP BY p.id ORDER BY p.name
+            """)
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        # Build category list and filter
+        all_categories = sorted({r.get("category") or "" for r in rows} - {""})
+        if category:
+            rows = [r for r in rows if (r.get("category") or "").lower() == category.lower()]
+
+        plugins = []
+        for p in rows:
+            kf = p.get("key_features") or []
+            if isinstance(kf, str):
+                kf = json.loads(kf)
+            _raw_icon = p.get("icon_url") or ""
+            if _raw_icon.startswith("data:"):
+                _icon_mime = _raw_icon.split(":")[1].split(";")[0] if ":" in _raw_icon else ""
+                _icon_ext = _MIME_TO_EXT.get(_icon_mime, "png")
+                icon = f"/catalog/api/plugins/{p['slug']}/icon.{_icon_ext}"
+            elif _raw_icon or p.get("icon_path"):
+                icon = f"/catalog/api/plugins/{p['slug']}/icon"
+            else:
+                icon = None
+            plugins.append({
+                "slug": p["slug"], "name": p["name"], "intent": p.get("intent") or "",
+                "device_type": p.get("device_type") or "",
+                "category": p.get("category") or "",
+                "publisher": p.get("publisher") or "DNUM",
+                "maturity": p.get("maturity") or "release",
+                "maturity_label": maturity_labels.get(p.get("maturity"), "Stable"),
+                "icon_url": icon,
+                "latest_version": p.get("latest_version"),
+                "install_count": p.get("install_count") or 0,
+                "key_features": kf,
+            })
+        return _catalog_templates.TemplateResponse("catalog_index.html", {
+            "request": request, "plugins": plugins,
+            "categories": all_categories, "current_category": category,
+        })
+    finally:
+        if pool_ctx is not None:
+            pool_ctx.__exit__(None, None, None)
+        elif conn is not None:
+            conn.close()
+
+
+def _serve_plugin_download(slug: str, version_filter: str | None = None):
+    """Resolve and serve a plugin binary. version_filter=None → latest published."""
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        raise HTTPException(404, "Aucune version disponible")
+    conn = None
+    pool_ctx = _pooled_conn()
+    try:
+        if pool_ctx is not None:
+            conn = pool_ctx.__enter__()
+        else:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, device_type FROM plugins WHERE slug = %s AND status = 'active'", (slug,))
+            prow = cur.fetchone()
+            if not prow:
+                raise HTTPException(404, "Plugin introuvable")
+            plugin_id, device_type = prow[0], prow[1]
+
+            if version_filter:
+                cur.execute("""
+                    SELECT pv.version, pv.distribution_mode, pv.download_url, pv.artifact_id
+                    FROM plugin_versions pv
+                    WHERE pv.plugin_id = %s AND pv.version = %s AND pv.status = 'published'
+                    LIMIT 1
+                """, (plugin_id, version_filter))
+            else:
+                cur.execute("""
+                    SELECT pv.version, pv.distribution_mode, pv.download_url, pv.artifact_id
+                    FROM plugin_versions pv
+                    WHERE pv.plugin_id = %s AND pv.status = 'published'
+                    ORDER BY pv.published_at DESC NULLS LAST
+                    LIMIT 1
+                """, (plugin_id,))
+            vrow = cur.fetchone()
+            if not vrow:
+                raise HTTPException(404, "Aucune version disponible")
+            version, dist_mode, download_url, artifact_id = vrow
+
+            ext = _DEVICE_TYPE_EXT.get(device_type, "bin")
+            filename = f"{slug}-{version}.{ext}"
+
+            if dist_mode == "managed" and artifact_id:
+                cur.execute("SELECT s3_path FROM artifacts WHERE id = %s", (artifact_id,))
+                arow = cur.fetchone()
+                if arow and arow[0]:
+                    s3_path = arow[0]
+                    if not os.path.isfile(s3_path):
+                        # Pull-on-miss: fetch from admin pod and cache locally
+                        _pull_binary_from_admin(s3_path)
+                    if os.path.isfile(s3_path):
+                        return FileResponse(s3_path, filename=filename,
+                                            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+                    # Try S3 presigned URL
+                    try:
+                        client = s3_client()
+                        if client:
+                            bucket = os.getenv("S3_BUCKET", "device-management")
+                            presigned = client.generate_presigned_url(
+                                "get_object", Params={"Bucket": bucket, "Key": s3_path}, ExpiresIn=300
+                            )
+                            return RedirectResponse(presigned, status_code=302)
+                    except Exception:
+                        pass
+                raise HTTPException(404, "Fichier binaire introuvable")
+
+            if dist_mode in ("download_link", "store") and download_url:
+                return RedirectResponse(download_url, status_code=302)
+
+            raise HTTPException(404, "Aucune version disponible")
+    finally:
+        if pool_ctx is not None:
+            pool_ctx.__exit__(None, None, None)
+        elif conn is not None:
+            conn.close()
+
+
+@app.get("/catalog/{slug}/download/{filename}")
+def catalog_download_file(slug: str, filename: str):
+    """Public — download by filename (e.g. mirai-libreoffice-0.2.1.oxt)."""
+    # Strip known extensions, then remove slug prefix to get version
+    _known_ext = (".oxt", ".xpi", ".crx", ".bin")
+    base = filename
+    for ext in _known_ext:
+        if base.endswith(ext):
+            base = base[:-len(ext)]
+            break
+    version = base.removeprefix(f"{slug}-") if base.startswith(f"{slug}-") else base
+    return _serve_plugin_download(slug, version_filter=version if version != filename else None)
+
+
+@app.get("/catalog/{slug}/download")
+def catalog_download(slug: str):
+    """Public — redirect to latest version with proper filename."""
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        raise HTTPException(404, "Aucune version disponible")
+    conn = None
+    pool_ctx = _pooled_conn()
+    try:
+        if pool_ctx is not None:
+            conn = pool_ctx.__enter__()
+        else:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, device_type FROM plugins WHERE slug = %s AND status = 'active'", (slug,))
+            prow = cur.fetchone()
+            if not prow:
+                raise HTTPException(404, "Plugin introuvable")
+            plugin_id, device_type = prow[0], prow[1]
+            cur.execute("""
+                SELECT pv.version FROM plugin_versions pv
+                WHERE pv.plugin_id = %s AND pv.status = 'published'
+                ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
+            """, (plugin_id,))
+            vrow = cur.fetchone()
+            if not vrow:
+                raise HTTPException(404, "Aucune version disponible")
+            version = vrow[0]
+            ext = _DEVICE_TYPE_EXT.get(device_type, "bin")
+            return RedirectResponse(
+                f"/catalog/{slug}/download/{slug}-{version}.{ext}",
+                status_code=302,
+            )
+    finally:
+        if pool_ctx is not None:
+            pool_ctx.__exit__(None, None, None)
+        elif conn is not None:
+            conn.close()
+
+
+@app.get("/catalog/{slug}", response_class=Response)
+def catalog_detail(request: Request, slug: str):
+    """Public HTML — plugin detail page."""
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        raise HTTPException(404)
+    maturity_labels = {"dev": "Dev", "alpha": "Alpha", "beta": "Beta",
+                       "pre-release": "Pre-release", "release": "Stable"}
+    conn = None
+    pool_ctx = _pooled_conn()
+    try:
+        if pool_ctx is not None:
+            conn = pool_ctx.__enter__()
+        else:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM plugins WHERE slug = %s AND status = 'active'", (slug,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(404, "Plugin introuvable")
+            cols = [d[0] for d in cur.description]
+            p = dict(zip(cols, row))
+
+            cur.execute("""
+                SELECT version, release_notes FROM plugin_versions
+                WHERE plugin_id = %s AND status = 'published'
+                ORDER BY published_at DESC LIMIT 1
+            """, (p["id"],))
+            vrow = cur.fetchone()
+
+            cur.execute(
+                "SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations WHERE plugin_id=%s AND status='active'",
+                (p["id"],),
+            )
+            installs = cur.fetchone()[0]
+
+        kf = p.get("key_features") or []
+        if isinstance(kf, str):
+            kf = json.loads(kf)
+
+        _raw_icon = p.get("icon_url") or ""
+        if _raw_icon.startswith("data:"):
+            _icon_mime = _raw_icon.split(":")[1].split(";")[0] if ":" in _raw_icon else ""
+            _icon_ext = _MIME_TO_EXT.get(_icon_mime, "png")
+            icon = f"/catalog/api/plugins/{p['slug']}/icon.{_icon_ext}"
+        elif _raw_icon or p.get("icon_path"):
+            icon = f"/catalog/api/plugins/{p['slug']}/icon"
+        else:
+            icon = None
+
+        device_type = p.get("device_type") or ""
+        file_ext = _DEVICE_TYPE_EXT.get(device_type)
+
+        updated_at = p.get("updated_at")
+        if updated_at:
+            try:
+                updated_at = updated_at.strftime("%d %B %Y")
+            except Exception:
+                updated_at = str(updated_at)[:10]
+
+        plugin = {
+            "slug": p["slug"], "name": p["name"],
+            "description": p.get("description") or "",
+            "intent": p.get("intent") or "",
+            "device_type": device_type,
+            "category": p.get("category") or "",
+            "publisher": p.get("publisher") or "DNUM",
+            "maturity": p.get("maturity") or "release",
+            "maturity_label": maturity_labels.get(p.get("maturity"), "Stable"),
+            "icon_url": icon,
+            "latest_version": vrow[0] if vrow else None,
+            "changelog_summary": (vrow[1] or "") if vrow else "",
+            "install_count": installs,
+            "key_features": kf,
+            "source_url": p.get("source_url"),
+            "homepage_url": p.get("homepage_url"),
+            "support_email": p.get("support_email"),
+            "doc_url": p.get("doc_url"),
+            "license": p.get("license"),
+            "updated_at": updated_at,
+        }
+        return _catalog_templates.TemplateResponse("catalog_detail.html", {
+            "request": request, "plugin": plugin, "file_ext": file_ext,
+        })
+    finally:
+        if pool_ctx is not None:
+            pool_ctx.__exit__(None, None, None)
+        elif conn is not None:
+            conn.close()
+
+
+# ─── Files API (internal, token-secured, read-only) ──────────────────────
+# Used by admin pods to list/inspect cached binaries on API pods (debug).
+# Binaries are pulled on-demand from admin via _pull_binary_from_admin().
+
+def _files_admin_guard(request: Request) -> None:
+    """Verify X-Admin-Token header for the files API."""
+    expected = (settings.queue_admin_token or "").strip()
+    if not expected:
+        raise HTTPException(403, "Files API token not configured")
+    provided = (request.headers.get("x-admin-token") or "").strip()
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(403, "Invalid token")
+
+
+@app.get("/api/files")
+def files_list(request: Request, prefix: str = ""):
+    """List cached binaries. Optional ?prefix=libreoffice/"""
+    _files_admin_guard(request)
+    base = settings.local_binaries_dir
+    if not os.path.isdir(base):
+        return JSONResponse({"files": []})
+    target = _safe_path_join(base, prefix) if prefix else base
+    if not os.path.isdir(target):
+        return JSONResponse({"files": []})
+    result = []
+    for root, _dirs, files in os.walk(target):
+        for fn in files:
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, base)
+            result.append({"path": rel, "size": os.path.getsize(full)})
+    result.sort(key=lambda x: x["path"])
+    return JSONResponse({"files": result, "total": len(result)})
 
 
 @app.get("/binaries/{path:path}")

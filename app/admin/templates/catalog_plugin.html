@@ -602,6 +602,13 @@ function nvSubmit(action) {
   }
 
   document.getElementById('nv-action').value = action;
+  // Show loading state on buttons
+  document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => {
+    b.disabled = true;
+  });
+  document.getElementById('nv-btn-deploy').innerHTML =
+    '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
+    (action === 'deploy' ? 'Deploiement en cours...' : 'Publication en cours...');
   document.getElementById('nv-form').submit();
 }
 </script>

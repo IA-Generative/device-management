@@ -154,6 +154,15 @@ def create_version(cur, *, plugin_id: int, version: str, artifact_id: int = None
              min_host_version, max_host_version, distribution_mode, status,
              published_at)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, CASE WHEN %s = 'published' THEN NOW() ELSE NULL END)
+        ON CONFLICT (plugin_id, version) DO UPDATE SET
+            artifact_id = COALESCE(EXCLUDED.artifact_id, plugin_versions.artifact_id),
+            release_notes = CASE WHEN EXCLUDED.release_notes <> '' THEN EXCLUDED.release_notes ELSE plugin_versions.release_notes END,
+            download_url = COALESCE(EXCLUDED.download_url, plugin_versions.download_url),
+            min_host_version = COALESCE(EXCLUDED.min_host_version, plugin_versions.min_host_version),
+            max_host_version = COALESCE(EXCLUDED.max_host_version, plugin_versions.max_host_version),
+            distribution_mode = EXCLUDED.distribution_mode,
+            status = EXCLUDED.status,
+            published_at = CASE WHEN EXCLUDED.status = 'published' THEN COALESCE(plugin_versions.published_at, NOW()) ELSE plugin_versions.published_at END
         RETURNING id
     """, (plugin_id, version, artifact_id or None, release_notes,
           download_url or None, min_host_version or None,

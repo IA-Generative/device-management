@@ -6,10 +6,7 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+    type: Recreate
   selector:
     matchLabels:
       app: device-management-admin
@@ -134,6 +131,14 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DM_RELAY_ASSISTANT_URL
+            # Files API token (shared with DM API pods for binary distribution)
+            - name: DM_QUEUE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_QUEUE_ADMIN_TOKEN
+            - name: DM_INTERNAL_URL
+              value: "http://device-management"
             # S3 (for artifact management)
             - name: DM_S3_BUCKET
               valueFrom:
@@ -150,6 +155,9 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DM_BINARIES_MODE
+          volumeMounts:
+            - name: admin-data
+              mountPath: /data/content
           resources:
             requests:
               cpu: 100m
@@ -179,3 +187,7 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 4
+      volumes:
+        - name: admin-data
+          persistentVolumeClaim:
+            claimName: admin-content-pvc

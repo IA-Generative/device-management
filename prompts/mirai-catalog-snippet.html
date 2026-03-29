@@ -1,0 +1,62 @@
+<!--
+  MIrAI Portal — Plugin Catalog Snippet (Option B: RawHTMLBlock)
+  Paste this entire block into a Wagtail RawHTMLBlock on the "Extensions" page.
+  API source: https://bootstrap.fake-domain.name/catalog/api/plugins
+-->
+<div id="plugin-catalog" class="fr-container fr-my-4w">
+  <div class="fr-grid-row fr-grid-row--gutters" id="plugin-grid">
+    <div class="fr-col-12">
+      <p class="fr-text--sm fr-text--alt">Chargement du catalogue...</p>
+    </div>
+  </div>
+</div>
+
+<script>
+fetch('https://bootstrap.fake-domain.name/catalog/api/plugins')
+  .then(r => r.json())
+  .then(data => {
+    const grid = document.getElementById('plugin-grid');
+    if (!data.plugins || !data.plugins.length) {
+      grid.innerHTML = '<div class="fr-col-12"><p>Aucun plugin disponible.</p></div>';
+      return;
+    }
+    const maturityColors = {
+      'Stable':'fr-badge--success',
+      'Pre-release':'fr-badge--info',
+      'Beta':'fr-badge--warning',
+      'Alpha':'fr-badge--new',
+      'Dev':'fr-badge--error'
+    };
+    grid.innerHTML = data.plugins.map(p => `
+      <div class="fr-col-12 fr-col-md-4">
+        <div class="fr-card fr-enlarge-link">
+          <div class="fr-card__body">
+            <div class="fr-card__content">
+              <h3 class="fr-card__title">
+                <a href="${p.detail_url}" class="fr-card__link">${p.name}</a>
+              </h3>
+              <p class="fr-card__desc">${p.intent || ''}</p>
+              <div class="fr-card__end">
+                <ul class="fr-badges-group">
+                  <li><p class="fr-badge fr-badge--sm ${maturityColors[p.maturity_label] || ''}">${p.maturity_label}</p></li>
+                  ${p.latest_version ? '<li><p class="fr-badge fr-badge--sm fr-badge--info">v' + p.latest_version + '</p></li>' : ''}
+                  <li><p class="fr-badge fr-badge--sm fr-badge--no-icon">${p.install_count} installs</p></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          ${p.icon_url ? `<div class="fr-card__header">
+            <div class="fr-card__img">
+              <img class="fr-responsive-img" src="${p.icon_url}" alt="${p.name}"
+                   style="max-height:80px;object-fit:contain;">
+            </div>
+          </div>` : ''}
+        </div>
+      </div>
+    `).join('');
+  })
+  .catch(() => {
+    document.getElementById('plugin-grid').innerHTML =
+      '<div class="fr-col-12"><div class="fr-alert fr-alert--warning"><p class="fr-alert__title">Catalogue indisponible</p><p>Le catalogue de plugins est temporairement indisponible. Reessayez dans quelques instants.</p></div></div>';
+  });
+</script>
