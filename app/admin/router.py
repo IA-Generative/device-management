@@ -2847,6 +2847,22 @@ def _files_token_check(request: Request) -> bool:
     )
 
 
+@router.put("/api/files/upload/{path:path}")
+async def admin_files_upload(request: Request, path: str, file: UploadFile = File(...)):
+    """Store a binary file on the admin persistent volume (token-secured)."""
+    if not _files_token_check(request):
+        raise HTTPException(403, "Invalid token")
+    base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+    full = os.path.normpath(os.path.join(base, path))
+    if not full.startswith(os.path.normpath(base)):
+        raise HTTPException(400, "Invalid path")
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    data = await file.read()
+    with open(full, "wb") as f:
+        f.write(data)
+    return JSONResponse({"ok": True, "path": path, "size": len(data)})
+
+
 @router.get("/api/files/{path:path}")
 async def admin_files_get(request: Request, path: str):
     """Serve a local binary file (token-secured, used by API pods for pull-on-miss)."""
