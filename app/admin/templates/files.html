@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Fichiers{% endblock %}
+
+{% block breadcrumb %}
+{% if breadcrumbs %}
+<div class="dm-breadcrumb">
+  <a href="/admin/files">Fichiers</a>
+  {% for crumb in breadcrumbs %}
+    &rsaquo; {% if not loop.last %}<a href="/admin/files/{{ crumb.path }}">{{ crumb.name }}</a>{% else %}{{ crumb.name }}{% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+
+{% if mode == 'roots' %}
+{# ── Root directories ─────────────────────────────────── #}
+<h1 class="dm-page-title">Navigateur de fichiers</h1>
+<p style="color:#666; margin-bottom:1.5rem;">Parcourir les repertoires de donnees du serveur.</p>
+
+<div class="dm-grid-3">
+  {% for r in roots %}
+  <a href="/admin/files/{{ r.path }}" class="dm-file-card{% if not r.exists %} dm-file-card--disabled{% endif %}">
+    <div class="dm-file-card__icon">&#128193;</div>
+    <div class="dm-file-card__info">
+      <div class="dm-file-card__name">{{ r.name }}</div>
+      <div class="dm-file-card__meta">
+        {% if r.exists %}{{ r.count }} element{{ 's' if r.count != 1 else '' }}{% else %}non disponible{% endif %}
+      </div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+
+{% elif mode == 'list' %}
+{# ── Directory listing ────────────────────────────────── #}
+<h1 class="dm-page-title">{{ breadcrumbs[-1].name if breadcrumbs else 'Fichiers' }}</h1>
+
+{% if entries %}
+<table>
+  <thead>
+    <tr>
+      <th style="width:50%">Nom</th>
+      <th>Taille</th>
+      <th>Derniere modification</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in entries %}
+    <tr>
+      <td>
+        {% if e.is_dir %}
+          <a href="/admin/files/{{ current_path }}/{{ e.name }}">&#128193; {{ e.name }}</a>
+        {% else %}
+          <a href="/admin/files/{{ current_path }}/{{ e.name }}">&#128196; {{ e.name }}</a>
+        {% endif %}
+      </td>
+      <td style="white-space:nowrap">{{ e.size_human }}</td>
+      <td style="white-space:nowrap">{{ timeago(e.mtime) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:#666;">Repertoire vide.</p>
+{% endif %}
+
+{% elif mode == 'detail' %}
+{# ── File detail ──────────────────────────────────────── #}
+<h1 class="dm-page-title">{{ file.name }}</h1>
+
+<table class="dm-table-compact" style="max-width:500px; margin-bottom:1.5rem;">
+  <tr><th style="width:40%">Nom</th><td>{{ file.name }}</td></tr>
+  <tr><th>Taille</th><td>{{ file.size_human }} ({{ file.size }} octets)</td></tr>
+  <tr><th>Type</th><td><code>{{ file.suffix or 'inconnu' }}</code></td></tr>
+  <tr><th>Derniere modification</th><td>{{ timeago(file.mtime) }}</td></tr>
+</table>
+
+<a href="{{ download_url }}" class="dm-btn dm-btn--primary" style="margin-bottom:1.5rem;">Telecharger</a>
+
+{% if file.preview is not none %}
+<details open style="margin-top:1rem;">
+  <summary style="cursor:pointer; font-weight:600; margin-bottom:0.5rem;">Apercu du contenu</summary>
+  <pre class="dm-file-preview">{{ file.preview }}</pre>
+</details>
+{% endif %}
+
+{% endif %}
+{% endblock %}

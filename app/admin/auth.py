@@ -179,15 +179,23 @@ def require_admin(func):
             if not cfg:
                 raise HTTPException(503, "OIDC provider not configured or unreachable")
             state = os.urandom(16).hex()
+            # PKCE: generate code_verifier and code_challenge (S256)
+            code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+            code_challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(code_verifier.encode()).digest()
+            ).rstrip(b"=").decode()
             params = urllib.parse.urlencode({
                 "response_type": "code",
                 "client_id": CLIENT_ID,
                 "redirect_uri": REDIRECT_URI,
                 "scope": "openid profile email",
                 "state": state,
+                "code_challenge": code_challenge,
+                "code_challenge_method": "S256",
             })
             resp = RedirectResponse(f"{cfg['authorization_endpoint']}?{params}")
             resp.set_cookie("dm_oidc_state", state, httponly=True, samesite="lax")
+            resp.set_cookie("dm_pkce_verifier", code_verifier, httponly=True, samesite="lax")
             return resp
 
         request.state.admin_session = session

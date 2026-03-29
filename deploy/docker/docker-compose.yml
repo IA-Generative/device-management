@@ -69,7 +69,9 @@ services:
     volumes:
       - ./data:/data
       - ../../app:/app/app
-      - ../../config:/app/config:ro
+    networks:
+      - default
+      - telemetry
     depends_on:
       - postgres
 
@@ -134,6 +136,12 @@ services:
       - "${ADMINER_PORT:-8080}:8080"
     depends_on:
       - postgres
+
+networks:
+  default:
+  telemetry:
+    external: true
+    name: docker_default
 
 volumes:
   postgres-data:

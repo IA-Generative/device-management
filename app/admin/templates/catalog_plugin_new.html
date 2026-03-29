@@ -39,7 +39,14 @@
 <div id="form-section" style="display:none;">
   <h3 style="font-size:1rem;margin-bottom:1rem;">3. Verifier et completer la fiche</h3>
 
-  <form method="post" action="/admin/catalog" style="max-width:700px;" id="catalog-form">
+  <form method="post" action="/admin/catalog" style="max-width:700px;" id="catalog-form" enctype="multipart/form-data">
+    {# Icon preview (shown when extracted from package) #}
+    <div id="icon-preview" style="display:none;margin-bottom:1rem;display:none;align-items:center;gap:1rem;">
+      <img id="icon-preview-img" src="" alt="Icone du plugin"
+           style="width:64px;height:64px;border-radius:12px;object-fit:cover;border:1px solid #ddd;">
+      <div style="font-size:0.85rem;color:#666;">Icone extraite du package</div>
+    </div>
+
     <div class="dm-form-row">
       <label class="dm-label">Nom *</label>
       <input type="text" name="name" id="f-name" required class="dm-input" placeholder="Assistant Mirai LibreOffice" oninput="autoSlug()">
@@ -52,6 +59,12 @@
         <span id="slug-status" style="font-size:0.8rem;"></span>
       </div>
       <div id="slug-alternatives" style="display:none;margin-top:0.25rem;font-size:0.8rem;"></div>
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Alias</label>
+      <input type="text" name="alias" id="f-alias" class="dm-input" placeholder="libreoffice" style="max-width:300px;">
+      <div class="dm-hint">Nom court pour identifier le plugin (ex: libreoffice, matisse). Utilise dans les URLs de config.</div>
     </div>
 
     <div class="dm-form-row">
@@ -95,7 +108,7 @@
     <div class="dm-grid-2">
       <div class="dm-form-row">
         <label class="dm-label">Editeur</label>
-        <input type="text" name="publisher" class="dm-input" value="DNUM">
+        <input type="text" name="publisher" id="f-publisher" class="dm-input" value="DNUM">
       </div>
       <div class="dm-form-row">
         <label class="dm-label">Visibilite</label>
@@ -107,16 +120,55 @@
       </div>
     </div>
     <div class="dm-form-row">
-      <label class="dm-label">URL page d'accueil / doc</label>
-      <input type="url" name="homepage_url" class="dm-input" placeholder="https://...">
+      <label class="dm-label">URL page d'accueil</label>
+      <input type="url" name="homepage_url" id="f-homepage_url" class="dm-input" placeholder="https://...">
     </div>
     <div class="dm-form-row">
-      <label class="dm-label">Email support</label>
-      <input type="email" name="support_email" class="dm-input" placeholder="support@example.com">
+      <label class="dm-label">URL documentation</label>
+      <input type="url" name="doc_url" id="f-doc_url" class="dm-input" placeholder="https://...">
+    </div>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Email support</label>
+        <input type="email" name="support_email" id="f-support_email" class="dm-input" placeholder="support@example.com">
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Licence</label>
+        <input type="text" name="license" id="f-license" class="dm-input" placeholder="MPL-2.0, MIT, Apache-2.0...">
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">URL icone</label>
+      <input type="text" name="icon_url" id="f-icon_url" class="dm-input" placeholder="assets/logo.png ou https://...">
     </div>
     <div class="dm-form-row">
       <label class="dm-label">Changelog (markdown)</label>
       <textarea name="changelog" id="f-changelog" class="dm-input" rows="5" placeholder="## v1.0.0&#10;- Premiere version..."></textarea>
+    </div>
+
+    {# Hidden fields for auto-version creation #}
+    <input type="hidden" name="config_template" id="f-config_template" value="">
+    <input type="hidden" name="initial_version" id="f-initial_version" value="">
+    <input type="hidden" name="initial_release_notes" id="f-initial_release_notes" value="">
+    <input type="file" name="binary" id="f-binary" style="display:none;">
+
+    {# dm-config.json preview (shown when extracted from package) #}
+    <div id="config-template-preview" style="display:none;margin-bottom:1rem;">
+      <label class="dm-label">Template de configuration (extrait du package)</label>
+      <div style="background:#f0f0f5;border:1px solid #ddd;border-radius:6px;padding:0.75rem;max-height:200px;overflow:auto;">
+        <pre id="config-template-json" style="margin:0;font-size:0.8rem;white-space:pre-wrap;"></pre>
+      </div>
+      <div class="dm-hint">Ce template sera stocke en base et servira de base pour la configuration du plugin.</div>
+      <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" style="margin-top:0.5rem;" onclick="previewSubstitutedConfig()">
+        Voir la config avec substitutions
+      </button>
+    </div>
+
+    {# Config example button (always visible) #}
+    <div style="margin-bottom:1rem;">
+      <button type="button" class="dm-btn dm-btn--ghost dm-btn--sm" onclick="showConfigExample()">
+        Voir un exemple de fichier de config
+      </button>
     </div>
 
     <div class="dm-form-actions">
@@ -127,6 +179,9 @@
 </div>
 
 <script>
+const DM_SUBSTITUTIONS = {{ substitution_values | tojson }};
+</script>
+{% raw %}<script>
 // ═══════ Tags system ═══════
 let tags = [];
 
@@ -185,12 +240,19 @@ document.getElementById('f-slug').addEventListener('input', function() {
 function autoSlug() {
   if (slugManuallyEdited) return;
   const name = document.getElementById('f-name').value;
-  const slug = name.toLowerCase()
+  const deviceType = document.getElementById('f-device_type').value;
+  const base = name.toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const slug = base && deviceType ? base + '-' + deviceType : base;
   document.getElementById('f-slug').value = slug;
   checkSlug();
 }
+
+// Re-generate slug when device type changes
+document.getElementById('f-device_type').addEventListener('change', function() {
+  if (!slugManuallyEdited) autoSlug();
+});
 
 function checkSlug() {
   clearTimeout(slugCheckTimer);
@@ -233,6 +295,12 @@ document.getElementById('plugin-file').addEventListener('change', function() {
   const file = this.files[0];
   const statusEl = document.getElementById('analysis-status');
   if (!file) return;
+
+  // Copy file to the hidden binary input so it's submitted with the form
+  const binaryInput = document.getElementById('f-binary');
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  binaryInput.files = dt.files;
 
   statusEl.innerHTML = '<div style="padding:0.75rem;background:#e8e8ff;border-radius:4px;">' +
     '<div style="display:flex;align-items:center;gap:0.5rem;"><span class="dm-spinner"></span>' +
@@ -323,7 +391,9 @@ async function enrichWithReadme() {
 
 // ═══════ Fill form from AI data ═══════
 function fillForm(data) {
-  const fields = {name:'f-name', slug:'f-slug', intent:'f-intent', description:'f-description', changelog:'f-changelog'};
+  const fields = {name:'f-name', slug:'f-slug', intent:'f-intent', description:'f-description',
+    homepage_url:'f-homepage_url', doc_url:'f-doc_url', support_email:'f-support_email',
+    publisher:'f-publisher', license:'f-license', icon_url:'f-icon_url'};
   for (const [key, id] of Object.entries(fields)) {
     const el = document.getElementById(id);
     if (data[key] && el) {
@@ -346,6 +416,14 @@ function fillForm(data) {
     const sel = document.getElementById('f-category');
     for (const opt of sel.options) { if (opt.value === data.category) { opt.selected = true; break; } }
   }
+  if (data.visibility) {
+    const sel = document.querySelector('select[name="visibility"]');
+    if (sel) { for (const opt of sel.options) { if (opt.value === data.visibility) { opt.selected = true; break; } } }
+  }
+  // Auto-fill alias from device_type
+  if (data.device_type && !document.getElementById('f-alias').value) {
+    document.getElementById('f-alias').value = data.device_type;
+  }
   // Auto-generate slug from name if not already set
   if (data.name && !document.getElementById('f-slug').value) {
     slugManuallyEdited = false;
@@ -353,6 +431,128 @@ function fillForm(data) {
   }
   // Check slug availability
   if (document.getElementById('f-slug').value) checkSlug();
+  // Changelog (JSON array → markdown)
+  if (data.changelog && Array.isArray(data.changelog)) {
+    const md = data.changelog.map(entry => {
+      const header = '## v' + (entry.version || '?') + (entry.date ? ' (' + entry.date + ')' : '');
+      const items = (entry.changes || []).map(c => '- ' + c).join('\n');
+      return header + '\n' + items;
+    }).join('\n\n');
+    const el = document.getElementById('f-changelog');
+    if (el) {
+      el.value = md;
+      el.style.borderColor = '#18753C';
+      setTimeout(() => el.style.borderColor = '', 3000);
+    }
+  }
+  // Initial version (from oxt_version or first changelog entry)
+  const ver = data.oxt_version || (data.changelog && data.changelog[0] ? data.changelog[0].version : '');
+  if (ver) {
+    document.getElementById('f-initial_version').value = ver;
+    // Release notes for this version
+    if (data.changelog) {
+      const entry = data.changelog.find(e => e.version === ver);
+      if (entry && entry.changes) {
+        document.getElementById('f-initial_release_notes').value = entry.changes.map(c => '- ' + c).join('\n');
+      }
+    }
+  }
+  // Icon preview
+  if (data.icon_data_url) {
+    const img = document.getElementById('icon-preview-img');
+    const container = document.getElementById('icon-preview');
+    img.src = data.icon_data_url;
+    container.style.display = 'flex';
+  }
+  // Config template
+  if (data.config_template) {
+    document.getElementById('f-config_template').value = JSON.stringify(data.config_template);
+    const preview = document.getElementById('config-template-preview');
+    document.getElementById('config-template-json').textContent = JSON.stringify(data.config_template, null, 2);
+    preview.style.display = 'block';
+  }
 }
-</script>
+
+// ═══════ Config preview with substitutions ═══════
+function previewSubstitutedConfig() {
+  const raw = document.getElementById('f-config_template').value;
+  if (!raw) { alert('Pas de template de configuration.'); return; }
+  try {
+    const tpl = JSON.parse(raw);
+    // Simulate substitutions with placeholder values
+    const substitutions = DM_SUBSTITUTIONS;
+    let json = JSON.stringify(tpl, null, 2);
+    // Replace both ${{VAR}} and ${VAR} syntaxes
+    for (const [varName, value] of Object.entries(substitutions)) {
+      json = json.split('${{' + varName + '}}').join(value);
+      json = json.split('${' + varName + '}').join(value);
+    }
+    const win = window.open('', '_blank');
+    win.document.write('<html><head><title>Config substituee — ' +
+      (document.getElementById('f-slug').value || 'preview') +
+      '</title><style>body{font-family:monospace;background:#1e1e2e;color:#cdd6f4;padding:2rem;margin:0;} ' +
+      'pre{white-space:pre-wrap;word-break:break-all;font-size:0.9rem;line-height:1.6;} ' +
+      '.key{color:#89b4fa;} .string{color:#a6e3a1;} .number{color:#fab387;} .bool{color:#f38ba8;} .null{color:#6c7086;} ' +
+      '.placeholder{color:#f9e2af;font-weight:bold;}</style></head><body>');
+    win.document.write('<h2 style="color:#cdd6f4;margin:0 0 1rem 0;">Config avec substitutions</h2>');
+    win.document.write('<pre>' + syntaxHighlight(json) + '</pre>');
+    win.document.write('</body></html>');
+    win.document.close();
+  } catch (e) { alert('Erreur : ' + e.message); }
+}
+
+function showConfigExample() {
+  const example = {
+    "configVersion": 1,
+    "config": {
+      "enabled": true,
+      "llm_base_urls": "${{LLM_BASE_URL}}",
+      "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
+      "llm_api_tokens": "${{LLM_API_TOKEN}}",
+      "llm_request_timeout_seconds": 45,
+      "authHeaderName": "Authorization",
+      "authHeaderPrefix": "Bearer ",
+      "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
+      "keycloakRealm": "${{KEYCLOAK_REALM}}",
+      "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+      "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
+      "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
+      "bootstrap_url": "${{PUBLIC_BASE_URL}}/",
+      "config_path": "/config/<slug>/config.json",
+      "device_name": "<slug>",
+      "telemetryEnabled": true,
+      "telemetryEndpoint": "${{PUBLIC_BASE_URL}}/telemetry/v1/traces",
+      "telemetryAuthorizationType": "Bearer",
+      "telemetryKey": "",
+      "telemetrylogJson": true
+    }
+  };
+  const json = JSON.stringify(example, null, 2);
+  const win = window.open('', '_blank');
+  win.document.write('<html><head><title>Exemple config template</title>' +
+    '<style>body{font-family:monospace;background:#1e1e2e;color:#cdd6f4;padding:2rem;margin:0;} ' +
+    'pre{white-space:pre-wrap;word-break:break-all;font-size:0.9rem;line-height:1.6;} ' +
+    '.key{color:#89b4fa;} .string{color:#a6e3a1;} .number{color:#fab387;} .bool{color:#f38ba8;} .null{color:#6c7086;} ' +
+    '.placeholder{color:#f9e2af;font-weight:bold;}</style></head><body>');
+  win.document.write('<h2 style="color:#cdd6f4;margin:0 0 0.5rem 0;">Exemple de template de configuration</h2>');
+  win.document.write('<p style="color:#a6adc8;font-size:0.85rem;margin:0 0 1rem 0;">Les variables <code style="color:#f9e2af;">${{VAR}}</code> sont substituees automatiquement par le serveur au moment de la distribution.</p>');
+  win.document.write('<pre>' + syntaxHighlight(json) + '</pre>');
+  win.document.write('</body></html>');
+  win.document.close();
+}
+
+function syntaxHighlight(json) {
+  return json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?|\bnull\b)/g, function(match) {
+      let cls = 'number';
+      if (/^"/.test(match)) {
+        if (/:$/.test(match)) { cls = 'key'; }
+        else if (/\$\{\{/.test(match)) { cls = 'placeholder'; }
+        else { cls = 'string'; }
+      } else if (/true|false/.test(match)) { cls = 'bool'; }
+      else if (/null/.test(match)) { cls = 'null'; }
+      return '<span class="' + cls + '">' + match + '</span>';
+    });
+}
+</script>{% endraw %}
 {% endblock %}

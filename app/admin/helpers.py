@@ -39,6 +39,8 @@ def timeago(dt) -> str:
     """Human-readable relative time in French."""
     if dt is None:
         return "jamais"
+    if isinstance(dt, (int, float)):
+        dt = datetime.fromtimestamp(dt, tz=timezone.utc)
     if isinstance(dt, str):
         try:
             dt = datetime.fromisoformat(dt)
@@ -66,10 +68,28 @@ def timeago(dt) -> str:
 
 
 SPAN_LABELS = {
+    # Lifecycle
     "ExtensionLoaded": ("Demarrage plugin", "🚀"),
     "ExtensionUpdated": ("Mise a jour", "⬆️"),
-    "EditSelection": ("Reecriture IA", "✏️"),
-    "ExtendSelection": ("Extension IA", "➕"),
+    "BootstrapConfig": ("Config bootstrap", "🔄"),
+    "EnrollSuccess": ("Enrollment OK", "🔑"),
+    "EnrollFailed": ("Enrollment echoue", "🔴"),
+    # Writer actions
+    "ExtendSelection": ("Generer la suite", "➕"),
+    "EditSelection": ("Modifier selection", "✏️"),
+    "ResizeSelection": ("Ajuster longueur", "📏"),
+    "SummarizeSelection": ("Resumer", "📝"),
+    "SimplifySelection": ("Reformuler", "💬"),
+    # Calc actions
+    "TransformToColumn": ("Transformer colonnes", "🔄"),
+    "GenerateFormula": ("Formule IA", "🧮"),
+    "AnalyzeRange": ("Analyser plage", "📊"),
+    # Navigation
+    "OpenmiraiWebsite": ("Site web", "🌐"),
+    "OpenDocumentation": ("Documentation", "📚"),
+    "OpenSettings": ("Parametres", "⚙️"),
+    "AboutDialog": ("A propos", "ℹ️"),
+    # Legacy aliases
     "TranslateSelection": ("Traduction", "🌐"),
     "SummarizeDocument": ("Resume", "📝"),
     "LoginSuccess": ("Connexion SSO", "🔑"),

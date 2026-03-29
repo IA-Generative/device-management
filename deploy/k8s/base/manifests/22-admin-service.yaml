@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: device-management-admin
+  namespace: bootstrap
+  labels:
+    app: device-management-admin
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 3001
+      name: http
+  selector:
+    app: device-management-admin

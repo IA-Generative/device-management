@@ -56,24 +56,39 @@ def create_plugin(cur, *, slug: str, name: str, description: str = "",
                   intent: str = "", key_features: list = None,
                   changelog: str = "", device_type: str = "libreoffice",
                   category: str = "productivity", icon_url: str = "",
-                  homepage_url: str = "", support_email: str = "",
-                  publisher: str = "DNUM", visibility: str = "public") -> int:
+                  homepage_url: str = "", doc_url: str = "",
+                  support_email: str = "", license: str = "",
+                  publisher: str = "DNUM", visibility: str = "public",
+                  config_template: dict = None) -> int:
+    # Disambiguate slug if a removed plugin already holds it
+    cur.execute(
+        "SELECT id FROM plugins WHERE slug = %s AND status = 'removed'", (slug,)
+    )
+    old = cur.fetchone()
+    if old:
+        import time as _t
+        cur.execute(
+            "UPDATE plugins SET slug = %s WHERE id = %s",
+            (f"{slug}__removed_{int(_t.time())}", old[0]),
+        )
     cur.execute("""
         INSERT INTO plugins (slug, name, description, intent, key_features, changelog,
-                            device_type, category, icon_url, homepage_url, support_email,
-                            publisher, visibility, status)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active')
+                            device_type, category, icon_url, homepage_url, doc_url,
+                            support_email, license, publisher, visibility, status, config_template)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active',%s)
         RETURNING id
     """, (slug, name, description, intent,
           json.dumps(key_features or []), changelog,
-          device_type, category, icon_url, homepage_url, support_email,
-          publisher, visibility))
+          device_type, category, icon_url, homepage_url, doc_url,
+          support_email, license, publisher, visibility,
+          json.dumps(config_template) if config_template else None))
     return cur.fetchone()[0]
 
 
 def update_plugin(cur, plugin_id: int, **fields) -> bool:
     allowed = {"name", "description", "intent", "key_features", "changelog",
-               "category", "icon_url", "homepage_url", "support_email",
+               "category", "icon_url", "icon_path", "homepage_url", "support_email",
+               "doc_url", "license",
                "publisher", "visibility", "status", "config_template"}
     sets, params = [], []
     for k, v in fields.items():
@@ -88,6 +103,12 @@ def update_plugin(cur, plugin_id: int, **fields) -> bool:
     params.append(plugin_id)
     cur.execute(f"UPDATE plugins SET {', '.join(sets)} WHERE id = %s RETURNING id", params)
     return cur.fetchone() is not None
+
+
+def purge_removed(cur) -> int:
+    """Permanently DELETE all plugins with status='removed' (cascades to aliases, versions, etc.)."""
+    cur.execute("DELETE FROM plugins WHERE status = 'removed'")
+    return cur.rowcount
 
 
 # ─── Versions ─────────────────────────────────────────────────────────

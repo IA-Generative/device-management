@@ -194,3 +194,18 @@
   width: 60px; height: 60px; border-radius: 12px; background: #000091; color: #fff;
   display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.2rem; flex-shrink: 0;
 }
+
+/* File browser */
+.dm-file-card {
+  display: flex; align-items: center; gap: 1rem; padding: 1.25rem; border: 1px solid #e5e5e5;
+  border-radius: 8px; text-decoration: none; color: #161616; transition: border-color 0.15s, box-shadow 0.15s;
+}
+.dm-file-card:hover { border-color: #000091; box-shadow: 0 2px 8px rgba(0,0,145,0.08); text-decoration: none; }
+.dm-file-card--disabled { opacity: 0.4; pointer-events: none; }
+.dm-file-card__icon { font-size: 2rem; }
+.dm-file-card__name { font-weight: 600; font-size: 1rem; }
+.dm-file-card__meta { font-size: 0.8rem; color: #666; margin-top: 0.15rem; }
+.dm-file-preview {
+  background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 4px; padding: 1rem;
+  font-size: 0.8rem; line-height: 1.5; overflow-x: auto; max-height: 500px; white-space: pre-wrap; word-break: break-all;
+}

@@ -22,7 +22,7 @@ spec:
         - name: regcred
       containers:
         - name: device-management
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.3.0-catalog-v2-full
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.4
           imagePullPolicy: Always
           ports:
             - containerPort: 3001
@@ -127,35 +127,13 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DM_RELAY_SECRET_PEPPER
-            - name: DM_CONFIG_DIR
-              value: /app/config
             - name: DM_LOCAL_BINARIES_DIR
-              value: /app/config/binaries
+              value: /data/binaries
             - name: PUBLIC_BASE_URL
               valueFrom:
                 secretKeyRef:
                   name: device-management-secrets
                   key: PUBLIC_BASE_URL
-            - name: MODELNAME1
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: MODELNAME1
-            - name: MODELNAME2
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: MODELNAME2
-            - name: MODELNAME3
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: MODELNAME3
-            - name: TOKENMODEL1
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: TOKENMODEL1
             - name: LLM_BASE_URL
               valueFrom:
                 secretKeyRef:
@@ -356,9 +334,21 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DATABASE_ADMIN_URL
-          volumeMounts:
-            - name: config-all
-              mountPath: /app/config
+            - name: ADMIN_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_OIDC_ISSUER_URL
+            - name: DM_TELEMETRY_GRAFANA_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_GRAFANA_URL
+            - name: DM_RELAY_ASSISTANT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_ASSISTANT_URL
           resources:
             requests:
               cpu: 500m
@@ -388,18 +378,5 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 4
-      volumes:
-        - name: config-all
-          projected:
-            sources:
-              - configMap:
-                  name: device-management-config
-                  items:
-                    - key: config.json
-                      path: config.json
-                    - key: matisse-config.json
-                      path: matisse/config.json
-                    - key: libreoffice-config.json
-                      path: mirai-libreoffice/config.json
-                    - key: libreoffice-config-int.json
-                      path: mirai-libreoffice/config.int.json
+      # Plugin configs are now stored in the database (plugins.config_template).
+      # The projected ConfigMap volume was removed.

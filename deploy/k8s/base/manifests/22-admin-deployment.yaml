@@ -1,0 +1,181 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: device-management-admin
+  namespace: bootstrap
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: device-management-admin
+  template:
+    metadata:
+      labels:
+        app: device-management-admin
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: device-management-admin
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.4
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+          env:
+            - name: DM_RUNTIME_MODE
+              value: "admin"
+            - name: DM_APP_ENV
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_APP_ENV
+            - name: DM_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_PORT
+            - name: DM_ALLOW_ORIGINS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_ALLOW_ORIGINS
+            - name: PUBLIC_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: PUBLIC_BASE_URL
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DATABASE_URL
+            - name: DATABASE_ADMIN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DATABASE_ADMIN_URL
+            # Keycloak / OIDC
+            - name: KEYCLOAK_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_ISSUER_URL
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_REALM
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_CLIENT_ID
+            - name: DM_AUTH_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_ISSUER_URL
+            - name: DM_AUTH_JWKS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_JWKS_URL
+            - name: ADMIN_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_OIDC_ISSUER_URL
+            - name: ADMIN_OIDC_CLIENT_ID
+              value: "admin-dm-ui"
+            - name: ADMIN_OIDC_REDIRECT_URI
+              value: "https://bootstrap.fake-domain.name/admin/callback"
+            - name: ADMIN_SESSION_SECRET
+              value: "changeme-dev-only"
+            # LLM (for debug page)
+            - name: LLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: LLM_BASE_URL
+            - name: LLM_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: LLM_API_TOKEN
+            - name: DEFAULT_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DEFAULT_MODEL_NAME
+            # Telemetry (for debug page)
+            - name: DM_TELEMETRY_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_ENABLED
+            - name: DM_TELEMETRY_UPSTREAM_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_UPSTREAM_ENDPOINT
+            - name: DM_TELEMETRY_GRAFANA_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_GRAFANA_URL
+            # Relay (for debug page)
+            - name: DM_RELAY_ASSISTANT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_ASSISTANT_URL
+            # S3 (for artifact management)
+            - name: DM_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_S3_BUCKET
+            - name: DM_S3_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_S3_ENDPOINT_URL
+            - name: DM_BINARIES_MODE
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_BINARIES_MODE
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: 3001
+            periodSeconds: 2
+            failureThreshold: 15
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /livez
+              port: 3001
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4

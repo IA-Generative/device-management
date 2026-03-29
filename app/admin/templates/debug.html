@@ -3,7 +3,12 @@
 {% block content %}
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
   <h1 class="dm-page-title" style="margin:0;">Debug — Sante des services</h1>
-  <a href="/admin/debug" class="dm-btn dm-btn--secondary dm-btn--sm">Rafraichir</a>
+  <div style="display:flex;gap:0.5rem;">
+    {% if telemetry_info.grafana_url %}
+    <a href="{{ telemetry_info.grafana_url }}" target="_blank" class="dm-btn dm-btn--primary dm-btn--sm">Ouvrir Grafana</a>
+    {% endif %}
+    <a href="/admin/debug" class="dm-btn dm-btn--secondary dm-btn--sm">Rafraichir</a>
+  </div>
 </div>
 
 <h3 style="font-size:1rem;margin-bottom:0.75rem;">Services</h3>
@@ -37,6 +42,38 @@
       <td style="font-size:0.85rem;">{{ v.value }}</td>
     </tr>
     {% endfor %}
+  </tbody>
+</table>
+
+<h3 style="font-size:1rem;margin-top:1.5rem;margin-bottom:0.75rem;">Telemetrie</h3>
+<table class="dm-table-compact">
+  <tbody>
+    <tr>
+      <td style="width:35%">Statut</td>
+      <td>
+        {% if telemetry_info.enabled == 'true' %}
+        <span class="dm-badge dm-badge--success">Active</span>
+        {% else %}
+        <span class="dm-badge dm-badge--neutral">Desactivee</span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr><td>Endpoint public (plugins)</td><td><code>{{ telemetry_info.public_endpoint }}</code></td></tr>
+    <tr><td>Upstream (collecteur OTel)</td><td><code>{{ telemetry_info.upstream_endpoint }}</code></td></tr>
+    <tr><td>Auth upstream</td><td>{{ telemetry_info.upstream_auth_type or 'aucune' }}</td></tr>
+    <tr><td>TTL token</td><td>{{ telemetry_info.token_ttl }}s</td></tr>
+    <tr><td>Token requis</td><td>{{ 'Oui' if telemetry_info.require_token == 'true' else 'Non' }}</td></tr>
+    <tr><td>Taille max payload</td><td>{{ telemetry_info.max_body_size_mb }} Mo</td></tr>
+    <tr>
+      <td>Dashboard Grafana</td>
+      <td>
+        {% if telemetry_info.grafana_url %}
+        <a href="{{ telemetry_info.grafana_url }}" target="_blank">{{ telemetry_info.grafana_url }}</a>
+        {% else %}
+        <span style="color:#666;">non configure (DM_TELEMETRY_GRAFANA_URL)</span>
+        {% endif %}
+      </td>
+    </tr>
   </tbody>
 </table>
 

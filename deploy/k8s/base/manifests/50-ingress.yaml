@@ -1,0 +1,39 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: device-management-ingress
+  namespace: bootstrap
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - bootstrap.fake-domain.name
+      secretName: bootstrap-tls
+  rules:
+    - host: bootstrap.fake-domain.name
+      http:
+        paths:
+          - path: /admin
+            pathType: Prefix
+            backend:
+              service:
+                name: device-management-admin
+                port:
+                  number: 80
+          - path: /telemetry/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: telemetry-relay
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: device-management
+                port:
+                  number: 80

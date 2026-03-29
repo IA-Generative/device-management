@@ -302,24 +302,32 @@ document.querySelector('.dm-device-card')?.classList.add('dm-device-card--select
 {# ════════════════ TRACKING PAGE ════════════════ #}
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
-  <div>
-    <h1 class="dm-page-title" style="margin-bottom:0.25rem;">{{ campaign.name }}</h1>
-    <div style="font-size:0.875rem;color:#666;">
-      {% if campaign.status == 'active' %}
-        <span class="dm-badge dm-badge--success">Actif</span>
-      {% elif campaign.status == 'paused' %}
-        <span class="dm-badge dm-badge--warning">En pause</span>
-      {% elif campaign.status == 'completed' %}
-        <span class="dm-badge dm-badge--info">Termine</span>
-      {% elif campaign.status == 'rolled_back' %}
-        <span class="dm-badge dm-badge--error">Annule</span>
-      {% else %}
-        <span class="dm-badge dm-badge--neutral">{{ campaign.status }}</span>
-      {% endif %}
-      &mdash; {{ campaign.device_type }} v{{ campaign.artifact_version }}
-      {% if campaign.urgency == 'critical' %}
-        <span class="dm-badge dm-badge--error" style="margin-left:0.5rem;">Urgent</span>
-      {% endif %}
+  <div style="display:flex;gap:1rem;align-items:center;">
+    {% if plugin and plugin.icon_url %}
+    <img src="{{ plugin.icon_url }}" alt=""
+         style="width:48px;height:48px;border-radius:10px;object-fit:cover;"
+         onerror="this.style.display='none';">
+    {% endif %}
+    <div>
+      <h1 class="dm-page-title" style="margin-bottom:0.25rem;">{{ campaign.name }}</h1>
+      <div style="font-size:0.875rem;color:#666;">
+        {% if campaign.status == 'active' %}
+          <span class="dm-badge dm-badge--success">Actif</span>
+        {% elif campaign.status == 'paused' %}
+          <span class="dm-badge dm-badge--warning">En pause</span>
+        {% elif campaign.status == 'completed' %}
+          <span class="dm-badge dm-badge--info">Termine</span>
+        {% elif campaign.status == 'rolled_back' %}
+          <span class="dm-badge dm-badge--error">Annule</span>
+        {% else %}
+          <span class="dm-badge dm-badge--neutral">{{ campaign.status }}</span>
+        {% endif %}
+        &mdash; {{ campaign.device_type }} v{{ campaign.artifact_version }}
+        {% if plugin %} &mdash; <strong>{{ plugin.name }}</strong>{% endif %}
+        {% if campaign.urgency == 'critical' %}
+          <span class="dm-badge dm-badge--error" style="margin-left:0.5rem;">Urgent</span>
+        {% endif %}
+      </div>
     </div>
   </div>
   <div style="display:flex;gap:0.5rem;">

@@ -17,7 +17,7 @@ spec:
         - name: regcred
       containers:
         - name: telemetry-relay
-          image: docker.io/etiquet/device-management:0.0.1
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.4
           imagePullPolicy: Always
           command:
             - uvicorn
@@ -97,7 +97,7 @@ spec:
               path: /livez
               port: 3001
             periodSeconds: 2
-            failureThreshold: 15
+            failureThreshold: 8
             timeoutSeconds: 2
           readinessProbe:
             httpGet:

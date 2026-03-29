@@ -3,8 +3,46 @@ import importlib
 import json
 import os
 import sys
+import tempfile
 
 from fastapi.testclient import TestClient
+
+# Minimal config fixture for tests — uses ${{VAR}} placeholders
+# that get substituted by the env vars set in _load_module().
+_TEST_CONFIG = {
+    "configVersion": 1,
+    "config": {
+        "llm_base_urls": "${{LLM_BASE_URL}}",
+        "llm_api_tokens": "${{LLM_API_TOKEN}}",
+        "authHeaderName": "Authorization",
+        "authHeaderPrefix": "Bearer ",
+        "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
+        "keycloakRealm": "${{KEYCLOAK_REALM}}",
+        "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+        "enabled": True,
+        "telemetryEnabled": True,
+        "telemetrylogJson": True,
+    },
+}
+
+# Temp config directory shared across tests in this module
+_config_dir = None
+
+
+def _ensure_config_fixture():
+    """Create a temporary config directory with a minimal config.json for filesystem fallback."""
+    global _config_dir
+    if _config_dir and os.path.isdir(_config_dir):
+        return _config_dir
+    _config_dir = tempfile.mkdtemp(prefix="dm-test-config-")
+    lo_dir = os.path.join(_config_dir, "libreoffice")
+    os.makedirs(lo_dir, exist_ok=True)
+    for d in [_config_dir, lo_dir]:
+        with open(os.path.join(d, "config.json"), "w") as f:
+            json.dump(_TEST_CONFIG, f)
+        with open(os.path.join(d, "config.prod.json"), "w") as f:
+            json.dump(_TEST_CONFIG, f)
+    return _config_dir
 
 
 def _mk_fake_jwt(payload: dict) -> str:
@@ -22,10 +60,13 @@ def _load_module():
     if root not in sys.path:
         sys.path.insert(0, root)
 
+    cfg_dir = _ensure_config_fixture()
+
     os.environ["DM_STORE_ENROLL_LOCALLY"] = "false"
     os.environ["DM_STORE_ENROLL_S3"] = "false"
     os.environ["DM_CONFIG_ENABLED"] = "true"
     os.environ["DM_CONFIG_PROFILE"] = "prod"
+    os.environ["DM_CONFIG_DIR"] = cfg_dir
     os.environ["DM_RELAY_ENABLED"] = "true"
     os.environ["DM_RELAY_SECRET_PEPPER"] = "unit-test-pepper"
     os.environ["DM_RELAY_PROXY_SHARED_TOKEN"] = "proxy-shared-token"
@@ -35,7 +76,12 @@ def _load_module():
     os.environ["KEYCLOAK_ISSUER_URL"] = "https://issuer.from.config.test/realms/bootstrap"
     os.environ["PUBLIC_BASE_URL"] = "https://example.test/bootstrap"
     os.environ["LLM_API_TOKEN"] = "very-secret-token"
+    # Unset DATABASE_URL to prevent real DB connections (may be set by other test modules)
+    os.environ.pop("DATABASE_URL", None)
+    os.environ.pop("DATABASE_ADMIN_URL", None)
 
+    # Remove any fake psycopg2 injected by other test modules
+    sys.modules.pop("psycopg2", None)
     sys.modules.pop("app.main", None)
     sys.modules.pop("app.settings", None)
     mod = importlib.import_module("app.main")

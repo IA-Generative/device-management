@@ -1,0 +1,37 @@
+{
+  "clientId": "admin-dm-ui",
+  "name": "DM Admin UI",
+  "description": "Device Management Administration Interface",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "standardFlowEnabled": true,
+  "directAccessGrantsEnabled": false,
+  "implicitFlowEnabled": false,
+  "serviceAccountsEnabled": false,
+  "authorizationServicesEnabled": false,
+  "rootUrl": "https://bootstrap.fake-domain.name",
+  "baseUrl": "/admin/",
+  "redirectUris": [
+    "https://bootstrap.fake-domain.name/admin/callback",
+    "http://localhost:3001/admin/callback",
+    "http://localhost:3002/admin/callback"
+  ],
+  "webOrigins": [
+    "https://bootstrap.fake-domain.name",
+    "http://localhost:3001",
+    "http://localhost:3002"
+  ],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "post.logout.redirect.uris": "https://bootstrap.fake-domain.name/admin/+||http://localhost:3001/admin/+"
+  },
+  "defaultClientScopes": [
+    "openid",
+    "profile",
+    "email"
+  ],
+  "optionalClientScopes": [
+    "groups"
+  ]
+}

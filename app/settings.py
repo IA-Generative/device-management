@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     telemetry_upstream_endpoint: str = Field(
         default_factory=lambda: _env_default(
             "TELEMETRY_UPSTREAM_ENDPOINT",
-            default="https://telemetry.minint.fr/v1/traces",
+            default="http://otel-collector.telemetry.svc.cluster.local:4318/v1/traces",
         )
     )
     telemetry_upstream_auth_type: str = Field(
@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     auth_allowed_algorithms_csv: str = Field(default="RS256")
     auth_leeway_seconds: int = Field(default=30)
     auth_jwks_cache_ttl_seconds: int = Field(default=600)
+
+    # Deploy environments (JSON list or comma-separated names)
+    # Each env: name, label, strategy (patch_all | progressive | choice), confirm_name (bool)
+    deploy_environments_json: str = Field(default='[{"name":"dev","label":"Dev","strategy":"patch_all","confirm_name":false},{"name":"int","label":"Integration","strategy":"patch_all","confirm_name":false},{"name":"beta","label":"Beta","strategy":"choice","confirm_name":false},{"name":"preview","label":"Preview","strategy":"choice","confirm_name":false},{"name":"prod","label":"Production","strategy":"progressive","confirm_name":true}]')
 
     # Database (optional, used by local tooling)
     database_url: str = Field(default_factory=_default_database_url)
