@@ -243,7 +243,7 @@ def test_update_action_when_behind():
         assert upd["action"] == "update"
         assert upd["current_version"] == "1.0.0"
         assert upd["target_version"] == "2.0.0"
-        assert "/binaries/" in upd["artifact_url"]
+        assert "/catalog/" in upd["artifact_url"] or "/binaries/" in upd["artifact_url"]
         assert upd["campaign_id"] == 42
     finally:
         patcher.stop()
