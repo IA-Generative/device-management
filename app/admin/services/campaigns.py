@@ -100,17 +100,27 @@ def create_campaign(cur, *, name: str, description: str = "", type: str = "plugi
                     target_cohort_id: int = None, urgency: str = "normal",
                     deadline_at: str = None, status: str = "draft",
                     rollout_config: dict = None,
-                    created_by: str = None) -> int:
+                    created_by: str = None,
+                    plugin_id: int = None) -> int:
+    # Auto-complete older active campaigns of the same type to avoid conflicts.
+    # Only the most recent active campaign is served to clients.
+    if status == "active":
+        cur.execute("""
+            UPDATE campaigns SET status = 'completed', updated_at = NOW()
+            WHERE status = 'active' AND type = %s
+              AND (%s IS NULL OR plugin_id = %s OR plugin_id IS NULL)
+        """, (type, plugin_id, plugin_id))
     cur.execute("""
         INSERT INTO campaigns (name, description, type, artifact_id,
                               rollback_artifact_id, target_cohort_id,
-                              urgency, deadline_at, status, rollout_config, created_by)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              urgency, deadline_at, status, rollout_config, created_by,
+                              plugin_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """, (name, description, type, artifact_id, rollback_artifact_id,
           target_cohort_id, urgency, deadline_at or None, status,
           json.dumps(rollout_config) if rollout_config else None,
-          created_by))
+          created_by, plugin_id))
     return cur.fetchone()[0]
 
 
