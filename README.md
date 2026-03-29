@@ -38,6 +38,8 @@ De nouveaux plugins (Firefox, Chrome, Edge) peuvent etre ajoutes via le catalogu
 | `prompts/prompt-deploy-wizard.md` | Assistant deploiement 1-2-3 |
 | `prompts/prompt-catalog-v2.md` | Catalogue v2 (alias, env, keycloak, maturite, page publique) |
 | `prompts/prompt-plugin-catalog.md` | Catalogue v1 (obsolete, remplace par v2) |
+| `prompts/prompt-public-catalog-dm.md` | Pages publiques du catalogue (HTML DSFR) |
+| `prompts/prompt-public-catalog-mirai.md` | Integration catalogue dans le portail MIrAI (Sites Faciles) |
 
 ## Concepts cles
 
@@ -190,12 +192,17 @@ Lors de la creation d'un plugin, le systeme analyse le package uploade et extrai
 - `/catalog/api/status` : disponibilite des services
 - `/catalog/api/docs` : documentation Swagger/OpenAPI
 
+### API de deploiement (`/api/`)
+- `POST /api/plugins/{slug}/deploy` : endpoint unifie de deploiement (token admin)
+  - Upload binaire + creation artifact (upsert) + version (upsert + deprecation anciennes)
+  - Extraction dm-config.json / dm-manifest.json + mise a jour changelog
+  - Creation campagne (auto-completion des anciennes) + activation
+  - Parametres : `binary` (fichier), `version` (auto-detect), `strategy` (canary/immediate), `urgency`
+- `GET /catalog/api/plugins/{slug}/icon.{ext}` : icone du plugin (binaire depuis DB)
+
 ### Monitoring (`/ops/`)
 - `/ops/health/full` : sante detaillee (JSON, pour Grafana/alerting)
 - `/ops/metrics` : metriques Prometheus (text exposition)
-- `/catalog/api/plugins` : API JSON publique (CORS ouvert, pour integration mirai)
-- `/catalog/api/plugins/{slug}` : detail JSON d'un plugin
-- `/catalog/api/docs` : documentation Swagger/OpenAPI
 
 ## Architecture
 
@@ -213,13 +220,12 @@ app/
       devices.py, flags.py, cohorts.py, artifacts.py, audit.py
     templates/         # Templates HTML (admin + catalogue preview)
     static/            # CSS (dm-admin.css)
-  catalog_public/      # Templates DSFR publics (catalogue)
+  catalog/             # Templates DSFR publics (catalogue vitrine)
 
 config/
-  mirai-libreoffice/   # Templates config LibreOffice (fallback fichier)
-  matisse/             # Templates config Matisse (fallback fichier)
-  # Note : a terme les templates config vivent dans plugins.config_template (DB)
-  # et les dossiers config/ deviennent un fallback pour la retrocompatibilite
+  config.json          # Template config generique (fallback fichier)
+  # Les templates config vivent dans plugins.config_template (DB)
+  # Le dossier config/ est un fallback pour la retrocompatibilite
 
 db/
   schema.sql           # Schema unique consolide (toutes les tables)
@@ -268,11 +274,11 @@ Services : DM (3001), relay-assistant (8088), postgres (5432), adminer (8080)
 ./scripts/build-local.sh
 
 # Kubernetes (multi-arch)
-./scripts/build-k8s.sh 0.1.1-catalog
+./scripts/build-k8s.sh 0.5.4
 ./scripts/k8s/deploy.sh scaleway
 ```
 
-Rollout complet ~12s (probes optimisees).
+Rollout complet ~15s (probes optimisees, 4 replicas API + 1 admin).
 
 ## Secure Relay Flow
 
@@ -306,6 +312,41 @@ L'admin UI propose un assistant **"Deploiement 1-2-3"** :
 3. Configurer le rythme (5% → 25% → 50% → 100%) et lancer
 
 Suivi en temps reel avec courbe de progression.
+
+### Deploiement par script (CI/CD)
+
+```bash
+# Deploiement en une commande via l'API unifiee
+export DM_ADMIN_TOKEN="<token>"
+./scripts/deploy-release.sh \
+  --bootstrap-url https://bootstrap.example.com \
+  --strategy canary     # ou immediate
+```
+
+Le script appelle `POST /api/plugins/{slug}/deploy` qui fait tout en une requete :
+artifact upsert, version publiee, anciennes versions deprecees, campagne activee.
+
+### Strategies de rollout
+
+| Strategy | Paliers | Description |
+|----------|---------|-------------|
+| `canary` | 5% (24h) → 25% (48h) → 100% | Progressif avec validation |
+| `immediate` | 100% | Tous les devices immediatement |
+
+### Distribution des binaires (pull-on-miss)
+
+L'architecture multi-pods utilise un mecanisme de **pull-on-miss** :
+- Le pod **admin** a un stockage persistant (PVC 5Gi) et stocke les binaires uploades
+- Les pods **API** (4 replicas) n'ont pas de volume partage
+- Au premier telechargement, un pod API tire le binaire depuis le pod admin et le cache localement
+- Les telechargements suivants sur ce pod sont servis depuis le cache local
+
+### Icones
+
+Les icones des plugins sont stockees en base (data URL base64 dans `plugins.icon_url`) :
+- **Admin UI** : `<img src="{{ plugin.icon_url }}">`  (data URL inline)
+- **API publique** : `GET /catalog/api/plugins/{slug}/icon.{ext}` (binaire decode depuis DB)
+- Pas de fichier sur disque ni de volume partage
 
 ## Validation
 

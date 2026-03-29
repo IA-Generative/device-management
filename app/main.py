@@ -909,11 +909,14 @@ _KC_GROUP_CACHE_LOCK = threading.Lock()
 # ---- Enriched config helpers
 
 def _parse_version_tuple(v: str) -> tuple:
-    """Parse a semver string into a tuple of ints for comparison."""
+    """Parse a version string into a tuple of ints for comparison.
+
+    Supports any number of segments (semver 3, or extended 4-5 segments).
+    """
     try:
-        return tuple(int(x) for x in str(v).split(".")[:3])
+        return tuple(int(x) for x in str(v).split("."))
     except Exception:
-        return (0, 0, 0)
+        return (0,)
 
 
 def _infer_platform_variant(platform_type: str, platform_version: str, manifest_version: int | None) -> str | None:
@@ -1163,7 +1166,7 @@ def _build_update_directive(
     device_name: str = "",
 ) -> dict | None:
     """Build the update directive dict, or return None if no action needed."""
-    if not plugin_version or not campaign:
+    if not plugin_version or plugin_version in ("unknown", "0", "") or not campaign:
         return None
 
     artifact_version = campaign["artifact_version"]
@@ -2185,10 +2188,17 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     dev = (device or "").strip().lower()
 
     # ── P2: Check config cache ──
+    # Skip cache when enrichment headers are present (update directive is device-specific)
+    _has_enrichment = bool(
+        request.headers.get("X-Plugin-Version", "").strip()
+        or request.headers.get("X-Client-UUID", "").strip()
+        or request.headers.get("X-User-Email", "").strip()
+    )
     cache_key = f"{dev or '_'}:{prof}"
-    cached = _config_cache_get(cache_key)
-    if cached is not None:
-        return JSONResponse(cached, headers={"Cache-Control": "public, max-age=60", "X-Cache": "HIT"})
+    if not _has_enrichment:
+        cached = _config_cache_get(cache_key)
+        if cached is not None:
+            return JSONResponse(cached, headers={"Cache-Control": "public, max-age=60", "X-Cache": "HIT"})
 
     device_name = dev
     device_type = dev
@@ -2472,10 +2482,14 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         "features": flags,
     }
 
-    # P2: Cache the response (skip if access was denied or error)
-    _config_cache_set(cache_key, response_body)
+    # P2: Cache the response only when no enrichment headers (generic response)
+    if not _has_enrichment:
+        _config_cache_set(cache_key, response_body)
 
-    return JSONResponse(response_body, headers={"Cache-Control": "public, max-age=60", "X-Cache": "MISS"})
+    return JSONResponse(response_body, headers={
+        "Cache-Control": "public, max-age=60" if not _has_enrichment else "no-store",
+        "X-Cache": "MISS",
+    })
 
 
 @app.get("/config/{device}/config.json")
@@ -2913,22 +2927,42 @@ async def api_plugin_deploy(slug: str, request: Request):
                 pass
 
             checksum = "sha256:" + hashlib.sha256(data).hexdigest()
-            _binaries_base = settings.local_binaries_dir
-            os.makedirs(os.path.join(_binaries_base, device_type), exist_ok=True)
             filename = binary.filename or f"{slug}-{version}.oxt"
             rel_path = f"{device_type}/{version}_{filename}"
+
+            # Store locally (API pod cache)
+            _binaries_base = settings.local_binaries_dir
+            os.makedirs(os.path.join(_binaries_base, device_type), exist_ok=True)
             full_path = os.path.join(_binaries_base, rel_path)
             with open(full_path, "wb") as f:
                 f.write(data)
 
-            # 5. Upsert artifact
+            # Forward to admin pod (persistent storage) for pull-on-miss
+            _admin_url = os.getenv("DM_ADMIN_INTERNAL_URL", "http://device-management-admin").rstrip("/")
+            _admin_token = (settings.queue_admin_token or "").strip()
+            _admin_base = "/data/content/binaries"
+            _admin_full = f"{_admin_base}/{rel_path}"
+            if _admin_token:
+                try:
+                    import io as _io2
+                    _files = {"file": (filename, _io2.BytesIO(data), "application/octet-stream")}
+                    _resp = httpx.put(
+                        f"{_admin_url}/admin/api/files/upload/{rel_path}",
+                        files=_files, headers={"x-admin-token": _admin_token}, timeout=30,
+                    )
+                    if _resp.status_code == 200:
+                        logger.info("api_plugin_deploy: forwarded %s to admin pod", rel_path)
+                except Exception as fwd_err:
+                    logger.warning("api_plugin_deploy: admin forward failed: %s", fwd_err)
+
+            # 5. Upsert artifact — use admin path as canonical (persistent)
             cur.execute("""
                 INSERT INTO artifacts (device_type, platform_variant, version, s3_path, checksum)
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (device_type, platform_variant, version) DO UPDATE SET
                     s3_path = EXCLUDED.s3_path, checksum = EXCLUDED.checksum, released_at = NOW()
                 RETURNING id
-            """, (device_type, "", version, full_path, checksum))
+            """, (device_type, "", version, _admin_full, checksum))
             artifact_id = cur.fetchone()[0]
 
             # 6. Deprecate old versions + upsert new version
