@@ -1,0 +1,152 @@
+{% extends "catalog_base.html" %}
+
+{% block title %}Catalogue de plugins{% endblock %}
+
+{% block extra_css %}
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .filter-link {
+      padding: 0.4rem 0.9rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      background: #fff;
+      color: #000091;
+      border: 1px solid #000091;
+      transition: background 0.15s, color 0.15s;
+    }
+    .filter-link:hover { background: #e3e3fd; text-decoration: none; }
+    .filter-link.active { background: #000091; color: #fff; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.5rem;
+    }
+    @media (max-width: 900px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 1.5rem;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      transition: box-shadow 0.15s;
+    }
+    .card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .card-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 8px;
+      object-fit: contain;
+      background: #F5F5FE;
+      flex-shrink: 0;
+    }
+    .card-icon-placeholder {
+      width: 48px;
+      height: 48px;
+      border-radius: 8px;
+      background: #e3e3fd;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #000091;
+      font-size: 1.2rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .card-title { font-size: 1rem; font-weight: 700; color: #1e1e1e; }
+    .card-meta { font-size: 0.8rem; color: #666; }
+
+    .card-intent {
+      font-size: 0.88rem;
+      color: #444;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      flex-grow: 1;
+    }
+
+    .card-features { display: flex; flex-wrap: wrap; gap: 0.2rem; }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: auto;
+      padding-top: 0.5rem;
+      border-top: 1px solid #eee;
+    }
+    .card-installs { font-size: 0.8rem; color: #666; }
+    .card-link { font-size: 0.85rem; font-weight: 600; }
+
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: #666;
+      font-size: 1.1rem;
+    }
+{% endblock %}
+
+{% block content %}
+  <div class="filters">
+    <a href="/catalog" class="filter-link {% if not current_category %}active{% endif %}">Tous</a>
+    {% for cat in categories %}
+      <a href="/catalog?category={{ cat }}" class="filter-link {% if current_category == cat %}active{% endif %}">{{ cat|capitalize }}</a>
+    {% endfor %}
+  </div>
+
+  {% if plugins %}
+  <div class="grid">
+    {% for p in plugins %}
+    <div class="card">
+      <div class="card-header">
+        {% if p.icon_url %}
+          <img class="card-icon" src="{{ p.icon_url }}" alt="{{ p.name }}">
+        {% else %}
+          <div class="card-icon-placeholder">{{ p.name[:1] }}</div>
+        {% endif %}
+        <div>
+          <div class="card-title">{{ p.name }}</div>
+          <div class="card-meta">
+            {% if p.latest_version %}v{{ p.latest_version }}{% else %}--{% endif %}
+            <span class="badge badge-{{ p.maturity }}">{{ p.maturity_label }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-intent">{{ p.intent }}</div>
+
+      {% if p.key_features %}
+      <div class="card-features">
+        {% for feat in p.key_features[:5] %}
+          <span class="pill">{{ feat }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <div class="card-footer">
+        <span class="card-installs">{{ p.install_count }} install{{ 's' if p.install_count != 1 else '' }}</span>
+        <a href="/catalog/{{ p.slug }}" class="card-link">Voir la fiche &rarr;</a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">Aucun plugin disponible pour le moment.</div>
+  {% endif %}
+{% endblock %}
