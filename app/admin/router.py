@@ -677,12 +677,14 @@ async def artifact_upload(request: Request,
 
     checksum = artifacts_svc.compute_checksum(data)
 
-    # Store locally
+    # Store locally + push to DM API pods
     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+    rel_path = f"{device_type}/{version}_{binary.filename}"
     os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
-    local_path = f"{binaries_dir}/{device_type}/{version}_{binary.filename}"
+    local_path = f"{binaries_dir}/{rel_path}"
     with open(local_path, "wb") as f:
         f.write(data)
+
 
     conn = get_db_connection()
     try:
@@ -1103,10 +1105,12 @@ async def deploy_create(request: Request,
 
     checksum = artifacts_svc.compute_checksum(data)
     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+    rel_path = f"{device_type}/{version}_{binary.filename}"
     os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
-    local_path = f"{binaries_dir}/{device_type}/{version}_{binary.filename}"
+    local_path = f"{binaries_dir}/{rel_path}"
     with open(local_path, "wb") as f:
         f.write(data)
+
 
     conn = get_db_connection()
     try:
@@ -1694,10 +1698,12 @@ async def catalog_create(request: Request,
                         bin_data = _strip_dm_metadata_from_zip(bin_data)
                         checksum = artifacts_svc.compute_checksum(bin_data)
                         binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+                        rel_path = f"{device_type}/{initial_version}_{binary.filename}"
                         os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
-                        local_path = f"{binaries_dir}/{device_type}/{initial_version}_{binary.filename}"
+                        local_path = f"{binaries_dir}/{rel_path}"
                         with open(local_path, "wb") as f:
                             f.write(bin_data)
+                        # Binary is pulled on-demand by API pods via _pull_binary_from_admin()
                         artifact_id = artifacts_svc.create_artifact(
                             cur, device_type=device_type, platform_variant="",
                             version=initial_version, s3_path=local_path, checksum=checksum,
@@ -2063,10 +2069,12 @@ async def catalog_version_upload(request: Request, plugin_id: int,
             device_type = plugin.get("device_type", "libreoffice")
 
             binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+            rel_path = f"{device_type}/{version}_{binary.filename}"
             os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
-            local_path = f"{binaries_dir}/{device_type}/{version}_{binary.filename}"
+            local_path = f"{binaries_dir}/{rel_path}"
             with open(local_path, "wb") as f:
                 f.write(data)
+        
 
             # 4. Create artifact
             artifact_id = artifacts_svc.create_artifact(
@@ -2817,6 +2825,52 @@ async def catalog_upload_logo(request: Request, plugin_id: int,
         return HTMLResponse(f'<div class="dm-flash dm-flash--error">Erreur: {e}</div>')
     finally:
         conn.close()
+
+
+# ─── Files API (internal, token-secured — allows DM API pods to pull binaries) ───
+
+def _files_token_check(request: Request) -> bool:
+    expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "").strip()
+    if not expected:
+        return False
+    import hmac
+    return hmac.compare_digest(
+        (request.headers.get("x-admin-token") or "").strip(), expected
+    )
+
+
+@router.get("/api/files/{path:path}")
+async def admin_files_get(request: Request, path: str):
+    """Serve a local binary file (token-secured, used by API pods for pull-on-miss)."""
+    if not _files_token_check(request):
+        raise HTTPException(403, "Invalid token")
+    base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+    full = os.path.normpath(os.path.join(base, path))
+    if not full.startswith(os.path.normpath(base)):
+        raise HTTPException(400, "Invalid path")
+    if not os.path.isfile(full):
+        raise HTTPException(404, "File not found")
+    return FileResponse(full)
+
+
+@router.get("/api/files")
+async def admin_files_list(request: Request, prefix: str = ""):
+    """List binary files (token-secured)."""
+    if not _files_token_check(request):
+        raise HTTPException(403, "Invalid token")
+    base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+    target = os.path.normpath(os.path.join(base, prefix)) if prefix else base
+    if not target.startswith(os.path.normpath(base)):
+        raise HTTPException(400, "Invalid path")
+    if not os.path.isdir(target):
+        return JSONResponse({"files": []})
+    result = []
+    for root, _dirs, files in os.walk(target):
+        for fn in files:
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, base)
+            result.append({"path": rel, "size": os.path.getsize(full)})
+    return JSONResponse({"files": sorted(result, key=lambda x: x["path"]), "total": len(result)})
 
 
 # ─── Dashboard APIs ──────────────────────────────────────────────────────
