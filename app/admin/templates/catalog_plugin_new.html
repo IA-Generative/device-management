@@ -173,7 +173,7 @@
 
     <div class="dm-form-actions">
       <a href="/admin/catalog" class="dm-btn dm-btn--secondary">Annuler</a>
-      <button type="submit" class="dm-btn dm-btn--primary">Creer le plugin</button>
+      <button type="submit" class="dm-btn dm-btn--primary" id="submit-btn">Creer le plugin</button>
     </div>
   </form>
 </div>
@@ -554,5 +554,12 @@ function syntaxHighlight(json) {
       return '<span class="' + cls + '">' + match + '</span>';
     });
 }
+
+// ═══════ Submit loading animation ═══════
+document.getElementById('catalog-form').addEventListener('submit', function() {
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>Publication en cours...';
+});
 </script>{% endraw %}
 {% endblock %}
