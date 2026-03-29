@@ -9,6 +9,8 @@ resources:
   - manifests/19-device-management-enroll-pvc.yaml
   - manifests/20-device-management-deployment.yaml
   - manifests/21-device-management-service.yaml
+  - manifests/22-admin-deployment.yaml
+  - manifests/22-admin-service.yaml
   - manifests/23-telemetry-relay-deployment.yaml
   - manifests/24-telemetry-relay-service.yaml
   - manifests/25-relay-assistant-configmap.yaml
@@ -20,9 +22,6 @@ resources:
   - manifests/31-postgres-service.yaml
   - manifests/40-adminer-deployment.yaml
   - manifests/41-adminer-service.yaml
-  - manifests/42-filebrowser-db-pvc.yaml
-  - manifests/51-filebrowser-users-job.yaml
-  - manifests/52-filebrowser-deployment.yaml
-  - manifests/53-filebrowser-service.yaml
+  - manifests/50-ingress.yaml
   - manifests/60-device-management-hpa.yaml
   - manifests/61-queue-worker-hpa.yaml

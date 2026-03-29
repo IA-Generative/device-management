@@ -206,7 +206,14 @@ def test_update_action_when_behind():
         "2.0.0", "libreoffice/plugin-2.0.0.xpi", "sha256:abc123", None,
         None, None,
         None, None, None,
+        None, None,  # rollout_config, campaign_created_at
     )
+
+    # Minimal config_template for the plugin (loaded from DB)
+    _config_template = {
+        "configVersion": 1,
+        "default": {"enabled": True},
+    }
 
     db_rows = {
         "cohorts": [],
@@ -214,12 +221,16 @@ def test_update_action_when_behind():
         "feature_flag_overrides": [],
         "campaigns": [campaign_row],
         "campaign_device_status": [],
+        # _resolve_device: SELECT slug, device_type, id FROM plugins WHERE slug = %s AND status
+        "AND status": [("libreoffice", "libreoffice", 1)],
+        # _load_config_template: SELECT config_template FROM plugins WHERE slug = %s OR device_type
+        "OR device_type": [(_config_template,)],
     }
     patcher = _install_db_mock(mod, db_rows)
     try:
         client = TestClient(mod.app)
         res = client.get(
-            "/config/config.json?profile=prod",
+            "/config/libreoffice/config.json?profile=prod",
             headers={
                 "X-Plugin-Version": "1.0.0",
                 "X-Client-UUID": "test-uuid-1234",
@@ -250,6 +261,7 @@ def test_update_null_when_current():
         "2.0.0", "libreoffice/plugin-2.0.0.xpi", "sha256:abc123", None,
         None, None,
         None, None, None,
+        None, None,  # rollout_config, campaign_created_at
     )
 
     db_rows = {

@@ -2,7 +2,14 @@
 {% block title %}Catalogue{% endblock %}
 {% block content %}
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
-  <h1 class="dm-page-title" style="margin:0;">Catalogue de plugins</h1>
+  <div>
+    <h1 class="dm-page-title" style="margin:0;">Catalogue de plugins</h1>
+    <div style="font-size:0.8rem;color:#666;margin-top:0.25rem;">
+      <a href="/catalog/api/plugins" target="_blank" style="color:#000091;">Catalogue public (JSON)</a>
+      &middot;
+      <a href="/docs" target="_blank" style="color:#000091;">Documentation API</a>
+    </div>
+  </div>
   <a href="/admin/catalog/new" class="dm-btn dm-btn--primary">+ Nouveau plugin</a>
 </div>
 
@@ -19,16 +26,33 @@
       <option value="active" {% if filters.status == 'active' %}selected{% endif %}>Actif</option>
       <option value="draft" {% if filters.status == 'draft' %}selected{% endif %}>Brouillon</option>
       <option value="deprecated" {% if filters.status == 'deprecated' %}selected{% endif %}>Obsolete</option>
+      <option value="removed" {% if filters.status == 'removed' %}selected{% endif %}>Supprime</option>
     </select>
   </form>
+  <form method="post" action="/admin/catalog/purge-removed" style="margin-left:auto;"
+        onsubmit="return confirm('Supprimer definitivement tous les plugins en statut Supprime ?');">
+    <button type="submit" class="dm-btn dm-btn--secondary dm-btn--sm" title="Supprimer definitivement les plugins en statut Supprime">Purger les supprimes</button>
+  </form>
 </div>
+
+{% set purged = request.query_params.get('purged', '') %}
+{% if purged %}
+<div class="dm-flash dm-flash--success" style="margin-bottom:1rem;">{{ purged }} plugin(s) supprime(s) definitivement.</div>
+{% endif %}
 
 {% if plugins %}
 <div class="dm-grid-3">
   {% for p in plugins %}
   <a href="/admin/catalog/{{ p.id }}" class="dm-plugin-card">
     <div class="dm-plugin-card__header">
+      {% if p.icon_url %}
+      <img src="{{ p.icon_url }}" alt=""
+           style="width:40px;height:40px;border-radius:8px;object-fit:cover;"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+      <div class="dm-plugin-card__icon" style="display:none;">{{ p.device_type[:2].upper() }}</div>
+      {% else %}
       <div class="dm-plugin-card__icon">{{ p.device_type[:2].upper() }}</div>
+      {% endif %}
       <div>
         <div class="dm-plugin-card__name">{{ p.name }}</div>
         <div class="dm-plugin-card__meta">{{ p.device_type }} &mdash; {{ p.category }}</div>

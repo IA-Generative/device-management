@@ -100,12 +100,12 @@ CREATE TABLE IF NOT EXISTS queue_job_dead_letters (
 
 CREATE TABLE IF NOT EXISTS plugins (
     id SERIAL PRIMARY KEY,
-    slug VARCHAR(100) UNIQUE NOT NULL,
+    slug VARCHAR(100) NOT NULL,
     name VARCHAR(200) NOT NULL,
     description TEXT,
     intent TEXT,
     key_features JSONB DEFAULT '[]'::jsonb,
-    changelog TEXT,
+    changelog JSONB DEFAULT '[]'::jsonb,
     icon_url TEXT,
     icon_path TEXT,
     source_url TEXT,
@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS plugins (
     category VARCHAR(100) DEFAULT 'productivity',
     homepage_url TEXT,
     support_email TEXT,
+    doc_url TEXT,
+    license VARCHAR(100),
     publisher VARCHAR(200) DEFAULT 'DNUM',
     visibility VARCHAR(20) DEFAULT 'public'
         CHECK (visibility IN ('public','internal','hidden')),
@@ -127,6 +129,8 @@ CREATE TABLE IF NOT EXISTS plugins (
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+-- Slug must be unique among non-removed plugins (allows re-using a slug after deletion)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_plugins_slug_active ON plugins(slug) WHERE status <> 'removed';
 CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins(status);
 CREATE INDEX IF NOT EXISTS idx_plugins_device_type ON plugins(device_type);
 
@@ -258,6 +262,9 @@ CREATE TABLE IF NOT EXISTS campaigns (
         CHECK (type IN ('plugin_update','config_patch','feature_set')),
     status VARCHAR(20) DEFAULT 'draft'
         CHECK (status IN ('draft','active','paused','completed','rolled_back')),
+    environment VARCHAR(50),
+    plugin_id INT REFERENCES plugins(id),
+    version_id INT REFERENCES plugin_versions(id),
     target_cohort_id INT REFERENCES cohorts(id),
     artifact_id INT REFERENCES artifacts(id),
     rollback_artifact_id INT REFERENCES artifacts(id),
@@ -268,6 +275,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_camp_plugin ON campaigns(plugin_id, environment);
 
 CREATE TABLE IF NOT EXISTS campaign_device_status (
     campaign_id INT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -409,21 +417,6 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON admin_audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON admin_audit_log(actor_email);
 
 -- ═══════════════════════════════════════════════════════════════
--- SEED DATA
--- ═══════════════════════════════════════════════════════════════
-
-INSERT INTO plugins (slug, name, device_type, intent, category, maturity, access_mode, status) VALUES
-  ('mirai-libreoffice', 'Assistant Mirai LibreOffice', 'libreoffice',
-   'Assistant IA integre a LibreOffice pour la redaction', 'productivity', 'release', 'open', 'active'),
-  ('mirai-matisse', 'Matisse Thunderbird', 'matisse',
-   'Extension IA pour Thunderbird', 'communication', 'beta', 'keycloak_group', 'active')
-ON CONFLICT (slug) DO NOTHING;
-
-INSERT INTO plugin_aliases (alias, plugin_id) VALUES
-  ('libreoffice', (SELECT id FROM plugins WHERE slug = 'mirai-libreoffice')),
-  ('matisse', (SELECT id FROM plugins WHERE slug = 'mirai-matisse'))
-ON CONFLICT DO NOTHING;
-
 -- ═══════════════════════════════════════════════════════════════
 -- GRANTS (dev role)
 -- ═══════════════════════════════════════════════════════════════

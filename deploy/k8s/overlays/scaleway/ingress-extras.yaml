@@ -38,10 +38,3 @@ spec:
                 name: relay-assistant
                 port:
                   number: 80
-          - path: /telemetry(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: telemetry-relay
-                port:
-                  number: 80
