@@ -1160,6 +1160,7 @@ def _build_update_directive(
     plugin_version: str,
     campaign: dict | None,
     client_uuid: str = "",
+    device_name: str = "",
 ) -> dict | None:
     """Build the update directive dict, or return None if no action needed."""
     if not plugin_version or not campaign:
@@ -1186,12 +1187,19 @@ def _build_update_directive(
                 if device_hash >= current_percent:
                     return None  # Not yet eligible for this rollout stage
 
+    # Prefer catalog download URL (human-friendly, handles redirects)
+    # Fallback to raw binary path if device_name is unknown
+    def _artifact_url(s3_path):
+        if device_name:
+            return f"/catalog/{device_name}/download"
+        return "/binaries/" + str(s3_path or "").lstrip("/")
+
     if pv < av:
         return {
             "action": "update",
             "current_version": plugin_version,
             "target_version": artifact_version,
-            "artifact_url": "/binaries/" + campaign["artifact_s3_path"],
+            "artifact_url": _artifact_url(campaign["artifact_s3_path"]),
             "checksum": campaign["artifact_checksum"],
             "urgency": campaign["urgency"],
             "changelog_url": campaign["changelog_url"],
@@ -1205,7 +1213,7 @@ def _build_update_directive(
             "action": "rollback",
             "current_version": plugin_version,
             "target_version": campaign["rollback_version"],
-            "artifact_url": "/binaries/" + campaign["rollback_s3_path"],
+            "artifact_url": _artifact_url(campaign["rollback_s3_path"]),
             "checksum": campaign["rollback_checksum"],
             "urgency": campaign["urgency"],
             "changelog_url": campaign["changelog_url"],
@@ -2384,6 +2392,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                         plugin_version=plugin_version,
                         campaign=campaign,
                         client_uuid=client_uuid,
+                        device_name=device_name or "",
                     )
                     if update_directive is not None and campaign and client_uuid:
                         try:
@@ -2426,6 +2435,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                             plugin_version=plugin_version,
                             campaign=campaign,
                             client_uuid=client_uuid,
+                            device_name=device_name or "",
                         )
                         if update_directive is not None and campaign and client_uuid:
                             try:

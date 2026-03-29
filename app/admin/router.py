@@ -1160,6 +1160,12 @@ async def deploy_create(request: Request,
                 urgency = "critical"
 
             campaign_name = name.strip() or f"MaJ {device_type} {version}"
+            # Resolve plugin_id from device_type for auto-completion of older campaigns
+            _deploy_plugin_id = None
+            cur.execute("SELECT id FROM plugins WHERE device_type = %s AND status = 'active' LIMIT 1", (device_type,))
+            _prow = cur.fetchone()
+            if _prow:
+                _deploy_plugin_id = _prow[0]
             campaign_id = campaigns_svc.create_campaign(
                 cur, name=campaign_name, type="plugin_update",
                 artifact_id=artifact_id,
@@ -1168,6 +1174,7 @@ async def deploy_create(request: Request,
                 urgency=urgency, status="active",
                 rollout_config=rollout_config,
                 created_by=actor.get("email"),
+                plugin_id=_deploy_plugin_id,
             )
 
             # Store dm-config.json template in the plugin record if extracted
@@ -2183,6 +2190,7 @@ async def catalog_version_upload(request: Request, plugin_id: int,
                     urgency=urgency, status="active",
                     rollout_config=rollout_config,
                     created_by=actor.get("email"),
+                    plugin_id=plugin_id,
                 )
                 # Set environment and plugin_id on campaign
                 cur.execute(
