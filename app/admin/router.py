@@ -2018,6 +2018,103 @@ async def catalog_version_status(request: Request, plugin_id: int,
         conn.close()
 
 
+@router.post("/catalog/{plugin_id}/versions/purge")
+@require_admin
+async def catalog_versions_purge(request: Request, plugin_id: int):
+    """Delete all deprecated and yanked versions for a plugin."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Detach campaigns referencing old versions
+            cur.execute("""
+                UPDATE campaigns SET version_id = NULL
+                WHERE version_id IN (
+                    SELECT id FROM plugin_versions
+                    WHERE plugin_id = %s AND status IN ('deprecated', 'yanked')
+                )
+            """, (plugin_id,))
+            # Delete old versions
+            cur.execute("""
+                DELETE FROM plugin_versions
+                WHERE plugin_id = %s AND status IN ('deprecated', 'yanked')
+            """, (plugin_id,))
+            deleted = cur.rowcount
+            # Clean orphan artifacts
+            cur.execute("""
+                DELETE FROM artifacts
+                WHERE id NOT IN (SELECT artifact_id FROM plugin_versions WHERE artifact_id IS NOT NULL)
+                  AND id NOT IN (SELECT artifact_id FROM campaigns WHERE artifact_id IS NOT NULL)
+                  AND id NOT IN (SELECT rollback_artifact_id FROM campaigns WHERE rollback_artifact_id IS NOT NULL)
+            """)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="versions.purge",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"deleted_versions": deleted},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/deployments/purge")
+@require_admin
+async def catalog_deployments_purge(request: Request, plugin_id: int):
+    """Delete all completed/rolled_back/draft campaigns for a plugin, keep active+paused."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Delete campaign_device_status for old campaigns first (FK)
+            cur.execute("""
+                DELETE FROM campaign_device_status
+                WHERE campaign_id IN (
+                    SELECT id FROM campaigns
+                    WHERE plugin_id = %s AND status IN ('completed', 'rolled_back', 'draft')
+                )
+            """, (plugin_id,))
+            # Delete old campaigns
+            cur.execute("""
+                DELETE FROM campaigns
+                WHERE plugin_id = %s AND status IN ('completed', 'rolled_back', 'draft')
+            """, (plugin_id,))
+            deleted = cur.rowcount
+            # Also clean campaigns without plugin_id that are completed
+            cur.execute("""
+                DELETE FROM campaign_device_status
+                WHERE campaign_id IN (
+                    SELECT id FROM campaigns
+                    WHERE plugin_id IS NULL AND status IN ('completed', 'rolled_back')
+                )
+            """)
+            cur.execute("""
+                DELETE FROM campaigns
+                WHERE plugin_id IS NULL AND status IN ('completed', 'rolled_back')
+            """)
+            deleted += cur.rowcount
+            # Clean orphan artifacts
+            cur.execute("""
+                DELETE FROM artifacts
+                WHERE id NOT IN (SELECT artifact_id FROM plugin_versions WHERE artifact_id IS NOT NULL)
+                  AND id NOT IN (SELECT artifact_id FROM campaigns WHERE artifact_id IS NOT NULL)
+                  AND id NOT IN (SELECT rollback_artifact_id FROM campaigns WHERE rollback_artifact_id IS NOT NULL)
+            """)
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="deployments.purge",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"deleted_campaigns": deleted},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
 @router.post("/catalog/{plugin_id}/versions/upload")
 @require_admin
 async def catalog_version_upload(request: Request, plugin_id: int,
