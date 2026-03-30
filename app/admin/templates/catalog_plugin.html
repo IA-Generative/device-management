@@ -141,7 +141,16 @@
 <div id="tab-versions" class="dm-tabs__panel {% if tab == 'versions' %}dm-tabs__panel--active{% endif %}">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
     <h3 style="margin:0;">Versions</h3>
-    <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="document.getElementById('new-version-form').style.display='block'">+ Nouvelle version</button>
+    <div style="display:flex;gap:0.5rem;">
+      {% set _old_count = versions|selectattr('status', 'in', ['deprecated','yanked'])|list|length %}
+      {% if _old_count > 0 %}
+      <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/purge" style="display:inline;"
+            onsubmit="return confirm('Supprimer {{ _old_count }} version(s) obsolete(s) (deprecated + yanked) ?');">
+        <button class="dm-btn dm-btn--secondary dm-btn--sm">Nettoyer ({{ _old_count }})</button>
+      </form>
+      {% endif %}
+      <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="document.getElementById('new-version-form').style.display='block'">+ Nouvelle version</button>
+    </div>
   </div>
 
   {# ── Upload-first new version form ── #}
@@ -373,7 +382,16 @@
 
 {# Tab: Deployments #}
 <div id="tab-deployments" class="dm-tabs__panel {% if tab == 'deployments' %}dm-tabs__panel--active{% endif %}">
-  <h3 style="margin:0 0 1rem 0;">Deploiements</h3>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+    <h3 style="margin:0;">Deploiements</h3>
+    {% set _old_deploys = deployments|selectattr('status', 'in', ['completed','rolled_back','draft'])|list|length %}
+    {% if _old_deploys > 0 %}
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/deployments/purge" style="display:inline;"
+          onsubmit="return confirm('Supprimer {{ _old_deploys }} deploiement(s) termine(s) ? Les deploiements actifs et en pause sont conserves.');">
+      <button class="dm-btn dm-btn--secondary dm-btn--sm">Nettoyer ({{ _old_deploys }})</button>
+    </form>
+    {% endif %}
+  </div>
   {% if deployments %}
   <table>
     <thead><tr><th>Nom</th><th>Version</th><th>Env</th><th>Statut</th><th>Progression</th><th>Date</th><th>Actions</th></tr></thead>
