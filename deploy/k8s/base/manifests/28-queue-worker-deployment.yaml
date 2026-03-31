@@ -23,7 +23,7 @@ spec:
           command: ['sh', '-c', 'until pg_isready -h postgres -U postgres; do echo "waiting for postgres..."; sleep 2; done']
       containers:
         - name: queue-worker
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.4
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.5
           imagePullPolicy: Always
           command:
             - python
