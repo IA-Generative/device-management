@@ -500,13 +500,13 @@ def _upsert_provisioning(*, email: str, client_uuid: str, device_name: str, encr
                 """
                 INSERT INTO provisioning (email, device_name, client_uuid, status, encryption_key, comments)
                 VALUES (%s, %s, %s, 'ENROLLED', %s, %s)
-                ON CONFLICT (client_uuid) DO UPDATE
-                SET email = EXCLUDED.email,
+                ON CONFLICT (client_uuid) WHERE status IN ('PENDING', 'ENROLLED')
+                DO UPDATE SET
+                    email = EXCLUDED.email,
                     device_name = EXCLUDED.device_name,
                     status = 'ENROLLED',
                     encryption_key = EXCLUDED.encryption_key,
                     updated_at = now()
-                WHERE provisioning.status IN ('PENDING', 'ENROLLED')
                 """,
                 (email, device_name, client_uuid, encryption_key, "enroll"),
             )
