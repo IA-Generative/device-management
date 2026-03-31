@@ -17,7 +17,7 @@ spec:
         - name: regcred
       containers:
         - name: telemetry-relay
-          image: <SCALEWAY_REGISTRY>/device-management:0.5.5
+          image: <SCALEWAY_REGISTRY>/device-management:0.5.6
           imagePullPolicy: Always
           command:
             - uvicorn
