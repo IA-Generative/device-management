@@ -345,14 +345,17 @@ async function analyzePlugin(file, statusEl) {
     if (tags.length) checks.push(tags.length + ' tags detectes');
     if (data.changelog) checks.push('Changelog extrait');
     const hasReadme = data._has_readme;
+    const hasManifest = data._has_manifest;
+    const hasEnoughInfo = hasReadme || hasManifest;
     if (hasReadme) checks.push('README trouve dans le package');
+    if (hasManifest) checks.push('dm-manifest.json extrait');
 
     statusEl.innerHTML = '<div class="dm-flash dm-flash--success" style="margin-bottom:0;">' +
       checks.map(c => '<div>&#10003; ' + c + '</div>').join('') +
-      (!hasReadme ? '<div style="color:#B34000;">&#9888; Pas de README — completez ci-dessous</div>' : '') +
+      (!hasEnoughInfo ? '<div style="color:#B34000;">&#9888; Pas de README ni de dm-manifest.json — completez ci-dessous</div>' : '') +
       '</div>';
 
-    showFormSections(!hasReadme);
+    showFormSections(!hasEnoughInfo);
   } catch (e) {
     statusEl.innerHTML += '<div class="dm-flash dm-flash--error" style="margin-top:0.5rem;">Erreur : ' + e.message + '</div>';
     showFormSections(true);
