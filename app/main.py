@@ -321,7 +321,8 @@ def _admin_db_url(base_url: str) -> str | None:
     if admin_password:
         netloc = f"{admin_user}:{admin_password}@{parsed.hostname}"
     else:
-        netloc = f"{admin_user}@{parsed.hostname}"
+        # No admin password available — skip admin DB operations
+        return None
 
     if parsed.port:
         netloc = f"{netloc}:{parsed.port}"
