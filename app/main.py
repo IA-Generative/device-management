@@ -2650,11 +2650,17 @@ async def telemetry_traces(request: Request):
             content={"ok": True, "queued": True, "jobId": job_id},
         )
 
-    return _forward_telemetry_to_upstream(
+    response = _forward_telemetry_to_upstream(
         body,
         content_type=content_type,
         user_agent=user_agent,
     )
+    # When queue is unavailable, persist spans directly after forwarding
+    try:
+        _persist_telemetry_spans(body, client_uuid)
+    except Exception:
+        logger.exception("Failed to persist telemetry spans (direct path)")
+    return response
 
 
 @app.api_route("/enroll", methods=["POST", "PUT", "OPTIONS"])
