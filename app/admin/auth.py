@@ -34,7 +34,19 @@ SESSION_COOKIE = "dm_admin_session"
 SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "changeme-dev-only")
 SESSION_TTL = 3600  # 1 hour
 
-OIDC_ISSUER = os.getenv("ADMIN_OIDC_ISSUER_URL", "")
+def _oidc_issuer_url() -> str:
+    """Resolve OIDC issuer: explicit ADMIN_OIDC_ISSUER_URL, else derive from
+    KEYCLOAK_ISSUER_URL + KEYCLOAK_REALM."""
+    explicit = os.getenv("ADMIN_OIDC_ISSUER_URL", "").strip()
+    if explicit:
+        return explicit
+    base = os.getenv("KEYCLOAK_ISSUER_URL", "").strip().rstrip("/")
+    realm = os.getenv("KEYCLOAK_REALM", "").strip()
+    if base and realm:
+        return f"{base}/realms/{realm}"
+    return base
+
+OIDC_ISSUER = _oidc_issuer_url()
 CLIENT_ID = os.getenv("ADMIN_OIDC_CLIENT_ID", "admin-dm-ui")
 CLIENT_SECRET = os.getenv("ADMIN_OIDC_CLIENT_SECRET", "")
 REDIRECT_URI = os.getenv("ADMIN_OIDC_REDIRECT_URI", "")
@@ -68,18 +80,23 @@ def _get_oidc_config() -> dict:
     except Exception:
         logger.warning("OIDC discovery failed for %s", url)
         return _oidc_config
-    # Rewrite browser-facing URLs to public issuer, keep server-side URLs internal.
-    # authorization_endpoint = browser redirect → must use public URL
-    # token_endpoint = server-side call → keep as _internal_token_endpoint
+    # Rewrite URLs: browser-facing endpoints use PUBLIC issuer,
+    # server-side token exchange uses INTERNAL issuer (e.g. wireguard-proxy).
     if OIDC_PUBLIC_ISSUER and OIDC_ISSUER != OIDC_PUBLIC_ISSUER:
-        # Save internal token endpoint before rewriting
-        _oidc_config["_internal_token_endpoint"] = _oidc_config.get("token_endpoint", "")
-        for key in ("authorization_endpoint", "token_endpoint", "userinfo_endpoint",
-                     "end_session_endpoint", "jwks_uri", "issuer"):
-            if key in _oidc_config and isinstance(_oidc_config[key], str):
-                _oidc_config[key] = _oidc_config[key].replace(
-                    OIDC_ISSUER.rstrip("/"), OIDC_PUBLIC_ISSUER.rstrip("/")
-                )
+        # The discovery response contains the issuer's own URLs (public).
+        # For server-side calls (token exchange), rewrite to internal URL.
+        public_base = _oidc_config.get("issuer", "").rstrip("/")
+        internal_base = OIDC_ISSUER.rstrip("/")
+        # Save internal token endpoint (rewrite public → internal for server-side call)
+        raw_token_ep = _oidc_config.get("token_endpoint", "")
+        if public_base and internal_base and public_base != internal_base:
+            _oidc_config["_internal_token_endpoint"] = raw_token_ep.replace(
+                public_base, internal_base
+            )
+        else:
+            _oidc_config["_internal_token_endpoint"] = raw_token_ep
+        # Browser-facing URLs: keep as-is (they're already public from discovery)
+        # No rewriting needed since discovery returns public URLs.
     return _oidc_config
 
 
