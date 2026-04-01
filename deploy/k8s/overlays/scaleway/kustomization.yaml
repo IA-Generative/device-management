@@ -3,8 +3,8 @@ kind: Kustomization
 
 resources:
   - ../../base
-  - ingress-root.yaml
   - ingress-extras.yaml
+  - wireguard-proxy.yaml
 
 patches:
   - path: secret-patch.yaml

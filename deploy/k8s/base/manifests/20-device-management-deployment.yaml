@@ -22,7 +22,7 @@ spec:
         - name: regcred
       containers:
         - name: device-management
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.6
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.11
           imagePullPolicy: Always
           ports:
             - containerPort: 3001
@@ -149,6 +149,21 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DEFAULT_MODEL_NAME
+            - name: ADMIN_REQUIRED_GROUP
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_REQUIRED_GROUP
+            - name: ADMIN_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_OIDC_ISSUER_URL
+            - name: ADMIN_OIDC_PUBLIC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_OIDC_PUBLIC_ISSUER_URL
             - name: KEYCLOAK_ISSUER_URL
               valueFrom:
                 secretKeyRef:
@@ -179,11 +194,6 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DM_AUTH_VERIFY_ACCESS_TOKEN
-            - name: DM_AUTH_ISSUER_URL
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: DM_AUTH_ISSUER_URL
             - name: DM_AUTH_JWKS_URL
               valueFrom:
                 secretKeyRef:
@@ -334,11 +344,6 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DATABASE_ADMIN_URL
-            - name: ADMIN_OIDC_ISSUER_URL
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: ADMIN_OIDC_ISSUER_URL
             - name: DM_TELEMETRY_GRAFANA_URL
               valueFrom:
                 secretKeyRef:

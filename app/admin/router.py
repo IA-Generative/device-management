@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 
 from pathlib import Path, PurePosixPath
 
@@ -20,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from .auth import (
     require_admin, _sign_session, _verify_session, _get_oidc_config,
     _get_token_endpoint, _has_admin_group, SESSION_COOKIE, SESSION_TTL,
-    CLIENT_ID, CLIENT_SECRET, REDIRECT_URI,
+    CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, REQUIRED_GROUP,
 )
 from .helpers import audit_log, get_db_connection, timeago, span_label
 
@@ -151,12 +152,13 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
     claims = json.loads(base64.urlsafe_b64decode(payload_b64))
 
     if not _has_admin_group(claims):
-        raise HTTPException(403, "Acces refuse : groupe admin-dm requis")
+        raise HTTPException(403, f"Acces refuse : groupe {REQUIRED_GROUP!r} requis")
 
     session = {
         "sub": claims.get("sub"),
         "email": claims.get("email"),
         "name": claims.get("name", claims.get("preferred_username")),
+        "id_token": tokens["id_token"],
         "exp": int(time.time()) + SESSION_TTL,
     }
     resp = RedirectResponse("/admin/", status_code=302)
@@ -169,8 +171,24 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
 
 
 @router.get("/logout")
-async def logout():
-    resp = RedirectResponse("/admin/", status_code=302)
+async def logout(request: Request):
+    cfg = _get_oidc_config()
+    end_session = cfg.get("end_session_endpoint", "")
+    resp_url = "/admin/"
+    if end_session:
+        base = str(request.base_url).rstrip("/")
+        # Behind TLS-terminating ingress, base_url is http; force https in prod
+        if base.startswith("http://") and "localhost" not in base:
+            base = "https://" + base[len("http://"):]
+        post_logout = f"{base}/admin/"
+        params = {"post_logout_redirect_uri": post_logout}
+        # Pass id_token_hint from session (required by Keycloak)
+        cookie = request.cookies.get(SESSION_COOKIE)
+        session = _verify_session(cookie) if cookie else None
+        if session and session.get("id_token"):
+            params["id_token_hint"] = session["id_token"]
+        resp_url = f"{end_session}?{urllib.parse.urlencode(params)}"
+    resp = RedirectResponse(resp_url, status_code=302)
     resp.delete_cookie(SESSION_COOKIE)
     return resp
 
@@ -3151,7 +3169,8 @@ async def debug_page(request: Request):
             n_keys = len(data.get("keys", []))
             return f"{os.getenv('KEYCLOAK_REALM','?')}, {n_keys} keys"
         # Fallback: openid-configuration via issuer
-        issuer = os.getenv("ADMIN_OIDC_ISSUER_URL") or os.getenv("KEYCLOAK_ISSUER_URL", "")
+        from app.admin.auth import _oidc_issuer_url
+        issuer = _oidc_issuer_url()
         if not issuer: return "non configure"
         with urlreq.urlopen(f"{issuer.rstrip('/')}/.well-known/openid-configuration", timeout=5) as r:
             data = json.loads(r.read())
