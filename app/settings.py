@@ -29,6 +29,19 @@ def _env_default(*keys: str, default: str) -> str:
     return default
 
 
+def _keycloak_realm_url() -> str:
+    """Derive the full realm issuer URL from KEYCLOAK_ISSUER_URL + KEYCLOAK_REALM.
+
+    Returns e.g. ``https://sso.example.com/realms/openwebui``.
+    Falls back to KEYCLOAK_ISSUER_URL alone when KEYCLOAK_REALM is not set.
+    """
+    base = os.getenv("KEYCLOAK_ISSUER_URL", "").strip().rstrip("/")
+    realm = os.getenv("KEYCLOAK_REALM", "").strip()
+    if base and realm:
+        return f"{base}/realms/{realm}"
+    return base
+
+
 class Settings(BaseSettings):
     if _HAS_PYDANTIC_V2_SETTINGS:
         model_config = SettingsConfigDict(env_prefix="DM_", extra="ignore")
@@ -117,7 +130,7 @@ class Settings(BaseSettings):
     # PKCE/OIDC access-token verification
     auth_verify_access_token: bool = Field(default=True)
     auth_issuer_url: str = Field(
-        default_factory=lambda: _env_default("AUTH_ISSUER_URL", "KEYCLOAK_ISSUER_URL", default="")
+        default_factory=lambda: _env_default("AUTH_ISSUER_URL", default="") or _keycloak_realm_url()
     )
     auth_jwks_url: str = Field(
         default_factory=lambda: _env_default("AUTH_JWKS_URL", default="")
