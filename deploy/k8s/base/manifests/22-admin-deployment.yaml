@@ -19,7 +19,7 @@ spec:
         - name: regcred
       containers:
         - name: device-management-admin
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.13
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.14
           imagePullPolicy: Always
           ports:
             - containerPort: 3001

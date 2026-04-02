@@ -3632,7 +3632,8 @@ _catalog_templates = _Jinja2Templates(
     directory=os.path.join(os.path.dirname(__file__), "catalog", "templates")
 )
 
-_DEVICE_TYPE_EXT = {"libreoffice": "oxt", "firefox": "xpi", "chrome": "crx", "edge": "crx", "matisse": "xpi"}
+# Download extensions: .crx triggers Chrome auto-install block, use .zip instead
+_DEVICE_TYPE_EXT = {"libreoffice": "oxt", "firefox": "xpi", "chrome": "zip", "edge": "zip", "matisse": "xpi"}
 
 
 @app.get("/catalog", response_class=Response)
@@ -3793,7 +3794,7 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None):
 def catalog_download_file(slug: str, filename: str):
     """Public — download by filename (e.g. mirai-libreoffice-0.2.1.oxt)."""
     # Strip known extensions, then remove slug prefix to get version
-    _known_ext = (".oxt", ".xpi", ".crx", ".bin")
+    _known_ext = (".oxt", ".xpi", ".crx", ".zip", ".bin")
     base = filename
     for ext in _known_ext:
         if base.endswith(ext):
