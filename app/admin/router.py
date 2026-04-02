@@ -3482,4 +3482,5 @@ async def files_download(request: Request, path: str):
     resolved = _safe_resolve(root, subpath)
     if not resolved.is_file():
         raise HTTPException(404, "Fichier introuvable")
-    return FileResponse(resolved, filename=resolved.name)
+    # Force download for plugin binaries to prevent browser auto-install
+    return FileResponse(resolved, filename=resolved.name, media_type="application/octet-stream")
