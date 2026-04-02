@@ -19,7 +19,7 @@ spec:
         - name: regcred
       containers:
         - name: device-management-admin
-          image: <SCALEWAY_REGISTRY>/device-management:0.5.11
+          image: <SCALEWAY_REGISTRY>/device-management:0.5.12
           imagePullPolicy: Always
           ports:
             - containerPort: 3001
