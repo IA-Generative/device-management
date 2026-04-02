@@ -1041,6 +1041,8 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
                     bss = mf.get("browser_specific_settings", mf.get("applications", {}))
                     if bss.get("thunderbird") or "messenger" in json.dumps(mf.get("permissions", [])).lower():
                         device_type = "matisse"
+                    elif ext == "crx":
+                        device_type = "chrome"
                     elif bss.get("gecko") or ext == "xpi":
                         device_type = "firefox"
                     elif mf.get("manifest_version") == 3:
