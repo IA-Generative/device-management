@@ -3845,6 +3845,72 @@ def catalog_download(slug: str):
             conn.close()
 
 
+@app.get("/catalog/{slug}/updates.xml")
+def catalog_updates_xml(request: Request, slug: str):
+    """Chrome/Edge Omaha-style update manifest for self-hosted extensions.
+
+    Extensions with "update_url" in manifest.json point here.
+    Chrome periodically polls this endpoint and auto-updates if a newer
+    version is available.  The codebase URL points to the .crx download
+    (Chrome's own updater accepts .crx from whitelisted update_url sources).
+    """
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        raise HTTPException(404, "Plugin not found")
+    conn = None
+    pool_ctx = _pooled_conn()
+    try:
+        if pool_ctx is not None:
+            conn = pool_ctx.__enter__()
+        else:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.id, p.device_type, p.slug
+                FROM plugins p WHERE p.slug = %s AND p.status = 'active'
+            """, (slug,))
+            prow = cur.fetchone()
+            if not prow:
+                raise HTTPException(404, "Plugin introuvable")
+            plugin_id, device_type = prow[0], prow[1]
+
+            cur.execute("""
+                SELECT pv.version, pv.artifact_id
+                FROM plugin_versions pv
+                WHERE pv.plugin_id = %s AND pv.status = 'published'
+                ORDER BY pv.published_at DESC NULLS LAST
+                LIMIT 1
+            """, (plugin_id,))
+            vrow = cur.fetchone()
+            if not vrow:
+                raise HTTPException(404, "Aucune version publiee")
+            version, artifact_id = vrow
+
+            # Build absolute codebase URL — Chrome updater downloads .crx from here
+            base = str(request.base_url).rstrip("/")
+            if base.startswith("http://") and "localhost" not in base:
+                base = "https://" + base[len("http://"):]
+            codebase = f"{base}/catalog/{slug}/download/{slug}-{version}.crx"
+
+            # Read extension ID from artifact manifest if possible,
+            # otherwise use slug as appid (admin must match in policy config)
+            appid = slug
+
+            xml = f"""<?xml version='1.0' encoding='UTF-8'?>
+<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
+  <app appid='{appid}'>
+    <updatecheck codebase='{codebase}' version='{version}' />
+  </app>
+</gupdate>"""
+            return Response(content=xml, media_type="application/xml")
+    finally:
+        if pool_ctx is not None:
+            pool_ctx.__exit__(None, None, None)
+        elif conn is not None:
+            conn.close()
+
+
 @app.get("/catalog/{slug}", response_class=Response)
 def catalog_detail(request: Request, slug: str):
     """Public HTML — plugin detail page."""
