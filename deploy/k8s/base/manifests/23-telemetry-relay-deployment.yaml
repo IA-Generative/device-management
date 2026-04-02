@@ -17,7 +17,7 @@ spec:
         - name: regcred
       containers:
         - name: telemetry-relay
-          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.12
+          image: rg.fr-par.scw.cloud/funcscwnspricelessmontalcinhiacgnzi/device-management:0.5.13
           imagePullPolicy: Always
           command:
             - uvicorn

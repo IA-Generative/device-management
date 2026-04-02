@@ -3763,6 +3763,7 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None):
                         _pull_binary_from_admin(s3_path)
                     if os.path.isfile(s3_path):
                         return FileResponse(s3_path, filename=filename,
+                                            media_type="application/octet-stream",
                                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
                     # Try S3 presigned URL
                     try:
