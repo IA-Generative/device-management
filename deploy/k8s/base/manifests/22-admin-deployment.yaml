@@ -95,7 +95,11 @@ spec:
             - name: ADMIN_OIDC_CLIENT_ID
               value: "bootstrap-iassistant"
             - name: ADMIN_OIDC_REDIRECT_URI
-              value: "https://<SCALEWAY_HOSTNAME>/admin/callback"
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_OIDC_REDIRECT_URI
+                  optional: true
             - name: ADMIN_SESSION_SECRET
               value: "changeme-dev-only"
             # LLM (for debug page)
