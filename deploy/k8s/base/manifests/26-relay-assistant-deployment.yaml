@@ -13,6 +13,8 @@ spec:
       labels:
         app: relay-assistant
     spec:
+      imagePullSecrets:
+        - name: regcred
       containers:
         - name: relay-assistant
           image: nginx:1.27-alpine
@@ -40,6 +42,11 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: RELAY_MCR_API_UPSTREAM
+            - name: RELAY_COMPTE_RENDU_UPSTREAM
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: RELAY_COMPTE_RENDU_UPSTREAM
           volumeMounts:
             - name: nginx-template
               mountPath: /etc/nginx/templates/default.conf.template
