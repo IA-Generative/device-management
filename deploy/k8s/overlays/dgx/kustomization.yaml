@@ -5,9 +5,33 @@ resources:
   - ../../base
   - httproute.yaml
 
+# Override all images to pull from etiquet's DockerHub mirror
+# (Scaleway registry was unreachable from DGX, DockerHub is accessible)
+images:
+  - name: <SCALEWAY_REGISTRY>/device-management
+    newName: docker.io/etiquet/device-management
+    newTag: "0.5.15"
+  - name: nginx
+    newName: docker.io/etiquet/nginx
+    newTag: "1.27-alpine"
+  - name: docker.io/library/postgres
+    newName: docker.io/etiquet/postgres
+    newTag: "16-alpine"
+  - name: docker.io/library/adminer
+    newName: docker.io/etiquet/adminer
+    newTag: "4.8.1-standalone"
+
 patches:
   - path: secret-patch.yaml
-  - path: proxy-patch.yaml
+  - path: proxy-patch-device-management.yaml
     target:
       kind: Deployment
       name: device-management
+  - path: proxy-patch-relay-assistant.yaml
+    target:
+      kind: Deployment
+      name: relay-assistant
+  - path: proxy-patch-queue-worker.yaml
+    target:
+      kind: Deployment
+      name: queue-worker
