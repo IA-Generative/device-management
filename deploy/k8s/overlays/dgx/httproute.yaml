@@ -51,6 +51,20 @@ spec:
     - backendRefs:
         - group: ""
           kind: Service
+          name: device-management-admin
+          port: 80
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: /admin
+      # NO URLRewrite : the app handles /admin prefix itself via FastAPI
+      # include_router(admin_router, prefix="/admin")
+      timeouts:
+        request: 300s
+    - backendRefs:
+        - group: ""
+          kind: Service
           name: filebrowser
           port: 80
           weight: 1

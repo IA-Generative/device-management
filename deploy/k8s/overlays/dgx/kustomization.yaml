@@ -35,3 +35,7 @@ patches:
     target:
       kind: Deployment
       name: queue-worker
+  - path: proxy-patch-device-management-admin.yaml
+    target:
+      kind: Deployment
+      name: device-management-admin
