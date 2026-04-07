@@ -1,13 +1,13 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: queue-worker
+  name: device-management-admin
   namespace: bootstrap
 spec:
   template:
     spec:
       containers:
-        - name: queue-worker
+        - name: device-management-admin
           env:
             - name: https_proxy
               value: "http://<PROXY_IP>:3128"
