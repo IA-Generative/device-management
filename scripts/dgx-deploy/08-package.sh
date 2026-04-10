@@ -51,9 +51,22 @@ mkdir -p "$PKG_DIR"/{manifests,scripts}
 # ── Rendered manifests ────────────────────────────────────
 
 step "Rendering final manifests"
-kubectl kustomize "$K8S_DGX" > "$PKG_DIR/manifests/dgx-all.yaml"
+# Render everything, then strip the Secret resource (managed separately by dumb-deploy.sh)
+kubectl kustomize "$K8S_DGX" > /tmp/dgx-full.yaml
+python3 -c "
+import sys
+doc = open('/tmp/dgx-full.yaml').read()
+parts = doc.split('---\n')
+kept = []
+for p in parts:
+    if 'kind: Secret' in p and 'device-management-secrets' in p:
+        continue  # skip the secret
+    kept.append(p)
+open('$PKG_DIR/manifests/dgx-all.yaml','w').write('---\n'.join(kept))
+"
+rm -f /tmp/dgx-full.yaml
 LINES=$(wc -l < "$PKG_DIR/manifests/dgx-all.yaml" | tr -d ' ')
-ok "manifests/dgx-all.yaml ($LINES lines)"
+ok "manifests/dgx-all.yaml ($LINES lines, secret excluded)"
 
 # ── Copy kustomize sources (for on-site tweaks) ──────────
 
