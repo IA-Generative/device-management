@@ -2,41 +2,22 @@
 # dumb-deploy.sh — deploiement DGX, une seule commande.
 #
 # Prerequis : kubectl configure sur le cluster cible.
-# Usage :
-#   ./dumb-deploy.sh                       # deploy (secrets preserved if exist)
-#   ./dumb-deploy.sh --reset-secrets       # force re-creation of secrets from .env.secrets
-#   ./dumb-deploy.sh --import-secrets DIR  # import secrets from a previous deploy directory
+# Usage :     ./dumb-deploy.sh
 #
-# Ce que fait le script :
-#   1. Verifie kubectl + cluster joignable
-#   2. Cree le namespace bootstrap
-#   3. Cree/met a jour le secret regcred (credentials DockerHub)
-#   4. Gere les secrets applicatifs (cree une seule fois, jamais ecrases)
-#   5. Applique les manifests (sans le Secret, qui est gere separement)
-#   6. Bootstrap le schema postgres si necessaire
-#   7. Attend que les Deployments soient prets
-#   8. Affiche l'etat final
+# Credentials et secrets sont stockes dans ~/.dm-secrets/ (persiste entre deploys).
+# Au premier lancement, le script copie les templates et demande de les remplir.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NAMESPACE="bootstrap"
-REGISTRY_SERVER="docker.io"
 REGISTRY_USERNAME_DEFAULT="etiquet"
 MANIFESTS="$SCRIPT_DIR/manifests/dgx-all.yaml"
-SECRETS_FILE="$SCRIPT_DIR/.env.secrets"
-SECRETS_EXAMPLE="$SCRIPT_DIR/.env.secrets.example"
 SECRET_NAME="device-management-secrets"
 
-# Parse args
-RESET_SECRETS=false
-IMPORT_DIR=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --reset-secrets) RESET_SECRETS=true; shift ;;
-    --import-secrets) IMPORT_DIR="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
+# Repertoire persistant pour credentials + secrets (hors du package)
+SECRETS_DIR="${DM_SECRETS_DIR:-$HOME/.dm-secrets}"
+DEPLOY_CREDS="$SECRETS_DIR/.env.deploy"
+SECRETS_FILE="$SECRETS_DIR/.env.secrets"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 step()  { echo ""; echo -e "${BLUE}▶ $*${NC}"; }
@@ -70,24 +51,53 @@ step "Creating namespace $NAMESPACE"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 ok "namespace ready"
 
-# ── 4. Registry credentials (DockerHub) ──────
-step "Configuring image pull secret (regcred)"
+# ── 4. Persistent secrets directory ───────────
+step "Checking credentials ($SECRETS_DIR)"
 
-if [ -f "$SCRIPT_DIR/.env.deploy" ]; then
-  set -a; . "$SCRIPT_DIR/.env.deploy"; set +a
-  ok "loaded .env.deploy"
+if [ ! -d "$SECRETS_DIR" ]; then
+  mkdir -p "$SECRETS_DIR"
+  chmod 700 "$SECRETS_DIR"
+  ok "created $SECRETS_DIR"
 fi
+
+# Copy templates if first time
+if [ ! -f "$DEPLOY_CREDS" ]; then
+  if [ -f "$SCRIPT_DIR/.env.deploy.example" ]; then
+    cp "$SCRIPT_DIR/.env.deploy.example" "$DEPLOY_CREDS"
+  else
+    printf "DOCKERHUB_USER=etiquet\nDOCKERHUB_TOKEN=\n" > "$DEPLOY_CREDS"
+  fi
+  chmod 600 "$DEPLOY_CREDS"
+  warn "NEW: fill in $DEPLOY_CREDS with your DockerHub token"
+  echo ""
+  echo "  nano $DEPLOY_CREDS"
+  echo ""
+  fail "credentials not configured yet — fill $DEPLOY_CREDS and re-run"
+fi
+
+if [ ! -f "$SECRETS_FILE" ]; then
+  if [ -f "$SCRIPT_DIR/.env.secrets.example" ]; then
+    cp "$SCRIPT_DIR/.env.secrets.example" "$SECRETS_FILE"
+  fi
+  chmod 600 "$SECRETS_FILE"
+  warn "NEW: fill in $SECRETS_FILE with your production secrets"
+  echo ""
+  echo "  nano $SECRETS_FILE"
+  echo ""
+  fail "secrets not configured yet — fill $SECRETS_FILE and re-run"
+fi
+
+ok "credentials dir: $SECRETS_DIR"
+
+# Load credentials
+set -a; . "$DEPLOY_CREDS"; set +a
+
+# ── 5. Registry credentials (DockerHub) ──────
+step "Configuring image pull secret (regcred)"
 
 DH_USER="${DOCKERHUB_USER:-$REGISTRY_USERNAME_DEFAULT}"
 DH_TOKEN="${DOCKERHUB_TOKEN:-}"
-
-if [ -z "$DH_TOKEN" ]; then
-  echo ""
-  echo "  Enter DockerHub Personal Access Token (dckr_pat_...)"
-  read -r -s -p "  DOCKERHUB_TOKEN: " DH_TOKEN
-  echo ""
-fi
-[ -z "$DH_TOKEN" ] && fail "empty DockerHub token"
+[ -z "$DH_TOKEN" ] && fail "DOCKERHUB_TOKEN empty in $DEPLOY_CREDS"
 
 kubectl -n "$NAMESPACE" delete secret regcred --ignore-not-found >/dev/null 2>&1
 kubectl -n "$NAMESPACE" create secret docker-registry regcred \
@@ -96,159 +106,47 @@ kubectl -n "$NAMESPACE" create secret docker-registry regcred \
   --docker-password="$DH_TOKEN" >/dev/null
 ok "regcred created (user=$DH_USER)"
 
-# ── 5. Application secrets ───────────────────
-step "Managing application secrets ($SECRET_NAME)"
+# ── 6. Application secrets ───────────────────
+step "Managing application secrets"
 
-# Import from previous deploy directory if requested
-if [ -n "$IMPORT_DIR" ]; then
-  if [ -f "$IMPORT_DIR/.env.secrets" ]; then
-    cp "$IMPORT_DIR/.env.secrets" "$SECRETS_FILE"
-    ok "imported .env.secrets from $IMPORT_DIR"
-  else
-    warn "no .env.secrets found in $IMPORT_DIR"
-  fi
-fi
-
-SECRET_EXISTS=false
 if kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" >/dev/null 2>&1; then
-  SECRET_EXISTS=true
-fi
-
-if [ "$SECRET_EXISTS" = "true" ] && [ "$RESET_SECRETS" = "false" ]; then
-  # Secret exists and no reset requested — keep it
-  KEYS=$(kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" -o jsonpath='{range .data[*]}{end}' 2>/dev/null | wc -c | tr -d ' ')
-  ok "secret already exists ($SECRET_NAME) — PRESERVED (use --reset-secrets to overwrite)"
-
-  # Back up current secrets to .env.secrets.backup for safety
-  info "backing up current secrets to .env.secrets.backup"
-  kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" -o jsonpath='{range .data[*]}{end}' >/dev/null 2>&1
-  kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" -o json 2>/dev/null | \
-    python3 -c "
-import sys, json, base64
-s = json.load(sys.stdin)
-data = s.get('data', {})
-with open('$SCRIPT_DIR/.env.secrets.backup', 'w') as f:
-    f.write('# Backup of $SECRET_NAME from cluster ($(date -u +%Y-%m-%dT%H:%M:%SZ))\n')
-    for k in sorted(data.keys()):
-        v = base64.b64decode(data[k]).decode('utf-8', errors='replace')
-        f.write(f'{k}={v}\n')
-" 2>/dev/null && ok "backup saved to .env.secrets.backup" || warn "backup failed (python3 not available?)"
-
+  ok "secret $SECRET_NAME already exists — PRESERVED"
+  info "(to recreate: kubectl -n $NAMESPACE delete secret $SECRET_NAME && re-run)"
 else
-  # Secret doesn't exist or reset requested — create from .env.secrets
-  if [ ! -f "$SECRETS_FILE" ]; then
-    if [ -f "$SECRETS_EXAMPLE" ]; then
-      warn ".env.secrets not found"
-      echo ""
-      echo "  Create it from the example:"
-      echo "    cp .env.secrets.example .env.secrets"
-      echo "    \$EDITOR .env.secrets"
-      echo ""
-      echo "  Or import from a previous deploy:"
-      echo "    ./dumb-deploy.sh --import-secrets /path/to/old/dgx-deploy-vX.X/"
-      echo ""
-      fail ".env.secrets required for first deployment"
-    else
-      fail ".env.secrets not found and no example template available"
-    fi
-  fi
+  info "creating secret from $SECRETS_FILE"
 
-  info "loading secrets from .env.secrets"
-
-  # Read .env.secrets and build kubectl create secret command
-  # The secret combines: .env.secrets (sensitive) + non-sensitive config from kustomize
-  # We render the full secret from kustomize to get the non-sensitive keys,
-  # then overlay the sensitive keys from .env.secrets
-
-  # Start with all keys from the rendered kustomize secret (config values)
-  # These are extracted from the kustomization source
-  KUSTOMIZE_SECRET=$(kubectl kustomize "$SCRIPT_DIR/manifests/dgx-overlay" 2>/dev/null || echo "")
-
-  # Build the secret from the .env.secrets file
+  # Build --from-literal args from .env.secrets (sensitive keys)
   SECRET_ARGS=""
-  while IFS='=' read -r key value; do
+  while IFS= read -r line; do
     # Skip comments and empty lines
-    [ -z "$key" ] && continue
-    [[ "$key" =~ ^[[:space:]]*# ]] && continue
-    # Remove leading/trailing whitespace
+    [ -z "$line" ] && continue
+    case "$line" in \#*) continue ;; esac
+    key="${line%%=*}"
+    value="${line#*=}"
     key=$(echo "$key" | tr -d '[:space:]')
-    # Value is everything after first =
+    [ -z "$key" ] && continue
     SECRET_ARGS="$SECRET_ARGS --from-literal=$key=$value"
   done < "$SECRETS_FILE"
 
-  # Also include the non-sensitive config keys that the app needs
-  # These come from the kustomize overlay secret-patch
-  NON_SENSITIVE_KEYS="
-    DM_APP_ENV=prod
-    DM_CONFIG_ENABLED=true
-    DM_CONFIG_PROFILE=prod
-    DM_ENROLL_URL=/bootstrap/enroll
-    DM_ALLOW_ORIGINS=*
-    DM_MAX_BODY_SIZE_MB=10
-    DM_PORT=3001
-    DM_STORE_ENROLL_LOCALLY=true
-    DM_ENROLL_DIR=/data/enroll
-    DM_STORE_ENROLL_S3=false
-    DM_AUTH_VERIFY_ACCESS_TOKEN=true
-    DM_AUTH_ALLOWED_ALGORITHMS_CSV=RS256
-    DM_AUTH_LEEWAY_SECONDS=30
-    DM_AUTH_JWKS_CACHE_TTL_SECONDS=600
-    DM_RELAY_ENABLED=true
-    DM_RELAY_KEY_TTL_SECONDS=2592000
-    DM_RELAY_REQUIRE_KEY_FOR_SECRETS=true
-    DM_RELAY_ASSISTANT_URL=http://relay-assistant
-    DM_TELEMETRY_ENABLED=true
-    DM_TELEMETRY_PUBLIC_ENDPOINT=/telemetry/v1/traces
-    DM_TELEMETRY_AUTHORIZATION_TYPE=Bearer
-    DM_TELEMETRY_UPSTREAM_AUTH_TYPE=Bearer
-    DM_TELEMETRY_UPSTREAM_ENDPOINT=http://otel-collector.telemetry.svc.cluster.local:4318/v1/traces
-    DM_TELEMETRY_REQUIRE_TOKEN=true
-    DM_TELEMETRY_TOKEN_TTL_SECONDS=300
-    DM_TELEMETRY_MAX_BODY_SIZE_MB=2
-    DM_BINARIES_MODE=local
-    DM_PRESIGN_TTL_SECONDS=300
-    DM_S3_BUCKET=
-    DM_S3_PREFIX_ENROLL=enroll/
-    DM_S3_PREFIX_BINARIES=binaries/
-    DM_S3_ENDPOINT_URL=
-    KEYCLOAK_REDIRECT_URI=http://localhost:28443/callback
-    KEYCLOAK_ALLOWED_REDIRECT_URI=http://localhost:28443/callback
-    DM_AUTH_AUDIENCE=
-    DM_TELEMETRY_GRAFANA_URL=
-    TELEMETRY_SALT=
-    TELEMETRY_KEY=
-    DEFAULT_MODEL_NAME=
-    RELAY_MCR_API_UPSTREAM=
-    AWS_DEFAULT_ORGANIZATION_ID=
-    AWS_DEFAULT_PROJECT_ID=
-    PUBLIC_BASE_URL=https://<DGX_HOSTNAME>/bootstrap
-    KEYCLOAK_ISSUER_URL=https://<SSO_HOSTNAME>
-    KEYCLOAK_REALM=mirai
-    KEYCLOAK_CLIENT_ID=bootstrap-iassistant
-    ADMIN_REQUIRED_GROUP=/g/Iassistant-Device-management
-    ADMIN_OIDC_ISSUER_URL=https://<SSO_HOSTNAME>/realms/mirai
-    ADMIN_OIDC_PUBLIC_ISSUER_URL=https://<SSO_HOSTNAME>/realms/mirai
-    ADMIN_OIDC_REDIRECT_URI=https://<DGX_HOSTNAME>/admin/callback
-    DM_AUTH_JWKS_URL=https://<SSO_HOSTNAME>/realms/mirai/protocol/openid-connect/certs
-    RELAY_KEYCLOAK_UPSTREAM=https://<SSO_HOSTNAME>/realms/mirai
-    RELAY_COMPTE_RENDU_UPSTREAM=https://<COMPTERENDU_HOSTNAME>
-    DM_RELAY_ALLOWED_TARGETS_CSV=keycloak,config,llm,mcr-api,telemetry,compte-rendu
-    LLM_BASE_URL=https://<LLM_API_HOSTNAME>/v1
-    RELAY_LLM_UPSTREAM=https://<LLM_API_HOSTNAME>/v1
-  "
+  # Add non-sensitive config keys (URLs, flags) that the app also needs
+  CONFIG_FILE="$SCRIPT_DIR/.env.config"
+  if [ -f "$CONFIG_FILE" ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      case "$line" in \#*) continue ;; esac
+      key="${line%%=*}"
+      key=$(echo "$key" | tr -d '[:space:]')
+      [ -z "$key" ] && continue
+      # Secrets take priority over config
+      if ! grep -q "^${key}=" "$SECRETS_FILE" 2>/dev/null; then
+        value="${line#*=}"
+        SECRET_ARGS="$SECRET_ARGS --from-literal=$key=$value"
+      fi
+    done < "$CONFIG_FILE"
+  fi
 
-  for entry in $NON_SENSITIVE_KEYS; do
-    key="${entry%%=*}"
-    value="${entry#*=}"
-    # Only add if not already in .env.secrets (secrets take priority)
-    if ! grep -q "^${key}=" "$SECRETS_FILE" 2>/dev/null; then
-      SECRET_ARGS="$SECRET_ARGS --from-literal=$key=$value"
-    fi
-  done
-
-  kubectl -n "$NAMESPACE" delete secret "$SECRET_NAME" --ignore-not-found >/dev/null 2>&1
   eval kubectl -n "$NAMESPACE" create secret generic "$SECRET_NAME" $SECRET_ARGS >/dev/null
-  ok "secret created from .env.secrets"
+  ok "secret created"
 fi
 
 # ── 6. Apply manifests (secret excluded) ─────
