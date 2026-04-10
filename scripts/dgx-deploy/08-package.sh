@@ -113,6 +113,12 @@ DOCKERHUB_TOKEN=
 ENVEOF
 ok ".env.deploy.example"
 
+# Non-sensitive config (embedded, combined with secrets at deploy time)
+if [ -f "$SCRIPT_DIR/.env.config" ]; then
+  cp "$SCRIPT_DIR/.env.config" "$PKG_DIR/.env.config"
+  ok ".env.config"
+fi
+
 # ── Image list (reference only, images pulled online) ─────
 
 step "Extracting image list from rendered manifests"
