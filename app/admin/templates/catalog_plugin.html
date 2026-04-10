@@ -627,7 +627,31 @@ function nvSubmit(action) {
   document.getElementById('nv-btn-deploy').innerHTML =
     '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
     (action === 'deploy' ? 'Deploiement en cours...' : 'Publication en cours...');
-  document.getElementById('nv-form').submit();
+  // Submit via fetch to bypass WAF blocking native form POSTs
+  const form = document.getElementById('nv-form');
+  const fd = new FormData(form);
+  fetch(form.action, {method:'POST', body:fd, credentials:'same-origin', redirect:'manual'})
+    .then(resp => {
+      if (resp.type === 'opaqueredirect' || resp.status === 303 || resp.status === 302) {
+        window.location.href = resp.headers.get('Location') || window.location.href;
+      } else if (resp.ok) {
+        window.location.reload();
+      } else {
+        return resp.text().then(t => {
+          let msg = 'Erreur ' + resp.status;
+          try { msg = JSON.parse(t).detail || msg; } catch {}
+          document.getElementById('nv-deploy-error').textContent = msg;
+          document.getElementById('nv-deploy-error').style.display = 'block';
+          document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => b.disabled = false);
+          document.getElementById('nv-btn-deploy').innerHTML = 'Deployer';
+        });
+      }
+    })
+    .catch(err => {
+      document.getElementById('nv-deploy-error').textContent = 'Erreur reseau : ' + err.message;
+      document.getElementById('nv-deploy-error').style.display = 'block';
+      document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => b.disabled = false);
+    });
 }
 </script>
 
