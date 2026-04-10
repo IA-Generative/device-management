@@ -176,6 +176,42 @@ document.addEventListener('click', function(e) {
   const panel = parent.querySelector('#' + tab.dataset.tab);
   if (panel) panel.classList.add('dm-tabs__panel--active');
 });
+
+// ═══════ Global: submit all POST forms via fetch ═══════
+// Bypasses WAF/firewall that block native browser form POST submissions
+// while allowing AJAX (fetch) POSTs through. All forms with method=post
+// are intercepted — the server receives the same FormData but via XHR.
+document.addEventListener('submit', function(e) {
+  const form = e.target;
+  if (!form || form.method.toLowerCase() !== 'post') return;
+  // Skip forms that already handle their own submit (catalog-form, nv-form)
+  if (form.id === 'catalog-form' || form.id === 'nv-form') return;
+
+  e.preventDefault();
+  const fd = new FormData(form);
+  const submitBtn = form.querySelector('button[type="submit"], input[type="submit"]');
+  if (submitBtn) submitBtn.disabled = true;
+
+  fetch(form.action, {method:'POST', body:fd, credentials:'same-origin', redirect:'manual'})
+    .then(function(resp) {
+      if (resp.type === 'opaqueredirect' || resp.status === 303 || resp.status === 302) {
+        window.location.href = resp.headers.get('Location') || window.location.href;
+      } else if (resp.ok) {
+        window.location.reload();
+      } else {
+        resp.text().then(function(t) {
+          var msg = 'Erreur ' + resp.status;
+          try { msg = JSON.parse(t).detail || msg; } catch(x) {}
+          alert(msg);
+          if (submitBtn) submitBtn.disabled = false;
+        });
+      }
+    })
+    .catch(function(err) {
+      alert('Erreur reseau : ' + err.message);
+      if (submitBtn) submitBtn.disabled = false;
+    });
+});
 </script>
 </body>
 </html>
