@@ -1133,12 +1133,13 @@ async def deploy_create(request: Request,
 
     checksum = artifacts_svc.compute_checksum(data)
     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    rel_path = f"{device_type}/{version}_{binary.filename}"
+    _ext = os.path.splitext(binary.filename or "")[1] or ".oxt"
+    _safe_name = (name or device_type).strip().lower().replace(" ", "-")
+    rel_path = f"{device_type}/{_safe_name}-{version}{_ext}"
     os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
     local_path = f"{binaries_dir}/{rel_path}"
     with open(local_path, "wb") as f:
         f.write(data)
-
 
     conn = get_db_connection()
     try:
@@ -1873,7 +1874,10 @@ async def catalog_create(request: Request):
                     bin_data = _strip_dm_metadata_from_zip(bin_data)
                     checksum = artifacts_svc.compute_checksum(bin_data)
                     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-                    rel_path = f"{device_type}/{initial_version}_{bin_filename}"
+                    # Normalize filename to {slug}-{version}.{ext} for consistent download URLs
+                    _ext = os.path.splitext(bin_filename)[1] or ".oxt"
+                    norm_filename = f"{slug}-{initial_version}{_ext}"
+                    rel_path = f"{device_type}/{norm_filename}"
                     os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
                     local_path = f"{binaries_dir}/{rel_path}"
                     with open(local_path, "wb") as f:
@@ -2338,9 +2342,11 @@ async def catalog_version_upload(request: Request, plugin_id: int,
             if not plugin:
                 raise HTTPException(404, "Plugin introuvable")
             device_type = plugin.get("device_type", "libreoffice")
+            _slug = plugin.get("slug", "plugin")
 
             binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-            rel_path = f"{device_type}/{version}_{binary.filename}"
+            _ext = os.path.splitext(binary.filename or "")[1] or ".oxt"
+            rel_path = f"{device_type}/{_slug}-{version}{_ext}"
             os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
             local_path = f"{binaries_dir}/{rel_path}"
             with open(local_path, "wb") as f:

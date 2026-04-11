@@ -10,7 +10,7 @@ resources:
 images:
   - name: <SCALEWAY_REGISTRY>/device-management
     newName: docker.io/<DOCKERHUB_NAMESPACE>/device-management
-    newTag: "0.5.19-json-post"
+    newTag: "0.5.20-download-fix"
   - name: nginx
     newName: docker.io/<DOCKERHUB_NAMESPACE>/nginx
     newTag: "1.27-alpine"
