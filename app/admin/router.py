@@ -20,7 +20,8 @@ from fastapi.templating import Jinja2Templates
 
 from .auth import (
     require_admin, _sign_session, _verify_session, _get_oidc_config,
-    _get_token_endpoint, _has_admin_group, SESSION_COOKIE, SESSION_TTL,
+    _get_token_endpoint, _has_admin_group, _generate_csrf_token,
+    SESSION_COOKIE, SESSION_TTL, CSRF_COOKIE,
     CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, REQUIRED_GROUP,
 )
 from .helpers import audit_log, get_db_connection, timeago, span_label
@@ -166,7 +167,10 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         SESSION_COOKIE, _sign_session(session),
         httponly=True, samesite="lax", max_age=SESSION_TTL,
     )
+    # CSRF cookie for POST protection (double-submit pattern)
+    resp.set_cookie(CSRF_COOKIE, _generate_csrf_token(), samesite="lax", max_age=SESSION_TTL)
     resp.delete_cookie("dm_oidc_state")
+    resp.delete_cookie("dm_pkce_verifier")
     return resp
 
 
