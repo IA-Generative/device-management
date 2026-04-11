@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
 # dumb-deploy.sh — deploiement DGX, une seule commande.
 #
-# Prerequis : kubectl configure sur le cluster cible.
-# Usage :     ./dumb-deploy.sh
+# Usage : ./dumb-deploy.sh
 #
-# Credentials et secrets sont stockes dans ~/.dm-secrets/ (persiste entre deploys).
-# Au premier lancement, le script copie les templates et demande de les remplir.
+# Credentials dans ~/.dm-secrets/ (persistant entre les packages).
+# Tokens applicatifs auto-generes au premier deploiement.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 NAMESPACE="bootstrap"
-REGISTRY_USERNAME_DEFAULT="etiquet"
 MANIFESTS="$SCRIPT_DIR/manifests/dgx-all.yaml"
 SECRET_NAME="device-management-secrets"
-
-# Repertoire persistant pour credentials + secrets (hors du package)
 SECRETS_DIR="${DM_SECRETS_DIR:-$HOME/.dm-secrets}"
 DEPLOY_CREDS="$SECRETS_DIR/.env.deploy"
 SECRETS_FILE="$SECRETS_DIR/.env.secrets"
@@ -25,6 +21,13 @@ ok()    { echo -e "  ${GREEN}✓${NC} $*"; }
 warn()  { echo -e "  ${YELLOW}⚠${NC} $*"; }
 fail()  { echo -e "  ${RED}✗${NC} $*"; exit 1; }
 info()  { echo -e "  → $*"; }
+
+# Generate a random token (portable: python3 or openssl or /dev/urandom)
+gen_token() {
+  python3 -c "import secrets; print(secrets.token_urlsafe(32))" 2>/dev/null || \
+  openssl rand -base64 32 2>/dev/null | tr -d '/+=' | head -c 43 || \
+  head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 43
+}
 
 echo "========================================="
 echo " DGX Dumb Deploy"
@@ -37,30 +40,22 @@ ok "kubectl found"
 if ! kubectl cluster-info >/dev/null 2>&1; then
   fail "cluster not reachable — check your KUBECONFIG"
 fi
-CONTEXT=$(kubectl config current-context 2>/dev/null || echo "?")
-ok "cluster: $CONTEXT"
+ok "cluster: $(kubectl config current-context 2>/dev/null || echo '?')"
 
-# ── 2. Check manifests file ───────────────────
+# ── 2. Check manifests ────────────────────────
 step "Checking manifests"
 [ -f "$MANIFESTS" ] || fail "manifests not found: $MANIFESTS"
-LINES=$(wc -l < "$MANIFESTS" | tr -d ' ')
-ok "manifests/dgx-all.yaml ($LINES lines)"
+ok "manifests/dgx-all.yaml"
 
-# ── 3. Namespace ──────────────────────────────
-step "Creating namespace $NAMESPACE"
-kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-ok "namespace ready"
-
-# ── 4. Persistent secrets directory ───────────
+# ── 3. Setup ~/.dm-secrets/ ───────────────────
 step "Checking credentials ($SECRETS_DIR)"
 
 if [ ! -d "$SECRETS_DIR" ]; then
   mkdir -p "$SECRETS_DIR"
   chmod 700 "$SECRETS_DIR"
-  ok "created $SECRETS_DIR"
 fi
 
-# Copy templates if first time
+# .env.deploy (DockerHub token)
 if [ ! -f "$DEPLOY_CREDS" ]; then
   if [ -f "$SCRIPT_DIR/.env.deploy.example" ]; then
     cp "$SCRIPT_DIR/.env.deploy.example" "$DEPLOY_CREDS"
@@ -68,34 +63,32 @@ if [ ! -f "$DEPLOY_CREDS" ]; then
     printf "DOCKERHUB_USER=etiquet\nDOCKERHUB_TOKEN=\n" > "$DEPLOY_CREDS"
   fi
   chmod 600 "$DEPLOY_CREDS"
-  warn "NEW: fill in $DEPLOY_CREDS with your DockerHub token"
-  echo ""
-  echo "  nano $DEPLOY_CREDS"
-  echo ""
-  fail "credentials not configured yet — fill $DEPLOY_CREDS and re-run"
+  warn "fill in $DEPLOY_CREDS with your DockerHub token, then re-run"
+  fail "credentials not configured"
 fi
 
+# .env.secrets (DB password + optional LLM token)
 if [ ! -f "$SECRETS_FILE" ]; then
   if [ -f "$SCRIPT_DIR/.env.secrets.example" ]; then
     cp "$SCRIPT_DIR/.env.secrets.example" "$SECRETS_FILE"
+  else
+    printf "POSTGRES_PASSWORD=postgres\nLLM_API_TOKEN=\n" > "$SECRETS_FILE"
   fi
   chmod 600 "$SECRETS_FILE"
-  warn "NEW: fill in $SECRETS_FILE with your production secrets"
-  echo ""
-  echo "  nano $SECRETS_FILE"
-  echo ""
-  fail "secrets not configured yet — fill $SECRETS_FILE and re-run"
+  ok "created $SECRETS_FILE with defaults"
 fi
 
-ok "credentials dir: $SECRETS_DIR"
-
-# Load credentials
+ok "credentials dir ready"
 set -a; . "$DEPLOY_CREDS"; set +a
 
-# ── 5. Registry credentials (DockerHub) ──────
-step "Configuring image pull secret (regcred)"
+# ── 4. Namespace ──────────────────────────────
+step "Creating namespace $NAMESPACE"
+kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+ok "namespace ready"
 
-DH_USER="${DOCKERHUB_USER:-$REGISTRY_USERNAME_DEFAULT}"
+# ── 5. Registry credentials ──────────────────
+step "Configuring regcred"
+DH_USER="${DOCKERHUB_USER:-etiquet}"
 DH_TOKEN="${DOCKERHUB_TOKEN:-}"
 [ -z "$DH_TOKEN" ] && fail "DOCKERHUB_TOKEN empty in $DEPLOY_CREDS"
 
@@ -104,31 +97,53 @@ kubectl -n "$NAMESPACE" create secret docker-registry regcred \
   --docker-server="https://index.docker.io/v1/" \
   --docker-username="$DH_USER" \
   --docker-password="$DH_TOKEN" >/dev/null
-ok "regcred created (user=$DH_USER)"
+ok "regcred (user=$DH_USER)"
 
-# ── 6. Application secrets ───────────────────
-step "Managing application secrets"
+# ── 6. Application secrets (auto-generated) ──
+step "Managing secrets"
+
+# Load user secrets
+set -a; . "$SECRETS_FILE"; set +a
+
+PG_PASS="${POSTGRES_PASSWORD:-postgres}"
+LLM_TOKEN="${LLM_API_TOKEN:-}"
 
 if kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" >/dev/null 2>&1; then
-  ok "secret $SECRET_NAME already exists — PRESERVED"
-  info "(to recreate: kubectl -n $NAMESPACE delete secret $SECRET_NAME && re-run)"
+  ok "secret exists — PRESERVED"
+  # Verify the admin token is usable (fix if it's a placeholder)
+  CURRENT_TOKEN=$(kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" \
+    -o jsonpath='{.data.DM_QUEUE_ADMIN_TOKEN}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+  if [ -z "$CURRENT_TOKEN" ] || echo "$CURRENT_TOKEN" | grep -qi "changeme"; then
+    info "fixing placeholder tokens in existing secret..."
+    MASTER_TOKEN=$(gen_token)
+    SIGNING_KEY=$(gen_token)
+    UPSTREAM_KEY=$(gen_token)
+    kubectl -n "$NAMESPACE" patch secret "$SECRET_NAME" --type=merge -p "{\"stringData\":{
+      \"DM_QUEUE_ADMIN_TOKEN\":\"$MASTER_TOKEN\",
+      \"DM_RELAY_PROXY_SHARED_TOKEN\":\"$MASTER_TOKEN\",
+      \"DM_RELAY_SECRET_PEPPER\":\"$MASTER_TOKEN\",
+      \"ADMIN_SESSION_SECRET\":\"$MASTER_TOKEN\",
+      \"DM_TELEMETRY_TOKEN_SIGNING_KEY\":\"$SIGNING_KEY\",
+      \"DM_TELEMETRY_UPSTREAM_KEY\":\"$UPSTREAM_KEY\"
+    }}" >/dev/null
+    ok "placeholder tokens replaced with generated values"
+    # Restart pods to pick up new tokens
+    kubectl -n "$NAMESPACE" rollout restart deploy/device-management 2>/dev/null || true
+    kubectl -n "$NAMESPACE" rollout restart deploy/device-management-admin 2>/dev/null || true
+  fi
 else
-  info "creating secret from $SECRETS_FILE"
+  info "creating secret with auto-generated tokens"
 
-  # Build --from-literal args from .env.secrets (sensitive keys)
+  # Generate one master token for all internal auth
+  MASTER_TOKEN=$(gen_token)
+  SIGNING_KEY=$(gen_token)
+  UPSTREAM_KEY=$(gen_token)
+  info "master token generated (used for relay, queue, session, pepper)"
+
+  # Build the secret: .env.config (non-sensitive) + generated tokens + user secrets
   SECRET_ARGS=""
-  while IFS= read -r line; do
-    # Skip comments and empty lines
-    [ -z "$line" ] && continue
-    case "$line" in \#*) continue ;; esac
-    key="${line%%=*}"
-    value="${line#*=}"
-    key=$(echo "$key" | tr -d '[:space:]')
-    [ -z "$key" ] && continue
-    SECRET_ARGS="$SECRET_ARGS --from-literal=$key=$value"
-  done < "$SECRETS_FILE"
 
-  # Add non-sensitive config keys (URLs, flags) that the app also needs
+  # 1. Non-sensitive config from .env.config
   CONFIG_FILE="$SCRIPT_DIR/.env.config"
   if [ -f "$CONFIG_FILE" ]; then
     while IFS= read -r line; do
@@ -137,44 +152,67 @@ else
       key="${line%%=*}"
       key=$(echo "$key" | tr -d '[:space:]')
       [ -z "$key" ] && continue
-      # Secrets take priority over config
-      if ! grep -q "^${key}=" "$SECRETS_FILE" 2>/dev/null; then
-        value="${line#*=}"
-        SECRET_ARGS="$SECRET_ARGS --from-literal=$key=$value"
-      fi
+      value="${line#*=}"
+      SECRET_ARGS="$SECRET_ARGS --from-literal=$key=$value"
     done < "$CONFIG_FILE"
   fi
 
+  # 2. Database (derived from POSTGRES_PASSWORD)
+  SECRET_ARGS="$SECRET_ARGS --from-literal=POSTGRES_PASSWORD=$PG_PASS"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=DATABASE_URL=postgresql://dev:dev@postgres:5432/bootstrap"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=DATABASE_ADMIN_URL=postgresql://postgres:${PG_PASS}@postgres:5432/postgres"
+
+  # 3. Master token (reused for all internal auth — same value everywhere = no mismatch)
+  SECRET_ARGS="$SECRET_ARGS --from-literal=DM_QUEUE_ADMIN_TOKEN=$MASTER_TOKEN"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=DM_RELAY_PROXY_SHARED_TOKEN=$MASTER_TOKEN"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=DM_RELAY_SECRET_PEPPER=$MASTER_TOKEN"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=ADMIN_SESSION_SECRET=$MASTER_TOKEN"
+
+  # 4. Telemetry signing keys (separate from master token for crypto hygiene)
+  SECRET_ARGS="$SECRET_ARGS --from-literal=DM_TELEMETRY_TOKEN_SIGNING_KEY=$SIGNING_KEY"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=DM_TELEMETRY_UPSTREAM_KEY=$UPSTREAM_KEY"
+
+  # 5. LLM + AWS from user secrets
+  SECRET_ARGS="$SECRET_ARGS --from-literal=LLM_API_TOKEN=$LLM_TOKEN"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=AWS_REGION=${AWS_REGION:-}"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}"
+
   eval kubectl -n "$NAMESPACE" create secret generic "$SECRET_NAME" $SECRET_ARGS >/dev/null
-  ok "secret created"
+  ok "secret created (tokens auto-generated)"
 fi
 
-# ── 6. Apply manifests (secret excluded) ─────
-step "Applying manifests (secret managed separately)"
+# ── 7. Apply manifests ────────────────────────
+step "Applying manifests"
 kubectl apply -f "$MANIFESTS"
 
-# ── 7. Wait for postgres first ────────────────
-step "Waiting for postgres"
-if kubectl -n "$NAMESPACE" rollout status deploy/postgres --timeout=180s >/dev/null 2>&1; then
-  ok "postgres ready"
-else
-  warn "postgres rollout not ready (continuing anyway)"
-fi
+# ── 8. Scale to 1 replica (DGX single node) ──
+step "Scaling to 1 replica"
+for deploy in device-management queue-worker; do
+  CURRENT=$(kubectl -n "$NAMESPACE" get deploy "$deploy" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+  if [ "$CURRENT" != "1" ]; then
+    kubectl -n "$NAMESPACE" scale deploy/"$deploy" --replicas=1 >/dev/null
+    info "$deploy: $CURRENT → 1"
+  else
+    ok "$deploy: already 1"
+  fi
+done
 
-# ── 7b. Bootstrap database schema ─────────────
+# ── 9. Wait for postgres ─────────────────────
+step "Waiting for postgres"
+kubectl -n "$NAMESPACE" rollout status deploy/postgres --timeout=180s >/dev/null 2>&1 && \
+  ok "postgres ready" || warn "postgres not ready"
+
+# ── 10. Bootstrap schema ─────────────────────
 SCHEMA_FILE="$SCRIPT_DIR/schema.sql"
 if [ -f "$SCHEMA_FILE" ]; then
   step "Bootstrapping database schema"
-  info "schema file: $SCHEMA_FILE ($(wc -c < "$SCHEMA_FILE" | tr -d ' ') bytes)"
 
   kubectl -n "$NAMESPACE" delete pod apply-schema --ignore-not-found >/dev/null 2>&1
   kubectl -n "$NAMESPACE" delete configmap dm-schema --ignore-not-found >/dev/null 2>&1
+  kubectl -n "$NAMESPACE" create configmap dm-schema --from-file=schema.sql="$SCHEMA_FILE" >/dev/null
 
-  if ! kubectl -n "$NAMESPACE" create configmap dm-schema --from-file=schema.sql="$SCHEMA_FILE" >/dev/null 2>&1; then
-    fail "failed to create configmap dm-schema"
-  fi
-
-  info "running psql to apply schema..."
   kubectl -n "$NAMESPACE" run apply-schema --restart=Never \
     --image=docker.io/etiquet/postgres:16-alpine \
     --overrides='{
@@ -191,7 +229,7 @@ if [ -f "$SCHEMA_FILE" ]; then
       }
     }' >/dev/null
 
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
+  for i in $(seq 1 30); do
     PHASE=$(kubectl -n "$NAMESPACE" get pod apply-schema -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
     case "$PHASE" in Succeeded|Failed) break ;; esac
     sleep 5
@@ -199,25 +237,21 @@ if [ -f "$SCHEMA_FILE" ]; then
 
   LOGS=$(kubectl -n "$NAMESPACE" logs apply-schema 2>/dev/null || echo "")
   if echo "$LOGS" | grep -q "SCHEMA_OK"; then
-    TABLES=$(echo "$LOGS" | grep -c "CREATE TABLE" || echo 0)
-    ok "schema applied ($TABLES tables)"
+    ok "schema applied"
   elif echo "$LOGS" | grep -q "already exists"; then
     ok "schema already present"
   else
-    warn "schema status: $(echo "$LOGS" | tail -3)"
+    warn "schema: $(echo "$LOGS" | tail -3)"
   fi
 
   kubectl -n "$NAMESPACE" delete pod apply-schema --ignore-not-found >/dev/null 2>&1
   kubectl -n "$NAMESPACE" delete configmap dm-schema --ignore-not-found >/dev/null 2>&1
-else
-  warn "schema.sql not found — skipping DB bootstrap"
 fi
 
-# ── 8. Wait for all rollouts ─────────────────
-step "Waiting for rollouts (max 3min each)"
-DEPLOYS=$(kubectl -n "$NAMESPACE" get deploy -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+# ── 11. Wait for rollouts ─────────────────────
+step "Waiting for rollouts"
 FAILED=0
-for deploy in $DEPLOYS; do
+for deploy in $(kubectl -n "$NAMESPACE" get deploy -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
   printf "  %-30s " "$deploy"
   if kubectl -n "$NAMESPACE" rollout status "deploy/$deploy" --timeout=180s >/dev/null 2>&1; then
     echo -e "${GREEN}ready${NC}"
@@ -227,19 +261,16 @@ for deploy in $DEPLOYS; do
   fi
 done
 
-# Restart queue-worker if it crashed waiting for schema
-if kubectl -n "$NAMESPACE" get deploy queue-worker >/dev/null 2>&1; then
-  CRASHED=$(kubectl -n "$NAMESPACE" get pods -l app=queue-worker -o jsonpath='{.items[*].status.containerStatuses[*].state.waiting.reason}' 2>/dev/null | grep -c CrashLoopBackOff || true)
-  if [ "${CRASHED:-0}" -gt 0 ]; then
-    info "queue-worker crashed (waiting for schema), restarting..."
-    kubectl -n "$NAMESPACE" rollout restart deploy/queue-worker >/dev/null
-    kubectl -n "$NAMESPACE" rollout status deploy/queue-worker --timeout=120s >/dev/null 2>&1 && \
-      ok "queue-worker restarted" || warn "queue-worker still not ready"
-  fi
+# Restart queue-worker if crashed
+CRASHED=$(kubectl -n "$NAMESPACE" get pods -l app=queue-worker -o jsonpath='{.items[*].status.containerStatuses[*].state.waiting.reason}' 2>/dev/null | grep -c CrashLoopBackOff || true)
+if [ "${CRASHED:-0}" -gt 0 ]; then
+  info "restarting queue-worker..."
+  kubectl -n "$NAMESPACE" rollout restart deploy/queue-worker >/dev/null
+  kubectl -n "$NAMESPACE" rollout status deploy/queue-worker --timeout=120s >/dev/null 2>&1 || true
 fi
 
-# ── 9. Final status ───────────────────────────
-step "Final pod status"
+# ── 12. Final status ──────────────────────────
+step "Pod status"
 kubectl -n "$NAMESPACE" get pods -o wide
 
 echo ""
@@ -247,20 +278,11 @@ if [ "$FAILED" -eq 0 ]; then
   echo -e "${GREEN}========================================="
   echo -e " Deploy OK"
   echo -e "=========================================${NC}"
-  echo ""
-  echo "Next steps:"
-  echo "  - Connectivity test : bash $SCRIPT_DIR/scripts/09-connectivity-test.sh"
-  echo "  - Logs              : kubectl -n $NAMESPACE logs deploy/device-management"
-  echo "  - Watch pods        : kubectl -n $NAMESPACE get pods -w"
   exit 0
 else
   echo -e "${RED}========================================="
-  echo -e " Deploy incomplete ($FAILED deployment(s) failed)"
+  echo -e " $FAILED deployment(s) failed"
   echo -e "=========================================${NC}"
-  echo ""
-  echo "Debug:"
   echo "  kubectl -n $NAMESPACE get events --sort-by=.lastTimestamp | tail -20"
-  echo "  kubectl -n $NAMESPACE describe pod <pod-name>"
-  echo "  kubectl -n $NAMESPACE logs <pod-name>"
   exit 1
 fi

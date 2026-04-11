@@ -21,6 +21,13 @@ images:
     newName: docker.io/etiquet/adminer
     newTag: "4.8.1-standalone"
 
+# DGX single node: 1 replica for all DM deployments
+replicas:
+  - name: device-management
+    count: 1
+  - name: queue-worker
+    count: 1
+
 patches:
   - path: secret-patch.yaml
   - path: proxy-patch-device-management.yaml
