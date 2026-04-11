@@ -600,25 +600,25 @@ document.getElementById('catalog-form').addEventListener('submit', async functio
   btn.innerHTML = '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>Publication en cours...';
 
   try {
-    const fd = new FormData(this);
+    // Collect form data as a plain object (NOT FormData — avoids multipart/form-data)
+    const formData = new FormData(this);
+    const payload = {};
+    for (const [key, value] of formData.entries()) {
+      if (key === 'binary') continue; // handled via chunked upload
+      payload[key] = value;
+    }
 
     // If there's a file, upload it in chunks first
     const binaryInput = document.getElementById('f-binary');
     const file = binaryInput && binaryInput.files[0];
     if (file && file.size > 0) {
       btn.innerHTML = '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>Upload du fichier...';
-      const uploadId = await uploadFileChunked(file);
-      fd.set('upload_id', uploadId);
-      fd.delete('binary'); // Don't send the file in the form POST
+      payload.upload_id = await uploadFileChunked(file);
     }
 
-    // If icon_url is a data URI (base64 image from package analysis),
-    // upload it as a separate chunk to avoid inflating the form body
-    // (WAF blocks POST > ~100KB)
-    const iconInput = document.getElementById('f-icon_url');
-    if (iconInput && iconInput.value && iconInput.value.startsWith('data:')) {
-      const dataUri = iconInput.value;
-      // Convert data URI to blob
+    // If icon_url is a data URI, upload it separately
+    if (payload.icon_url && payload.icon_url.startsWith('data:')) {
+      const dataUri = payload.icon_url;
       const byteString = atob(dataUri.split(',')[1]);
       const mimeType = dataUri.split(';')[0].split(':')[1];
       const ab = new ArrayBuffer(byteString.length);
@@ -626,8 +626,6 @@ document.getElementById('catalog-form').addEventListener('submit', async functio
       for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
       const iconBlob = new Blob([ab], {type: mimeType});
       const ext = mimeType.split('/')[1] || 'png';
-
-      // Upload icon as a single chunk
       const iconFd = new FormData();
       iconFd.append('chunk', iconBlob, 'icon.' + ext);
       iconFd.append('chunk_index', '0');
@@ -638,17 +636,18 @@ document.getElementById('catalog-form').addEventListener('submit', async functio
       });
       if (iconResp.ok) {
         const iconData = await iconResp.json();
-        // Replace data URI with upload reference
-        fd.set('icon_upload_id', iconData.upload_id);
+        payload.icon_upload_id = iconData.upload_id;
+        delete payload.icon_url;
       }
-      fd.delete('icon_url'); // Remove the huge data URI from the form
     }
 
     btn.innerHTML = '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>Creation du plugin...';
 
+    // Send as JSON (not multipart) — WAF blocks multipart POST
     const resp = await fetch(this.action, {
       method: 'POST',
-      body: fd,
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
       credentials: 'same-origin',
       redirect: 'manual',
     });
