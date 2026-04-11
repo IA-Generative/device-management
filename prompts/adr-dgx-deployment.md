@@ -202,12 +202,19 @@ dgx-deploy-vX.X/
 - Aucune modification de la base kustomize (les overlays DGX sont additifs)
 - Le profil Scaleway n'est pas impacte
 
-### Negatives / Dette technique
+### Negatives / Dette technique restante
 - Les images DockerHub sont sur un compte personnel (`<DOCKERHUB_NAMESPACE>`) — devrait migrer vers un registre d'equipe
 - Le proxy est en IP directe (pas de DNS) — fragile si l'IP change
 - Les patches proxy sont dupliques (un fichier par Deployment) — pourrait etre factorise avec un mutating webhook
-- Le schema DB est en `IF NOT EXISTS` (pas de migrations versionnees) — devrait passer a Alembic
 - Le `no_proxy` est hardcode dans chaque patch — devrait etre centralise
+
+### Dette technique resolue (avril 2026)
+- ✅ **Schema DB** : Alembic installe avec migration initiale `001` (commit `ae17ade`)
+- ✅ **CSRF en production** : cookie pose dans le callback OIDC (commit `0b33f29`)
+- ✅ **Secrets ecrases au redeploy** : exclus du manifest, persistants dans `~/.dm-secrets/` (commit `b012158`)
+- ✅ **WAF bloque les POST** : formulaires admin soumis via `fetch()` (commit `97e22c4`)
+- ✅ **Test E2E WAF** : `10-e2e-waf-test.sh` avec 14 scenarios automatises (commit `f1c3652`)
+- 🟡 **Decoupage main.py** : `app/services/db.py` + `app/services/crypto.py` extraits, -204 lignes (commits `38208bf`, `170fce6`)
 
 ### Roadmap
 - **Court terme** : migration vers ArgoCD + GitLab CI (voir `prompt-migration-argocd.md`)
