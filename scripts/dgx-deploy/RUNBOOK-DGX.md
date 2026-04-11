@@ -168,7 +168,30 @@ DM_SECRETS_DIR=/autre/chemin ./dumb-deploy.sh
 |----------|-------|--------|
 | `ImagePullBackOff` | Token DockerHub expire | Editer `~/.dm-secrets/.env.deploy` + relancer |
 | `CrashLoopBackOff` queue-worker | Schema DB manquant | `./dumb-deploy.sh` (re-applique le schema) |
-| 503 sur `/admin/` | OIDC non configure | Verifier `~/.dm-secrets/.env.secrets` (KEYCLOAK_*) |
-| 403 sur POST admin | WAF bloque form natif | Doit etre soumis via fetch() (fix integre) |
-| Secrets ecrases | Ancien package sans separation | Utiliser package v5+ avec `~/.dm-secrets/` |
-| `dumb-deploy.sh` demande les creds | Premier lancement | Remplir `~/.dm-secrets/.env.deploy` et `.env.secrets` |
+| 500 sur `/admin/` + `UndefinedTable` | Schema non applique ou DATABASE_ADMIN_URL pointe sur la mauvaise base | `kubectl delete ns bootstrap && ./dumb-deploy.sh` |
+| 503 sur `/admin/` | OIDC non configure ou proxy bloque | Verifier logs : `kubectl -n bootstrap logs deploy/device-management-admin --tail=20` |
+| 403 sur POST admin | WAF bloque multipart | Fix integre (fetch + JSON). Verifier image version ≥ 0.5.19 |
+| 403 sur upload fichier | WAF bloque body > 2MB | Fix integre (chunked upload). Verifier image version ≥ 0.5.17 |
+| 407 sur appels inter-pods | Proxy intercepte le trafic interne | Verifier no_proxy inclut les noms courts des services K8s |
+| Download "Fichier introuvable" | PVC non monte ou path mismatch | Verifier mount `/data/content/binaries` sur pod device-management |
+| Download OK mais fichier vide | Pull-on-miss echoue (token mismatch) | `kubectl -n bootstrap logs deploy/device-management \| grep pull_binary` |
+| Tokens `changeme-*` | Ancien .env.secrets | `rm ~/.dm-secrets/.env.secrets && ./dumb-deploy.sh` (auto-genere) |
+| `dumb-deploy.sh` demande les creds | Premier lancement | Remplir `~/.dm-secrets/.env.deploy` seulement (secrets auto-generes) |
+
+## Architecture des pods
+
+```
+                            ┌─ device-management (API)
+                            │  PVC: /data/content/binaries + /data/enroll
+Navigateur → WAF → Envoy ──┤
+                            ├─ device-management-admin
+                            │  PVC: /data/content (binaires + uploads)
+                            │
+                            ├─ relay-assistant (nginx proxy)
+                            ├─ queue-worker (jobs async)
+                            ├─ telemetry-relay
+                            └─ postgres (PVC: /var/lib/postgresql/data)
+
+Pull-on-miss: API pod tire les binaires de admin pod via HTTP
+              (DM_QUEUE_ADMIN_TOKEN doit matcher entre les 2 pods)
+```

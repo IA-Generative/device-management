@@ -212,8 +212,16 @@ dgx-deploy-vX.X/
 - ✅ **Schema DB** : Alembic installe avec migration initiale `001` (commit `ae17ade`)
 - ✅ **CSRF en production** : cookie pose dans le callback OIDC (commit `0b33f29`)
 - ✅ **Secrets ecrases au redeploy** : exclus du manifest, persistants dans `~/.dm-secrets/` (commit `b012158`)
-- ✅ **WAF bloque les POST** : formulaires admin soumis via `fetch()` (commit `97e22c4`)
+- ✅ **WAF bloque les POST** : formulaires admin soumis via `fetch()` + JSON (commits `97e22c4`, `4f61302`)
+- ✅ **WAF bloque les uploads > 2MB** : chunked upload en 512KB (commit `afdd30f`)
 - ✅ **Test E2E WAF** : `10-e2e-waf-test.sh` avec 14 scenarios automatises (commit `f1c3652`)
+- ✅ **Tokens auto-generes** : un seul master token pour relay/queue/session/pepper (commit `68ca332`)
+- ✅ **ADMIN_SESSION_SECRET** : lu depuis le secret K8s, plus hardcode (commit `2688a84`)
+- ✅ **DATABASE_ADMIN_URL** : pointe vers bootstrap, pas postgres (commit `38df16c`)
+- ✅ **PVCs montes** : /data/content/binaries et /data/enroll sur le pod API (commits `d93e61d`, `e46ab45`)
+- ✅ **no_proxy** : inclut les noms courts des services K8s pour eviter 407 inter-pods (commit `eb6c417`)
+- ✅ **Download filename** : normalise en {slug}-{version}.{ext} (commit `5f87943`)
+- ✅ **Replicas DGX** : force a 1 pour single-node (commit `68ca332`)
 - 🟡 **Decoupage main.py** : `app/services/db.py` + `app/services/crypto.py` extraits, -204 lignes (commits `38208bf`, `170fce6`)
 
 ### Roadmap
