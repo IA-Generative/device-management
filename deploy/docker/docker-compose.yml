@@ -51,7 +51,7 @@ services:
       DM_PRESIGN_TTL_SECONDS: ${DM_PRESIGN_TTL_SECONDS:-300}
       DM_S3_ENDPOINT_URL: ${DM_S3_ENDPOINT_URL:-}
       AWS_REGION: ${AWS_REGION:-}
-      # Credentials AWS/Scaleway — héritées de l'hôte, jamais écrites dans un fichier
+      # Credentials AWS/Scaleway — heritees de l'hote, jamais ecrites dans un fichier
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-${SCW_ACCESS_KEY:-}}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-${SCW_SECRET_KEY:-}}
 
@@ -64,16 +64,19 @@ services:
       ADMIN_REQUIRED_GROUP: ${ADMIN_REQUIRED_GROUP:-admin-dm}
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-changeme-dev-only}
 
-      # Database
-      DATABASE_URL: ${DATABASE_URL:-postgresql://dev:dev@postgres:5432/bootstrap}
+      # Database — by default uses owuicore shared PostgreSQL on owui-net
+      DATABASE_URL: ${DATABASE_URL:-postgresql://owui:owui@postgres:5432/bootstrap}
     volumes:
       - ./data:/data
       - ../../app:/app/app
     networks:
       - default
+      - owui-net
       - telemetry
     depends_on:
-      - postgres
+      postgres-local:
+        condition: service_started
+        required: false
 
   queue-worker:
     build:
@@ -95,12 +98,17 @@ services:
       DM_QUEUE_RETRY_BASE_SECONDS: ${DM_QUEUE_RETRY_BASE_SECONDS:-2}
       DM_QUEUE_RETRY_MAX_SECONDS: ${DM_QUEUE_RETRY_MAX_SECONDS:-300}
       DM_QUEUE_RETRY_JITTER_SECONDS: ${DM_QUEUE_RETRY_JITTER_SECONDS:-1.0}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://dev:dev@postgres:5432/bootstrap}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://owui:owui@postgres:5432/bootstrap}
     volumes:
       - ./data:/data
       - ../../app:/app/app
+    networks:
+      - default
+      - owui-net
     depends_on:
-      - postgres
+      postgres-local:
+        condition: service_started
+        required: false
 
   relay-assistant:
     image: nginx:1.27-alpine
@@ -116,10 +124,17 @@ services:
     depends_on:
       - device-management
 
-  postgres:
+  # -------------------------------------------------------------------
+  # Local standalone PostgreSQL (disabled by default).
+  # To use this instead of the owuicore shared instance:
+  #   1. Set DM_POSTGRES_LOCAL=true in .env
+  #   2. Set DATABASE_URL=postgresql://dev:dev@postgres-local:5432/bootstrap
+  # -------------------------------------------------------------------
+  postgres-local:
+    profiles: ["postgres-local"]
     image: postgres:16
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     environment:
       POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
       LANG: C
@@ -128,20 +143,24 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-dev}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-local-data:/var/lib/postgresql/data
 
   adminer:
+    profiles: ["postgres-local"]
     image: adminer:latest
     ports:
       - "${ADMINER_PORT:-8080}:8080"
     depends_on:
-      - postgres
+      - postgres-local
 
 networks:
   default:
+  owui-net:
+    external: true
+    name: owui-net
   telemetry:
     external: true
     name: docker_default
 
 volumes:
-  postgres-data:
+  postgres-local-data:
