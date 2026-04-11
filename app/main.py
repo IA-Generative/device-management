@@ -47,6 +47,14 @@ if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.enviro
 from .settings import settings
 from .s3 import s3_client
 from .postgres_queue import PostgresQueue, QueueJob
+from .services.crypto import (
+    b64url_encode as _svc_b64url_encode,
+    b64url_decode as _svc_b64url_decode,
+    hash_relay_secret as _svc_hash_relay_secret,
+    mint_telemetry_token as _svc_mint_telemetry_token,
+    verify_telemetry_token as _svc_verify_telemetry_token,
+    SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
+)
 from .services.db import (
     db_url as _svc_db_url,
     db_url_bootstrap as _svc_db_url_bootstrap,
@@ -584,13 +592,9 @@ def _substitute_env(obj):
     return obj
 
 
-def _b64url_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-
-def _b64url_decode(raw: str) -> bytes:
-    pad = "=" * ((4 - (len(raw) % 4)) % 4)
-    return base64.urlsafe_b64decode((raw + pad).encode("ascii"))
+# ── Crypto helpers (delegated to app/services/crypto.py) ──
+_b64url_encode = _svc_b64url_encode
+_b64url_decode = _svc_b64url_decode
 
 
 def _resolve_public_telemetry_endpoint() -> str:
@@ -686,13 +690,7 @@ def _queue_worker_id(role: str) -> str:
     return f"{role}:{host}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
 
-_SECRET_CONFIG_KEYS = {
-    "llm_api_tokens",
-    "tokenOWUI",
-    "telemetryKey",
-    "keycloak_client_secret",
-    "keycloakClientSecret",
-}
+_SECRET_CONFIG_KEYS = _SVC_SECRET_CONFIG_KEYS
 
 _RELAY_MEMORY_STORE: dict[str, dict] = {}
 _AUTH_JWKS_CLIENT_CACHE: dict[str, tuple[float, Any]] = {}
@@ -1213,8 +1211,7 @@ def _relay_allowed_targets() -> list[str]:
 
 def _hash_relay_secret(relay_client_id: str, relay_key: str) -> str:
     pepper = str(settings.relay_secret_pepper or "")
-    base = f"{relay_client_id}:{relay_key}:{pepper}".encode("utf-8")
-    return hashlib.sha256(base).hexdigest()
+    return _svc_hash_relay_secret(relay_client_id, relay_key, pepper)
 
 
 def _mint_or_rotate_relay_credentials(*, client_uuid: str, email: str) -> dict:
