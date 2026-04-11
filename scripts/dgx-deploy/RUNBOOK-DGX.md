@@ -1,328 +1,174 @@
-# Runbook : Deploiement DGX depuis VSCode distant
+# Runbook : Deploiement DGX
 
-## Ce qui a change
+## Credentials persistants
 
-Les modifications suivantes sont deja appliquees aux fichiers YAML du repo :
+Les credentials vivent dans `~/.dm-secrets/` (pas dans le package).
+Ils survivent entre les versions du package — on ne les recree jamais.
 
-**Proxy corporate sur tous les pods sortants :**
-- `deploy/k8s/overlays/dgx/proxy-patch-device-management.yaml` (nouveau)
-- `deploy/k8s/overlays/dgx/proxy-patch-relay-assistant.yaml` (nouveau)
-- `deploy/k8s/overlays/dgx/proxy-patch-queue-worker.yaml` (nouveau)
-- `deploy/k8s/overlays/dgx/kustomization.yaml` (modifie — 3 targets proxy)
-- L'ancien `proxy-patch.yaml` (qui ne ciblait que device-management) est remplace
-
-**Nouveau relay `compte-rendu` :**
-- `deploy/k8s/base/manifests/25-relay-assistant-configmap.yaml` — bloc nginx `/compte-rendu/`
-- `deploy/k8s/base/manifests/26-relay-assistant-deployment.yaml` — env `RELAY_COMPTE_RENDU_UPSTREAM`
-- `deploy/k8s/base/secrets/all-secrets.yaml` — placeholder
-
-**Secrets DGX :**
-- `deploy/k8s/overlays/dgx/secret-patch.yaml` :
-  - `RELAY_KEYCLOAK_UPSTREAM` → `https://<SSO_HOSTNAME>/realms/mirai`
-  - `RELAY_COMPTE_RENDU_UPSTREAM` → `https://<COMPTERENDU_HOSTNAME>`
-  - `DM_RELAY_ALLOWED_TARGETS_CSV` → `keycloak,config,llm,mcr-api,telemetry,compte-rendu`
-  - `DM_AUTH_JWKS_URL` → `https://<SSO_HOSTNAME>/realms/mirai/protocol/openid-connect/certs`
+```
+~/.dm-secrets/
+├── .env.deploy       ← token DockerHub (DOCKERHUB_USER, DOCKERHUB_TOKEN)
+└── .env.secrets      ← secrets applicatifs (passwords, tokens, signing keys)
+```
 
 ---
 
-## Pre-requis
-
-### Sur ta machine (VSCode)
-
-```
-kubectl      → configure pour pointer vers le cluster DGX
-kustomize    → inclus dans kubectl (v1.27+)
-ssh          → acces au noeud DGX (si besoin transfert images)
-```
-
-Verifier l'acces cluster :
+## Premier deploiement
 
 ```bash
-kubectl cluster-info
-kubectl get nodes
+# 1. Extraire le package
+tar xzf dgx-deploy-vX.X.tar.gz
+cd dgx-deploy-vX.X
+
+# 2. Lancer — le script cree ~/.dm-secrets/ et s'arrete
+./dumb-deploy.sh
+
+# 3. Remplir le token DockerHub
+nano ~/.dm-secrets/.env.deploy
+# DOCKERHUB_USER=etiquet
+# DOCKERHUB_TOKEN=dckr_pat_xxxxx
+
+# 4. Remplir les secrets applicatifs
+nano ~/.dm-secrets/.env.secrets
+# Generer les tokens : python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# 5. Relancer — cette fois tout se deploie
+./dumb-deploy.sh
+```
+
+Ce que fait `dumb-deploy.sh` :
+1. Verifie kubectl + cluster joignable
+2. Cree le namespace `bootstrap`
+3. Cree le secret `regcred` (credentials DockerHub)
+4. Cree le secret `device-management-secrets` (si absent — jamais ecrase)
+5. Applique les manifests K8s (sans le Secret, gere separement)
+6. Bootstrap le schema PostgreSQL (via Job psql, idempotent)
+7. Attend les rollouts de tous les Deployments
+8. Restart le queue-worker si schema manquait
+
+---
+
+## Redeploiement (mise a jour)
+
+```bash
+# Extraire le nouveau package
+tar xzf dgx-deploy-vY.Y.tar.gz
+cd dgx-deploy-vY.Y
+
+# C'est tout — les credentials sont deja dans ~/.dm-secrets/
+./dumb-deploy.sh
+```
+
+Les secrets existants dans le cluster ne sont PAS ecrases.
+
+---
+
+## Changer un secret
+
+### Option 1 : via le fichier + redeploy
+
+```bash
+# Editer le fichier
+nano ~/.dm-secrets/.env.secrets
+
+# Supprimer le secret K8s pour forcer la re-creation
+kubectl -n bootstrap delete secret device-management-secrets
+
+# Relancer
+./dumb-deploy.sh
+```
+
+### Option 2 : patch direct dans le cluster
+
+```bash
+kubectl -n bootstrap patch secret device-management-secrets \
+  --type=merge -p '{"stringData":{"MA_CLE":"nouvelle-valeur"}}'
+
+# Redemarrer les pods pour prendre en compte
+kubectl -n bootstrap rollout restart deploy/device-management
+kubectl -n bootstrap rollout restart deploy/device-management-admin
+```
+
+---
+
+## Verifier l'etat
+
+```bash
+# Fichiers credentials
+ls -la ~/.dm-secrets/
+
+# Secret K8s existe ?
+kubectl -n bootstrap get secret device-management-secrets
+
+# Pods en cours
 kubectl -n bootstrap get pods
-```
 
-Si le kubeconfig n'est pas le defaut :
+# Voir un secret specifique
+kubectl -n bootstrap get secret device-management-secrets \
+  -o jsonpath='{.data.KEYCLOAK_ISSUER_URL}' | base64 -d; echo
 
-```bash
-export KUBECONFIG=~/.kube/dgx-config
-```
-
----
-
-## Phase 1 — Verification locale (VSCode, pas de contact cluster)
-
-### 1.1 Verifier que kustomize rend correctement
-
-```bash
-kubectl kustomize deploy/k8s/overlays/dgx > /dev/null && echo "OK" || echo "FAIL"
-```
-
-### 1.2 Verifier le proxy sur les 3 deployments
-
-```bash
-RENDERED=$(kubectl kustomize deploy/k8s/overlays/dgx)
-for deploy in device-management relay-assistant queue-worker; do
-  echo -n "$deploy proxy: "
-  echo "$RENDERED" | grep -A60 "name: $deploy" | grep -q 'proxydc-sir' && echo "OK" || echo "MISSING"
-done
-```
-
-Resultat attendu :
-
-```
-device-management proxy: OK
-relay-assistant proxy: OK
-queue-worker proxy: OK
-```
-
-### 1.3 Verifier le relay compte-rendu dans nginx
-
-```bash
-kubectl kustomize deploy/k8s/overlays/dgx | grep 'relay_target compte-rendu'
-```
-
-Doit afficher :
-
-```
-        set $relay_target compte-rendu;
-```
-
-### 1.4 Verifier les secrets DGX
-
-```bash
-kubectl kustomize deploy/k8s/overlays/dgx | grep -E 'RELAY_COMPTE_RENDU|RELAY_KEYCLOAK|DM_RELAY_ALLOWED'
-```
-
-Doit afficher les 3 variables avec les bonnes valeurs.
-
-### 1.5 Verifier que no_proxy ne contient PAS .gouv.fr
-
-```bash
-kubectl kustomize deploy/k8s/overlays/dgx | grep 'no_proxy' | head -1
-```
-
-Le domaine `.gouv.fr` ne doit PAS apparaitre dans la valeur
-(sinon le SSO et compte-rendu bypasseraient le proxy).
-
-### 1.6 Diff visuel (optionnel)
-
-```bash
-kubectl kustomize deploy/k8s/overlays/dgx > /tmp/dgx-rendered.yaml
-wc -l /tmp/dgx-rendered.yaml
-grep -n 'compte-rendu' /tmp/dgx-rendered.yaml
-grep -n 'RELAY_.*UPSTREAM' /tmp/dgx-rendered.yaml
+# Dump complet (attention : affiche les valeurs)
+kubectl -n bootstrap get secret device-management-secrets -o json | \
+  python3 -c "import sys,json,base64; d=json.load(sys.stdin).get('data',{}); \
+  [print(f'{k}={base64.b64decode(v).decode()}') for k,v in sorted(d.items())]"
 ```
 
 ---
 
-## Phase 2 — Test connectivite (sur le cluster DGX)
+## Test de connectivite
 
-Avant de deployer, on verifie que le cluster atteint les endpoints
-externes. Le script utilise un **Job K8s ephemere** (pas besoin de
-`kubectl exec`).
-
-### 2.1 Lancer le test
+Verifie que le cluster atteint les endpoints externes via le proxy :
 
 ```bash
-bash scripts/dgx-deploy/09-connectivity-test.sh
+bash scripts/09-connectivity-test.sh
 ```
 
-Le script :
-1. Verifie le secret `regcred` (existe, cible `rg.fr-par.scw.cloud`)
-2. Lance un Job avec l'image `postgres:16-alpine` (deja dans le cluster)
-3. Teste DNS, HTTP via proxy, HTTP direct, services cluster, registry
-4. Lit les resultats via `kubectl logs`
-5. Supprime le Job automatiquement
-
-### 2.2 Endpoints testes
-
-| Endpoint | Type | Attendu |
-|----------|------|---------|
-| <SSO_HOSTNAME> (OIDC) | via proxy | HTTP < 500 |
-| <SSO_HOSTNAME> (JWKS) | via proxy | HTTP < 500 |
-| <COMPTERENDU_HOSTNAME> | via proxy | HTTP < 500 |
-| rg.fr-par.scw.cloud/v2/ (registry) | via proxy | HTTP < 500 (301 ou 401 = OK) |
-| <LLM_API_HOSTNAME>/v1/models | direct (.minint.fr) | HTTP < 500 |
-| device-management:3001/health | cluster interne | HTTP 200 |
-| relay-assistant:8080/healthz | cluster interne | HTTP 200 |
-| relay-assistant JWKS passthrough | cluster interne | JSON "keys" |
-| postgres:5432 | cluster TCP | pg_isready |
-| Registry v2 API | via proxy | HTTP < 500 |
-| Image path | via proxy | HTTP < 500 |
-
-Pre-flight (hors Job) :
-
-| Test | Attendu |
-|------|---------|
-| Secret `regcred` existe | present dans namespace |
-| `regcred` cible `rg.fr-par.scw.cloud` | serveur correct |
-| Deployments ont `imagePullSecrets` | `regcred` reference |
-
-Resultat attendu :
-
-```
-Results: 11 passed, 0 failed, 0 warnings
-```
-
-> **Note :** HTTP 301 ou 401 pour la registry = OK.
-> Ca prouve que le reseau passe. Le pull reel utilise le secret `regcred`.
-
-### 2.3 En cas d'echec connectivite
-
-**DNS echoue :**
-→ Verifier CoreDNS : `kubectl -n kube-system get cm coredns -o yaml`
-→ Ajouter un forward vers le DNS corporate si besoin
-
-**Proxy echoue :**
-→ Verifier que `<PROXY_HOSTNAME>:3128` est joignable depuis les pods
-→ Verifier les NetworkPolicy
-
-**Service cluster echoue :**
-→ Normal si c'est le premier deploiement (les services n'existent pas encore)
-→ Refaire le test apres le deploy (phase 4)
+Teste : DNS, SSO mirai, compte-rendu, DockerHub registry, LLM API, services cluster.
 
 ---
 
-## Phase 3 — Deploiement (sur le cluster DGX)
-
-### 3.1 Dry-run serveur
+## Deployer sans tout detruire
 
 ```bash
-kubectl apply -k deploy/k8s/overlays/dgx --dry-run=server
+# dumb-deploy.sh est idempotent — il applique les diffs
+./dumb-deploy.sh
 ```
 
-Si OK, continuer. Si erreur, corriger avant d'appliquer.
-
-### 3.2 Appliquer
+## Deployer from scratch (tout recreer)
 
 ```bash
-kubectl apply -k deploy/k8s/overlays/dgx
-```
-
-### 3.3 Surveiller les rollouts
-
-```bash
-kubectl -n bootstrap rollout status deploy/device-management --timeout=180s
-kubectl -n bootstrap rollout status deploy/relay-assistant --timeout=180s
-kubectl -n bootstrap rollout status deploy/queue-worker --timeout=180s
-```
-
-### 3.4 Verifier les pods
-
-```bash
-kubectl -n bootstrap get pods -o wide
-```
-
-Tous les pods doivent etre `Running` et `READY`.
-
-Si un pod est en `CrashLoopBackOff` :
-
-```bash
-kubectl -n bootstrap logs deploy/<nom> --tail=50
-kubectl -n bootstrap describe pod <nom-du-pod>
-```
-
-### 3.5 Verifier le proxy dans les pods
-
-```bash
-for deploy in device-management relay-assistant queue-worker; do
-  echo -n "$deploy: "
-  kubectl -n bootstrap get deploy "$deploy" -o jsonpath='{.spec.template.spec.containers[0].env}' | grep -q 'proxydc-sir' && echo "OK" || echo "MISSING"
-done
-```
-
-### 3.6 Re-tester la connectivite complete
-
-```bash
-bash scripts/dgx-deploy/09-connectivity-test.sh
-```
-
-Cette fois tous les services cluster doivent aussi passer.
-
----
-
-## Phase 4 — Packaging air-gap (optionnel)
-
-Si tu dois transferer le deploiement sur un DGX deconnecte :
-
-```bash
-bash scripts/dgx-deploy/08-package.sh v1.0
-```
-
-Produit : `dist/dgx-deploy-v1.0.tar.gz`
-
-Contenu :
-- `manifests/dgx-all.yaml` — manifests pre-rendus
-- `images/*.tar` — images Docker (docker save)
-- `apply.sh` — deploiement autonome
-- `load-images.sh` — charge les images dans containerd
-- `scripts/` — scripts de validation
-
-Sur le DGX cible :
-
-```bash
-tar xzf dgx-deploy-v1.0.tar.gz
-cd dgx-deploy-v1.0
-./load-images.sh
-./apply.sh
+kubectl delete namespace bootstrap --wait=true
+./dumb-deploy.sh
 ```
 
 ---
 
-## Aide-memoire rapide
+## URLs
 
-```
-# ---- Verification locale ----
-kubectl kustomize deploy/k8s/overlays/dgx > /dev/null   # kustomize OK ?
-
-# ---- Test connectivite ----
-bash scripts/dgx-deploy/09-connectivity-test.sh          # 11 tests
-
-# ---- Deploiement ----
-kubectl apply -k deploy/k8s/overlays/dgx --dry-run=server
-kubectl apply -k deploy/k8s/overlays/dgx
-kubectl -n bootstrap rollout status deploy/device-management --timeout=180s
-kubectl -n bootstrap rollout status deploy/relay-assistant --timeout=180s
-kubectl -n bootstrap rollout status deploy/queue-worker --timeout=180s
-
-# ---- Validation post-deploy ----
-kubectl -n bootstrap get pods -o wide
-bash scripts/dgx-deploy/09-connectivity-test.sh          # re-test complet
-
-# ---- Packaging (optionnel) ----
-bash scripts/dgx-deploy/08-package.sh v1.0
-```
+| URL | Service |
+|-----|---------|
+| `https://<DGX_HOSTNAME>/bootstrap/healthz` | API health |
+| `https://<DGX_HOSTNAME>/admin/` | Admin UI (SSO) |
+| `https://<DGX_HOSTNAME>/catalog` | Catalogue public |
+| `https://<DGX_HOSTNAME>/adminer` | DB admin |
 
 ---
 
-## Rollback
+## Override le repertoire secrets
 
 ```bash
-# Voir l'historique
-kubectl -n bootstrap rollout history deploy/device-management
-kubectl -n bootstrap rollout history deploy/relay-assistant
-
-# Revenir a la version precedente
-kubectl -n bootstrap rollout undo deploy/device-management
-kubectl -n bootstrap rollout undo deploy/relay-assistant
-kubectl -n bootstrap rollout undo deploy/queue-worker
+DM_SECRETS_DIR=/autre/chemin ./dumb-deploy.sh
 ```
 
 ---
 
 ## Depannage
 
-| Symptome | Cause probable | Action |
-|----------|---------------|--------|
-| Pod `ImagePullBackOff` | Registry injoignable ou creds invalides | `09-connectivity-test.sh` + recreer `regcred` |
-| Pod `ImagePullBackOff` + `401` | Secret `regcred` manquant/expire | `./scripts/k8s/create-registry-secret.sh dgx` |
-| Pod `ImagePullBackOff` + `timeout` | Proxy bloque `rg.fr-par.scw.cloud` | Verifier whitelist proxy corporate |
-| Pod `ErrImagePull` + TLS | Proxy MITM le TLS | Ajouter CA corporate ou bypass TLS |
-| Pod `CrashLoopBackOff` | Config/secret manquant | `kubectl logs` + verifier secret-patch |
-| relay-assistant 502 | Upstream injoignable | `09-connectivity-test.sh` |
-| SSO timeout | Proxy manquant sur relay-assistant | Verifier proxy-patch-relay-assistant.yaml |
-| DNS fail | CoreDNS ne forward pas | Verifier configmap `coredns` dans kube-system |
-| `compte-rendu` 403 | Target pas dans allowed list | Verifier `DM_RELAY_ALLOWED_TARGETS_CSV` |
-| `no_proxy` bypass SSO | `.gouv.fr` dans no_proxy | Ne PAS ajouter `.gouv.fr` dans no_proxy |
+| Symptome | Cause | Action |
+|----------|-------|--------|
+| `ImagePullBackOff` | Token DockerHub expire | Editer `~/.dm-secrets/.env.deploy` + relancer |
+| `CrashLoopBackOff` queue-worker | Schema DB manquant | `./dumb-deploy.sh` (re-applique le schema) |
+| 503 sur `/admin/` | OIDC non configure | Verifier `~/.dm-secrets/.env.secrets` (KEYCLOAK_*) |
+| 403 sur POST admin | WAF bloque form natif | Doit etre soumis via fetch() (fix integre) |
+| Secrets ecrases | Ancien package sans separation | Utiliser package v5+ avec `~/.dm-secrets/` |
+| `dumb-deploy.sh` demande les creds | Premier lancement | Remplir `~/.dm-secrets/.env.deploy` et `.env.secrets` |
