@@ -183,7 +183,7 @@ if [ -f "$SCHEMA_FILE" ]; then
         "containers": [{
           "name": "apply-schema",
           "image": "docker.io/<DOCKERHUB_NAMESPACE>/postgres:16-alpine",
-          "command": ["sh","-c","psql $DATABASE_ADMIN_URL -v ON_ERROR_STOP=1 -f /sql/schema.sql && echo SCHEMA_OK"],
+          "command": ["sh","-c","until pg_isready -h postgres -p 5432 -t 60; do sleep 2; done && psql $DATABASE_ADMIN_URL -v ON_ERROR_STOP=1 -f /sql/schema.sql && echo SCHEMA_OK"],
           "env": [{"name":"DATABASE_ADMIN_URL","valueFrom":{"secretKeyRef":{"name":"device-management-secrets","key":"DATABASE_ADMIN_URL"}}}],
           "volumeMounts": [{"name":"sql","mountPath":"/sql"}]
         }],
