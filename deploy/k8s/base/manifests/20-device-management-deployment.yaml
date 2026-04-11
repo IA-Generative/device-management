@@ -354,6 +354,11 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DM_RELAY_ASSISTANT_URL
+          volumeMounts:
+            - name: dm-content
+              mountPath: /data/binaries
+            - name: dm-enroll
+              mountPath: /data/enroll
           resources:
             requests:
               cpu: 500m
@@ -383,5 +388,10 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 4
-      # Plugin configs are now stored in the database (plugins.config_template).
-      # The projected ConfigMap volume was removed.
+      volumes:
+        - name: dm-content
+          persistentVolumeClaim:
+            claimName: device-management-content-pvc
+        - name: dm-enroll
+          persistentVolumeClaim:
+            claimName: device-management-enroll-pvc
