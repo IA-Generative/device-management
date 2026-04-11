@@ -101,7 +101,11 @@ spec:
                   key: ADMIN_OIDC_REDIRECT_URI
                   optional: true
             - name: ADMIN_SESSION_SECRET
-              value: "changeme-dev-only"
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_SESSION_SECRET
+                  optional: true
             # LLM (for debug page)
             - name: LLM_BASE_URL
               valueFrom:
