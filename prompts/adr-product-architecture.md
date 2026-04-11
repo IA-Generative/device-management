@@ -348,17 +348,17 @@ Draft → Active → (Paused) → Completed | Rolled Back
 
 ## 4. Dette technique identifiee
 
-| Priorite | Element | Impact | Effort |
-|---|---|---|---|
-| **Haute** | main.py = 4244 lignes | Maintenance difficile, merge conflicts | 2-3 jours |
-| **Haute** | Pas de migrations DB versionnees | Risque de drift schema, pas de rollback DB | 1 jour (Alembic) |
-| **Haute** | CSRF absent en prod (cookie pose uniquement en dev) | Vulnerabilite CSRF sur les POST admin | 0.5 jour |
-| **Moyenne** | Secrets dans le repo (all-secrets.yaml) | Risque de fuite | Resolu en partie (v5.1) |
-| **Moyenne** | Pas de tests automatises | Regression non detectee | 3-5 jours |
-| **Moyenne** | JavaScript inline non-type dans les templates | Bugs silencieux | 1-2 jours |
-| **Basse** | Telemetrie en PostgreSQL | Scalabilite limitee | Selon volume reel |
-| **Basse** | Pas de rate limiting | DoS possible | 0.5 jour (nginx ou middleware) |
-| **Basse** | Pas de pagination sur les endpoints de liste | Lent avec > 1000 entries | 1 jour |
+| Priorite | Element | Impact | Effort | Statut |
+|---|---|---|---|---|
+| **Haute** | main.py = 4244 lignes | Maintenance difficile, merge conflicts | 2-3 jours | 🟡 Commence — `app/services/db.py` et `app/services/crypto.py` extraits (4244 → 4040 lignes, -5%). Le reste (relay, config pipeline, enrollment, telemetry) est fortement couple a FastAPI et necessite un refactoring d'interfaces. |
+| **Haute** | Pas de migrations DB versionnees | Risque de drift schema, pas de rollback DB | 1 jour | ✅ **Resolu** — Alembic installe, migration initiale `001` wrapping `db/schema.sql`. Cycle upgrade/downgrade/upgrade valide sur PostgreSQL 16. Commit `ae17ade`. |
+| **Haute** | CSRF absent en prod (cookie pose uniquement en dev) | Vulnerabilite CSRF sur les POST admin | 0.5 jour | ✅ **Resolu** — Cookie `dm_csrf_token` pose dans le callback OIDC. Warning CRITICAL au demarrage si `SESSION_SECRET` est le defaut en prod. Commit `0b33f29`. |
+| **Moyenne** | Secrets dans le repo (all-secrets.yaml) | Risque de fuite | — | ✅ **Resolu** — Secrets exclus du manifest pre-rendu, stockes dans `~/.dm-secrets/` (persistant entre redeploys). Commit `b012158`. |
+| **Moyenne** | Pas de tests automatises | Regression non detectee | 3-5 jours | 🟡 Partiel — 68 tests unitaires existants passent, 14 tests E2E WAF+Envoy (`10-e2e-waf-test.sh`). Manque : tests d'enrollment, config pipeline, relay auth. |
+| **Moyenne** | JavaScript inline non-type dans les templates | Bugs silencieux | 1-2 jours | Non traite |
+| **Basse** | Telemetrie en PostgreSQL | Scalabilite limitee | Selon volume reel | Non traite |
+| **Basse** | Pas de rate limiting | DoS possible | 0.5 jour | Non traite |
+| **Basse** | Pas de pagination sur les endpoints de liste | Lent avec > 1000 entries | 1 jour | Non traite |
 
 ---
 
@@ -367,14 +367,25 @@ Draft → Active → (Paused) → Completed | Rolled Back
 ### Court terme (< 1 mois)
 
 1. **Decouper main.py** : extraire les services metier dans `app/services/`
-   - config_service.py, enrollment_service.py, relay_service.py, telemetry_service.py, catalog_service.py
-   - main.py ne contient plus que le wiring FastAPI (routes → services)
+   - ✅ `app/services/db.py` : pool de connexions, bootstrap schema, helpers URL (268 lignes)
+   - ✅ `app/services/crypto.py` : base64url, hash relay, tokens telemetrie (95 lignes)
+   - 🔲 Reste a faire : relay, config pipeline, enrollment, telemetry spans (~1500 lignes)
+   - Bloqueur : ces fonctions dependent de `FastAPI.HTTPException` et `Request` — necessite un refactoring d'injection de dependances
+   - main.py passe de 4244 a 4040 lignes (-204, ~5%). Objectif : < 2000 lignes.
 
-2. **Introduire Alembic** : `alembic init`, generer la migration initiale depuis schema.sql, puis toutes les evolutions passent par des fichiers de migration numerotes
+2. ✅ **Alembic installe** — commit `ae17ade`
+   - `alembic.ini`, `alembic/env.py`, `alembic/versions/001_initial_schema.py`
+   - Migration initiale wrap `db/schema.sql` (idempotent, IF NOT EXISTS)
+   - Cycle upgrade/downgrade/upgrade valide sur PostgreSQL 16
+   - Futures evolutions de schema = nouveaux fichiers de migration
 
-3. **Fixer le CSRF en production** : poser le cookie `dm_csrf_token` dans le callback OIDC (ligne 164 de auth.py), pas seulement en dev mode
+3. ✅ **CSRF fixe en production** — commit `0b33f29`
+   - Cookie `dm_csrf_token` pose dans le callback OIDC (`app/admin/router.py`)
+   - Warning CRITICAL si `ADMIN_SESSION_SECRET == "changeme-dev-only"` en prod (`app/admin/auth.py`)
+   - Nettoyage du cookie `dm_pkce_verifier` apres le callback
 
-4. **Ajouter des tests E2E** : etendre `10-e2e-waf-test.sh` pour couvrir les parcours non-admin (enroll, config, relay, telemetry)
+4. **Tests E2E** : ✅ 14 tests WAF+Envoy dans `10-e2e-waf-test.sh`
+   - 🔲 Reste a faire : tests enrollment, config distribution, relay authorize, telemetry ingestion
 
 ### Moyen terme (1-3 mois)
 
@@ -437,14 +448,21 @@ Draft → Active → (Paused) → Completed | Rolled Back
 
 | Document | Chemin |
 |---|---|
-| Code principal | `app/main.py` (4244 lignes) |
+| Code principal | `app/main.py` (4040 lignes, was 4244) |
+| Service DB | `app/services/db.py` (268 lignes, extrait de main.py) |
+| Service Crypto | `app/services/crypto.py` (95 lignes, extrait de main.py) |
 | Admin UI | `app/admin/router.py` (3486 lignes) |
+| Admin Auth | `app/admin/auth.py` (OIDC, session, CSRF) |
 | Schema DB | `db/schema.sql` (438 lignes) |
+| Alembic migrations | `alembic/versions/001_initial_schema.py` |
 | Settings | `app/settings.py` (153 lignes, 155+ env vars) |
 | Queue | `app/postgres_queue.py` |
 | Dockerfile | `deploy/docker/Dockerfile` |
 | Kustomize base | `deploy/k8s/base/` |
 | Overlay DGX | `deploy/k8s/overlays/dgx/` |
 | ADR deploiement DGX | `prompts/adr-dgx-deployment.md` |
+| Test E2E WAF | `scripts/dgx-deploy/10-e2e-waf-test.sh` |
+| Deploiement DGX | `scripts/dgx-deploy/dumb-deploy.sh` |
+| Test connectivite | `scripts/dgx-deploy/09-connectivity-test.sh` |
 | Migration ArgoCD | `prompts/prompt-migration-argocd.md` |
 | MyVault (futur) | `prompts/prompt_myvault_v2.md` (externe) |
