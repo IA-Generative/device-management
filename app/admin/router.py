@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import time
+import uuid
 import urllib.parse
 
 from pathlib import Path, PurePosixPath
@@ -1395,6 +1396,89 @@ A partir du texte fourni, extrais les informations suivantes au format JSON stri
 Si tu ne trouves pas une info, mets une chaine vide ou une liste vide. Reponds uniquement avec le JSON."""
 
 
+# ─── Chunked upload (bypass WAF body size limits) ──────────────────────
+# WAF corporate blocks multipart POST > ~2 MB. This endpoint receives
+# file chunks of ≤512 KB each, stores them in /tmp, and returns an
+# upload_id that catalog_create/version_upload use instead of the file.
+
+import tempfile as _tempfile
+
+_CHUNK_DIR = os.path.join(_tempfile.gettempdir(), "dm-upload-chunks")
+_CHUNK_MAX_SIZE = 768 * 1024  # 768 KB per chunk (leaves room for headers)
+_UPLOAD_MAX_AGE = 3600  # cleanup uploads older than 1h
+
+
+@router.post("/api/upload-chunk")
+@require_admin
+async def api_upload_chunk(request: Request,
+                           upload_id: str = Form(""),
+                           chunk_index: int = Form(0),
+                           total_chunks: int = Form(1),
+                           filename: str = Form(""),
+                           chunk: UploadFile = File(...)):
+    """Receive a single chunk of a file upload. Returns upload_id."""
+    # Generate upload_id on first chunk
+    if not upload_id:
+        upload_id = uuid.uuid4().hex[:16]
+
+    upload_dir = os.path.join(_CHUNK_DIR, upload_id)
+    os.makedirs(upload_dir, exist_ok=True)
+
+    # Save chunk
+    data = await chunk.read()
+    if len(data) > _CHUNK_MAX_SIZE:
+        raise HTTPException(413, f"Chunk too large ({len(data)} > {_CHUNK_MAX_SIZE})")
+
+    chunk_path = os.path.join(upload_dir, f"{chunk_index:06d}")
+    with open(chunk_path, "wb") as f:
+        f.write(data)
+
+    # Save metadata
+    meta_path = os.path.join(upload_dir, "_meta.json")
+    meta = {"filename": filename, "total_chunks": total_chunks, "upload_id": upload_id}
+    with open(meta_path, "w") as f:
+        json.dump(meta, f)
+
+    # Check if all chunks received
+    received = len([f for f in os.listdir(upload_dir) if f != "_meta.json"])
+    complete = received >= total_chunks
+
+    return JSONResponse({
+        "upload_id": upload_id,
+        "chunk_index": chunk_index,
+        "received": received,
+        "total_chunks": total_chunks,
+        "complete": complete,
+    })
+
+
+def _reassemble_upload(upload_id: str) -> tuple[bytes, str] | None:
+    """Reassemble chunks into a single file. Returns (data, filename) or None."""
+    upload_dir = os.path.join(_CHUNK_DIR, upload_id)
+    if not os.path.isdir(upload_dir):
+        return None
+    meta_path = os.path.join(upload_dir, "_meta.json")
+    if not os.path.isfile(meta_path):
+        return None
+    with open(meta_path) as f:
+        meta = json.load(f)
+
+    chunks = sorted([f for f in os.listdir(upload_dir) if f != "_meta.json"])
+    if len(chunks) < meta.get("total_chunks", 1):
+        return None
+
+    data = b""
+    for chunk_name in chunks:
+        with open(os.path.join(upload_dir, chunk_name), "rb") as f:
+            data += f.read()
+
+    # Cleanup
+    import shutil
+    shutil.rmtree(upload_dir, ignore_errors=True)
+
+    return data, meta.get("filename", "upload.bin")
+
+
 @router.post("/api/catalog/suggest")
 @require_admin
 async def api_catalog_suggest(request: Request):
@@ -1684,7 +1768,8 @@ async def catalog_create(request: Request,
                          alias: str = Form(""),
                          initial_version: str = Form(""),
                          initial_release_notes: str = Form(""),
-                         binary: UploadFile | None = File(None)):
+                         binary: UploadFile | None = File(None),
+                         upload_id: str = Form("")):
     features = [f.strip() for f in key_features.split(",") if f.strip()] if key_features else []
     # Parse changelog: accept JSON array or markdown text
     parsed_changelog = None
@@ -1724,33 +1809,42 @@ async def catalog_create(request: Request,
                 except Exception:
                     logger.warning("alias creation failed for %s", alias)
             # Auto-create initial version + artifact if binary provided
+            # Support both direct upload (binary field) and chunked upload (upload_id)
             version_created = ""
-            if initial_version and binary and binary.filename:
+            bin_data = None
+            bin_filename = ""
+            if upload_id:
+                # Reassemble from chunks (WAF bypass)
+                result = _reassemble_upload(upload_id)
+                if result:
+                    bin_data, bin_filename = result
+            elif binary and binary.filename:
+                bin_data = await binary.read()
+                bin_filename = binary.filename
+
+            if initial_version and bin_data:
                 try:
-                    bin_data = await binary.read()
-                    if bin_data:
-                        bin_data = _strip_dm_metadata_from_zip(bin_data)
-                        checksum = artifacts_svc.compute_checksum(bin_data)
-                        binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-                        rel_path = f"{device_type}/{initial_version}_{binary.filename}"
-                        os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
-                        local_path = f"{binaries_dir}/{rel_path}"
-                        with open(local_path, "wb") as f:
-                            f.write(bin_data)
-                        # Binary is pulled on-demand by API pods via _pull_binary_from_admin()
-                        artifact_id = artifacts_svc.create_artifact(
-                            cur, device_type=device_type, platform_variant="",
-                            version=initial_version, s3_path=local_path, checksum=checksum,
-                        )
-                        catalog_svc.create_version(
-                            cur, plugin_id=plugin_id, version=initial_version,
-                            artifact_id=artifact_id,
-                            release_notes=initial_release_notes,
-                            download_url="", distribution_mode="managed",
-                            min_host_version="", max_host_version="",
-                            status="published",
-                        )
-                        version_created = initial_version
+                    bin_data = _strip_dm_metadata_from_zip(bin_data)
+                    checksum = artifacts_svc.compute_checksum(bin_data)
+                    binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+                    rel_path = f"{device_type}/{initial_version}_{bin_filename}"
+                    os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
+                    local_path = f"{binaries_dir}/{rel_path}"
+                    with open(local_path, "wb") as f:
+                        f.write(bin_data)
+                    artifact_id = artifacts_svc.create_artifact(
+                        cur, device_type=device_type, platform_variant="",
+                        version=initial_version, s3_path=local_path, checksum=checksum,
+                    )
+                    catalog_svc.create_version(
+                        cur, plugin_id=plugin_id, version=initial_version,
+                        artifact_id=artifact_id,
+                        release_notes=initial_release_notes,
+                        download_url="", distribution_mode="managed",
+                        min_host_version="", max_host_version="",
+                        status="published",
+                    )
+                    version_created = initial_version
                 except Exception as ver_err:
                     logger.warning("auto-version creation failed: %s", ver_err)
 

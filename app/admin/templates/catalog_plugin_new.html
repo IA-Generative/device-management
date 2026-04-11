@@ -558,7 +558,41 @@ function syntaxHighlight(json) {
     });
 }
 
-// ═══════ Submit via fetch (bypasses WAF blocking native form POST) ═══════
+// ═══════ Chunked upload + form submit (bypasses WAF body size limit) ═══════
+const CHUNK_SIZE = 512 * 1024; // 512 KB per chunk
+
+async function uploadFileChunked(file) {
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  let uploadId = '';
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const blob = file.slice(start, end);
+
+    const fd = new FormData();
+    fd.append('chunk', blob, file.name);
+    fd.append('chunk_index', i);
+    fd.append('total_chunks', totalChunks);
+    fd.append('filename', file.name);
+    if (uploadId) fd.append('upload_id', uploadId);
+
+    const resp = await fetch('/admin/api/upload-chunk', {
+      method: 'POST', body: fd, credentials: 'same-origin',
+    });
+    if (!resp.ok) throw new Error('Chunk upload failed: ' + resp.status);
+    const data = await resp.json();
+    uploadId = data.upload_id;
+
+    // Update progress
+    const pct = Math.round(((i + 1) / totalChunks) * 100);
+    document.getElementById('submit-btn').innerHTML =
+      '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
+      'Upload ' + pct + '%...';
+  }
+  return uploadId;
+}
+
 document.getElementById('catalog-form').addEventListener('submit', async function(e) {
   e.preventDefault();
   const btn = document.getElementById('submit-btn');
@@ -567,6 +601,19 @@ document.getElementById('catalog-form').addEventListener('submit', async functio
 
   try {
     const fd = new FormData(this);
+
+    // If there's a file, upload it in chunks first
+    const binaryInput = document.getElementById('f-binary');
+    const file = binaryInput && binaryInput.files[0];
+    if (file && file.size > 0) {
+      btn.innerHTML = '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>Upload du fichier...';
+      const uploadId = await uploadFileChunked(file);
+      fd.set('upload_id', uploadId);
+      fd.delete('binary'); // Don't send the file in the form POST
+    }
+
+    btn.innerHTML = '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>Creation du plugin...';
+
     const resp = await fetch(this.action, {
       method: 'POST',
       body: fd,
@@ -575,7 +622,6 @@ document.getElementById('catalog-form').addEventListener('submit', async functio
     });
 
     if (resp.type === 'opaqueredirect' || resp.status === 303 || resp.status === 302) {
-      // Redirect: read Location header or default to catalog list
       const location = resp.headers.get('Location') || '/admin/catalog';
       window.location.href = location;
     } else if (resp.ok) {
@@ -589,7 +635,7 @@ document.getElementById('catalog-form').addEventListener('submit', async functio
       btn.innerHTML = 'Creer le plugin';
     }
   } catch (err) {
-    alert('Erreur reseau : ' + err.message);
+    alert('Erreur : ' + err.message);
     btn.disabled = false;
     btn.innerHTML = 'Creer le plugin';
   }
