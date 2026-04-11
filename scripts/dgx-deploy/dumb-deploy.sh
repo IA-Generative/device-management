@@ -160,7 +160,7 @@ else
   # 2. Database (derived from POSTGRES_PASSWORD)
   SECRET_ARGS="$SECRET_ARGS --from-literal=POSTGRES_PASSWORD=$PG_PASS"
   SECRET_ARGS="$SECRET_ARGS --from-literal=DATABASE_URL=postgresql://dev:dev@postgres:5432/bootstrap"
-  SECRET_ARGS="$SECRET_ARGS --from-literal=DATABASE_ADMIN_URL=postgresql://postgres:${PG_PASS}@postgres:5432/postgres"
+  SECRET_ARGS="$SECRET_ARGS --from-literal=DATABASE_ADMIN_URL=postgresql://postgres:${PG_PASS}@postgres:5432/bootstrap"
 
   # 3. Master token (reused for all internal auth — same value everywhere = no mismatch)
   SECRET_ARGS="$SECRET_ARGS --from-literal=DM_QUEUE_ADMIN_TOKEN=$MASTER_TOKEN"
