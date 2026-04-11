@@ -113,6 +113,12 @@ DOCKERHUB_TOKEN=
 ENVEOF
 ok ".env.deploy.example"
 
+# Secrets template
+if [ -f "$SCRIPT_DIR/.env.secrets.example" ]; then
+  cp "$SCRIPT_DIR/.env.secrets.example" "$PKG_DIR/.env.secrets.example"
+  ok ".env.secrets.example"
+fi
+
 # Non-sensitive config (embedded, combined with secrets at deploy time)
 if [ -f "$SCRIPT_DIR/.env.config" ]; then
   cp "$SCRIPT_DIR/.env.config" "$PKG_DIR/.env.config"
