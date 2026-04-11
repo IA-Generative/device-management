@@ -1758,6 +1758,7 @@ async def catalog_create(request: Request,
                          device_type: str = Form("libreoffice"),
                          category: str = Form("productivity"),
                          icon_url: str = Form(""),
+                         icon_upload_id: str = Form(""),
                          homepage_url: str = Form(""),
                          doc_url: str = Form(""),
                          support_email: str = Form(""),
@@ -1787,6 +1788,19 @@ async def catalog_create(request: Request,
             parsed_template = _apply_platform_defaults(parsed_template)
         except json.JSONDecodeError:
             logger.warning("Invalid config_template JSON in create form, ignoring")
+    # Resolve icon from chunked upload if provided
+    if icon_upload_id:
+        icon_result = _reassemble_upload(icon_upload_id)
+        if icon_result:
+            icon_data, icon_filename = icon_result
+            import base64 as _b64
+            mime = "image/png"
+            if icon_filename.endswith(".svg"):
+                mime = "image/svg+xml"
+            elif icon_filename.endswith(".jpg") or icon_filename.endswith(".jpeg"):
+                mime = "image/jpeg"
+            icon_url = f"data:{mime};base64,{_b64.b64encode(icon_data).decode()}"
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
