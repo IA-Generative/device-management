@@ -47,6 +47,21 @@ if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.enviro
 from .settings import settings
 from .s3 import s3_client
 from .postgres_queue import PostgresQueue, QueueJob
+from .services.db import (
+    db_url as _svc_db_url,
+    db_url_bootstrap as _svc_db_url_bootstrap,
+    get_pool as _svc_get_pool,
+    PoolConn as _SvcPoolConn,
+    pooled_conn as _svc_pooled_conn,
+    get_db_connection as _svc_get_db_connection,
+    admin_db_url as _svc_admin_db_url,
+    ensure_database_exists as _svc_ensure_database_exists,
+    ensure_dev_role as _svc_ensure_dev_role,
+    ensure_dev_privileges as _svc_ensure_dev_privileges,
+    apply_schema as _svc_apply_schema,
+    wait_for_db as _svc_wait_for_db,
+    _with_db,
+)
 
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
@@ -136,71 +151,12 @@ def _repo_root() -> str:
 SCHEMA_SQL_PATH = os.path.join(_repo_root(), "db", "schema.sql")
 
 
-def _db_url() -> str | None:
-    return os.getenv("DATABASE_URL") or settings.database_url or None
-
-
-def _db_url_bootstrap() -> str | None:
-    base = _db_url()
-    if not base:
-        return None
-    return _with_db(base, "bootstrap")
-
-
-# ---- Connection pool (P0 performance) ----
-_pool: Any = None
-_pool_lock = threading.Lock()
-_POOL_MIN = 2
-_POOL_MAX = 10
-
-
-def _get_pool():
-    """Return (or lazily create) a ThreadedConnectionPool for the bootstrap DB."""
-    global _pool
-    if _pool is not None:
-        return _pool
-    if psycopg2 is None:
-        return None
-    db_url = _db_url_bootstrap() or _db_url()
-    if not db_url:
-        return None
-    with _pool_lock:
-        if _pool is not None:
-            return _pool
-        try:
-            _pool = psycopg2.pool.ThreadedConnectionPool(_POOL_MIN, _POOL_MAX, db_url)
-        except Exception as exc:
-            logger.warning("Connection pool creation failed: %s", exc)
-            return None
-    return _pool
-
-
-class _PoolConn:
-    """Context manager: borrows a connection from the pool, returns it on exit."""
-    __slots__ = ("_conn", "_pool")
-
-    def __init__(self, pool):
-        self._pool = pool
-        self._conn = pool.getconn()
-        self._conn.autocommit = True
-
-    def __enter__(self):
-        return self._conn
-
-    def __exit__(self, *exc):
-        try:
-            self._pool.putconn(self._conn)
-        except Exception:
-            pass
-        self._conn = None
-
-
-def _pooled_conn():
-    """Return a _PoolConn context manager, or None if pool unavailable."""
-    pool = _get_pool()
-    if pool is None:
-        return None
-    return _PoolConn(pool)
+# ── DB helpers (delegated to app/services/db.py) ──
+_db_url = _svc_db_url
+_db_url_bootstrap = _svc_db_url_bootstrap
+_get_pool = _svc_get_pool
+_PoolConn = _SvcPoolConn
+_pooled_conn = _svc_pooled_conn
 
 
 # ---- Config response cache (P2 performance) ----
@@ -294,176 +250,19 @@ def _get_queue_manager() -> PostgresQueue | None:
         return _queue_manager
 
 
-def _with_db(url: str, db_name: str) -> str:
-    parsed = urlparse(url)
-    path = f"/{db_name}"
-    return urlunparse(parsed._replace(path=path))
+# _with_db imported from services.db at top
+_admin_db_url = _svc_admin_db_url
+_ensure_database_exists = _svc_ensure_database_exists
+_ensure_dev_role = _svc_ensure_dev_role
+_ensure_dev_privileges = _svc_ensure_dev_privileges
 
 
-def _admin_db_url(base_url: str) -> str | None:
-    explicit = os.getenv("DATABASE_ADMIN_URL") or os.getenv("DM_DATABASE_ADMIN_URL")
-    if explicit:
-        return explicit
-
-    parsed = urlparse(base_url)
-    admin_user = (
-        os.getenv("DB_ADMIN_USER")
-        or os.getenv("POSTGRES_ADMIN_USER")
-        or os.getenv("POSTGRES_USER")
-        or "postgres"
-    )
-    admin_password = (
-        os.getenv("DB_ADMIN_PASSWORD")
-        or os.getenv("POSTGRES_ADMIN_PASSWORD")
-        or os.getenv("POSTGRES_PASSWORD")
-    )
-
-    if admin_password:
-        netloc = f"{admin_user}:{admin_password}@{parsed.hostname}"
-    else:
-        # No admin password available — skip admin DB operations
-        return None
-
-    if parsed.port:
-        netloc = f"{netloc}:{parsed.port}"
-
-    return urlunparse(parsed._replace(netloc=netloc))
+def _apply_schema(db_url_str: str) -> None:
+    _svc_apply_schema(db_url_str, SCHEMA_SQL_PATH)
 
 
-def _ensure_database_exists(db_url: str, db_name: str = "bootstrap") -> None:
-    if psycopg2 is None:
-        raise RuntimeError(
-            "psycopg2 is not installed. Install it with: pip install psycopg2-binary (dev) or psycopg2 (prod)."
-        )
-    admin_url = _with_db(db_url, "postgres")
-    conn = psycopg2.connect(admin_url)
-    conn.autocommit = True
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
-            exists = cur.fetchone() is not None
-            if not exists:
-                cur.execute(f'CREATE DATABASE "{db_name}"')
-    finally:
-        conn.close()
-
-
-def _ensure_dev_role(admin_url: str) -> None:
-    conn = psycopg2.connect(admin_url)
-    conn.autocommit = True
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'dev'")
-            exists = cur.fetchone() is not None
-            if not exists:
-                cur.execute("CREATE ROLE dev LOGIN PASSWORD 'dev'")
-            # Enforce least privilege for dev role.
-            try:
-                cur.execute(
-                    "ALTER ROLE dev NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION"
-                )
-            except psycopg2.Error:
-                logger.warning("Skipping ALTER ROLE dev (insufficient privilege)")
-    finally:
-        conn.close()
-
-
-def _ensure_dev_privileges(admin_bootstrap_url: str) -> None:
-    conn = psycopg2.connect(admin_bootstrap_url)
-    conn.autocommit = True
-    try:
-        with conn.cursor() as cur:
-            cur.execute("GRANT CONNECT ON DATABASE bootstrap TO dev")
-            cur.execute("GRANT USAGE ON SCHEMA public TO dev")
-            cur.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO dev")
-            cur.execute("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO dev")
-            cur.execute(
-                "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
-                "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO dev"
-            )
-            cur.execute(
-                "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
-                "GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO dev"
-            )
-    finally:
-        conn.close()
-
-def _apply_schema(db_url: str) -> None:
-    if psycopg2 is None:
-        raise RuntimeError(
-            "psycopg2 is not installed. Install it with: pip install psycopg2-binary (dev) or psycopg2 (prod)."
-        )
-    if not os.path.isfile(SCHEMA_SQL_PATH):
-        raise FileNotFoundError(f"Schema SQL not found: {SCHEMA_SQL_PATH}")
-    with open(SCHEMA_SQL_PATH, "r", encoding="utf-8") as f:
-        sql = f.read()
-    conn = psycopg2.connect(db_url)
-    conn.autocommit = True
-    try:
-        with conn.cursor() as cur:
-            # Migrations BEFORE schema.sql: add columns that CREATE TABLE IF
-            # NOT EXISTS won't add to existing tables.  Must run first so that
-            # indexes in schema.sql referencing these columns don't fail.
-            cur.execute("""
-                DO $$ BEGIN
-                  -- campaigns: add environment, plugin_id, version_id if missing
-                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'campaigns') THEN
-                    IF NOT EXISTS (
-                      SELECT 1 FROM information_schema.columns
-                      WHERE table_name = 'campaigns' AND column_name = 'environment'
-                    ) THEN
-                      ALTER TABLE campaigns ADD COLUMN environment VARCHAR(50);
-                    END IF;
-                    IF NOT EXISTS (
-                      SELECT 1 FROM information_schema.columns
-                      WHERE table_name = 'campaigns' AND column_name = 'plugin_id'
-                    ) THEN
-                      ALTER TABLE campaigns ADD COLUMN plugin_id INT REFERENCES plugins(id);
-                    END IF;
-                    IF NOT EXISTS (
-                      SELECT 1 FROM information_schema.columns
-                      WHERE table_name = 'campaigns' AND column_name = 'version_id'
-                    ) THEN
-                      ALTER TABLE campaigns ADD COLUMN version_id INT REFERENCES plugin_versions(id);
-                    END IF;
-                  END IF;
-                  -- plugins: replace absolute UNIQUE(slug) with partial index
-                  IF EXISTS (
-                    SELECT 1 FROM pg_constraint
-                    WHERE conname = 'plugins_slug_key' AND conrelid = 'plugins'::regclass
-                  ) THEN
-                    ALTER TABLE plugins DROP CONSTRAINT plugins_slug_key;
-                  END IF;
-                END $$;
-            """)
-            # Now apply the full schema (CREATE TABLE IF NOT EXISTS + indexes)
-            cur.execute(sql)
-            # Ensure the partial unique index exists (idempotent)
-            cur.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_plugins_slug_active
-                ON plugins(slug) WHERE status <> 'removed'
-            """)
-    finally:
-        conn.close()
-
-
-def _wait_for_db(db_url: str, timeout_seconds: int = 30, interval_seconds: float = 1.0) -> None:
-    if psycopg2 is None:
-        raise RuntimeError(
-            "psycopg2 is not installed. Install it with: pip install psycopg2-binary (dev) or psycopg2 (prod)."
-        )
-    deadline = time.time() + timeout_seconds
-    last_exc: Exception | None = None
-    while time.time() < deadline:
-        try:
-            conn = psycopg2.connect(db_url)
-            conn.close()
-            return
-        except psycopg2.OperationalError as exc:
-            last_exc = exc
-            time.sleep(interval_seconds)
-    if last_exc:
-        raise last_exc
+def _wait_for_db(db_url_str: str, timeout_seconds: int = 30, interval_seconds: float = 1.0) -> None:
+    _svc_wait_for_db(db_url_str, timeout_seconds, interval_seconds)
 
 
 def _extract_identity(request: Request, body_obj: dict | None = None) -> tuple[str, str, str]:
