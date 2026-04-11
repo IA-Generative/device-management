@@ -34,6 +34,16 @@ SESSION_COOKIE = "dm_admin_session"
 SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "changeme-dev-only")
 SESSION_TTL = 3600  # 1 hour
 
+# Warn loudly if session secret is the insecure default in production
+_app_env = os.getenv("DM_APP_ENV", "").strip().lower()
+if SESSION_SECRET == "changeme-dev-only" and _app_env in ("prod", "production", "staging"):
+    logger.critical(
+        "ADMIN_SESSION_SECRET is set to the insecure default 'changeme-dev-only' "
+        "in %s environment. Anyone can forge admin sessions. "
+        "Set a strong random value: python3 -c \"import secrets; print(secrets.token_urlsafe(32))\"",
+        _app_env,
+    )
+
 def _oidc_issuer_url() -> str:
     """Resolve OIDC issuer: explicit ADMIN_OIDC_ISSUER_URL, else derive from
     KEYCLOAK_ISSUER_URL + KEYCLOAK_REALM."""
