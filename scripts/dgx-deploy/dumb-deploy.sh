@@ -183,7 +183,8 @@ if [ -f "$SCHEMA_FILE" ]; then
         "containers": [{
           "name": "apply-schema",
           "image": "docker.io/etiquet/postgres:16-alpine",
-          "command": ["sh","-c","psql postgresql://postgres:postgres@postgres:5432/bootstrap -v ON_ERROR_STOP=1 -f /sql/schema.sql && echo SCHEMA_OK"],
+          "command": ["sh","-c","psql $DATABASE_ADMIN_URL -v ON_ERROR_STOP=1 -f /sql/schema.sql && echo SCHEMA_OK"],
+          "env": [{"name":"DATABASE_ADMIN_URL","valueFrom":{"secretKeyRef":{"name":"device-management-secrets","key":"DATABASE_ADMIN_URL"}}}],
           "volumeMounts": [{"name":"sql","mountPath":"/sql"}]
         }],
         "volumes": [{"name":"sql","configMap":{"name":"dm-schema"}}]
