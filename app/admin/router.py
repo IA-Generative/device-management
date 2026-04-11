@@ -1750,27 +1750,59 @@ async def catalog_new(request: Request):
 
 @router.post("/catalog")
 @require_admin
-async def catalog_create(request: Request,
-                         slug: str = Form(...), name: str = Form(...),
-                         description: str = Form(""), intent: str = Form(""),
-                         key_features: str = Form(""),
-                         changelog: str = Form(""),
-                         device_type: str = Form("libreoffice"),
-                         category: str = Form("productivity"),
-                         icon_url: str = Form(""),
-                         icon_upload_id: str = Form(""),
-                         homepage_url: str = Form(""),
-                         doc_url: str = Form(""),
-                         support_email: str = Form(""),
-                         publisher: str = Form("DNUM"),
-                         visibility: str = Form("public"),
-                         license: str = Form(""),
-                         config_template: str = Form(""),
-                         alias: str = Form(""),
-                         initial_version: str = Form(""),
-                         initial_release_notes: str = Form(""),
-                         binary: UploadFile | None = File(None),
-                         upload_id: str = Form("")):
+async def catalog_create(request: Request):
+    """Create a new catalog plugin. Accepts both JSON and multipart form data."""
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        body = await request.json()
+        slug = body.get("slug", "")
+        name = body.get("name", "")
+        description = body.get("description", "")
+        intent = body.get("intent", "")
+        key_features = body.get("key_features", "")
+        changelog = body.get("changelog", "")
+        device_type = body.get("device_type", "libreoffice")
+        category = body.get("category", "productivity")
+        icon_url = body.get("icon_url", "")
+        icon_upload_id = body.get("icon_upload_id", "")
+        homepage_url = body.get("homepage_url", "")
+        doc_url = body.get("doc_url", "")
+        support_email = body.get("support_email", "")
+        publisher = body.get("publisher", "DNUM")
+        visibility = body.get("visibility", "public")
+        license = body.get("license", "")
+        config_template = body.get("config_template", "")
+        alias = body.get("alias", "")
+        initial_version = body.get("initial_version", "")
+        initial_release_notes = body.get("initial_release_notes", "")
+        upload_id = body.get("upload_id", "")
+        binary = None
+    else:
+        form = await request.form()
+        slug = form.get("slug", "")
+        name = form.get("name", "")
+        description = form.get("description", "")
+        intent = form.get("intent", "")
+        key_features = form.get("key_features", "")
+        changelog = form.get("changelog", "")
+        device_type = form.get("device_type", "libreoffice")
+        category = form.get("category", "productivity")
+        icon_url = form.get("icon_url", "")
+        icon_upload_id = form.get("icon_upload_id", "")
+        homepage_url = form.get("homepage_url", "")
+        doc_url = form.get("doc_url", "")
+        support_email = form.get("support_email", "")
+        publisher = form.get("publisher", "DNUM")
+        visibility = form.get("visibility", "public")
+        license = form.get("license", "")
+        config_template = form.get("config_template", "")
+        alias = form.get("alias", "")
+        initial_version = form.get("initial_version", "")
+        initial_release_notes = form.get("initial_release_notes", "")
+        upload_id = form.get("upload_id", "")
+        binary = form.get("binary")
+        if binary and not hasattr(binary, "read"):
+            binary = None
     features = [f.strip() for f in key_features.split(",") if f.strip()] if key_features else []
     # Parse changelog: accept JSON array or markdown text
     parsed_changelog = None
@@ -1832,7 +1864,7 @@ async def catalog_create(request: Request,
                 result = _reassemble_upload(upload_id)
                 if result:
                     bin_data, bin_filename = result
-            elif binary and binary.filename:
+            elif binary and hasattr(binary, 'read') and hasattr(binary, 'filename') and binary.filename:
                 bin_data = await binary.read()
                 bin_filename = binary.filename
 
