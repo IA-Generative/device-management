@@ -10,7 +10,7 @@ resources:
 images:
   - name: <SCALEWAY_REGISTRY>/device-management
     newName: docker.io/etiquet/device-management
-    newTag: "0.5.20-download-fix"
+    newTag: "0.5.21"
   - name: nginx
     newName: docker.io/etiquet/nginx
     newTag: "1.27-alpine"

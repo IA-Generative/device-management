@@ -233,11 +233,13 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                       ALTER TABLE campaigns ADD COLUMN version_id INT REFERENCES plugin_versions(id);
                     END IF;
                   END IF;
-                  IF EXISTS (
-                    SELECT 1 FROM pg_constraint
-                    WHERE conname = 'plugins_slug_key' AND conrelid = 'plugins'::regclass
-                  ) THEN
-                    ALTER TABLE plugins DROP CONSTRAINT plugins_slug_key;
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'plugins') THEN
+                    IF EXISTS (
+                      SELECT 1 FROM pg_constraint
+                      WHERE conname = 'plugins_slug_key' AND conrelid = 'plugins'::regclass
+                    ) THEN
+                      ALTER TABLE plugins DROP CONSTRAINT plugins_slug_key;
+                    END IF;
                   END IF;
                 END $$;
             """)
