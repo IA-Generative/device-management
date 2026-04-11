@@ -127,8 +127,6 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DM_RELAY_SECRET_PEPPER
-            - name: DM_LOCAL_BINARIES_DIR
-              value: /data/binaries
             - name: PUBLIC_BASE_URL
               valueFrom:
                 secretKeyRef:
@@ -356,7 +354,7 @@ spec:
                   key: DM_RELAY_ASSISTANT_URL
           volumeMounts:
             - name: dm-content
-              mountPath: /data/binaries
+              mountPath: /data/content/binaries
             - name: dm-enroll
               mountPath: /data/enroll
           resources:
