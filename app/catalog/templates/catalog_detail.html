@@ -3,142 +3,33 @@
 {% block title %}{{ plugin.name }}{% endblock %}
 
 {% block extra_css %}
-    .back-link {
-      display: inline-block;
-      margin-bottom: 1.5rem;
-      font-size: 0.9rem;
-      font-weight: 600;
-    }
-
-    .detail-header {
-      display: flex;
-      align-items: flex-start;
-      gap: 1.5rem;
-      margin-bottom: 2rem;
-    }
-    .detail-icon {
-      width: 80px;
-      height: 80px;
-      border-radius: 12px;
-      object-fit: contain;
-      background: #fff;
-      flex-shrink: 0;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-    }
-    .detail-icon-placeholder {
-      width: 80px;
-      height: 80px;
-      border-radius: 12px;
-      background: #e3e3fd;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #000091;
-      font-size: 2rem;
-      font-weight: 700;
-      flex-shrink: 0;
-    }
-    .detail-info h1 {
-      font-size: 1.5rem;
-      margin-bottom: 0.25rem;
-    }
-    .detail-meta {
-      font-size: 0.9rem;
-      color: #666;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      align-items: center;
-    }
-    .detail-intent {
-      font-size: 1.05rem;
-      color: #444;
-      margin-top: 0.75rem;
-    }
-
-    .cta-bar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-      margin-bottom: 2rem;
-      padding: 1.25rem;
-      background: #fff;
-      border-radius: 8px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-    }
-
-    .section {
-      margin-bottom: 2rem;
-    }
-    .section h2 {
-      font-size: 1.1rem;
-      color: #000091;
-      margin-bottom: 0.75rem;
-      padding-bottom: 0.4rem;
-      border-bottom: 2px solid #e3e3fd;
-    }
-    .section p, .section ul {
-      font-size: 0.95rem;
-      color: #333;
-    }
-    .section ul {
-      padding-left: 1.2rem;
-    }
-    .section li {
-      margin-bottom: 0.3rem;
-    }
-
-    .features-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.3rem;
-    }
-
-    .info-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-      gap: 0.75rem;
-    }
-    .info-item {
-      font-size: 0.9rem;
-    }
-    .info-label {
-      font-weight: 700;
-      color: #666;
-      font-size: 0.8rem;
-      text-transform: uppercase;
-    }
-    .info-value {
-      color: #1e1e1e;
-    }
-
-    .changelog-content {
-      white-space: pre-line;
-      font-size: 0.9rem;
-      line-height: 1.6;
-    }
-
-    .auto-update-box {
-      background: #fff;
-      border-left: 4px solid #000091;
-      padding: 1rem 1.25rem;
-      border-radius: 0 8px 8px 0;
-      font-size: 0.9rem;
-    }
+    .dm-detail-header { display: flex; align-items: flex-start; gap: 1.5rem; margin-bottom: 1.5rem; }
+    .dm-detail-icon { width: 80px; height: 80px; border-radius: 12px; object-fit: contain; background: #fff; flex-shrink: 0; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+    .dm-detail-icon-placeholder { width: 80px; height: 80px; border-radius: 12px; background: #000091; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 2rem; font-weight: 700; flex-shrink: 0; }
+    .dm-changelog { white-space: pre-line; font-size: 0.9rem; line-height: 1.6; }
 {% endblock %}
 
 {% block content %}
-  <a href="/catalog" class="back-link">&larr; Retour au catalogue</a>
+  <nav role="navigation" class="fr-breadcrumb" aria-label="vous etes ici">
+    <button class="fr-breadcrumb__button" aria-expanded="false" aria-controls="breadcrumb">Voir le fil d'Ariane</button>
+    <div class="fr-collapse" id="breadcrumb">
+      <ol class="fr-breadcrumb__list">
+        <li><a class="fr-breadcrumb__link" href="/catalog">Catalogue</a></li>
+        <li><a class="fr-breadcrumb__link" aria-current="page">{{ plugin.name }}</a></li>
+      </ol>
+    </div>
+  </nav>
 
-  <div class="detail-header">
+  {# ── Header ── #}
+  <div class="dm-detail-header">
     {% if plugin.icon_url %}
-      <img class="detail-icon" src="{{ plugin.icon_url }}" alt="{{ plugin.name }}">
+      <img class="dm-detail-icon" src="{{ plugin.icon_url }}" alt="{{ plugin.name }}">
     {% else %}
-      <div class="detail-icon-placeholder">{{ plugin.name[:1] }}</div>
+      <div class="dm-detail-icon-placeholder">{{ plugin.name[:2] }}</div>
     {% endif %}
-    <div class="detail-info">
-      <h1>{{ plugin.name }}</h1>
-      <div class="detail-meta">
+    <div>
+      <h1 style="margin:0 0 0.25rem 0;">{{ plugin.name }}</h1>
+      <div style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;font-size:0.9rem;color:#666;">
         <span>par {{ plugin.publisher }}</span>
         {% if plugin.license %}
           <span>&middot; Licence {{ plugin.license }}</span>
@@ -147,97 +38,117 @@
         {% if plugin.category %}
           <span>&middot; {{ plugin.category|capitalize }}</span>
         {% endif %}
-        <span class="badge badge-{{ plugin.maturity }}">{{ plugin.maturity_label }}</span>
+        {% if plugin.maturity == 'release' %}
+          <p class="fr-badge fr-badge--success fr-badge--no-icon">Stable</p>
+        {% elif plugin.maturity == 'beta' %}
+          <p class="fr-badge fr-badge--warning fr-badge--no-icon">Beta</p>
+        {% elif plugin.maturity == 'alpha' %}
+          <p class="fr-badge fr-badge--new fr-badge--no-icon">Alpha</p>
+        {% elif plugin.maturity == 'pre-release' %}
+          <p class="fr-badge fr-badge--info fr-badge--no-icon">Pre-release</p>
+        {% else %}
+          <p class="fr-badge fr-badge--no-icon">{{ plugin.maturity_label }}</p>
+        {% endif %}
         {% if plugin.latest_version %}
           <span>&middot; v{{ plugin.latest_version }}</span>
         {% endif %}
       </div>
-      <div class="detail-intent">{{ plugin.intent }}</div>
+      {% if plugin.intent %}
+        <p style="margin-top:0.75rem;font-size:1.05rem;color:#444;">{{ plugin.intent }}</p>
+      {% endif %}
     </div>
   </div>
 
-  <div class="cta-bar">
+  {# ── Actions ── #}
+  <div class="fr-btns-group fr-btns-group--inline" style="margin-bottom:2rem;">
     {% if plugin.latest_version %}
-      <a href="/catalog/{{ plugin.slug }}/download" class="btn btn-primary">
+      <a href="/catalog/{{ plugin.slug }}/download" class="fr-btn">
         Telecharger v{{ plugin.latest_version }}{% if file_ext %} (.{{ file_ext }}){% endif %}
       </a>
     {% endif %}
     {% if plugin.doc_url %}
-      <a href="{{ plugin.doc_url }}" class="btn btn-secondary" target="_blank" rel="noopener">Documentation</a>
+      <a href="{{ plugin.doc_url }}" class="fr-btn fr-btn--secondary" target="_blank" rel="noopener">Documentation</a>
     {% endif %}
     {% if plugin.homepage_url %}
-      <a href="{{ plugin.homepage_url }}" class="btn btn-secondary" target="_blank" rel="noopener">Site web</a>
+      <a href="{{ plugin.homepage_url }}" class="fr-btn fr-btn--secondary" target="_blank" rel="noopener">Site web</a>
     {% endif %}
   </div>
 
-  {% if plugin.key_features %}
-  <div class="section">
-    <h2>Fonctionnalites</h2>
-    <div class="features-list">
-      {% for feat in plugin.key_features %}
-        <span class="pill">{{ feat }}</span>
-      {% endfor %}
+  <div class="fr-grid-row fr-grid-row--gutters">
+    <div class="fr-col-12 fr-col-md-8">
+
+      {# ── Fonctionnalités ── #}
+      {% if plugin.key_features %}
+      <div style="margin-bottom:2rem;">
+        <h2>Fonctionnalites</h2>
+        <ul class="fr-tags-group" style="margin-top:0.75rem;">
+          {% for feat in plugin.key_features %}
+            <li><p class="fr-tag">{{ feat }}</p></li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {# ── Description ── #}
+      {% if plugin.description %}
+      <div style="margin-bottom:2rem;">
+        <h2>Description</h2>
+        <p>{{ plugin.description }}</p>
+      </div>
+      {% endif %}
+
+      {# ── Changelog ── #}
+      {% if plugin.changelog_summary %}
+      <div style="margin-bottom:2rem;">
+        <h2>Nouveautes{% if plugin.latest_version %} v{{ plugin.latest_version }}{% endif %}</h2>
+        <div class="dm-changelog">{{ plugin.changelog_summary }}</div>
+      </div>
+      {% endif %}
+
+      {# ── Mise à jour auto ── #}
+      <div class="fr-callout" style="margin-bottom:2rem;">
+        <p class="fr-callout__title">Mises a jour automatiques</p>
+        <p class="fr-callout__text">
+          Ce plugin se met a jour automatiquement via Device Management.
+          Lors du premier lancement, connectez-vous avec votre compte pour activer les mises a jour.
+        </p>
+      </div>
     </div>
-  </div>
-  {% endif %}
 
-  {% if plugin.description %}
-  <div class="section">
-    <h2>Description</h2>
-    <p>{{ plugin.description }}</p>
-  </div>
-  {% endif %}
+    <div class="fr-col-12 fr-col-md-4">
+      {# ── Informations ── #}
+      <div class="fr-card" style="margin-bottom:1.5rem;">
+        <div class="fr-card__body">
+          <div class="fr-card__content">
+            <h3 class="fr-card__title">Informations</h3>
+            <dl style="margin:0;">
+              <dt style="font-size:0.8rem;color:#666;text-transform:uppercase;margin-top:0.75rem;">Editeur</dt>
+              <dd style="margin:0;">{{ plugin.publisher }}</dd>
 
-  {% if plugin.changelog_summary %}
-  <div class="section">
-    <h2>Nouveautes{% if plugin.latest_version %} v{{ plugin.latest_version }}{% endif %}</h2>
-    <div class="changelog-content">{{ plugin.changelog_summary }}</div>
-  </div>
-  {% endif %}
+              {% if plugin.license %}
+              <dt style="font-size:0.8rem;color:#666;text-transform:uppercase;margin-top:0.75rem;">Licence</dt>
+              <dd style="margin:0;">{{ plugin.license }}</dd>
+              {% endif %}
 
-  <div class="section">
-    <div class="auto-update-box">
-      <strong>Mises a jour automatiques</strong><br>
-      Ce plugin se met a jour automatiquement via Device Management.
-      Lors du premier lancement, connectez-vous avec votre compte pour activer les mises a jour.
-    </div>
-  </div>
+              {% if plugin.support_email %}
+              <dt style="font-size:0.8rem;color:#666;text-transform:uppercase;margin-top:0.75rem;">Support</dt>
+              <dd style="margin:0;"><a href="mailto:{{ plugin.support_email }}">{{ plugin.support_email }}</a></dd>
+              {% endif %}
 
-  <div class="section">
-    <h2>Informations</h2>
-    <div class="info-grid">
-      <div class="info-item">
-        <div class="info-label">Editeur</div>
-        <div class="info-value">{{ plugin.publisher }}</div>
+              <dt style="font-size:0.8rem;color:#666;text-transform:uppercase;margin-top:0.75rem;">Installations</dt>
+              <dd style="margin:0;">{{ plugin.install_count }}</dd>
+
+              {% if plugin.updated_at %}
+              <dt style="font-size:0.8rem;color:#666;text-transform:uppercase;margin-top:0.75rem;">Derniere mise a jour</dt>
+              <dd style="margin:0;">{{ plugin.updated_at }}</dd>
+              {% endif %}
+
+              <dt style="font-size:0.8rem;color:#666;text-transform:uppercase;margin-top:0.75rem;">Type</dt>
+              <dd style="margin:0;">{{ plugin.device_type|capitalize }}</dd>
+            </dl>
+          </div>
+        </div>
       </div>
-      {% if plugin.license %}
-      <div class="info-item">
-        <div class="info-label">Licence</div>
-        <div class="info-value">{{ plugin.license }}</div>
-      </div>
-      {% endif %}
-      {% if plugin.support_email %}
-      <div class="info-item">
-        <div class="info-label">Support</div>
-        <div class="info-value"><a href="mailto:{{ plugin.support_email }}">{{ plugin.support_email }}</a></div>
-      </div>
-      {% endif %}
-      {% if plugin.source_url %}
-      <div class="info-item">
-        <div class="info-label">Source</div>
-        <div class="info-value"><a href="{{ plugin.source_url }}" target="_blank" rel="noopener">{{ plugin.source_url }}</a></div>
-      </div>
-      {% endif %}
-      <div class="info-item">
-        <div class="info-label">Installations</div>
-        <div class="info-value">{{ plugin.install_count }}</div>
-      </div>
-      {% if plugin.updated_at %}
-      <div class="info-item">
-        <div class="info-label">Derniere mise a jour</div>
-        <div class="info-value">{{ plugin.updated_at }}</div>
-      </div>
-      {% endif %}
     </div>
   </div>
 {% endblock %}

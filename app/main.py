@@ -3439,6 +3439,7 @@ def catalog_index(request: Request, category: str | None = None):
     if not psycopg2 or not db_url:
         return _catalog_templates.TemplateResponse("catalog_index.html", {
             "request": request, "plugins": [], "categories": [], "current_category": None,
+            "total_installs": 0,
         })
     maturity_labels = {"dev": "Dev", "alpha": "Alpha", "beta": "Beta",
                        "pre-release": "Pre-release", "release": "Stable"}
@@ -3496,9 +3497,11 @@ def catalog_index(request: Request, category: str | None = None):
                 "install_count": p.get("install_count") or 0,
                 "key_features": kf,
             })
+        total_installs = sum(p.get("install_count", 0) for p in plugins)
         return _catalog_templates.TemplateResponse("catalog_index.html", {
             "request": request, "plugins": plugins,
             "categories": all_categories, "current_category": category,
+            "total_installs": total_installs,
         })
     finally:
         if pool_ctx is not None:
