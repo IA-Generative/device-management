@@ -3891,9 +3891,20 @@ def get_binary(path: str):
 # relay service.  In docker-compose dev the relay is a separate container
 # (relay-assistant:8080) so we proxy here to keep the plugin's single-origin
 # assumption working.
-
-_RELAY_UPSTREAM = os.getenv(
-    "DM_RELAY_ASSISTANT_UPSTREAM", "http://relay-assistant:8080"
+#
+# Env var lookup order:
+#   1. DM_RELAY_ASSISTANT_URL  — K8s convention (Service ClusterIP on port 80,
+#      see deploy/k8s/base/secrets/all-secrets.yaml + 27-relay-assistant-service.yaml)
+#   2. DM_RELAY_ASSISTANT_UPSTREAM  — legacy name, kept for backwards compat
+#   3. default http://relay-assistant:8080  — docker-compose (container port 8080)
+# K8s deployments MUST set DM_RELAY_ASSISTANT_URL=http://relay-assistant so the
+# Service DNS resolves to the ClusterIP and routes to the pod on targetPort 8080.
+# Hardcoded :8080 would attempt a direct pod connection and fail (no matching
+# service port).
+_RELAY_UPSTREAM = (
+    os.getenv("DM_RELAY_ASSISTANT_URL")
+    or os.getenv("DM_RELAY_ASSISTANT_UPSTREAM")
+    or "http://relay-assistant:8080"
 ).rstrip("/")
 
 _RELAY_HOP_HEADERS = frozenset({
@@ -3915,7 +3926,21 @@ async def relay_assistant_proxy(path: str, request: Request):
     }
     body = await request.body()
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    # Bypass corporate proxy: relay-assistant is an in-cluster service and
+    # MUST NOT go through HTTP_PROXY / HTTPS_PROXY. The DGX overlay sets
+    # these env vars cluster-wide for outbound calls (Keycloak, compte-rendu,
+    # etc.), and httpx picks them up by default via trust_env=True. Short
+    # hostnames like "relay-assistant" don't always match NO_PROXY reliably,
+    # so httpx either routes through the proxy (→ 407) or retries a direct
+    # TCP connect that hangs (→ ConnectTimeout). Pinning trust_env=False
+    # combined with an explicit AsyncHTTPTransport guarantees a direct
+    # in-cluster TCP connection regardless of env-var state.
+    transport = httpx.AsyncHTTPTransport()
+    async with httpx.AsyncClient(
+        transport=transport,
+        trust_env=False,
+        timeout=30,
+    ) as client:
         upstream_resp = await client.request(
             method=request.method,
             url=upstream_url,
