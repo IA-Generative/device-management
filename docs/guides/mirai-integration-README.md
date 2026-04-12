@@ -2,7 +2,7 @@
 
 ## Description
 
-Le fichier `mirai-catalog-snippet.html` contient un snippet HTML pret a coller dans le CMS Wagtail du portail MIrAI (<INTERNAL_DOMAIN>). Il appelle l'API DM (`/catalog/api/plugins`) via Fetch et affiche les plugins sous forme de cartes DSFR responsives avec nom, description, icone, badges de maturite/version et nombre d'installations.
+Le fichier `mirai-catalog-snippet.html` contient un snippet HTML pret a coller dans le CMS Wagtail du portail MIrAI (mirai.<GOV_DOMAIN>). Il appelle l'API DM (`/catalog/api/plugins`) via Fetch et affiche les plugins sous forme de cartes DSFR responsives avec nom, description, icone, badges de maturite/version et nombre d'installations.
 
 ## Prerequis
 
@@ -15,7 +15,7 @@ Le fichier `mirai-catalog-snippet.html` contient un snippet HTML pret a coller d
 
 ## Guide : coller le snippet dans Sites Faciles (Option B)
 
-1. Se connecter a l'administration Wagtail de <INTERNAL_DOMAIN>.
+1. Se connecter a l'administration Wagtail de mirai.<GOV_DOMAIN>.
 2. Dans l'arborescence, naviguer sous la section "Outils MIrAI".
 3. Creer une nouvelle page enfant, titre : **"Extensions"**.
 4. Dans le corps de la page (StreamField), ajouter les blocs suivants dans l'ordre :

@@ -90,3 +90,6 @@ config.default.json
 
 # Bonus
 bordel/
+
+# Private docs with real production values
+private/

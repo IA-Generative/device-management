@@ -2,7 +2,7 @@
 
 **Date** : 2026-04-11
 **Statut** : En vigueur
-**Auteurs** : <DOCKERHUB_NAMESPACE> + Claude Opus 4.6
+**Auteurs** : <USERNAME> + Claude Opus 4.6
 
 ---
 
