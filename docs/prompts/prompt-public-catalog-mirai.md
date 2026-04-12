@@ -1,7 +1,7 @@
 # Prompt — Integration du catalogue plugins dans le portail MIrAI (Sites Faciles)
 
 > Version : 1.0 — 2026-03-29
-> Perimetre : portail mirai.interieur.gouv.fr (Sites Faciles / Wagtail)
+> Perimetre : portail mirai.<GOV_DOMAIN> (Sites Faciles / Wagtail)
 > Prerequis : pages publiques DM operationnelles (`/catalog`, `/catalog/{slug}`, `/catalog/{slug}/download`)
 > Dependance : prompt-public-catalog-dm.md (doit etre implemente en premier)
 
@@ -11,7 +11,7 @@
 
 ### Portail MIrAI
 
-Le portail MIrAI (`mirai.interieur.gouv.fr`) est le site vitrine des outils IA du Ministere de l'Interieur. Il presente :
+Le portail MIrAI (`mirai.<GOV_DOMAIN>`) est le site vitrine des outils IA du Ministere de l'Interieur. Il presente :
 - Un header avec navigation (Outils MIrAI, Actualites, FAQ, A propos)
 - Une grille de 7 cartes pour les outils existants (Chat, Resumer, Compte-Rendu, Prompts, RAG, OCR, Espace travail)
 - Hero banner : "24 000 agents utilisent MIrAI, +3 000 nouveaux/mois"
@@ -275,7 +275,7 @@ urlpatterns = [
 
 ## Checklist d'implementation (Option B)
 
-- [ ] Acces editeur au CMS Wagtail de mirai.interieur.gouv.fr
+- [ ] Acces editeur au CMS Wagtail de mirai.<GOV_DOMAIN>
 - [ ] Creer une page enfant sous "Outils MIrAI" → titre "Extensions"
 - [ ] Ajouter un bloc `HeroBlock` : titre + texte d'introduction
 - [ ] Ajouter un bloc `RawHTMLBlock` : coller le snippet JS ci-dessus

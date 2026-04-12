@@ -25,8 +25,8 @@ cd dgx-deploy-vX.X
 
 # 3. Remplir le token DockerHub
 nano ~/.dm-secrets/.env.deploy
-# DOCKERHUB_USER=etiquet
-# DOCKERHUB_TOKEN=dckr_pat_xxxxx
+# DOCKERHUB_USER=<USERNAME>
+# DOCKERHUB_TOKEN=dckr_pat_<REDACTED>
 
 # 4. Remplir les secrets applicatifs
 nano ~/.dm-secrets/.env.secrets

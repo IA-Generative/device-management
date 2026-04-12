@@ -13,10 +13,10 @@
 pour pouvoir revenir en arriere si necessaire.
 
 ```bash
-cd /Users/etiquet/Documents/GitHub/device-management
+cd /path/to/device-management
 git add -A && git commit -m "chore: checkpoint before dm-config packaging"
 
-cd /Users/etiquet/Documents/GitHub/AssistantMiraiLibreOffice
+cd /path/to/AssistantMiraiLibreOffice
 git add -A && git commit -m "chore: checkpoint before dm-config packaging"
 ```
 
@@ -26,11 +26,11 @@ de verification (Phase 5).
 
 ```bash
 # Commit DM
-cd /Users/etiquet/Documents/GitHub/device-management
+cd /path/to/device-management
 git add -A && git commit -m "feat: serve config from plugins.config_template (dm-config.json)"
 
 # Commit plugin
-cd /Users/etiquet/Documents/GitHub/AssistantMiraiLibreOffice
+cd /path/to/AssistantMiraiLibreOffice
 git add -A && git commit -m "feat: add dm-config.json to .oxt package"
 ```
 
@@ -71,7 +71,7 @@ A la racine du repo AssistantMiraiLibreOffice, creer `dm-config.json` :
   "default": {
     "authHeaderName": "Authorization",
     "authHeaderPrefix": "Bearer ",
-    "portal_url": "https://mirai.interieur.gouv.fr",
+    "portal_url": "https://mirai.<GOV_DOMAIN>",
     "doc_url": "https://github.com/IA-Generative/AssistantMiraiLibreOffice/blob/master/docs/notice-utilisateur.md",
     "systemPrompt": "Tu es un assistant specialise dans la redaction de documents le contenu doit est concis et professionnels. Ton role est d'assister le redacteur pour disposer d'une redaction impecable. Ne repete pas mot pour mot le texte, reformule. Uniquement en texte seul et en francais",
     "extend_selection_max_tokens": 15000,

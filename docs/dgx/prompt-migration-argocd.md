@@ -226,7 +226,7 @@ acceder a GitLab et a la registry :
   environment = [
     "https_proxy=http://<PROXY_HOSTNAME>:3128",
     "http_proxy=http://<PROXY_HOSTNAME>:3128",
-    "no_proxy=localhost,127.0.0.1,.minint.fr,.svc,.svc.cluster.local"
+    "no_proxy=localhost,127.0.0.1,.<INTERNAL_DOMAIN>,.svc,.svc.cluster.local"
   ]
 ```
 
@@ -254,7 +254,7 @@ ArgoCD a besoin de pull le repo git. Dans le DGX, il faut le proxy :
 kubectl -n argocd set env deploy/argocd-repo-server \
   HTTPS_PROXY=http://<PROXY_HOSTNAME>:3128 \
   HTTP_PROXY=http://<PROXY_HOSTNAME>:3128 \
-  NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.minint.fr,.svc,.svc.cluster.local
+  NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.<INTERNAL_DOMAIN>,.svc,.svc.cluster.local
 ```
 
 ### 3.3 Configurer le repo Git
@@ -425,7 +425,7 @@ metadata:
 spec:
   provider:
     vault:
-      server: "https://vault.minint.fr"       # ou http://openbao.svc:8200
+      server: "https://vault.<INTERNAL_DOMAIN>"       # ou http://openbao.svc:8200
       path: "secret"
       version: "v2"
       auth:

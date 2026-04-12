@@ -100,7 +100,7 @@ Les environnements sont **libres** — le developpeur peut en creer autant qu'il
   "default": {
     "authHeaderName": "Authorization",
     "authHeaderPrefix": "Bearer ",
-    "portal_url": "https://mirai.interieur.gouv.fr",
+    "portal_url": "https://mirai.<GOV_DOMAIN>",
     "doc_url": "https://github.com/IA-Generative/AssistantMiraiLibreOffice/blob/master/docs/notice-utilisateur.md",
     "systemPrompt": "Tu es un assistant specialise...",
     "extend_selection_max_tokens": 15000,
@@ -163,7 +163,7 @@ a utiliser ces noms pour une coherence inter-plugins.
 | `local` | Dev en autonomie sur le poste du developpeur | **Non** | localhost uniquement | Ollama local (`http://localhost:11434`) ou mock | Aucun ou Keycloak Docker local (`localhost:8082`) |
 | `dev` | Dev avec DM Docker Compose local | Oui (localhost:3001) | localhost | Ollama ou Scaleway dev | Keycloak Docker (`localhost:8082`) |
 | `int` | Integration / recette sur un cluster partage | Oui (serveur int) | Interne | Scaleway ou GPU partage | Keycloak int |
-| `prod` | Production | Oui (serveur prod) | Internet / VPN | LLM production (Scaleway, GPU minint) | Keycloak production |
+| `prod` | Production | Oui (serveur prod) | Internet / VPN | LLM production (Scaleway, GPU <INTERNAL>) | Keycloak production |
 
 #### Valeurs par defaut recommandees
 

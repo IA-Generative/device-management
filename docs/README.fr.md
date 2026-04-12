@@ -38,7 +38,7 @@ Le fichier `config/config.json` supporte les placeholders `${VARNAME}` (ex: `${P
 - `DM_TELEMETRY_ENABLED=true`
 - `DM_TELEMETRY_PUBLIC_ENDPOINT=/telemetry/v1/traces`
 - `DM_TELEMETRY_AUTHORIZATION_TYPE=Bearer`
-- `DM_TELEMETRY_UPSTREAM_ENDPOINT=https://telemetry.minint.fr/v1/traces`
+- `DM_TELEMETRY_UPSTREAM_ENDPOINT=https://telemetry.<INTERNAL_DOMAIN>/v1/traces`
 - `DM_TELEMETRY_UPSTREAM_AUTH_TYPE=Bearer`
 - `DM_TELEMETRY_UPSTREAM_KEY=...` (optionnel si l’amont exige une auth)
 - `DM_TELEMETRY_TOKEN_TTL_SECONDS=300`
