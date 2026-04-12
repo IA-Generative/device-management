@@ -30,9 +30,15 @@ server {
     proxy_set_header X-Original-URI $request_uri;
   }
 
+  # Keycloak OIDC endpoints — public by design (same as /certs).
+  # /auth is a browser redirect endpoint: the user-agent cannot inject
+  # custom X-Relay-* headers, so auth_request here creates a chicken-and-egg
+  # at first login (credentials are only distributed after enrollment,
+  # which itself requires a valid Keycloak token).
+  # /token is protected by PKCE (code_verifier) and /userinfo by the
+  # Bearer token — Keycloak validates them natively, no relay gatekeeping
+  # needed for cryptographic safety.
   location ~ ^/keycloak/protocol/openid-connect/(auth|token|userinfo)$ {
-    set $relay_target keycloak;
-    auth_request /__relay_auth;
     proxy_set_header Authorization $http_authorization;
     proxy_set_header Content-Type $http_content_type;
     proxy_set_header User-Agent $http_user_agent;
