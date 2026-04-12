@@ -84,9 +84,16 @@ config.default.json
 !deploy/docker/.env.secrets.example
 
 ############################
-# Misc
+# IDE / Tools
 ############################
 .idea/
+.claude/
+
+############################
+# macOS extras
+############################
+*.DS_Store
+Thumbs.db
 
 # Bonus
 bordel/
