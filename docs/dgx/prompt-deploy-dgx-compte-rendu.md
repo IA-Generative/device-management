@@ -23,7 +23,7 @@ deploy/k8s/overlays/dgx/
 Variables injectees dans chaque pod :
 - `https_proxy` / `HTTPS_PROXY`
 - `http_proxy` / `HTTP_PROXY`
-- `no_proxy` / `NO_PROXY` = `localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.minint.fr,.svc,.svc.cluster.local`
+- `no_proxy` / `NO_PROXY` = `localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.<INTERNAL_DOMAIN>,.svc,.svc.cluster.local`
 
 Les domaines `.gouv.fr` (sso.mirai, compte-rendu.mirai) ne sont PAS dans
 `no_proxy` → ils passent par le proxy. C'est intentionnel.

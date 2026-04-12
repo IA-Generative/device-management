@@ -2,7 +2,7 @@
 
 **Date** : 2026-04-11
 **Statut** : Accepte (valide en production)
-**Auteurs** : etiquet + Claude Opus 4.6
+**Auteurs** : <USERNAME> + Claude Opus 4.6
 
 ---
 
@@ -28,22 +28,22 @@ Le projet device-management doit etre deploye on-premise sur un cluster DGX (GPU
 
 ### 1. Registry : DockerHub mirror au lieu de Scaleway
 
-**Decision** : Toutes les images sont mirrored sur `docker.io/etiquet/*` et l'overlay DGX utilise le bloc `images:` de kustomize pour rerouter.
+**Decision** : Toutes les images sont mirrored sur `docker.io/<DOCKERHUB_USER>/*` et l'overlay DGX utilise le bloc `images:` de kustomize pour rerouter.
 
 **Alternatives envisagees** :
 - Scaleway registry directe → **rejetee** : injoignable depuis le DGX (pas de route reseau)
 - Harbor on-premise → **reportee** : necessite infra a deployer, trop de friction pour un premier deploiement
 - Transfer air-gap (docker save/load) → **rejetee** : trop manuel, pas de CI possible
 
-**Justification** : DockerHub est accessible via le proxy corporate. Le compte `etiquet` avec un PAT evite le rate limit anonyme. Le bloc `images:` de kustomize permet de changer la registry sans modifier aucun manifest de base — les profils Scaleway et local ne sont pas affectes.
+**Justification** : DockerHub est accessible via le proxy corporate. Le compte `<USERNAME>` avec un PAT evite le rate limit anonyme. Le bloc `images:` de kustomize permet de changer la registry sans modifier aucun manifest de base — les profils Scaleway et local ne sont pas affectes.
 
 **Images mirrored** :
 ```
-etiquet/device-management:0.5.16-waf-fix  (image applicative)
-etiquet/postgres:16-alpine
-etiquet/nginx:1.27-alpine
-etiquet/adminer:4.8.1-standalone
-etiquet/curl:8.10.1                        (image de test)
+<DOCKERHUB_USER>/device-management:0.5.16-waf-fix  (image applicative)
+<DOCKERHUB_USER>/postgres:16-alpine
+<DOCKERHUB_USER>/nginx:1.27-alpine
+<DOCKERHUB_USER>/adminer:4.8.1-standalone
+<DOCKERHUB_USER>/curl:8.10.1                        (image de test)
 ```
 
 ---
@@ -62,7 +62,7 @@ etiquet/curl:8.10.1                        (image de test)
 
 **Deployments patches** : `device-management`, `device-management-admin`, `relay-assistant`, `queue-worker`
 
-**no_proxy** : `localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.minint.fr,.svc,.svc.cluster.local`
+**no_proxy** : `localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.<INTERNAL_DOMAIN>,.svc,.svc.cluster.local`
 - Les domaines `.gouv.fr` (SSO, compte-rendu) ne sont PAS dans `no_proxy` → ils passent par le proxy. Intentionnel.
 
 ---
@@ -140,14 +140,14 @@ Le script `dumb-deploy.sh` :
 
 ### 7. Tests de connectivite : Job ephemere sans `kubectl exec`
 
-**Decision** : Le script `09-connectivity-test.sh` lance un Job K8s avec l'image `etiquet/curl:8.10.1` qui teste DNS, HTTP via proxy, services cluster, et registry.
+**Decision** : Le script `09-connectivity-test.sh` lance un Job K8s avec l'image `<DOCKERHUB_USER>/curl:8.10.1` qui teste DNS, HTTP via proxy, services cluster, et registry.
 
 **Alternatives envisagees** :
 - `kubectl exec` dans un pod existant → **rejetee** : bloque sur le DGX
 - Pod debug avec `kubectl run --rm -it` → **rejetee** : le `--rm -it` ne marche pas sur le DGX (falling back to streaming logs, pod supprime avant d'avoir les resultats)
 - Test depuis la machine locale → **rejetee** : ne teste pas le reseau interne du cluster
 
-**Justification** : Le Job ecrit ses resultats dans stdout, on les lit via `kubectl logs`. L'image curl est sur DockerHub `etiquet/curl` (pas de rate limit). Le script distingue les erreurs via les codes de sortie curl (5=proxy DNS, 6=host DNS, 7=connexion refusee, 28=timeout, 35=TLS).
+**Justification** : Le Job ecrit ses resultats dans stdout, on les lit via `kubectl logs`. L'image curl est sur DockerHub `<DOCKERHUB_USER>/curl` (pas de rate limit). Le script distingue les erreurs via les codes de sortie curl (5=proxy DNS, 6=host DNS, 7=connexion refusee, 28=timeout, 35=TLS).
 
 **Variables configurables** : `PROXY`, `NAMESPACE`, `TIMEOUT_SEC`, `USE_HOST_NETWORK`, `TEST_IMAGE`
 
@@ -203,7 +203,7 @@ dgx-deploy-vX.X/
 - Le profil Scaleway n'est pas impacte
 
 ### Negatives / Dette technique restante
-- Les images DockerHub sont sur un compte personnel (`etiquet`) — devrait migrer vers un registre d'equipe
+- Les images DockerHub sont sur un compte personnel (`<USERNAME>`) — devrait migrer vers un registre d'equipe
 - Le proxy est en IP directe (pas de DNS) — fragile si l'IP change
 - Les patches proxy sont dupliques (un fichier par Deployment) — pourrait etre factorise avec un mutating webhook
 - Le `no_proxy` est hardcode dans chaque patch — devrait etre centralise

@@ -389,7 +389,7 @@ Donnees depuis `/catalog/api/stats` (public, cache 5min) et `/admin/api/debug/he
 
 ## 6. Page publique catalogue (`/catalog`)
 
-DSFR via CDN. Sans auth. Style mirai.interieur.gouv.fr.
+DSFR via CDN. Sans auth. Style mirai.<GOV_DOMAIN>.
 
 **Structure** : header gouv → encart disponibilite → hero + stats → metriques adoption (graphique + filtres) → grille plugins (cartes avec badges maturite, tags, version, installs, logo, lien code source) → prochainement → benefices → footer gouv.
 

@@ -12,8 +12,8 @@ Configuration centralisee, catalogue de plugins, deploiement progressif, telemet
 Assiste par LLM pour l'analyse de packages et la generation de fiches catalogue.
 
 **Repos** :
-- `/Users/etiquet/Documents/GitHub/device-management` — serveur DM (FastAPI)
-- `/Users/etiquet/Documents/GitHub/AssistantMiraiLibreOffice` — plugin LibreOffice (client)
+- `/path/to/device-management` — serveur DM (FastAPI)
+- `/path/to/AssistantMiraiLibreOffice` — plugin LibreOffice (client)
 
 ## Etat actuel
 
