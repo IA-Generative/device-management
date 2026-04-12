@@ -1,134 +1,97 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" data-fr-scheme="system">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Catalogue de plugins{% endblock %} - Device Management</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Catalogue de plugins{% endblock %} — Device Management</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.12.1/dist/dsfr.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.12.1/dist/utility/icons/icons.min.css">
   <style>
-    @font-face {
-      font-family: 'Marianne';
-      src: url('https://cdn.jsdelivr.net/npm/@gouvfr/dsfr/dist/fonts/Marianne-Regular.woff2') format('woff2');
-      font-weight: 400;
-      font-style: normal;
-      font-display: swap;
-    }
-    @font-face {
-      font-family: 'Marianne';
-      src: url('https://cdn.jsdelivr.net/npm/@gouvfr/dsfr/dist/fonts/Marianne-Bold.woff2') format('woff2');
-      font-weight: 700;
-      font-style: normal;
-      font-display: swap;
-    }
-
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: 'Marianne', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #F5F5FE;
-      color: #1e1e1e;
-      line-height: 1.5;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-
-    a { color: #000091; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-
-    .header {
-      background: #000091;
-      color: #fff;
-      padding: 1rem 2rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    .header-title {
-      font-size: 1.25rem;
-      font-weight: 700;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .header-title a { color: #fff; }
-    .header-title a:hover { text-decoration: none; opacity: 0.9; }
-
-    .main { flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; padding: 2rem 1.5rem; }
-
-    .footer {
-      text-align: center;
-      padding: 1.5rem;
-      color: #666;
-      font-size: 0.85rem;
-      border-top: 1px solid #ddd;
-      background: #fff;
-      margin-top: auto;
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      padding: 0.6rem 1.2rem;
-      border: none;
-      border-radius: 4px;
-      font-family: inherit;
-      font-size: 0.9rem;
-      font-weight: 700;
-      cursor: pointer;
-      text-decoration: none;
-      transition: background 0.15s;
-    }
-    .btn-primary { background: #000091; color: #fff; }
-    .btn-primary:hover { background: #1212ff; text-decoration: none; }
-    .btn-secondary { background: #fff; color: #000091; border: 1px solid #000091; }
-    .btn-secondary:hover { background: #F5F5FE; text-decoration: none; }
-
-    .badge {
-      display: inline-block;
-      padding: 0.15rem 0.55rem;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      font-weight: 700;
-      color: #fff;
-      line-height: 1.4;
-    }
-    .badge-dev { background: #ce0500; }
-    .badge-alpha { background: #e67e22; }
-    .badge-beta { background: #c9b800; color: #1e1e1e; }
-    .badge-pre-release { background: #0078f3; }
-    .badge-release { background: #18753c; }
-
-    .pill {
-      display: inline-block;
-      padding: 0.2rem 0.6rem;
-      border-radius: 12px;
-      font-size: 0.8rem;
-      background: #e3e3fd;
-      color: #000091;
-      margin: 0.15rem 0.1rem;
-    }
-
+    .dm-hero { background: linear-gradient(135deg, #000091 0%, #1212ff 100%); color: #fff; padding: 3rem 0; }
+    .dm-hero h1 { color: #fff; margin-bottom: 0.5rem; }
+    .dm-hero p { color: rgba(255,255,255,0.85); }
+    .dm-stat-card { background: rgba(255,255,255,0.12); border-radius: 8px; padding: 1.25rem; text-align: center; }
+    .dm-stat-card strong { display: block; font-size: 1.75rem; margin-bottom: 0.25rem; }
+    .dm-stat-card span { font-size: 0.85rem; opacity: 0.85; }
+    .dm-plugin-icon { width: 64px; height: 64px; border-radius: 12px; object-fit: contain; flex-shrink: 0; }
+    .dm-plugin-icon-placeholder { width: 64px; height: 64px; border-radius: 12px; background: #000091; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 1.1rem; flex-shrink: 0; }
+    .dm-section { padding: 2.5rem 0; }
+    .dm-filter-group { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
+    .dm-source-link { font-size: 0.8rem; color: #929292; display: inline-flex; align-items: center; gap: 0.3rem; text-decoration: none; }
+    .dm-source-link:hover { color: #000091; text-decoration: underline; }
     {% block extra_css %}{% endblock %}
   </style>
 </head>
 <body>
-  <header class="header">
-    <div class="header-title">
-      <a href="/catalog">Catalogue de plugins</a>
+
+<header role="banner" class="fr-header">
+  <div class="fr-header__body">
+    <div class="fr-container">
+      <div class="fr-header__body-row">
+        <div class="fr-header__brand fr-enlarge-link">
+          <div class="fr-header__brand-top">
+            <div class="fr-header__logo">
+              <p class="fr-logo">Republique<br>Francaise</p>
+            </div>
+          </div>
+          <div class="fr-header__service">
+            <a href="/catalog" title="Accueil catalogue">
+              <p class="fr-header__service-title">MIrAI — Catalogue de plugins</p>
+            </a>
+            <p class="fr-header__service-tagline">Extensions pour les outils bureautiques</p>
+          </div>
+        </div>
+        <div class="fr-header__tools">
+          <div class="fr-header__tools-links">
+            <ul class="fr-btns-group">
+              {% block header_buttons %}
+              <li><a class="fr-btn fr-btn--sm fr-btn--secondary" href="/admin/">Administration</a></li>
+              {% endblock %}
+            </ul>
+          </div>
+        </div>
+      </div>
     </div>
-    {% block header_extra %}{% endblock %}
-  </header>
+  </div>
+</header>
 
-  <main class="main">
+{% block hero %}{% endblock %}
+
+<main class="dm-section">
+  <div class="fr-container">
     {% block content %}{% endblock %}
-  </main>
+  </div>
+</main>
 
-  <footer class="footer">
-    Propulse par Device Management
-  </footer>
+<footer class="fr-footer" role="contentinfo">
+  <div class="fr-container">
+    <div class="fr-footer__body">
+      <div class="fr-footer__brand fr-enlarge-link">
+        <p class="fr-logo">Republique<br>Francaise</p>
+      </div>
+      <div class="fr-footer__content">
+        <ul class="fr-footer__content-list">
+          <li><a href="https://info.gouv.fr" class="fr-footer__content-link">info.gouv.fr</a></li>
+          <li><a href="https://service-public.fr" class="fr-footer__content-link">service-public.fr</a></li>
+          <li><a href="https://legifrance.gouv.fr" class="fr-footer__content-link">legifrance.gouv.fr</a></li>
+          <li><a href="https://data.gouv.fr" class="fr-footer__content-link">data.gouv.fr</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="fr-footer__bottom">
+      <ul class="fr-footer__bottom-list">
+        <li><a class="fr-footer__bottom-link" href="#">Accessibilite : partiellement conforme</a></li>
+        <li><a class="fr-footer__bottom-link" href="#">Mentions legales</a></li>
+        <li><a class="fr-footer__bottom-link" href="/catalog/api/plugins">API JSON</a></li>
+      </ul>
+      <div class="fr-footer__bottom-copy">
+        <p>Sauf mention explicite, les contenus sont proposes sous
+        <a href="https://github.com/etalab/licence-ouverte/blob/master/LO.md">licence etalab-2.0</a></p>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.12.1/dist/dsfr.module.min.js"></script>
 </body>
 </html>
