@@ -2288,27 +2288,61 @@ async def catalog_deployments_purge(request: Request, plugin_id: int):
 
 @router.post("/catalog/{plugin_id}/versions/upload")
 @require_admin
-async def catalog_version_upload(request: Request, plugin_id: int,
-                                 version: str = Form(...),
-                                 release_notes: str = Form(""),
-                                 distribution_mode: str = Form("managed"),
-                                 min_host_version: str = Form(""),
-                                 max_host_version: str = Form(""),
-                                 environment: str = Form("dev"),
-                                 deploy_strategy: str = Form("patch_all"),
-                                 stage_hours: str = Form("24"),
-                                 target_mode: str = Form("all"),
-                                 cohort_id: str = Form(""),
-                                 percent: str = Form("10"),
-                                 emails: str = Form(""),
-                                 action: str = Form("deploy"),
-                                 binary: UploadFile = File(...)):
-    """Upload binary → create artifact + version → optionally deploy."""
-    # 1. Validate & read binary
-    error = artifacts_svc.validate_upload(binary.filename or "", binary.size or 0)
-    if error:
-        raise HTTPException(400, error)
-    data = await binary.read()
+async def catalog_version_upload(request: Request, plugin_id: int):
+    """Upload binary → create artifact + version → optionally deploy.
+
+    Accepts both multipart/form-data (legacy) and JSON with chunked
+    upload_id (WAF-safe).
+    """
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        body = await request.json()
+        version = body.get("version", "")
+        release_notes = body.get("release_notes", "")
+        distribution_mode = body.get("distribution_mode", "managed")
+        min_host_version = body.get("min_host_version", "")
+        max_host_version = body.get("max_host_version", "")
+        environment = body.get("environment", "dev")
+        deploy_strategy = body.get("deploy_strategy", "patch_all")
+        stage_hours = body.get("stage_hours", "24")
+        target_mode = body.get("target_mode", "all")
+        cohort_id = body.get("cohort_id", "")
+        percent = body.get("percent", "10")
+        emails = body.get("emails", "")
+        action = body.get("action", "deploy")
+        upload_id = body.get("upload_id", "")
+        if not upload_id:
+            raise HTTPException(400, "Missing upload_id in JSON body")
+        result = _reassemble_upload(upload_id)
+        if not result:
+            raise HTTPException(400, "Upload not found or incomplete")
+        data, bin_filename = result
+    else:
+        form = await request.form()
+        version = form.get("version", "")
+        release_notes = form.get("release_notes", "")
+        distribution_mode = form.get("distribution_mode", "managed")
+        min_host_version = form.get("min_host_version", "")
+        max_host_version = form.get("max_host_version", "")
+        environment = form.get("environment", "dev")
+        deploy_strategy = form.get("deploy_strategy", "patch_all")
+        stage_hours = form.get("stage_hours", "24")
+        target_mode = form.get("target_mode", "all")
+        cohort_id = form.get("cohort_id", "")
+        percent = form.get("percent", "10")
+        emails = form.get("emails", "")
+        action = form.get("action", "deploy")
+        binary = form.get("binary")
+        if not binary or not hasattr(binary, "read"):
+            raise HTTPException(400, "Missing binary file")
+        error = artifacts_svc.validate_upload(binary.filename or "", binary.size or 0)
+        if error:
+            raise HTTPException(400, error)
+        data = await binary.read()
+        bin_filename = binary.filename or "upload.oxt"
+
+    if not version:
+        raise HTTPException(400, "Missing version")
     if len(data) > artifacts_svc.MAX_UPLOAD_SIZE:
         raise HTTPException(400, "Fichier trop volumineux (>100 Mo)")
 
@@ -2345,7 +2379,7 @@ async def catalog_version_upload(request: Request, plugin_id: int,
             _slug = plugin.get("slug", "plugin")
 
             binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-            _ext = os.path.splitext(binary.filename or "")[1] or ".oxt"
+            _ext = os.path.splitext(bin_filename or "")[1] or ".oxt"
             rel_path = f"{device_type}/{_slug}-{version}{_ext}"
             os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
             local_path = f"{binaries_dir}/{rel_path}"
