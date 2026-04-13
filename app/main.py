@@ -1408,11 +1408,10 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
     if public_base:
         config_obj["relayAssistantBaseUrl"] = f"{public_base}/relay-assistant"
 
-        # Keep Keycloak values from config by default.
-        # Force relay endpoints only when explicitly enabled via DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS.
+        # Keep keycloakIssuerUrl as the real SSO URL (needed for JWT iss validation).
+        # Only redirect auth/token/userinfo through the relay proxy.
         if settings.relay_force_keycloak_endpoints:
             relay_keycloak_base = f"{public_base}/relay-assistant/keycloak"
-            config_obj["keycloakIssuerUrl"] = relay_keycloak_base
             config_obj["keycloakAuthorizationEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/auth"
             config_obj["keycloakTokenEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/token"
             config_obj["keycloakUserinfoEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/userinfo"
