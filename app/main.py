@@ -3895,20 +3895,22 @@ def get_binary(path: str):
 # (relay-assistant:8080) so we proxy here to keep the plugin's single-origin
 # assumption working.
 #
-# Env var lookup order:
-#   1. DM_RELAY_ASSISTANT_URL  — K8s convention (Service ClusterIP on port 80,
-#      see deploy/k8s/base/secrets/all-secrets.yaml + 27-relay-assistant-service.yaml)
-#   2. DM_RELAY_ASSISTANT_UPSTREAM  — legacy name, kept for backwards compat
-#   3. default http://relay-assistant:8080  — docker-compose (container port 8080)
-# K8s deployments MUST set DM_RELAY_ASSISTANT_URL=http://relay-assistant so the
-# Service DNS resolves to the ClusterIP and routes to the pod on targetPort 8080.
-# Hardcoded :8080 would attempt a direct pod connection and fail (no matching
-# service port).
-_RELAY_UPSTREAM = (
-    os.getenv("DM_RELAY_ASSISTANT_URL")
-    or os.getenv("DM_RELAY_ASSISTANT_UPSTREAM")
-    or "http://relay-assistant:8080"
-).rstrip("/")
+# Direct upstream mapping: instead of forwarding to the nginx relay-assistant
+# (which cannot resolve corporate hostnames behind a forward HTTP proxy),
+# device-management routes directly to external upstreams via httpx with
+# trust_env=True so that HTTPS_PROXY is honoured for outbound corporate calls.
+_RELAY_UPSTREAM_MAP: dict[str, str] = {}
+for _target, _env_keys in (
+    ("keycloak", ("RELAY_KEYCLOAK_UPSTREAM",)),
+    ("llm", ("RELAY_LLM_UPSTREAM", "LLM_BASE_URL")),
+    ("compte-rendu", ("RELAY_COMPTE_RENDU_UPSTREAM",)),
+    ("mcr-api", ("RELAY_MCR_API_UPSTREAM",)),
+):
+    for _k in _env_keys:
+        _v = (os.getenv(_k) or "").strip().rstrip("/")
+        if _v:
+            _RELAY_UPSTREAM_MAP[_target] = _v
+            break
 
 _RELAY_HOP_HEADERS = frozenset({
     "host", "transfer-encoding", "connection", "keep-alive",
@@ -3918,7 +3920,16 @@ _RELAY_HOP_HEADERS = frozenset({
 
 @app.api_route("/relay-assistant/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def relay_assistant_proxy(path: str, request: Request):
-    upstream_url = f"{_RELAY_UPSTREAM}/{path}"
+    # Split path into target prefix and remainder, e.g. "keycloak/protocol/..." → ("keycloak", "protocol/...")
+    parts = path.split("/", 1)
+    target = parts[0]
+    remainder = parts[1] if len(parts) > 1 else ""
+
+    upstream_base = _RELAY_UPSTREAM_MAP.get(target)
+    if not upstream_base:
+        raise HTTPException(status_code=404, detail=f"Unknown relay target: {target}")
+
+    upstream_url = f"{upstream_base}/{remainder}" if remainder else upstream_base
     qs = str(request.url.query)
     if qs:
         upstream_url = f"{upstream_url}?{qs}"
@@ -3929,21 +3940,11 @@ async def relay_assistant_proxy(path: str, request: Request):
     }
     body = await request.body()
 
-    # Bypass corporate proxy: relay-assistant is an in-cluster service and
-    # MUST NOT go through HTTP_PROXY / HTTPS_PROXY. The DGX overlay sets
-    # these env vars cluster-wide for outbound calls (Keycloak, compte-rendu,
-    # etc.), and httpx picks them up by default via trust_env=True. Short
-    # hostnames like "relay-assistant" don't always match NO_PROXY reliably,
-    # so httpx either routes through the proxy (→ 407) or retries a direct
-    # TCP connect that hangs (→ ConnectTimeout). Pinning trust_env=False
-    # combined with an explicit AsyncHTTPTransport guarantees a direct
-    # in-cluster TCP connection regardless of env-var state.
-    transport = httpx.AsyncHTTPTransport()
-    async with httpx.AsyncClient(
-        transport=transport,
-        trust_env=False,
-        timeout=30,
-    ) as client:
+    # External corporate upstreams: use trust_env=True so httpx picks up
+    # HTTPS_PROXY and routes through the corporate forward proxy.
+    # DNS resolution of corporate hostnames (sso.mirai.interieur.gouv.fr etc.)
+    # only works through the proxy's HTTP CONNECT tunnel.
+    async with httpx.AsyncClient(trust_env=True, timeout=30) as client:
         upstream_resp = await client.request(
             method=request.method,
             url=upstream_url,
