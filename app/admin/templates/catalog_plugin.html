@@ -677,7 +677,7 @@ async function nvSubmit(action) {
       (action === 'deploy' ? 'Deploiement en cours...' : 'Publication en cours...');
 
     // 3. Send as JSON (not multipart) — WAF blocks multipart POST
-    const resp = await fetch(form.action, {
+    const resp = await fetch(form.getAttribute('action'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
