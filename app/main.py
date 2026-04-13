@@ -1409,11 +1409,11 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
         config_obj["relayAssistantBaseUrl"] = f"{public_base}/relay-assistant"
 
         # Keep keycloakIssuerUrl as the real SSO URL (needed for JWT iss validation).
-        # Only redirect auth/token/userinfo through the relay proxy.
+        # Token exchange goes through /auth/token (WAF-safe JSON envelope).
+        # Userinfo goes through relay-assistant proxy.
         if settings.relay_force_keycloak_endpoints:
             relay_keycloak_base = f"{public_base}/relay-assistant/keycloak"
-            config_obj["keycloakAuthorizationEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/auth"
-            config_obj["keycloakTokenEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/token"
+            config_obj["keycloakTokenEndpoint"] = f"{public_base}/auth/token"
             config_obj["keycloakUserinfoEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/userinfo"
 
     token = ""
