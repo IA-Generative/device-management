@@ -106,8 +106,13 @@ def update_plugin(cur, plugin_id: int, **fields) -> bool:
 
 
 def purge_removed(cur) -> int:
-    """Permanently DELETE all plugins with status='removed' (cascades to aliases, versions, etc.)."""
-    cur.execute("DELETE FROM plugins WHERE status = 'removed'")
+    """Permanently DELETE all plugins with status='removed' (cascades to aliases, versions, campaigns, etc.)."""
+    cur.execute("SELECT id FROM plugins WHERE status = 'removed'")
+    ids = [r[0] for r in cur.fetchall()]
+    if not ids:
+        return 0
+    cur.execute("DELETE FROM campaigns WHERE plugin_id = ANY(%s)", (ids,))
+    cur.execute("DELETE FROM plugins WHERE id = ANY(%s)", (ids,))
     return cur.rowcount
 
 
