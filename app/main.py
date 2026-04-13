@@ -1175,7 +1175,8 @@ def _verify_access_token(token: str) -> dict:
             },
             leeway=max(0, int(settings.auth_leeway_seconds)),
         )
-    except PyJWTError:
+    except PyJWTError as exc:
+        logger.warning("JWT verification failed (PyJWTError): %s: %s", exc.__class__.__name__, exc)
         raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
     except Exception as exc:
         logger.warning("JWT verification failed with backend error: %s: %s", exc.__class__.__name__, exc)
@@ -2488,12 +2489,15 @@ async def enroll(request: Request):
         )
 
     access_token = _extract_access_token_from_request(request)
+    logger.info("Enroll: bearer token present=%s length=%d", bool(access_token), len(access_token) if access_token else 0)
     try:
         auth_email = _email_from_access_token(access_token)
     except HTTPException as exc:
+        logger.warning("Enroll: _email_from_access_token raised HTTP %d: %s", exc.status_code, exc.detail)
         if exc.status_code >= 500:
             raise
         auth_email = ""
+    logger.info("Enroll: auth_email=%r", auth_email)
     if not auth_email:
         return JSONResponse(
             status_code=401,
