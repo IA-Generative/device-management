@@ -584,7 +584,37 @@ function nvUpdateEstimate() {
     '~ ' + days + ' jours (5% \u2192 25% \u2192 50% \u2192 100%)';
 }
 
-function nvSubmit(action) {
+// ═══════ Chunked upload (WAF bypass) ═══════
+const NV_CHUNK_SIZE = 512 * 1024; // 512 KB per chunk
+
+async function nvUploadFileChunked(file) {
+  const totalChunks = Math.ceil(file.size / NV_CHUNK_SIZE);
+  let uploadId = '';
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * NV_CHUNK_SIZE;
+    const end = Math.min(start + NV_CHUNK_SIZE, file.size);
+    const blob = file.slice(start, end);
+    const fd = new FormData();
+    fd.append('chunk', blob, file.name);
+    fd.append('chunk_index', i);
+    fd.append('total_chunks', totalChunks);
+    fd.append('filename', file.name);
+    if (uploadId) fd.append('upload_id', uploadId);
+    const resp = await fetch('/admin/api/upload-chunk', {
+      method: 'POST', body: fd, credentials: 'same-origin',
+    });
+    if (!resp.ok) throw new Error('Chunk upload failed: ' + resp.status);
+    const data = await resp.json();
+    uploadId = data.upload_id;
+    const pct = Math.round(((i + 1) / totalChunks) * 100);
+    document.getElementById('nv-btn-deploy').innerHTML =
+      '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
+      'Upload ' + pct + '%...';
+  }
+  return uploadId;
+}
+
+async function nvSubmit(action) {
   const errBox = document.getElementById('nv-deploy-error');
   errBox.style.display = 'none';
 
@@ -619,39 +649,61 @@ function nvSubmit(action) {
     }
   }
 
-  document.getElementById('nv-action').value = action;
   // Show loading state on buttons
   document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => {
     b.disabled = true;
   });
   document.getElementById('nv-btn-deploy').innerHTML =
     '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
-    (action === 'deploy' ? 'Deploiement en cours...' : 'Publication en cours...');
-  // Submit via fetch to bypass WAF blocking native form POSTs
-  const form = document.getElementById('nv-form');
-  const fd = new FormData(form);
-  fetch(form.action, {method:'POST', body:fd, credentials:'same-origin', redirect:'manual'})
-    .then(resp => {
-      if (resp.type === 'opaqueredirect' || resp.status === 303 || resp.status === 302) {
-        window.location.href = resp.headers.get('Location') || window.location.href;
-      } else if (resp.ok) {
-        window.location.reload();
-      } else {
-        return resp.text().then(t => {
-          let msg = 'Erreur ' + resp.status;
-          try { msg = JSON.parse(t).detail || msg; } catch {}
-          document.getElementById('nv-deploy-error').textContent = msg;
-          document.getElementById('nv-deploy-error').style.display = 'block';
-          document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => b.disabled = false);
-          document.getElementById('nv-btn-deploy').innerHTML = 'Deployer';
-        });
-      }
-    })
-    .catch(err => {
-      document.getElementById('nv-deploy-error').textContent = 'Erreur reseau : ' + err.message;
-      document.getElementById('nv-deploy-error').style.display = 'block';
-      document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => b.disabled = false);
+    'Upload du fichier...';
+
+  try {
+    // 1. Upload file in chunks (WAF bypass)
+    const uploadId = await nvUploadFileChunked(file);
+
+    // 2. Collect form fields as JSON payload
+    const form = document.getElementById('nv-form');
+    const formData = new FormData(form);
+    const payload = {};
+    for (const [key, value] of formData.entries()) {
+      if (key === 'binary') continue;
+      payload[key] = value;
+    }
+    payload.action = action;
+    payload.upload_id = uploadId;
+
+    document.getElementById('nv-btn-deploy').innerHTML =
+      '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
+      (action === 'deploy' ? 'Deploiement en cours...' : 'Publication en cours...');
+
+    // 3. Send as JSON (not multipart) — WAF blocks multipart POST
+    const resp = await fetch(form.action, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+      redirect: 'manual',
     });
+
+    if (resp.type === 'opaqueredirect' || resp.status === 303 || resp.status === 302) {
+      window.location.href = resp.headers.get('Location') || window.location.href;
+    } else if (resp.ok) {
+      window.location.reload();
+    } else {
+      const t = await resp.text();
+      let msg = 'Erreur ' + resp.status;
+      try { msg = JSON.parse(t).detail || msg; } catch {}
+      errBox.textContent = msg;
+      errBox.style.display = 'block';
+      document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => b.disabled = false);
+      document.getElementById('nv-btn-deploy').innerHTML = 'Deployer';
+    }
+  } catch (err) {
+    errBox.textContent = 'Erreur : ' + err.message;
+    errBox.style.display = 'block';
+    document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => b.disabled = false);
+    document.getElementById('nv-btn-deploy').innerHTML = 'Deployer';
+  }
 }
 </script>
 
