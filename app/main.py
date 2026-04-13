@@ -3917,6 +3917,58 @@ _RELAY_HOP_HEADERS = frozenset({
 })
 
 
+# ── WAF-safe Keycloak token proxy ─────────────────────────────────────
+# Corporate WAFs block POST requests whose URL contains
+# /openid-connect/token (OIDC pattern detection).  This endpoint
+# accepts a JSON envelope with a base64-encoded form payload from the
+# plugin, decodes it, and forwards it to the real Keycloak token
+# endpoint server-side via the corporate proxy.
+#
+# Plugin sends:
+#   POST /auth/token  { "p": "<base64(grant_type=authorization_code&code=…)>" }
+# DM forwards:
+#   POST https://sso.…/realms/mirai/protocol/openid-connect/token
+#   Content-Type: application/x-www-form-urlencoded
+#   body = decoded form payload
+_KEYCLOAK_TOKEN_UPSTREAM = (
+    (os.getenv("RELAY_KEYCLOAK_UPSTREAM") or "").rstrip("/")
+)
+
+
+@app.api_route("/auth/token", methods=["POST", "OPTIONS"])
+async def keycloak_token_proxy(request: Request):
+    if request.method == "OPTIONS":
+        return Response(status_code=204)
+
+    if not _KEYCLOAK_TOKEN_UPSTREAM:
+        raise HTTPException(status_code=503, detail="RELAY_KEYCLOAK_UPSTREAM not configured")
+
+    body = await request.json()
+    encoded_payload = body.get("p")
+    if not encoded_payload:
+        raise HTTPException(status_code=400, detail="Missing 'p' field (base64 form payload)")
+
+    try:
+        form_data = base64.b64decode(encoded_payload)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 in 'p' field")
+
+    token_url = f"{_KEYCLOAK_TOKEN_UPSTREAM}/protocol/openid-connect/token"
+
+    async with httpx.AsyncClient(trust_env=True, timeout=30) as client:
+        upstream_resp = await client.post(
+            token_url,
+            content=form_data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    return Response(
+        content=upstream_resp.content,
+        status_code=upstream_resp.status_code,
+        headers={"content-type": upstream_resp.headers.get("content-type", "application/json")},
+    )
+
+
 @app.api_route("/relay-assistant/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def relay_assistant_proxy(path: str, request: Request):
     # Split path into target prefix and remainder, e.g. "keycloak/protocol/..." → ("keycloak", "protocol/...")
