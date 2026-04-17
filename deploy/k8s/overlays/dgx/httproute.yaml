@@ -5,7 +5,7 @@ metadata:
   namespace: bootstrap
 spec:
   hostnames:
-    - <DGX_HOSTNAME>
+    - onyxia.gpu.minint.fr
   parentRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway
