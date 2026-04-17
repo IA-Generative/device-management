@@ -5,7 +5,7 @@ metadata:
   namespace: bootstrap
 spec:
   hostnames:
-    - <DGX_HOSTNAME>
+    - <INTERNAL_DOMAIN>
   parentRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway
