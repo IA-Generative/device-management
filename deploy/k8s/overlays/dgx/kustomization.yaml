@@ -4,6 +4,9 @@ kind: Kustomization
 resources:
   - ../../base
   - httproute.yaml
+  # WORKAROUND DGX clock skew — bibliothèque libfaketime pré-staged
+  # (voir CLOCK-SKEW-WORKAROUND.md). À retirer quand le NTP hôte est OK.
+  - clock-skew-libfaketime-configmap.yaml
 
 # Override all images to pull from <DOCKERHUB_NAMESPACE>'s DockerHub mirror
 # (Scaleway registry was unreachable from DGX, DockerHub is accessible)
@@ -46,3 +49,26 @@ patches:
     target:
       kind: Deployment
       name: device-management-admin
+
+  # WORKAROUND — DGX clock skew (libfaketime)
+  # L'horloge du node hôte dérive (~+462s) faute de NTP joignable, et nous
+  # n'avons pas SSH sur le node pour corriger. Ces 4 patches injectent
+  # libfaketime via LD_PRELOAD dans tous les pods Python (image
+  # device-management). À retirer dès que le NTP hôte est rétabli.
+  # Détails complets : CLOCK-SKEW-WORKAROUND.md (même répertoire).
+  - path: clock-skew-patch-device-management.yaml
+    target:
+      kind: Deployment
+      name: device-management
+  - path: clock-skew-patch-device-management-admin.yaml
+    target:
+      kind: Deployment
+      name: device-management-admin
+  - path: clock-skew-patch-telemetry-relay.yaml
+    target:
+      kind: Deployment
+      name: telemetry-relay
+  - path: clock-skew-patch-queue-worker.yaml
+    target:
+      kind: Deployment
+      name: queue-worker
