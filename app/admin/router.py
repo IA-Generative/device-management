@@ -1503,7 +1503,7 @@ async def api_catalog_suggest(request: Request):
         try:
             with urlreq.urlopen(readme_url, timeout=10) as r:
                 content = r.read().decode("utf-8", errors="replace")[:15000]
-            texts.append(f"=== README (URL) ===\n" + content)
+            texts.append("=== README (URL) ===\n" + content)
         except Exception as e:
             texts.append(f"=== README URL error: {e} ===")
 
@@ -2796,7 +2796,6 @@ async def catalog_migrate_config_templates(request: Request):
                 except Exception as e:
                     errors.append({"slug": p["slug"], "error": str(e)})
             conn.commit()
-        actor = getattr(request.state, "admin_session", {})
         return JSONResponse({"migrated": migrated, "errors": errors})
     except Exception as e:
         conn.rollback()
@@ -3370,7 +3369,7 @@ async def debug_page(request: Request):
         req = urlreq.Request(f"{llm_url.rstrip('/')}/models",
                              headers={"Authorization": f"Bearer {token}"})
         try:
-            with urlreq.urlopen(req, timeout=5) as r:
+            with urlreq.urlopen(req, timeout=5):
                 pass
             return f"{model}"
         except urllib_error.HTTPError as e:
@@ -3382,7 +3381,7 @@ async def debug_page(request: Request):
 
     def check_relay():
         relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant")
-        with urlreq.urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3) as r:
+        with urlreq.urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3):
             pass
         return "nginx OK"
 
@@ -3392,7 +3391,7 @@ async def debug_page(request: Request):
         payload = b'{"resourceSpans":[]}'
         req = urlreq.Request(url, data=payload, method="POST",
                              headers={"Content-Type": "application/json"})
-        with urlreq.urlopen(req, timeout=5) as r:
+        with urlreq.urlopen(req, timeout=5):
             pass
         return "accessible"
 

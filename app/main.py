@@ -13,11 +13,11 @@ import hmac
 import hashlib
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 from urllib import request as urllib_request
 from urllib import error as urllib_error
 
-from fastapi import FastAPI, File, Request, Response, HTTPException, UploadFile
+from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -51,17 +51,12 @@ from .services.crypto import (
     b64url_encode as _svc_b64url_encode,
     b64url_decode as _svc_b64url_decode,
     hash_relay_secret as _svc_hash_relay_secret,
-    mint_telemetry_token as _svc_mint_telemetry_token,
-    verify_telemetry_token as _svc_verify_telemetry_token,
     SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
 )
 from .services.db import (
     db_url as _svc_db_url,
     db_url_bootstrap as _svc_db_url_bootstrap,
-    get_pool as _svc_get_pool,
-    PoolConn as _SvcPoolConn,
     pooled_conn as _svc_pooled_conn,
-    get_db_connection as _svc_get_db_connection,
     admin_db_url as _svc_admin_db_url,
     ensure_database_exists as _svc_ensure_database_exists,
     ensure_dev_role as _svc_ensure_dev_role,
@@ -162,8 +157,6 @@ SCHEMA_SQL_PATH = os.path.join(_repo_root(), "db", "schema.sql")
 # ── DB helpers (delegated to app/services/db.py) ──
 _db_url = _svc_db_url
 _db_url_bootstrap = _svc_db_url_bootstrap
-_get_pool = _svc_get_pool
-_PoolConn = _SvcPoolConn
 _pooled_conn = _svc_pooled_conn
 
 
@@ -3299,7 +3292,6 @@ def api_public_plugin_icon(slug: str):
 @app.get("/catalog/api/status")
 def api_catalog_status():
     """Public status endpoint for catalog availability banner."""
-    import urllib.request as urlreq
     services = {}
     for name, check_fn in [
         ("api", lambda: "ok"),
@@ -3669,13 +3661,13 @@ def catalog_updates_xml(request: Request, slug: str):
             conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT p.id, p.device_type, p.slug
+                SELECT p.id, p.slug
                 FROM plugins p WHERE p.slug = %s AND p.status = 'active'
             """, (slug,))
             prow = cur.fetchone()
             if not prow:
                 raise HTTPException(404, "Plugin introuvable")
-            plugin_id, device_type = prow[0], prow[1]
+            plugin_id = prow[0]
 
             cur.execute("""
                 SELECT pv.version, pv.artifact_id
