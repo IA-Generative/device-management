@@ -190,65 +190,6 @@ def update_version_status(cur, version_id: int, new_status: str) -> bool:
     return cur.fetchone() is not None
 
 
-# ─── Bundles ──────────────────────────────────────────────────────────
-
-def list_bundles(cur) -> list[dict]:
-    cur.execute("""
-        SELECT b.*, COUNT(bp.plugin_id) AS plugin_count
-        FROM bundles b
-        LEFT JOIN bundle_plugins bp ON bp.bundle_id = b.id
-        GROUP BY b.id
-        ORDER BY b.name
-    """)
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
-def get_bundle(cur, bundle_id: int) -> dict | None:
-    cur.execute("SELECT * FROM bundles WHERE id = %s", (bundle_id,))
-    row = cur.fetchone()
-    if not row:
-        return None
-    cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
-
-
-def get_bundle_plugins(cur, bundle_id: int) -> list[dict]:
-    cur.execute("""
-        SELECT p.id, p.slug, p.name, p.device_type, p.icon_url, p.intent,
-               bp.is_required, bp.display_order
-        FROM bundle_plugins bp
-        JOIN plugins p ON p.id = bp.plugin_id
-        WHERE bp.bundle_id = %s
-        ORDER BY bp.display_order, p.name
-    """, (bundle_id,))
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
-def create_bundle(cur, *, slug: str, name: str, description: str = "",
-                  icon_url: str = "", visibility: str = "public") -> int:
-    cur.execute("""
-        INSERT INTO bundles (slug, name, description, icon_url, visibility)
-        VALUES (%s,%s,%s,%s,%s) RETURNING id
-    """, (slug, name, description, icon_url, visibility))
-    return cur.fetchone()[0]
-
-
-def add_bundle_plugin(cur, bundle_id: int, plugin_id: int,
-                      is_required: bool = True, display_order: int = 0):
-    cur.execute("""
-        INSERT INTO bundle_plugins (bundle_id, plugin_id, is_required, display_order)
-        VALUES (%s,%s,%s,%s)
-        ON CONFLICT (bundle_id, plugin_id) DO UPDATE SET is_required = %s, display_order = %s
-    """, (bundle_id, plugin_id, is_required, display_order, is_required, display_order))
-
-
-def remove_bundle_plugin(cur, bundle_id: int, plugin_id: int):
-    cur.execute("DELETE FROM bundle_plugins WHERE bundle_id = %s AND plugin_id = %s",
-                (bundle_id, plugin_id))
-
-
 # ─── Installations ────────────────────────────────────────────────────
 
 def get_plugin_stats(cur, plugin_id: int) -> dict:
