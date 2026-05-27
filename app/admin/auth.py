@@ -229,16 +229,3 @@ def require_admin(func):
         return await func(request, *args, **kwargs)
 
     return wrapper
-
-
-def require_csrf(func):
-    """Decorator: verify CSRF token on POST/PUT/DELETE requests."""
-
-    @wraps(func)
-    async def wrapper(request: Request, *args, **kwargs):
-        if request.method in ("POST", "PUT", "DELETE"):
-            if not _verify_csrf(request):
-                raise HTTPException(403, "CSRF token invalid")
-        return await func(request, *args, **kwargs)
-
-    return wrapper
