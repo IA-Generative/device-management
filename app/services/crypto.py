@@ -9,10 +9,7 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import time
-import uuid
-from typing import Any
 
 logger = logging.getLogger("device-management")
 

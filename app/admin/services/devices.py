@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 
 def list_devices(cur, *, owner: str = None, platform: str = None,
                  health: str = None, enrollment: str = None,
@@ -61,11 +59,6 @@ def list_devices(cur, *, owner: str = None, platform: str = None,
     """, params)
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
-def count_devices(cur) -> int:
-    cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM device_connections")
-    return cur.fetchone()[0]
 
 
 def health_summary(cur) -> dict:
