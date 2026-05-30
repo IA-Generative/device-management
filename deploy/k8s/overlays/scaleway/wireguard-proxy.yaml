@@ -14,6 +14,16 @@ metadata:
   namespace: bootstrap
 data:
   default.conf: |
+    # Pool de connexions keepalive vers le SSO : évite de rouvrir une connexion
+    # TLS neuve à travers le tunnel WireGuard à chaque requête (handshake à froid
+    # ~7-10s). Sans ça, le 1er fetch JWKS du device-management dépassait
+    # proxy_connect_timeout (10s) → 504 → token non vérifiable → /enroll 401.
+    upstream sso_keycloak {
+      server <SSO_INTERNAL_IP>:443;
+      keepalive 16;
+      keepalive_timeout 3600s;
+      keepalive_requests 10000;
+    }
     server {
       listen 8443;
       server_name _;
@@ -21,15 +31,16 @@ data:
       # SSO internal IP on VPN (resolved via VPN DNS: <SSO_INTERNAL_IP>)
       # Using IP directly to avoid DNS resolution issues in nginx.
       location / {
-        proxy_pass https://<SSO_INTERNAL_IP>;
+        proxy_pass https://sso_keycloak;
         proxy_ssl_server_name on;
-        proxy_ssl_name <SSO_HOSTNAME>;
+        proxy_ssl_name <INTERNAL_DOMAIN>;
         proxy_ssl_verify off;
-        proxy_set_header Host <SSO_HOSTNAME>;
+        proxy_set_header Host <INTERNAL_DOMAIN>;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_http_version 1.1;
-        proxy_connect_timeout 10;
-        proxy_read_timeout 30;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 60;
+        proxy_read_timeout 60;
       }
 
       location = /healthz {
@@ -146,3 +157,43 @@ spec:
       targetPort: 8443
       protocol: TCP
       name: https
+---
+# Keycloak warmer — pod séparé (réseau cluster normal, contrairement au pod
+# wireguard-proxy dont le netns est verrouillé par le kill-switch WireGuard).
+# Sollicite le JWKS via le service toutes les 20s pour garder le tunnel ET la
+# connexion keepalive nginx→Keycloak chauds → le device-management ne paie
+# jamais le cold-connect (~27s) lors de la vérification des tokens (/enroll).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-warmer
+  namespace: bootstrap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak-warmer
+  template:
+    metadata:
+      labels:
+        app: keycloak-warmer
+    spec:
+      containers:
+        - name: warmer
+          image: nginx:1.27-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              while true; do
+                wget -q -T 55 -O /dev/null \
+                  http://wireguard-proxy/realms/mirai/protocol/openid-connect/certs || true
+                sleep 20
+              done
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              cpu: 50m
+              memory: 16Mi
