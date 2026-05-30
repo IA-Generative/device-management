@@ -1135,7 +1135,10 @@ def _get_jwks_client(issuer: str):
             return cached[1]
 
     jwks_uri = _resolve_jwks_uri(issuer)
-    client = PyJWKClient(jwks_uri, cache_keys=True)
+    # timeout=60 : le fetch JWKS passe par le proxy WireGuard ; un connect à froid
+    # dans le tunnel peut prendre ~20-30s. Le défaut (30s) était limite et pouvait
+    # faire échouer la vérif (401 sur /enroll). 60s couvre le cold-connect.
+    client = PyJWKClient(jwks_uri, cache_keys=True, timeout=60)
     with _AUTH_CACHE_LOCK:
         _AUTH_JWKS_CLIENT_CACHE[issuer] = (now + ttl, client)
     return client
@@ -3343,16 +3346,30 @@ def ops_health_full():
             c = psycopg2.connect(db_url); c.cursor().execute("SELECT 1"); c.close(); return "ok"
         _do("postgres", _db)
 
-    issuer = os.getenv("KEYCLOAK_ISSUER_URL", "")
-    if issuer:
-        _do("keycloak", lambda: (urlreq.urlopen(f"{issuer.rstrip('/')}/.well-known/openid-configuration", timeout=5).close() or "ok"))
+    # Keycloak: probe the endpoint the app ACTUALLY uses for token validation —
+    # the JWKS URL (DM_AUTH_JWKS_URL) reached via the WireGuard relay proxy, with
+    # fallbacks. The public KEYCLOAK_ISSUER_URL is unreachable from inside the
+    # cluster (egress blocked) and lacks the /realms/{realm} segment, so probing
+    # it gave a permanent false "error". See ADR DGX §2/§3.
+    admin_issuer = os.getenv("ADMIN_OIDC_ISSUER_URL", "").rstrip("/")
+    public_issuer = os.getenv("KEYCLOAK_ISSUER_URL", "").rstrip("/")
+    kc_probe = (
+        os.getenv("DM_AUTH_JWKS_URL", "")
+        or (f"{admin_issuer}/.well-known/openid-configuration" if admin_issuer else "")
+        or (f"{public_issuer}/.well-known/openid-configuration" if public_issuer else "")
+    )
+    if kc_probe:
+        _do("keycloak", lambda: (urlreq.urlopen(kc_probe, timeout=5).close() or "ok"))
 
     llm_url = os.getenv("LLM_BASE_URL", "")
     if llm_url:
         _do("llm", lambda: (urlreq.urlopen(urlreq.Request(f"{llm_url.rstrip('/')}/models",
              headers={"Authorization": f"Bearer {os.getenv('LLM_API_TOKEN','')}"}), timeout=10).close() or "ok"))
 
-    _do("relay", lambda: (urlreq.urlopen("http://relay-assistant:8080/healthz", timeout=3).close() or "ok"))
+    # Relay: the relay-assistant K8s Service listens on port 80 (targetPort 8080).
+    # Probing :8080 directly bypassed the Service and timed out (false "error").
+    relay_base = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant").rstrip("/")
+    _do("relay", lambda: (urlreq.urlopen(f"{relay_base}/healthz", timeout=3).close() or "ok"))
 
     has_critical = any(checks.get(s, {}).get("status") == "error" for s in critical_svcs)
     has_any_err = any(v.get("status") == "error" for v in checks.values())
