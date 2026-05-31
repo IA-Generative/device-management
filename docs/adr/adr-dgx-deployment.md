@@ -237,7 +237,7 @@ dgx-deploy-vX.X/
 |---|---|
 | HTTPRoute DGX | `deploy/k8s/overlays/dgx/httproute.yaml` |
 | Proxy patches | `deploy/k8s/overlays/dgx/proxy-patch-*.yaml` |
-| Secret patch DGX | `deploy/k8s/overlays/dgx/secret-patch.yaml` |
+| Secret patch DGX | `deploy/k8s/overlays/dgx/env-secrets.yaml` |
 | Kustomization DGX | `deploy/k8s/overlays/dgx/kustomization.yaml` |
 | Script deploiement | `scripts/dgx-deploy/dumb-deploy.sh` |
 | Test connectivite | `scripts/dgx-deploy/09-connectivity-test.sh` |

@@ -7,5 +7,5 @@ resources:
   - ingress-extras.yaml
 
 patches:
-  - path: secret-patch.yaml
+  - path: env-secrets.yaml
   - path: filebrowser-patch.yaml

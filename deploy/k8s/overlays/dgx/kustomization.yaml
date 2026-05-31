@@ -29,7 +29,7 @@ replicas:
     count: 1
 
 patches:
-  - path: secret-patch.yaml
+  - path: env-secrets.yaml
   - path: proxy-patch-device-management.yaml
     target:
       kind: Deployment

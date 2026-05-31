@@ -59,7 +59,7 @@ location ~ ^/compte-rendu/(.+)$ {
 
 ### Secrets DGX
 
-`deploy/k8s/overlays/dgx/secret-patch.yaml` :
+`deploy/k8s/overlays/dgx/env-secrets.yaml` :
 
 ```yaml
 stringData:
