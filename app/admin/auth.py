@@ -34,6 +34,12 @@ SESSION_COOKIE = "dm_admin_session"
 SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "changeme-dev-only")
 SESSION_TTL = 3600  # 1 hour
 
+# Dev-only unauthenticated admin login. Opt-in and OFF by default (IMM-2): it
+# only activates when DM_DEV_AUTOLOGIN is explicitly enabled AND no OIDC issuer
+# is configured. The prod boot gate (app.main.validate_security_config) refuses
+# to start if this flag is on in a prod-like environment.
+DEV_AUTOLOGIN = (os.getenv("DM_DEV_AUTOLOGIN") or "").strip().lower() in ("1", "true", "yes", "on")
+
 # Warn loudly if session secret is the insecure default in production
 _app_env = os.getenv("DM_APP_ENV", "").strip().lower()
 if SESSION_SECRET == "changeme-dev-only" and _app_env in ("prod", "production", "staging"):
@@ -178,8 +184,9 @@ def require_admin(func):
         session = _verify_session(cookie) if cookie else None
 
         if not session:
-            # In dev mode without OIDC, create a dev session
-            if not OIDC_ISSUER and SESSION_SECRET == "changeme-dev-only":
+            # Dev-only auto-login: requires explicit opt-in (DM_DEV_AUTOLOGIN)
+            # and an unconfigured OIDC issuer. Never triggers in production.
+            if DEV_AUTOLOGIN and not OIDC_ISSUER:
                 session = {
                     "sub": "dev-user",
                     "email": "admin@dev.local",

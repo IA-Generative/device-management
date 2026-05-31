@@ -116,11 +116,61 @@ async def security_headers(request: Request, call_next):
         )
     return response
 
-# ---- CORS
-origins = [o.strip() for o in settings.allow_origins.split(",")] if settings.allow_origins else ["*"]
+# ---- Security boot gate (IMM-1/IMM-6): refuse to start a prod-like deployment
+# that still carries insecure defaults.
+_DEFAULT_ADMIN_SESSION_SECRET = "changeme-dev-only"
+_DEFAULT_RELAY_SECRET_PEPPER = "change-me-relay-pepper"
+_PROD_LIKE_ENVS = {"prod", "production", "staging"}
+
+
+def _dev_autologin_enabled() -> bool:
+    return (os.getenv("DM_DEV_AUTOLOGIN") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def validate_security_config(app_env: str | None = None) -> list[str]:
+    """Return blocking misconfigurations for a prod-like environment.
+
+    In dev the same problems are only logged as warnings (returns []), so local
+    work is not disrupted; the caller refuses to start when this list is
+    non-empty in a prod-like environment.
+    """
+    env = (app_env if app_env is not None else (settings.app_env or "")).strip().lower()
+    prod_like = env in _PROD_LIKE_ENVS
+    problems: list[str] = []
+
+    if os.getenv("ADMIN_SESSION_SECRET", _DEFAULT_ADMIN_SESSION_SECRET) == _DEFAULT_ADMIN_SESSION_SECRET:
+        problems.append("ADMIN_SESSION_SECRET is the insecure default 'changeme-dev-only'")
+    if str(settings.relay_secret_pepper or "") == _DEFAULT_RELAY_SECRET_PEPPER:
+        problems.append("DM_RELAY_SECRET_PEPPER is the insecure default 'change-me-relay-pepper'")
+    origins_raw = str(settings.allow_origins or "").strip()
+    if origins_raw == "*" or not origins_raw:
+        problems.append("CORS allow_origins is '*' — set DM_ALLOW_ORIGINS to an explicit allowlist")
+    if _dev_autologin_enabled():
+        problems.append("DM_DEV_AUTOLOGIN is enabled outside development")
+
+    if problems:
+        log = logger.critical if prod_like else logger.warning
+        log("Insecure configuration in environment %r:", env)
+        for p in problems:
+            log("  - %s", p)
+    return problems if prod_like else []
+
+
+_security_problems = validate_security_config()
+if _security_problems:
+    raise RuntimeError(
+        "Refusing to start due to insecure configuration: " + "; ".join(_security_problems)
+    )
+
+
+# ---- CORS — no wildcard fallback in prod-like environments (the boot gate above
+# already blocks that case; here we just avoid silently widening origins).
+_cors_origins = [o.strip() for o in (settings.allow_origins or "").split(",") if o.strip()]
+if not _cors_origins:
+    _cors_origins = ["*"] if (settings.app_env or "").strip().lower() not in _PROD_LIKE_ENVS else []
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
@@ -2568,6 +2618,12 @@ async def enroll(request: Request):
 @app.post("/update/status")
 async def report_update_status(request: Request):
     """Receive update status report from a plugin after install/failure."""
+    # VULN-007: require valid relay credentials so statuses cannot be forged.
+    relay_info: dict | str | None = None
+    if settings.relay_enabled:
+        ok, relay_info = _relay_auth_from_request(request)
+        if not ok:
+            return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     try:
         body = await request.json()
     except Exception:
@@ -2585,6 +2641,11 @@ async def report_update_status(request: Request):
         return JSONResponse({"ok": False, "error": f"status must be one of {allowed}"}, status_code=400)
     if not client_uuid:
         return JSONResponse({"ok": False, "error": "client_uuid required"}, status_code=400)
+    # Bind the reported client_uuid to the authenticated relay client.
+    if isinstance(relay_info, dict):
+        authed_uuid = relay_info.get("client_uuid")
+        if authed_uuid and str(client_uuid) != str(authed_uuid):
+            return JSONResponse({"ok": False, "error": "client_uuid mismatch"}, status_code=403)
 
     db_url = _db_url()
     if db_url:
@@ -2624,7 +2685,8 @@ def _verify_admin_token(request: Request) -> bool:
     if not expected:
         return False
     token = request.headers.get("X-Admin-Token", "")
-    return token == expected
+    # Constant-time comparison to avoid a timing side channel (VULN-005).
+    return hmac.compare_digest(token, expected)
 
 
 @app.post("/api/plugins/{slug}/deploy")
@@ -3047,16 +3109,24 @@ async def api_upload_artifact(request: Request):
     if not version or not binary:
         return JSONResponse({"ok": False, "error": "version and binary required"}, status_code=400)
 
+    # VULN-002: validate path components to prevent traversal; reduce filename to
+    # its basename and resolve the storage path through _safe_path_join.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", device_type):
+        return JSONResponse({"ok": False, "error": "invalid device_type"}, status_code=400)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
+        return JSONResponse({"ok": False, "error": "invalid version"}, status_code=400)
     data = await binary.read()
     checksum = "sha256:" + hashlib.sha256(data).hexdigest()
-    filename = binary.filename or f"mirai-{version}.oxt"
+    filename = os.path.basename(binary.filename or f"mirai-{version}.oxt")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", filename):
+        return JSONResponse({"ok": False, "error": "invalid filename"}, status_code=400)
 
     # Save locally
     _binaries_base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    binaries_dir = os.path.join(_binaries_base, device_type)
+    binaries_dir = _safe_path_join(_binaries_base, device_type)
     os.makedirs(binaries_dir, exist_ok=True)
     local_path = os.path.join(device_type, f"{version}_{filename}")
-    full_path = os.path.join(_binaries_base, local_path)
+    full_path = _safe_path_join(_binaries_base, local_path)
     with open(full_path, "wb") as f:
         f.write(data)
 
