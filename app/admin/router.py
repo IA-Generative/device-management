@@ -20,7 +20,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.templating import Jinja2Templates
 
 from .auth import (
-    require_admin, _sign_session, _verify_session, _get_oidc_config,
+    require_admin, require_admin_or_service_token,
+    _sign_session, _verify_session, _get_oidc_config,
     _get_token_endpoint, _has_admin_group, _generate_csrf_token,
     SESSION_COOKIE, SESSION_TTL, CSRF_COOKIE,
     CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, REQUIRED_GROUP,
@@ -2290,7 +2291,7 @@ async def catalog_deployments_purge(request: Request, plugin_id: int):
 
 
 @router.post("/catalog/{plugin_id}/versions/upload")
-@require_admin
+@require_admin_or_service_token
 async def catalog_version_upload(request: Request, plugin_id: int):
     """Upload binary → create artifact + version → optionally deploy.
 
@@ -2303,6 +2304,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         version = body.get("version", "")
         release_notes = body.get("release_notes", "")
         distribution_mode = body.get("distribution_mode", "managed")
+        platform_variant = (body.get("platform_variant", "") or "").strip()
         min_host_version = body.get("min_host_version", "")
         max_host_version = body.get("max_host_version", "")
         environment = body.get("environment", "dev")
@@ -2325,6 +2327,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         version = form.get("version", "")
         release_notes = form.get("release_notes", "")
         distribution_mode = form.get("distribution_mode", "managed")
+        platform_variant = (form.get("platform_variant", "") or "").strip()
         min_host_version = form.get("min_host_version", "")
         max_host_version = form.get("max_host_version", "")
         environment = form.get("environment", "dev")
@@ -2383,20 +2386,23 @@ async def catalog_version_upload(request: Request, plugin_id: int):
 
             binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
             _ext = os.path.splitext(bin_filename or "")[1] or ".oxt"
-            rel_path = f"{device_type}/{_slug}-{version}{_ext}"
+            # Variant-aware filename so multiple binaries of the same version
+            # (e.g. chromium + gecko × cibles) ne s'écrasent pas sur disque.
+            _suffix = f"-{platform_variant}" if platform_variant else ""
+            rel_path = f"{device_type}/{_slug}-{version}{_suffix}{_ext}"
             os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
             local_path = f"{binaries_dir}/{rel_path}"
             with open(local_path, "wb") as f:
                 f.write(data)
-        
 
-            # 4. Create artifact
+
+            # 4. Create artifact (platform_variant désambiguïse les variantes)
             artifact_id = artifacts_svc.create_artifact(
-                cur, device_type=device_type, platform_variant="",
+                cur, device_type=device_type, platform_variant=platform_variant,
                 version=version, s3_path=local_path, checksum=checksum,
             )
 
-            # 5. Create version (published immediately)
+            # 5. Create version (published immediately; idempotent sur (plugin,version))
             vid = catalog_svc.create_version(
                 cur, plugin_id=plugin_id, version=version,
                 artifact_id=artifact_id,
@@ -2406,6 +2412,14 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 max_host_version=max_host_version,
                 status="published",
             )
+
+            # 5b. Lien 1:N version→artefacts : enregistre la variante pour les
+            # manifests multi-format/multi-cible (no-op si variant vide = legacy).
+            if platform_variant:
+                catalog_svc.link_version_artifact(
+                    cur, plugin_version_id=vid, artifact_id=artifact_id,
+                    platform_variant=platform_variant,
+                )
 
             # 6. Store config_template if extracted
             if deploy_config_template:
