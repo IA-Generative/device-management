@@ -100,3 +100,8 @@ bordel/
 
 # Private docs with real production values
 private/
+
+# Secrets / valeurs réelles (déploiement) — utiliser les .example
+deploy/docker/.env
+deploy/k8s/overlays/scaleway/secret-patch.yaml
+*.bak
