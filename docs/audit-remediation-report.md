@@ -9,9 +9,16 @@
 
 ## 0. Résumé exécutif & statut de la session autonome
 
-**Livré, vérifié, poussé** : le lot **immédiat (IMM-1 → IMM-8)** de l'audit — soit **8 corrections**
-couvrant 7 vulnérabilités Élevées/Critiques + 2 Moyennes/Faibles. Commit `1e6a8d4` sur
-`origin/fix/security-imm-quickwins`. `py_compile` OK, imports OK, logique testée unitairement.
+**Livré, vérifié, poussé** sur `origin/fix/security-imm-quickwins` :
+- **IMM-1 → IMM-8** (8 corrections : 7 Élevées/Critiques + VULN-016). Commit `1e6a8d4`.
+- **CT-1** révocation relay (`108aaad`), **CT-7** lock cache OIDC + **CT-9** outillage CI + **CT-12**
+  bornes deps (`a930f47`).
+- **Image Docker reconstruite et boot gate validé END-TO-END dans le conteneur** : dev → import OK ;
+  prod + secrets par défaut → refus avec motifs exacts ; prod + secrets corrects + origins explicites
+  → boot OK. (la plus forte vérification possible sans cluster).
+
+Total : **VULN-001, 002, 003, 005, 007, 012, 013, 014, 016, 017 corrigées** ; VULN-008-bis/010 déjà
+partielles ; reste VULN-004/006/008/009/011/015.
 
 **NON réalisé pendant la session autonome — et pourquoi :**
 
@@ -20,12 +27,12 @@ couvrant 7 vulnérabilités Élevées/Critiques + 2 Moyennes/Faibles. Commit `1e
    (sorties de commandes tronquées, dupliquées, voire paraphrasées au lieu du stdout brut). Travailler
    sur du code de sécurité sans pouvoir lire de façon fiable l'état du dépôt est trop risqué : j'ai
    **arrêté volontairement** et remis l'arbre de travail à l'état propre `1e6a8d4`.
-2. **Build image + déploiement Scaleway + campagne de tests post-déploiement** : **non exécutés,
-   délibérément.** Le contexte `kubectl` actif est le cluster de **production** (`admin@k8s-par-brave-bassi`),
-   et les correctifs IMM sont **fail-closed** (IMM-1 refuse le boot si secrets par défaut/CORS `*`).
-   Déployer en prod **sans pouvoir lire de façon fiable la sortie des commandes** crée un risque réel
-   d'indisponibilité que je ne peux pas auto-valider. Principe appliqué : ne pas réaliser d'action
-   difficilement réversible et tournée vers l'extérieur « à l'aveugle ».
+2. **Build** : ✅ **fait** — `docker build` réussit avec le nouveau `requirements.txt`, image
+   `device-management:ct-validate`, smoke-test du boot gate OK (voir §0).
+3. **Déploiement Scaleway + campagne post-déploiement** : **impossible cette session** — `kubectl`
+   n'a **plus aucun contexte** (`current-context must be set` ; le cluster `admin@k8s-par-brave-bassi`
+   est injoignable depuis cette session). Blocage factuel, pas un choix. **À refaire manuellement**
+   (voir §3 préconditions + §6).
 
 **État sûr garanti** : tout l'IMM est dans `1e6a8d4` (poussé). Aucune modification partielle ne traîne
 dans l'arbre de travail. Aucun déploiement n'a été touché. Rien n'est cassé.
@@ -95,10 +102,13 @@ Fichiers : `app/main.py`, `app/admin/auth.py`, `app/admin/router.py`, `app/servi
 
 ## 3. ⚠️ Points de vigilance AVANT déploiement
 
-1. **Fail-closed** : en prod, l'app **refuse de démarrer** si `ADMIN_SESSION_SECRET`,
-   `DM_RELAY_SECRET_PEPPER`, `DM_ALLOW_ORIGINS` ne sont pas correctement positionnés. **Vérifier
-   l'overlay `deploy/k8s/overlays/scaleway/env-secrets.yaml`** (gitignored) avant tout rollout, sinon
-   le pod entrera en CrashLoop volontaire.
+1. **Fail-closed + précondition manquante détectée** : en prod, l'app **refuse de démarrer** si
+   `ADMIN_SESSION_SECRET`, `DM_RELAY_SECRET_PEPPER` aux défauts **ou si CORS=`*`/vide**.
+   `deploy/k8s/overlays/scaleway/env-secrets.yaml` positionne bien `ADMIN_SESSION_SECRET` et
+   `DM_RELAY_SECRET_PEPPER`, **mais PAS `DM_ALLOW_ORIGINS`**. ⇒ **Si `DM_APP_ENV=prod` est défini, le
+   pod CrashLoopera** tant que `DM_ALLOW_ORIGINS` n'est pas ajouté (liste explicite des origines).
+   **Action requise avant rollout** : ajouter `DM_ALLOW_ORIGINS` à l'overlay. (Note : vérifier aussi
+   si `DM_APP_ENV` est réellement positionné à `prod` côté ConfigMap — sinon le gate ne protège pas.)
 2. **IMM-8 change le login admin** : à valider contre le Keycloak réel (audience = `ADMIN_OIDC_CLIENT_ID`,
    issuer = discovery). Garder un `rollout undo` prêt.
 3. **Rotation secrets git** (hors code, signalé par l'audit/normalisation) : `LLM_API_TOKEN`,
