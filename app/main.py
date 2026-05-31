@@ -3202,6 +3202,7 @@ def api_public_plugin_detail(slug: str):
         else:
             icon = None
         return JSONResponse({
+            "id": p["id"],
             "slug": p["slug"], "name": p["name"], "description": p.get("description") or "",
             "intent": p.get("intent") or "", "device_type": p["device_type"],
             "category": p.get("category") or "", "publisher": p.get("publisher") or "DNUM",

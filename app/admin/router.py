@@ -2822,9 +2822,13 @@ async def catalog_migrate_config_templates(request: Request):
 
 
 @router.post("/api/catalog/{plugin_id}/config-template")
-@require_admin
+@require_admin_or_service_token
 async def catalog_save_config_template(request: Request, plugin_id: int):
-    """Save or update the dm-config.json template for a plugin."""
+    """Save or update the dm-config.json template for a plugin.
+
+    Accepte la session admin OIDC OU le token de service (x-admin-token), pour
+    permettre au deploy-release.sh client de rafraîchir le template en CI.
+    """
     body = await request.json()
     template = body.get("config_template")
     if not template or not isinstance(template, dict):
