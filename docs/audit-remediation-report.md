@@ -47,9 +47,8 @@ partielles ; reste VULN-004/006/008/009/011/015.
 4. **Campagne de tests post-déploiement** : api ✅ logs propres (pas de « Refusing to start »),
    `/livez` + `/healthz` **200**, `/update/status` sans creds relay → **401** (IMM-5 vérifié en prod
    réelle). Public `https://bootstrap.fake-domain.name/livez` → **200**. L'admin a nécessité le correctif
-   pepper ci-dessus ; vérification finale de sa santé en cours au moment où le canal d'outils est
-   redevenu intermittent — **à confirmer** : `kubectl -n bootstrap get pods | grep device-management`
-   (les deux doivent être `1/1 Running`) et `/admin/` doit répondre 307 (redirection OIDC), pas 500.
+   pepper ci-dessus ; **après correction, les deux déploiements sont `1/1 Running` sur 0.6.1** et
+   `/admin/` répond **307** (redirection OIDC) via l'ingress public. **Déploiement confirmé sain.**
 
 > Namespace de prod réel = **`bootstrap`** (et non `device-mgmt`). Image cible = `0.6.1`.
 > Rollback si besoin : `kubectl -n bootstrap set image deploy/device-management-admin
