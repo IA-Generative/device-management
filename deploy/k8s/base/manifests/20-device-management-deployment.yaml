@@ -227,6 +227,38 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: TELEMETRY_KEY
+            # Tokens du template extension (DM-2) — optional: la clé peut être absente
+            # du secret tant qu'ops n'a pas posé la vraie valeur (sinon le pod ne démarre pas).
+            - name: API_BASE
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: API_BASE
+                  optional: true
+            - name: RELAY_ASSISTANT_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: RELAY_ASSISTANT_BASE_URL
+                  optional: true
+            - name: COMPTE_RENDU_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: COMPTE_RENDU_URL
+                  optional: true
+            - name: COMU_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: COMU_URL
+                  optional: true
+            - name: TELEMETRY_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: TELEMETRY_ENDPOINT
+                  optional: true
             - name: DM_TELEMETRY_ENABLED
               valueFrom:
                 secretKeyRef:
