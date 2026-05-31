@@ -8,4 +8,3 @@ resources:
 
 patches:
   - path: env-secrets.yaml
-  - path: filebrowser-patch.yaml
