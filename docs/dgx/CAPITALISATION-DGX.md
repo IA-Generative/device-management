@@ -9,7 +9,7 @@ Journal des sessions de travail, valeurs locales en cours d'expérimentation, d�
 ### État du repo en début de session
 
 - Branche `main` en retard de 1 commit sur `origin/main` (fast-forward possible).
-- Commit distant à intégrer : `b685e8a` — *fix(dgx): replace all placeholders with real DGX values* (overlay k8s `deploy/k8s/overlays/dgx/` : httproute, 4 proxy-patch, secret-patch).
+- Commit distant à intégrer : `b685e8a` — *fix(dgx): replace all placeholders with real DGX values* (overlay k8s `deploy/k8s/overlays/dgx/` : httproute, 4 proxy-patch, env-secrets).
 - Modification locale non commitée dans `scripts/dgx-deploy/.env.config`.
 
 ### Valeur locale en cours de test

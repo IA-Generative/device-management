@@ -240,6 +240,20 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                     ) THEN
                       ALTER TABLE plugins DROP CONSTRAINT plugins_slug_key;
                     END IF;
+                    -- DM-4 : metadata d'auto-update (CREATE TABLE IF NOT EXISTS n'ajoute
+                    -- pas de colonne à une table plugins existante → ALTER explicite ici).
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'plugins' AND column_name = 'extension_id'
+                    ) THEN
+                      ALTER TABLE plugins ADD COLUMN extension_id VARCHAR(64);
+                    END IF;
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'plugins' AND column_name = 'gecko_id'
+                    ) THEN
+                      ALTER TABLE plugins ADD COLUMN gecko_id VARCHAR(128);
+                    END IF;
                   END IF;
                 END $$;
             """)

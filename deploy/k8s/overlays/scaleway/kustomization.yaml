@@ -27,5 +27,5 @@ replicas:
     count: 1
 
 patches:
-  - path: secret-patch.yaml
+  - path: env-secrets.yaml
   - path: hpa-patch.yaml

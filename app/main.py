@@ -3603,7 +3603,15 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None):
 
 @app.get("/catalog/{slug}/download/{filename}")
 def catalog_download_file(slug: str, filename: str):
-    """Public — download by filename (e.g. mirai-libreoffice-0.2.1.oxt)."""
+    """Public — download by filename (e.g. mirai-libreoffice-0.2.1.oxt).
+
+    Variant-aware : si `filename` correspond à un artefact de variante
+    (plugin_version_artifacts, ex. iassistant-direct-browser-1.0.0-chromium-scaleway.crx),
+    sert CE binaire ; sinon retombe sur l'artefact primaire de la version.
+    """
+    served = _serve_variant_by_filename(slug, filename)
+    if served is not None:
+        return served
     # Strip known extensions, then remove slug prefix to get version
     _known_ext = (".oxt", ".xpi", ".crx", ".zip", ".bin")
     base = filename
@@ -3720,6 +3728,163 @@ def catalog_updates_xml(request: Request, slug: str):
             pool_ctx.__exit__(None, None, None)
         elif conn is not None:
             conn.close()
+
+
+# ─── Auto-update multi-format / multi-cible (DM-4) ────────────────────────
+# Le DM GÉNÈRE les manifests (le producteur fournit version/changelog/binaire via
+# le pipeline catalogue). .xml = gupdate (Chromium: Chrome/Edge/Brave/Opera),
+# .json = manifest Mozilla (Gecko: Firefox/Thunderbird). platform_variant encode
+# "<engine>-<target>" (ex. chromium-scaleway, gecko-dgx).
+_UPDATE_ENGINE_BY_EXT = {"xml": "chromium", "json": "gecko"}
+
+
+def _with_bootstrap_cursor(fn):
+    """Ouvre une connexion (pool ou directe) et exécute fn(cur). Renvoie son résultat."""
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        raise HTTPException(404, "Indisponible")
+    conn = None
+    pool_ctx = _pooled_conn()
+    try:
+        if pool_ctx is not None:
+            conn = pool_ctx.__enter__()
+        else:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+        with conn.cursor() as cur:
+            return fn(cur)
+    finally:
+        if pool_ctx is not None:
+            pool_ctx.__exit__(None, None, None)
+        elif conn is not None:
+            conn.close()
+
+
+def _serve_binary_path(s3_path: str, filename: str):
+    """Sert un binaire depuis le disque (pull-on-miss) ou via URL S3 présignée."""
+    if not s3_path:
+        return None
+    if not os.path.isfile(s3_path):
+        try:
+            _pull_binary_from_admin(s3_path)
+        except Exception:
+            pass
+    if os.path.isfile(s3_path):
+        return FileResponse(s3_path, filename=filename,
+                            media_type="application/octet-stream",
+                            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    try:
+        client = s3_client()
+        if client:
+            bucket = os.getenv("S3_BUCKET", "device-management")
+            presigned = client.generate_presigned_url(
+                "get_object", Params={"Bucket": bucket, "Key": s3_path}, ExpiresIn=300)
+            return RedirectResponse(presigned, status_code=302)
+    except Exception:
+        pass
+    return None
+
+
+def _serve_variant_by_filename(slug: str, filename: str):
+    """Si `filename` correspond au basename d'un artefact de variante du plugin
+    (résolu par slug ou alias), sert CE binaire. Sinon None (→ fallback legacy)."""
+    def _q(cur):
+        _slug, _dtype, pid, _via = _resolve_device(slug, cur)
+        if not pid:
+            return None
+        cur.execute("""
+            SELECT a.s3_path
+            FROM plugin_version_artifacts pva
+            JOIN artifacts a ON a.id = pva.artifact_id
+            JOIN plugin_versions pv ON pv.id = pva.plugin_version_id
+            WHERE pv.plugin_id = %s
+        """, (pid,))
+        for (s3_path,) in cur.fetchall():
+            if s3_path and os.path.basename(s3_path) == filename:
+                return _serve_binary_path(s3_path, filename)
+        return None
+    try:
+        return _with_bootstrap_cursor(_q)
+    except HTTPException:
+        return None
+
+
+def _latest_variant_release(cur, plugin_id: int, variant: str):
+    """(version, filename, extension_id, gecko_id) de la dernière version publiée
+    ayant un artefact pour cette variante ; None si aucune."""
+    cur.execute("SELECT extension_id, gecko_id FROM plugins WHERE id = %s", (plugin_id,))
+    meta = cur.fetchone() or (None, None)
+    cur.execute("""
+        SELECT pv.version, a.s3_path
+        FROM plugin_versions pv
+        JOIN plugin_version_artifacts pva ON pva.plugin_version_id = pv.id
+        JOIN artifacts a ON a.id = pva.artifact_id
+        WHERE pv.plugin_id = %s AND pv.status = 'published' AND pva.platform_variant = %s
+        ORDER BY pv.published_at DESC NULLS LAST
+        LIMIT 1
+    """, (plugin_id, variant))
+    row = cur.fetchone()
+    if not row:
+        return None
+    version, s3_path = row
+    filename = os.path.basename(s3_path) if s3_path else ""
+    return {"version": version, "filename": filename,
+            "extension_id": meta[0], "gecko_id": meta[1]}
+
+
+def _resolve_update_context(slug: str, target: str, ext: str):
+    """Résout (canonical_slug, release) pour /updates/{slug}/{target}.{ext}."""
+    engine = _UPDATE_ENGINE_BY_EXT.get(ext)
+    if not engine:
+        raise HTTPException(404, "Format inconnu")
+    variant = f"{engine}-{target}"
+
+    def _q(cur):
+        canonical, _dtype, pid, _via = _resolve_device(slug, cur)
+        if not pid:
+            raise HTTPException(404, "Plugin introuvable")
+        rel = _latest_variant_release(cur, pid, variant)
+        if not rel:
+            raise HTTPException(404, "Aucune release pour cette variante/cible")
+        return canonical, rel
+    return _with_bootstrap_cursor(_q)
+
+
+@app.get("/updates/{slug}/{target}.xml")
+def updates_manifest_xml(request: Request, slug: str, target: str):
+    """Manifest gupdate (Chromium: Chrome/Edge/Brave/Opera). appid = Extension ID."""
+    canonical, rel = _resolve_update_context(slug, target, "xml")
+    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    appid = rel["extension_id"] or canonical
+    codebase = f"{base}/catalog/{canonical}/download/{rel['filename']}"
+    xml = (
+        "<?xml version='1.0' encoding='UTF-8'?>\n"
+        "<gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>\n"
+        f"  <app appid='{appid}'>\n"
+        f"    <updatecheck codebase='{codebase}' version='{rel['version']}' />\n"
+        "  </app>\n"
+        "</gupdate>"
+    )
+    return Response(content=xml, media_type="application/xml")
+
+
+@app.get("/updates/{slug}/{target}.json")
+def updates_manifest_json(request: Request, slug: str, target: str):
+    """Manifest Mozilla addons (Gecko: Firefox/Thunderbird). Clé = gecko id."""
+    canonical, rel = _resolve_update_context(slug, target, "json")
+    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+    gecko_id = rel["gecko_id"] or canonical
+    update_link = f"{base}/catalog/{canonical}/download/{rel['filename']}"
+    payload = {
+        "addons": {
+            gecko_id: {
+                "updates": [
+                    {"version": rel["version"], "update_link": update_link}
+                ]
+            }
+        }
+    }
+    return JSONResponse(payload)
 
 
 @app.get("/catalog/{slug}", response_class=Response)

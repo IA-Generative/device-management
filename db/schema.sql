@@ -126,6 +126,9 @@ CREATE TABLE IF NOT EXISTS plugins (
         CHECK (access_mode IN ('open','waitlist','keycloak_group')),
     required_group VARCHAR(200),
     config_template JSONB,
+    -- Identité d'auto-update (génération des manifests). Constants par plugin.
+    extension_id VARCHAR(64),    -- ex. Chrome/Edge ext id (appid gupdate XML)
+    gecko_id VARCHAR(128),       -- ex. Firefox/Thunderbird addon id (manifest JSON)
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -217,6 +220,20 @@ CREATE TABLE IF NOT EXISTS plugin_versions (
     UNIQUE (plugin_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_pv_plugin ON plugin_versions(plugin_id);
+
+-- Lien 1:N version → artefacts : une release peut porter plusieurs binaires
+-- (ex. .crx Chromium + .xpi Gecko) × cibles, désambiguïsés par platform_variant
+-- (ex. "chromium-scaleway", "gecko-dgx"). plugin_versions.artifact_id reste utilisé
+-- comme artefact principal/legacy (mono-binaire) ; cette table ajoute les variantes.
+CREATE TABLE IF NOT EXISTS plugin_version_artifacts (
+    id SERIAL PRIMARY KEY,
+    plugin_version_id INT NOT NULL REFERENCES plugin_versions(id) ON DELETE CASCADE,
+    artifact_id INT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    platform_variant VARCHAR(50) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (plugin_version_id, platform_variant)
+);
+CREATE INDEX IF NOT EXISTS idx_pva_version ON plugin_version_artifacts(plugin_version_id);
 
 CREATE TABLE IF NOT EXISTS plugin_installations (
     id SERIAL PRIMARY KEY,
