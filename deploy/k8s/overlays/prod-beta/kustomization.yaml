@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Overlay PROD-BETA (nouvel environnement). Calqué sur scaleway.
+# Avant `kustomize build` : copier secret-patch.yaml.example -> secret-patch.yaml
+# (gitignored) et renseigner les valeurs réelles (cf. NORMALIZATION-secrets.md).
+# TODO ops : ajouter ingress-extras.yaml / wireguard-proxy.yaml / hpa-patch.yaml
+#            spécifiques prod-beta si nécessaire (cf. overlays/scaleway).
+
+resources:
+  - ../../base
+
+images:
+  - name: <SCALEWAY_REGISTRY>/device-management
+    newName: docker.io/etiquet/device-management
+    newTag: "<TODO_TAG>"
+
+replicas:
+  - name: device-management
+    count: 1
+
+patches:
+  - path: secret-patch.yaml
