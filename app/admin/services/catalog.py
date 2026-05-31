@@ -181,6 +181,38 @@ def create_version(cur, *, plugin_id: int, version: str, artifact_id: int = None
     return cur.fetchone()[0]
 
 
+def link_version_artifact(cur, *, plugin_version_id: int, artifact_id: int,
+                          platform_variant: str) -> int:
+    """Upsert le lien 1:N version→artefact pour une variante donnée.
+
+    Permet à une release de porter plusieurs binaires (ex. .crx Chromium +
+    .xpi Gecko) × cibles, désambiguïsés par platform_variant. Idempotent :
+    un nouvel upload de la même variante met à jour l'artefact pointé.
+    """
+    cur.execute("""
+        INSERT INTO plugin_version_artifacts (plugin_version_id, artifact_id, platform_variant)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (plugin_version_id, platform_variant) DO UPDATE SET
+            artifact_id = EXCLUDED.artifact_id
+        RETURNING id
+    """, (plugin_version_id, artifact_id, platform_variant))
+    return cur.fetchone()[0]
+
+
+def get_version_artifacts(cur, plugin_version_id: int) -> list[dict]:
+    """Liste les artefacts (variantes) liés à une version, avec leur chemin/checksum."""
+    cur.execute("""
+        SELECT pva.platform_variant, a.id AS artifact_id, a.s3_path, a.checksum,
+               a.device_type, a.version
+        FROM plugin_version_artifacts pva
+        JOIN artifacts a ON a.id = pva.artifact_id
+        WHERE pva.plugin_version_id = %s
+        ORDER BY pva.platform_variant
+    """, (plugin_version_id,))
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 def update_version_status(cur, version_id: int, new_status: str) -> bool:
     extra = ", published_at = NOW()" if new_status == "published" else ""
     cur.execute(f"""
