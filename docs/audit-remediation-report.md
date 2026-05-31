@@ -56,7 +56,7 @@ Légende statut : ✅ Corrigé (ce lot) · 🟡 Partiel (déjà avancé avant au
 | **VULN-008** | Tokens propriétaires non-RFC (Moyenne 5,9) | ⏳ **Planifié** | STR-2/STR-3 : JWT RFC 9068 + introspect RFC 7662. Non fait. |
 | **VULN-009** | CSRF repli SameSite (Moyenne 5,4) | ⏳ **Planifié** | CT-4. **Note importante découverte : `_verify_csrf` n'est appelé nulle part** — la protection CSRF n'est pas câblée aujourd'hui ; CT-4 doit la brancher ET mettre à jour `base.html` (intercepteur `fetch` global sans header CSRF). |
 | **VULN-011** | CSP unsafe-inline (Moyenne 4,7) | ⏳ **Planifié** | CT-6 : CSP à nonces. Non fait. |
-| **VULN-012** | Cache OIDC non thread-safe (Moyenne 4,3) | ⏳ **Planifié (WIP perdu)** | CT-7 : lock écrit puis perdu dans l'incident git/canal. À refaire (~10 lignes dans `auth.py:_get_oidc_config`). |
+| **VULN-012** | Cache OIDC non thread-safe (Moyenne 4,3) | ✅ **Corrigé** | CT-7 : `threading.Lock` + double-checked locking dans `auth.py:_get_oidc_config`. Commit `a930f47`. |
 | **VULN-015** | Hash relay SHA-256 sans sel/compte (Faible 2,5) | 📋 **Acceptable, à documenter** | Conforme RGS-B1 (clé 256 bits os.urandom). ADR à produire (CT-10/STR-7). Non fait. |
 
 ### Conformité référentielle (synthèse)
@@ -115,12 +115,12 @@ Fichiers : `app/main.py`, `app/admin/auth.py`, `app/admin/router.py`, `app/servi
 - CT-4 CSRF obligatoire **+ câblage** (`_verify_csrf` n'est pas branché) + maj `base.html` — VULN-009.
 - CT-5 restauration audit (source_ip/user_agent/identité) — VULN-010.
 - CT-6 CSP à nonces — VULN-011.
-- CT-7 lock cache OIDC — VULN-012. (~10 lignes, à refaire)
+- ✅ CT-7 lock cache OIDC — VULN-012. **Fait** (`a930f47`).
 - CT-8 nonce OIDC — PA-080 R14/R15.
-- CT-9 CI (ruff/bandit/pip-audit/semgrep) — WIP rédigé (`.github/workflows/ci.yml`, `pyproject.toml`, `requirements-dev.txt`), non committé.
+- ✅ CT-9 CI (ruff/bandit/pip-audit/semgrep) — **Fait** (`a930f47`) : `.github/workflows/ci.yml`, `pyproject.toml`, `requirements-dev.txt`.
 - CT-10 ADR (hash relay, pattern relay) — VULN-015.
 - CT-11 renommage `provisioning.encryption_key` → `_fingerprint` (migration Alembic ; revisions 001/002 existent).
-- CT-12 bornes hautes deps — WIP rédigé, non committé.
+- ✅ CT-12 bornes hautes deps — **Fait** (`a930f47`).
 - STR-2 tokens télémétrie → JWT RFC 9068 ; STR-3 introspect RFC 7662 — VULN-008.
 - STR-5 découpage `app/main.py` (4299 l.) en sous-routers.
 - STR-7 doctrine secrets + ADRs.
