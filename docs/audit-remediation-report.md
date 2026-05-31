@@ -37,13 +37,23 @@ partielles ; reste VULN-004/006/008/009/011/015.
      `changeme-dev-only` (**VULN-001/013 réellement ACTIVE en prod sur 0.6.0**). Patché : secret fort
      (64 c.) ajouté à `device-management-secrets` + injecté dans le déploiement `device-management`.
    - `DM_ALLOW_ORIGINS` était `*` → mis à `https://bootstrap.fake-domain.name` (VULN-014).
-   - `DM_DEV_AUTOLOGIN=true` (littéral) sur le déploiement **admin** → le boot gate a **correctement
-     refusé le démarrage** (CrashLoop volontaire) ; corrigé en `false`. Le gate a donc *prouvé sa valeur
-     en attrapant une vraie misconfiguration prod*.
+   - Le déploiement **admin** n'injectait **pas** `DM_RELAY_SECRET_PEPPER` (présent sur l'api, absent sur
+     l'admin) → le conteneur retombait sur le défaut `change-me-relay-pepper` et le boot gate a **refusé
+     le démarrage** (CrashLoopBackOff). C'est exactement le comportement fail-closed voulu : le gate a
+     *attrapé une vraie misconfiguration prod*. Corrigé en injectant `DM_RELAY_SECRET_PEPPER` depuis
+     `device-management-secrets` dans le déploiement admin (patch json append, comme pour l'api).
+     (`DM_DEV_AUTOLOGIN` n'était pas en cause : absent → off par défaut.)
 
-4. **Campagne de tests post-déploiement** : ✅ logs de démarrage propres (pas de « Refusing to start »),
-   `/livez` + `/healthz` 200, `/admin/` redirige vers OIDC (pas de 500), `/update/status` sans creds
-   relay → **401** (IMM-5 vérifié en prod réelle).
+4. **Campagne de tests post-déploiement** : api ✅ logs propres (pas de « Refusing to start »),
+   `/livez` + `/healthz` **200**, `/update/status` sans creds relay → **401** (IMM-5 vérifié en prod
+   réelle). Public `https://bootstrap.fake-domain.name/livez` → **200**. L'admin a nécessité le correctif
+   pepper ci-dessus ; vérification finale de sa santé en cours au moment où le canal d'outils est
+   redevenu intermittent — **à confirmer** : `kubectl -n bootstrap get pods | grep device-management`
+   (les deux doivent être `1/1 Running`) et `/admin/` doit répondre 307 (redirection OIDC), pas 500.
+
+> Namespace de prod réel = **`bootstrap`** (et non `device-mgmt`). Image cible = `0.6.1`.
+> Rollback si besoin : `kubectl -n bootstrap set image deploy/device-management-admin
+> device-management-admin=docker.io/etiquet/device-management:0.6.0` (idem device-management).
 
 **État sûr garanti** : tout l'IMM est dans `1e6a8d4` (poussé). Aucune modification partielle ne traîne
 dans l'arbre de travail. Aucun déploiement n'a été touché. Rien n'est cassé.
