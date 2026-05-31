@@ -21,7 +21,7 @@ la registry Scaleway (`rg.fr-par.scw.cloud`). Le tag est passe en argument.
 Le tag est hardcode dans les manifests (pas de `kustomize images`).
 
 Les secrets sont un fichier YAML en clair dans le repo (`all-secrets.yaml`)
-avec des overrides par overlay (`secret-patch.yaml`). Pas de rotation
+avec des overrides par overlay (`env-secrets.yaml`). Pas de rotation
 automatique, pas de chiffrement, pas d'audit.
 
 ---
@@ -77,7 +77,7 @@ dont des tokens, passwords, et clefs de chiffrement.
 **Action :**
 
 1. Retirer `secrets/all-secrets.yaml` de la kustomization base
-2. Retirer les `secret-patch.yaml` des overlays
+2. Retirer les `env-secrets.yaml` des overlays
 3. Choisir une strategie de secrets (voir Etape 5)
 4. Ajouter `deploy/k8s/base/secrets/` dans `.gitignore`
 
@@ -331,7 +331,7 @@ images:
     newTag: "abc1234"
 
 patches:
-  - path: secret-patch.yaml
+  - path: env-secrets.yaml
   - path: proxy-patch-device-management.yaml
     target:
       kind: Deployment
@@ -749,7 +749,7 @@ Impact : preparation pour Vault, les secrets sont isoles.
 - [ ] Installer External Secrets Operator
 - [ ] Creer le SecretStore + ExternalSecret
 - [ ] Alimenter Vault avec les clefs
-- [ ] Supprimer `all-secrets.yaml` et les `secret-patch.yaml` du repo
+- [ ] Supprimer `all-secrets.yaml` et les `env-secrets.yaml` du repo
 - [ ] Ajouter `deploy/k8s/base/secrets/` dans `.gitignore`
 - [ ] Passer ArgoCD en sync automatique
 
@@ -779,5 +779,5 @@ Impact : les secrets ne sont plus dans git, rotation possible.
 | `deploy/k8s/base/manifests/05-secret-store.yaml` | Creer (ESO) | 5 |
 | `deploy/k8s/base/manifests/06-external-secret.yaml` | Creer (ESO) | 5 |
 | `deploy/k8s/base/secrets/all-secrets.yaml` | Supprimer | 5 |
-| `deploy/k8s/overlays/*/secret-patch.yaml` | Supprimer | 5 |
+| `deploy/k8s/overlays/*/env-secrets.yaml` | Supprimer | 5 |
 | `.gitignore` | Ajouter secrets/ | 5 |
