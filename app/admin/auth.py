@@ -229,3 +229,30 @@ def require_admin(func):
         return await func(request, *args, **kwargs)
 
     return wrapper
+
+
+def require_admin_or_service_token(func):
+    """Like require_admin, but ALSO accepts a valid x-admin-token header
+    (== DM_QUEUE_ADMIN_TOKEN) for non-interactive CI callers (e.g. the
+    deploy-release.sh release pipeline).
+
+    Scoped on purpose: only endpoints that explicitly opt in get token auth —
+    this does NOT broaden DM_QUEUE_ADMIN_TOKEN to every @require_admin route.
+    Falls back to the normal admin-session flow when no/invalid token is given.
+    """
+    admin_wrapped = require_admin(func)
+
+    @wraps(func)
+    async def wrapper(request: Request, *args, **kwargs):
+        tok = (request.headers.get("x-admin-token") or "").strip()
+        expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "").strip()
+        if expected and tok and hmac.compare_digest(tok, expected):
+            request.state.admin_session = {
+                "sub": "service",
+                "email": "ci@service.local",
+                "name": "CI service token",
+            }
+            return await func(request, *args, **kwargs)
+        return await admin_wrapped(request, *args, **kwargs)
+
+    return wrapper

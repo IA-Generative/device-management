@@ -103,5 +103,8 @@ private/
 
 # Secrets / valeurs réelles (déploiement) — utiliser les .example
 deploy/docker/.env
-deploy/k8s/overlays/scaleway/secret-patch.yaml
+# Tout env-secrets d'overlay (scaleway, dgx, local, prod-beta, …) est gitignored ;
+# seuls les .example sont versionnés. Les secrets se posent APRÈS création du cluster.
+deploy/k8s/overlays/*/env-secrets.yaml
+!deploy/k8s/overlays/*/env-secrets.yaml.example
 *.bak
