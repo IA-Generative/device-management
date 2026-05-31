@@ -6,5 +6,26 @@ resources:
   - ingress-extras.yaml
   - wireguard-proxy.yaml
 
+images:
+  - name: <SCALEWAY_REGISTRY>/device-management
+    newName: docker.io/<DOCKERHUB_NAMESPACE>/device-management
+    newTag: "0.5.23"
+  - name: nginx
+    newName: docker.io/<DOCKERHUB_NAMESPACE>/nginx
+    newTag: "1.27-alpine"
+  - name: docker.io/library/postgres
+    newName: docker.io/<DOCKERHUB_NAMESPACE>/postgres
+    newTag: "16-alpine"
+  - name: docker.io/library/adminer
+    newName: docker.io/<DOCKERHUB_NAMESPACE>/adminer
+    newTag: "4.8.1-standalone"
+
+# RWO PVCs (sbs-default) ne supportent pas plusieurs replicas sur des nœuds
+# différents. Forcer 1 replica pour device-management (calque DGX).
+replicas:
+  - name: device-management
+    count: 1
+
 patches:
   - path: secret-patch.yaml
+  - path: hpa-patch.yaml
