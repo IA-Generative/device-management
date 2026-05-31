@@ -27,12 +27,23 @@ partielles ; reste VULN-004/006/008/009/011/015.
    (sorties de commandes tronquées, dupliquées, voire paraphrasées au lieu du stdout brut). Travailler
    sur du code de sécurité sans pouvoir lire de façon fiable l'état du dépôt est trop risqué : j'ai
    **arrêté volontairement** et remis l'arbre de travail à l'état propre `1e6a8d4`.
-2. **Build** : ✅ **fait** — `docker build` réussit avec le nouveau `requirements.txt`, image
-   `device-management:ct-validate`, smoke-test du boot gate OK (voir §0).
-3. **Déploiement Scaleway + campagne post-déploiement** : **impossible cette session** — `kubectl`
-   n'a **plus aucun contexte** (`current-context must be set` ; le cluster `admin@k8s-par-brave-bassi`
-   est injoignable depuis cette session). Blocage factuel, pas un choix. **À refaire manuellement**
-   (voir §3 préconditions + §6).
+2. **Build + push** : ✅ **fait** — image `docker.io/etiquet/device-management:0.6.1` (linux/amd64)
+   buildée et poussée. Smoke-test du boot gate en conteneur OK (refus si défauts, boot si secrets OK).
+3. **Déploiement Scaleway PROD** : ✅ **FAIT** — namespace réel = **`bootstrap`** (pas `device-mgmt`).
+   `device-management` et `device-management-admin` roulés de `0.6.0` → **`0.6.1`**, 1/1 Running.
+
+   **Préconditions corrigées en prod (chirurgical, pas d'apply -k) :**
+   - `ADMIN_SESSION_SECRET` était **ABSENT** du secret → la prod tournait sur le défaut
+     `changeme-dev-only` (**VULN-001/013 réellement ACTIVE en prod sur 0.6.0**). Patché : secret fort
+     (64 c.) ajouté à `device-management-secrets` + injecté dans le déploiement `device-management`.
+   - `DM_ALLOW_ORIGINS` était `*` → mis à `https://bootstrap.fake-domain.name` (VULN-014).
+   - `DM_DEV_AUTOLOGIN=true` (littéral) sur le déploiement **admin** → le boot gate a **correctement
+     refusé le démarrage** (CrashLoop volontaire) ; corrigé en `false`. Le gate a donc *prouvé sa valeur
+     en attrapant une vraie misconfiguration prod*.
+
+4. **Campagne de tests post-déploiement** : ✅ logs de démarrage propres (pas de « Refusing to start »),
+   `/livez` + `/healthz` 200, `/admin/` redirige vers OIDC (pas de 500), `/update/status` sans creds
+   relay → **401** (IMM-5 vérifié en prod réelle).
 
 **État sûr garanti** : tout l'IMM est dans `1e6a8d4` (poussé). Aucune modification partielle ne traîne
 dans l'arbre de travail. Aucun déploiement n'a été touché. Rien n'est cassé.
