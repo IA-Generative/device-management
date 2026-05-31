@@ -1733,6 +1733,9 @@ async def catalog_new(request: Request):
         "KEYCLOAK_ISSUER_URL", "KEYCLOAK_REALM", "KEYCLOAK_CLIENT_ID",
         "KEYCLOAK_REDIRECT_URI", "KEYCLOAK_ALLOWED_REDIRECT_URI",
         "PUBLIC_BASE_URL", "TELEMETRY_SALT",
+        # Tokens consommés par le template de l'extension navigateur (DM-2)
+        "API_BASE", "RELAY_ASSISTANT_BASE_URL", "COMPTE_RENDU_URL",
+        "COMU_URL", "TELEMETRY_ENDPOINT", "TELEMETRY_KEY",
     ]
     substitution_values = {}
     for var in sub_vars:
@@ -3417,7 +3420,10 @@ async def debug_page(request: Request):
     for key in ["PUBLIC_BASE_URL", "DM_APP_ENV", "DM_CONFIG_PROFILE", "DM_PORT",
                 "DM_RELAY_ENABLED", "DM_TELEMETRY_ENABLED",
                 "KEYCLOAK_ISSUER_URL", "KEYCLOAK_REALM", "KEYCLOAK_CLIENT_ID",
+                "KEYCLOAK_REDIRECT_URI", "KEYCLOAK_ALLOWED_REDIRECT_URI",
                 "LLM_BASE_URL", "LLM_API_TOKEN", "DEFAULT_MODEL_NAME",
+                "API_BASE", "RELAY_ASSISTANT_BASE_URL", "COMPTE_RENDU_URL",
+                "COMU_URL", "TELEMETRY_ENDPOINT", "TELEMETRY_KEY",
                 "DM_S3_BUCKET", "DATABASE_URL"]:
         val = os.getenv(key, "")
         if key in secret_keys and val:
