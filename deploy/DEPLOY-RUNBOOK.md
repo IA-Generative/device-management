@@ -18,6 +18,14 @@ cp .env.registry.example .env.registry   # renseigner REGISTRY_SERVER si absent
 ./scripts/build-k8s.sh 0.6.0              # build multi-arch + push
 ```
 Puis bumper le tag dans l'overlay cible : `overlays/<env>/kustomization.yaml` → `newTag: "0.6.0"`.
+Ce `newTag` unique met à jour **l'API `device-management` ET `device-management-admin`**
+(les endpoints d'upload/config-template tournent sur l'admin, `DM_RUNTIME_MODE=admin`).
+
+> Endpoints producteur (CI client), routés `<base>/admin/*` → service `device-management-admin` :
+> - upload release : `POST <base>/admin/catalog/{plugin_id}/versions/upload` (header `x-admin-token`)
+> - refresh template : `POST <base>/admin/api/catalog/{plugin_id}/config-template` (header `x-admin-token`)
+> - résoudre slug→plugin_id : `GET <base>/catalog/api/plugins/{slug}` (champ `id`).
+> ⚠️ L'ingress `/admin` a `proxy-body-size: 10m` — relever si un binaire dépasse 10 Mo.
 
 ## 2. Secrets (cf. NORMALIZATION-secrets.md) — AVANT l'apply
 La base ne fournit plus les secrets. Pour l'env cible :
