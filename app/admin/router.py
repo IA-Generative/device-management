@@ -399,6 +399,40 @@ async def device_detail(request: Request, client_uuid: str):
         conn.close()
 
 
+@router.post("/devices/{client_uuid}/revoke-relay")
+@require_admin
+async def device_revoke_relay(request: Request, client_uuid: str):
+    """CT-1 (VULN-003): revoke all active relay credentials of a device.
+
+    Sets revoked_at=now() on every non-revoked relay_clients row for this device.
+    _verify_relay_credentials already rejects revoked rows, so this takes effect
+    immediately without waiting for the TTL. Idempotent."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE relay_clients
+                SET revoked_at = now(), comments = 'revoked-by-admin'
+                WHERE client_uuid = %s AND revoked_at IS NULL
+                """,
+                (client_uuid,),
+            )
+            revoked = cur.rowcount
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="relay.revoke",
+                      resource_type="relay_client", resource_id=str(client_uuid),
+                      payload={"revoked_rows": revoked},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/devices/{client_uuid}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
 @router.get("/api/devices/{client_uuid}/activity", response_class=HTMLResponse)
 @require_admin
 async def api_device_activity(request: Request, client_uuid: str):
