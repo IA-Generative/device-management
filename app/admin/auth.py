@@ -20,6 +20,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -76,8 +77,9 @@ CSRF_COOKIE = "dm_csrf_token"
 CSRF_HEADER = "X-CSRF-Token"
 CSRF_FORM_FIELD = "_csrf_token"
 
-# OIDC discovery cache
+# OIDC discovery cache (CT-7 / VULN-012: guarded by a lock for thread-safe lazy init).
 _oidc_config: dict = {}
+_oidc_config_lock = threading.Lock()
 
 
 def _get_oidc_config() -> dict:
@@ -85,17 +87,23 @@ def _get_oidc_config() -> dict:
     rewrite endpoint URLs so browser-side redirects use the public URL
     (e.g. localhost:8082) instead of the internal one (host.docker.internal:8082)."""
     global _oidc_config
+    # Fast path: dict truthiness read is atomic in CPython.
     if _oidc_config:
         return _oidc_config
     if not OIDC_ISSUER:
         return {}
-    url = OIDC_ISSUER.rstrip("/") + "/.well-known/openid-configuration"
-    try:
-        with urllib.request.urlopen(url, timeout=5) as r:
-            _oidc_config = json.loads(r.read())
-    except Exception:
-        logger.warning("OIDC discovery failed for %s", url)
-        return _oidc_config
+    with _oidc_config_lock:
+        # Re-check under the lock; another thread may have populated it.
+        if _oidc_config:
+            return _oidc_config
+        url = OIDC_ISSUER.rstrip("/") + "/.well-known/openid-configuration"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                cfg = json.loads(r.read())
+        except Exception:
+            logger.warning("OIDC discovery failed for %s", url)
+            return _oidc_config
+        _oidc_config = cfg
     # Rewrite URLs: browser-facing endpoints use PUBLIC issuer,
     # server-side token exchange uses INTERNAL issuer (e.g. wireguard-proxy).
     if OIDC_PUBLIC_ISSUER and OIDC_ISSUER != OIDC_PUBLIC_ISSUER:
