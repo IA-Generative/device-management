@@ -20,6 +20,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -33,6 +34,12 @@ logger = logging.getLogger("dm-admin-auth")
 SESSION_COOKIE = "dm_admin_session"
 SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "changeme-dev-only")
 SESSION_TTL = 3600  # 1 hour
+
+# Dev-only unauthenticated admin login. Opt-in and OFF by default (IMM-2): it
+# only activates when DM_DEV_AUTOLOGIN is explicitly enabled AND no OIDC issuer
+# is configured. The prod boot gate (app.main.validate_security_config) refuses
+# to start if this flag is on in a prod-like environment.
+DEV_AUTOLOGIN = (os.getenv("DM_DEV_AUTOLOGIN") or "").strip().lower() in ("1", "true", "yes", "on")
 
 # Warn loudly if session secret is the insecure default in production
 _app_env = os.getenv("DM_APP_ENV", "").strip().lower()
@@ -70,8 +77,9 @@ CSRF_COOKIE = "dm_csrf_token"
 CSRF_HEADER = "X-CSRF-Token"
 CSRF_FORM_FIELD = "_csrf_token"
 
-# OIDC discovery cache
+# OIDC discovery cache (CT-7 / VULN-012: guarded by a lock for thread-safe lazy init).
 _oidc_config: dict = {}
+_oidc_config_lock = threading.Lock()
 
 
 def _get_oidc_config() -> dict:
@@ -79,17 +87,23 @@ def _get_oidc_config() -> dict:
     rewrite endpoint URLs so browser-side redirects use the public URL
     (e.g. localhost:8082) instead of the internal one (host.docker.internal:8082)."""
     global _oidc_config
+    # Fast path: dict truthiness read is atomic in CPython.
     if _oidc_config:
         return _oidc_config
     if not OIDC_ISSUER:
         return {}
-    url = OIDC_ISSUER.rstrip("/") + "/.well-known/openid-configuration"
-    try:
-        with urllib.request.urlopen(url, timeout=5) as r:
-            _oidc_config = json.loads(r.read())
-    except Exception:
-        logger.warning("OIDC discovery failed for %s", url)
-        return _oidc_config
+    with _oidc_config_lock:
+        # Re-check under the lock; another thread may have populated it.
+        if _oidc_config:
+            return _oidc_config
+        url = OIDC_ISSUER.rstrip("/") + "/.well-known/openid-configuration"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                cfg = json.loads(r.read())
+        except Exception:
+            logger.warning("OIDC discovery failed for %s", url)
+            return _oidc_config
+        _oidc_config = cfg
     # Rewrite URLs: browser-facing endpoints use PUBLIC issuer,
     # server-side token exchange uses INTERNAL issuer (e.g. wireguard-proxy).
     if OIDC_PUBLIC_ISSUER and OIDC_ISSUER != OIDC_PUBLIC_ISSUER:
@@ -178,8 +192,9 @@ def require_admin(func):
         session = _verify_session(cookie) if cookie else None
 
         if not session:
-            # In dev mode without OIDC, create a dev session
-            if not OIDC_ISSUER and SESSION_SECRET == "changeme-dev-only":
+            # Dev-only auto-login: requires explicit opt-in (DM_DEV_AUTOLOGIN)
+            # and an unconfigured OIDC issuer. Never triggers in production.
+            if DEV_AUTOLOGIN and not OIDC_ISSUER:
                 session = {
                     "sub": "dev-user",
                     "email": "admin@dev.local",

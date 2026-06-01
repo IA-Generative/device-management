@@ -150,9 +150,30 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
     except Exception:
         raise HTTPException(502, "Token exchange failed")
 
-    # Decode id_token (HTTPS guarantees integrity from the issuer)
-    payload_b64 = tokens["id_token"].split(".")[1] + "=="
-    claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+    # Verify the ID Token as a JWS (VULN-017 / PA-080 R26/R28): JWKS signature
+    # plus issuer/audience/expiry. HTTPS alone does NOT guarantee the integrity
+    # of the token issued by Keycloak.
+    import logging as _logging
+    import jwt as _jwt
+    from jwt import PyJWKClient as _PyJWKClient
+    id_token = tokens.get("id_token") or ""
+    jwks_uri = cfg.get("jwks_uri")
+    expected_iss = cfg.get("issuer")
+    if not jwks_uri:
+        raise HTTPException(502, "OIDC discovery missing jwks_uri")
+    try:
+        signing_key = _PyJWKClient(jwks_uri).get_signing_key_from_jwt(id_token)
+        claims = _jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=CLIENT_ID,
+            issuer=expected_iss,
+            options={"verify_aud": True, "verify_iss": bool(expected_iss)},
+        )
+    except Exception as exc:
+        _logging.getLogger("dm-admin-auth").warning("admin ID token verification failed: %s", exc)
+        raise HTTPException(401, "ID token verification failed")
 
     if not _has_admin_group(claims):
         raise HTTPException(403, f"Acces refuse : groupe {REQUIRED_GROUP!r} requis")
@@ -374,6 +395,40 @@ async def device_detail(request: Request, client_uuid: str):
             "connections": connections, "campaign_statuses": campaign_statuses,
             "device_flags": device_flags, "timeago": timeago,
         })
+    finally:
+        conn.close()
+
+
+@router.post("/devices/{client_uuid}/revoke-relay")
+@require_admin
+async def device_revoke_relay(request: Request, client_uuid: str):
+    """CT-1 (VULN-003): revoke all active relay credentials of a device.
+
+    Sets revoked_at=now() on every non-revoked relay_clients row for this device.
+    _verify_relay_credentials already rejects revoked rows, so this takes effect
+    immediately without waiting for the TTL. Idempotent."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE relay_clients
+                SET revoked_at = now(), comments = 'revoked-by-admin'
+                WHERE client_uuid = %s AND revoked_at IS NULL
+                """,
+                (client_uuid,),
+            )
+            revoked = cur.rowcount
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="relay.revoke",
+                      resource_type="relay_client", resource_id=str(client_uuid),
+                      payload={"revoked_rows": revoked},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/devices/{client_uuid}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
     finally:
         conn.close()
 
@@ -1728,7 +1783,6 @@ async def catalog_list(request: Request, status: str = "", device_type: str = ""
 @require_admin
 async def catalog_new(request: Request):
     # Provide real env var values for config preview substitutions
-    secret_vars = {"LLM_API_TOKEN", "TELEMETRY_SALT", "TELEMETRY_KEY"}
     sub_vars = [
         "LLM_BASE_URL", "DEFAULT_MODEL_NAME", "LLM_API_TOKEN",
         "KEYCLOAK_ISSUER_URL", "KEYCLOAK_REALM", "KEYCLOAK_CLIENT_ID",
@@ -1738,11 +1792,12 @@ async def catalog_new(request: Request):
         "API_BASE", "RELAY_ASSISTANT_BASE_URL", "COMPTE_RENDU_URL",
         "COMU_URL", "TELEMETRY_ENDPOINT", "TELEMETRY_KEY",
     ]
+    from app.services.crypto import is_sensitive_key, mask_secret
     substitution_values = {}
     for var in sub_vars:
         val = os.getenv(var, "")
-        if var in secret_vars and val:
-            substitution_values[var] = val[:4] + "***"
+        if is_sensitive_key(var) and val:
+            substitution_values[var] = mask_secret(val)
         else:
             substitution_values[var] = val
     return templates.TemplateResponse("catalog_plugin_new.html", {
@@ -3431,9 +3486,7 @@ async def debug_page(request: Request):
             checks[name] = result
 
     # Config vars (safe)
-    secret_keys = {"LLM_API_TOKEN", "AWS_SECRET_ACCESS_KEY", "DATABASE_URL",
-                   "ADMIN_OIDC_CLIENT_SECRET", "ADMIN_SESSION_SECRET",
-                   "DM_RELAY_PROXY_SHARED_TOKEN", "DM_TELEMETRY_TOKEN_SIGNING_KEY"}
+    from app.services.crypto import is_sensitive_key, mask_secret
     config_vars = []
     for key in ["PUBLIC_BASE_URL", "DM_APP_ENV", "DM_CONFIG_PROFILE", "DM_PORT",
                 "DM_RELAY_ENABLED", "DM_TELEMETRY_ENABLED",
@@ -3444,8 +3497,8 @@ async def debug_page(request: Request):
                 "COMU_URL", "TELEMETRY_ENDPOINT", "TELEMETRY_KEY",
                 "DM_S3_BUCKET", "DATABASE_URL"]:
         val = os.getenv(key, "")
-        if key in secret_keys and val:
-            val = val[:4] + "***" + val[-4:] if len(val) > 8 else "***"
+        if is_sensitive_key(key) and val:
+            val = mask_secret(val)
         config_vars.append({"key": key, "value": val or "(vide)"})
 
     # DB stats
