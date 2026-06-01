@@ -10,11 +10,14 @@ def list_plugins(cur, *, status: str = None, device_type: str = None,
                  category: str = None, limit: int = 50, offset: int = 0) -> list[dict]:
     conditions, params = [], []
     if status:
-        conditions.append("p.status = %s"); params.append(status)
+        conditions.append("p.status = %s")
+        params.append(status)
     if device_type:
-        conditions.append("p.device_type = %s"); params.append(device_type)
+        conditions.append("p.device_type = %s")
+        params.append(device_type)
     if category:
-        conditions.append("p.category = %s"); params.append(category)
+        conditions.append("p.category = %s")
+        params.append(category)
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     params.extend([limit, offset])
     cur.execute(f"""

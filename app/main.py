@@ -24,6 +24,7 @@ from botocore.client import Config
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates as _Jinja2Templates
 
 try:
     import psycopg2  # type: ignore
@@ -3431,7 +3432,10 @@ def ops_health_full():
     db_url = _db_url_bootstrap() or _db_url()
     if psycopg2 and db_url:
         def _db():
-            c = psycopg2.connect(db_url); c.cursor().execute("SELECT 1"); c.close(); return "ok"
+            c = psycopg2.connect(db_url)
+            c.cursor().execute("SELECT 1")
+            c.close()
+            return "ok"
         _do("postgres", _db)
 
     # Keycloak: probe the endpoint the app ACTUALLY uses for token validation —
@@ -3479,7 +3483,10 @@ def ops_metrics():
     db_ok = 0
     if psycopg2 and db_url:
         try:
-            c = psycopg2.connect(db_url); c.cursor().execute("SELECT 1"); c.close(); db_ok = 1
+            c = psycopg2.connect(db_url)
+            c.cursor().execute("SELECT 1")
+            c.close()
+            db_ok = 1
         except Exception:
             pass
     lines += ["# HELP dm_service_up Service health (1=ok, 0=error)", "# TYPE dm_service_up gauge",
@@ -3488,7 +3495,9 @@ def ops_metrics():
     # Business metrics
     if psycopg2 and db_url:
         try:
-            conn = psycopg2.connect(db_url); conn.autocommit = True; cur = conn.cursor()
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            cur = conn.cursor()
             cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM provisioning WHERE status='ENROLLED'")
             enrolled = cur.fetchone()[0]
             cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM device_connections WHERE created_at > NOW() - INTERVAL '7 days'")
@@ -3529,8 +3538,6 @@ def catalog_api_cors():
 
 
 # ─── Public Catalog HTML Pages ──────────────────────────────────────────
-
-from fastapi.templating import Jinja2Templates as _Jinja2Templates
 
 _catalog_templates = _Jinja2Templates(
     directory=os.path.join(os.path.dirname(__file__), "catalog", "templates")

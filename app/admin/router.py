@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import tempfile as _tempfile
 import time
 import urllib.parse
 import uuid
@@ -1480,8 +1481,6 @@ Si tu ne trouves pas une info, mets une chaine vide ou une liste vide. Reponds u
 # WAF corporate blocks multipart POST > ~2 MB. This endpoint receives
 # file chunks of ≤512 KB each, stores them in /tmp, and returns an
 # upload_id that catalog_create/version_upload use instead of the file.
-
-import tempfile as _tempfile
 
 _CHUNK_DIR = os.path.join(_tempfile.gettempdir(), "dm-upload-chunks")
 _CHUNK_MAX_SIZE = 768 * 1024  # 768 KB per chunk (leaves room for headers)
@@ -3455,14 +3454,16 @@ async def debug_page(request: Request):
         # Fallback: openid-configuration via issuer
         from app.admin.auth import _oidc_issuer_url
         issuer = _oidc_issuer_url()
-        if not issuer: return "non configure"
+        if not issuer:
+            return "non configure"
         with urlreq.urlopen(f"{issuer.rstrip('/')}/.well-known/openid-configuration", timeout=5) as r:
             data = json.loads(r.read())
         return f"{os.getenv('KEYCLOAK_REALM','?')}, {len([k for k in data if 'endpoint' in k])} endpoints"
 
     def check_llm():
         llm_url = os.getenv("LLM_BASE_URL", "")
-        if not llm_url: return "non configure"
+        if not llm_url:
+            return "non configure"
         token = os.getenv("LLM_API_TOKEN", "")
         model = os.getenv("DEFAULT_MODEL_NAME", "?")
         req = urlreq.Request(f"{llm_url.rstrip('/')}/models",
@@ -3486,7 +3487,8 @@ async def debug_page(request: Request):
 
     def check_telemetry():
         url = os.getenv("DM_TELEMETRY_UPSTREAM_ENDPOINT", "")
-        if not url: return "non configure"
+        if not url:
+            return "non configure"
         payload = b'{"resourceSpans":[]}'
         req = urlreq.Request(url, data=payload, method="POST",
                              headers={"Content-Type": "application/json"})

@@ -10,11 +10,14 @@ def list_communications(cur, *, type: str = None, status: str = None,
                         limit: int = 50, offset: int = 0) -> list[dict]:
     conditions, params = [], []
     if type:
-        conditions.append("c.type = %s"); params.append(type)
+        conditions.append("c.type = %s")
+        params.append(type)
     if status:
-        conditions.append("c.status = %s"); params.append(status)
+        conditions.append("c.status = %s")
+        params.append(status)
     if plugin_id:
-        conditions.append("c.target_plugin_id = %s"); params.append(plugin_id)
+        conditions.append("c.target_plugin_id = %s")
+        params.append(plugin_id)
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     params.extend([limit, offset])
     cur.execute(f"""
