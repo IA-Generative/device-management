@@ -34,7 +34,7 @@ def list_communications(cur, *, type: str = None, status: str = None,
         LIMIT %s OFFSET %s
     """, params)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_communication(cur, comm_id: int) -> dict | None:
@@ -49,7 +49,7 @@ def get_communication(cur, comm_id: int) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def get_communication_stats(cur, comm_id: int) -> dict:
@@ -69,7 +69,7 @@ def get_survey_results(cur, comm_id: int) -> dict:
         ORDER BY responded_at DESC
     """, (comm_id,))
     cols = [d[0] for d in cur.description]
-    responses = [dict(zip(cols, row)) for row in cur.fetchall()]
+    responses = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
     # Tally choices
     choice_counts: dict[str, int] = {}
@@ -161,7 +161,7 @@ def get_active_communications(cur, *, plugin_slug: str = None,
         LIMIT 10
     """, (plugin_slug or "", client_uuid or ""))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def ack_communication(cur, comm_id: int, client_uuid: str):

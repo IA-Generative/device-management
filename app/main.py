@@ -3213,7 +3213,7 @@ def api_public_plugins():
                 GROUP BY p.id ORDER BY p.name
             """)
             cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
         maturity_labels = {"dev":"Dev","alpha":"Alpha","beta":"Beta","pre-release":"Pre-release","release":"Stable"}
         plugins = []
@@ -3272,7 +3272,7 @@ def api_public_plugin_detail(slug: str):
             if not row:
                 raise HTTPException(404)
             cols = [d[0] for d in cur.description]
-            p = dict(zip(cols, row))
+            p = dict(zip(cols, row, strict=False))
             # Latest version
             cur.execute("""
                 SELECT version, release_notes FROM plugin_versions
@@ -3572,7 +3572,7 @@ def catalog_index(request: Request, category: str | None = None):
                 GROUP BY p.id ORDER BY p.name
             """)
             cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
         # Build category list and filter
         all_categories = sorted({r.get("category") or "" for r in rows} - {""})
@@ -4005,7 +4005,7 @@ def catalog_detail(request: Request, slug: str):
             if not row:
                 raise HTTPException(404, "Plugin introuvable")
             cols = [d[0] for d in cur.description]
-            p = dict(zip(cols, row))
+            p = dict(zip(cols, row, strict=False))
 
             cur.execute("""
                 SELECT version, release_notes FROM plugin_versions
@@ -4153,8 +4153,7 @@ def get_binary(path: str):
             content_type = obj.get("ContentType") or "application/octet-stream"
 
             def iterfile():
-                for chunk in iter(lambda: body_stream.read(1024 * 1024), b""):
-                    yield chunk
+                yield from iter(lambda: body_stream.read(1024 * 1024), b"")
 
             return StreamingResponse(iterfile(), media_type=content_type)
         except Exception as e:

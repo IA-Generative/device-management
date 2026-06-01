@@ -1347,7 +1347,7 @@ async def deploy_tracking(request: Request, campaign_id: int):
                     row = cur.fetchone()
                     if row:
                         cols = [d[0] for d in cur.description]
-                        plugin = dict(zip(cols, row))
+                        plugin = dict(zip(cols, row, strict=False))
         return templates.TemplateResponse("deploy_wizard.html", {
             "request": request,
             "mode": "tracking",
@@ -2014,7 +2014,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                 ORDER BY environment, key
             """, (plugin_id,))
             env_cols = [d[0] for d in cur.description]
-            env_overrides = [dict(zip(env_cols, r)) for r in cur.fetchall()]
+            env_overrides = [dict(zip(env_cols, r, strict=False)) for r in cur.fetchall()]
             # Keycloak clients
             kc_clients = keycloak_svc.get_plugin_clients(cur, plugin_id)
             all_kc_clients = keycloak_svc.list_clients(cur)
@@ -2025,7 +2025,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                 ORDER BY created_at DESC LIMIT 50
             """, (plugin_id,))
             wl_cols = [d[0] for d in cur.description]
-            waitlist = [dict(zip(wl_cols, r)) for r in cur.fetchall()]
+            waitlist = [dict(zip(wl_cols, r, strict=False)) for r in cur.fetchall()]
             # Aliases
             cur.execute("SELECT alias FROM plugin_aliases WHERE plugin_id = %s ORDER BY alias", (plugin_id,))
             aliases = [r[0] for r in cur.fetchall()]
@@ -2074,7 +2074,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                 ORDER BY c.created_at DESC LIMIT 50
             """, (plugin_id,))
             dep_cols = [d[0] for d in cur2.description]
-            deployments = [dict(zip(dep_cols, r)) for r in cur2.fetchall()]
+            deployments = [dict(zip(dep_cols, r, strict=False)) for r in cur2.fetchall()]
             # Add progress_pct
             for d in deployments:
                 try:
@@ -2859,7 +2859,7 @@ async def catalog_migrate_config_templates(request: Request):
         with conn.cursor() as cur:
             cur.execute("SELECT id, slug, device_type, config_template FROM plugins")
             cols = [d[0] for d in cur.description]
-            plugins = [dict(zip(cols, r)) for r in cur.fetchall()]
+            plugins = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
             for p in plugins:
                 if p["config_template"]:
                     migrated.append({"slug": p["slug"], "status": "skipped (already has template)"})
@@ -3187,7 +3187,7 @@ async def catalog_alias_stats(request: Request, plugin_id: int):
                 GROUP BY alias ORDER BY total_calls DESC
             """, (plugin_id,))
             cols = [d[0] for d in cur.description]
-            stats = [dict(zip(cols, row)) for row in cur.fetchall()]
+            stats = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
         return JSONResponse(stats)
     finally:
         conn.close()
