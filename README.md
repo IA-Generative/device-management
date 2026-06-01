@@ -4,6 +4,8 @@ Backend de gestion de plugins pour les outils bureautiques (LibreOffice, Thunder
 Configuration centralisee, catalogue de plugins, deploiement progressif, telemetrie et relay securise.
 Le systeme s'appuie sur un **LLM** (modele de langage) pour assister l'administrateur et automatiser certaines taches : analyse de packages, generation de fiches catalogue, suggestion de contenu a partir de README, et classification automatique des plugins.
 
+> **Note de securite (depot public)** — Ce depot ne contient aucun secret reel : toutes les valeurs sensibles (tokens, cles, mots de passe) sont des placeholders `<...>`, injectees au deploiement via des secrets Kubernetes / overlays non versionnes. Les references d'infrastructure interne sont egalement des placeholders (`<SSO_HOSTNAME>`, `<INTERNAL_DOMAIN>`, `<DOCKERHUB_NAMESPACE>`...), a renseigner selon votre environnement. Un *boot gate* refuse le demarrage en production si un secret est reste a sa valeur par defaut.
+
 ## Plateformes supportees
 
 | Plateforme | Extension | Protocole de mise a jour |
