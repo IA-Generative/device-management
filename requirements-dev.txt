@@ -1,5 +1,6 @@
 # Developer / CI tooling (CT-9). Kept separate from runtime requirements.txt.
 -r requirements.txt
+pytest>=9.0.3
 ruff>=0.6,<1.0
 bandit>=1.7,<2.0
 pip-audit>=2.7,<3.0
