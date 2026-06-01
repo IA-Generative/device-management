@@ -3178,7 +3178,7 @@ def api_public_plugins():
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
+                SELECT p.id, p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
                        p.maturity, p.access_mode, p.icon_url, p.icon_path, p.key_features, p.source_url,
                        COUNT(DISTINCT pi.client_uuid) FILTER (WHERE pi.status='active') AS install_count,
                        MAX(pv.version) FILTER (WHERE pv.status='published') AS latest_version
@@ -3208,6 +3208,7 @@ def api_public_plugins():
             else:
                 icon = None
             plugins.append({
+                "id": p["id"],
                 "slug": p["slug"], "name": p["name"], "intent": p.get("intent") or "",
                 "device_type": p["device_type"], "category": p.get("category") or "",
                 "publisher": p.get("publisher") or "DNUM",
