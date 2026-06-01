@@ -4243,7 +4243,7 @@ async def relay_assistant_proxy(path: str, request: Request):
 
     # External corporate upstreams: use trust_env=True so httpx picks up
     # HTTPS_PROXY and routes through the corporate forward proxy.
-    # DNS resolution of corporate hostnames (<INTERNAL_DOMAIN> etc.)
+    # DNS resolution of corporate hostnames (<SSO_HOSTNAME> etc.)
     # only works through the proxy's HTTP CONNECT tunnel.
     async with httpx.AsyncClient(trust_env=True, timeout=30) as client:
         upstream_resp = await client.request(

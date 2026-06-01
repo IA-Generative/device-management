@@ -5,7 +5,7 @@ metadata:
   namespace: bootstrap
 spec:
   hostnames:
-    - <INTERNAL_DOMAIN>
+    - <PUBLIC_HOSTNAME>
   parentRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway

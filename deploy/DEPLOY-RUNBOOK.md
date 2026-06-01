@@ -50,7 +50,7 @@ dans `kubectl kustomize overlays/<env>`.
 Dans `env-secrets.yaml`, poser les vraies valeurs de `API_BASE`, `RELAY_ASSISTANT_BASE_URL`,
 `COMPTE_RENDU_URL`, `COMU_URL`, `TELEMETRY_ENDPOINT`, `TELEMETRY_KEY` (sinon ces tokens sortent
 vides dans config.json). Pour DM-1, `KEYCLOAK_REDIRECT_URI`/`ALLOWED` doivent être l'URL de
-callback publique (cf. valeurs déjà posées : `https://<INTERNAL_DOMAIN>/callback`).
+callback publique (cf. valeurs déjà posées : `https://<SSO_HOSTNAME>/callback`).
 
 ## 4. Apply
 ```

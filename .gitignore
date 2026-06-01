@@ -107,4 +107,10 @@ deploy/docker/.env
 # seuls les .example sont versionnés. Les secrets se posent APRÈS création du cluster.
 deploy/k8s/overlays/*/env-secrets.yaml
 !deploy/k8s/overlays/*/env-secrets.yaml.example
+
+# Backups / éditeurs (peuvent contenir des secrets en clair)
 *.bak
+*.bak*
+*~
+*.swp
+*.swo

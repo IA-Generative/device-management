@@ -5,7 +5,7 @@
 # Lance un Job ephemere qui utilise curl (avec fallback wget) pour tester :
 #   - DNS interne et public
 #   - HTTP via proxy (registry, SSO, compte-rendu)
-#   - HTTP direct (services <INTERNAL_DOMAIN> et cluster internes si disponibles)
+#   - HTTP direct (services .<INTERNAL_DOMAIN> et cluster internes si disponibles)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -16,7 +16,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NAMESPACE="${NAMESPACE:-bootstrap}"
 JOB_NAME="connectivity-test-$(date +%s)"
 PROXY="${PROXY:-http://<PROXY_IP>:3128}"
-NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,<INTERNAL_DOMAIN>,.svc,.svc.cluster.local}"
+NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.<INTERNAL_DOMAIN>,.svc,.svc.cluster.local}"
 TIMEOUT_SEC="${TIMEOUT_SEC:-10}"
 # Image avec curl ET wget, mirror sur DockerHub <DOCKERHUB_NAMESPACE> (compte authentifie
 # via regcred → pas de rate limit).
@@ -34,7 +34,7 @@ USE_HOST_NETWORK="${USE_HOST_NETWORK:-false}"
 # ── Endpoints a tester ────────────────────────────────────
 # Format : NOM|URL|TYPE
 #   proxy   = via proxy corporate (domaines publics .gouv.fr, .scw.cloud)
-#   direct  = direct, sans proxy (domaines internes <INTERNAL_DOMAIN>)
+#   direct  = direct, sans proxy (domaines internes .<INTERNAL_DOMAIN>)
 #   cluster = service interne k8s (peut ne pas exister au premier run)
 ENDPOINTS=(
   "SSO OIDC discovery|https://<SSO_HOSTNAME>/realms/mirai/.well-known/openid-configuration|proxy"
@@ -176,7 +176,7 @@ SCRIPT_HEADER
   done
 
   echo 'echo ""'
-  echo 'echo "--- Endpoints direct (<INTERNAL_DOMAIN>) ---"'
+  echo 'echo "--- Endpoints direct (.<INTERNAL_DOMAIN>) ---"'
   for entry in "${ENDPOINTS[@]}"; do
     IFS='|' read -r name url type <<< "$entry"
     [ "$type" = "direct" ] && echo "test_http \"$name\" \"$url\" no $TIMEOUT_SEC"

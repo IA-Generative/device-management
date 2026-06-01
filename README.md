@@ -101,7 +101,7 @@ Le catalogue est le hub central de gestion des plugins. Il permet de :
 ### Page publique
 
 Le catalogue expose une **vitrine publique** (sans authentification) au design DSFR
-(Systeme de Design de l'Etat Francais), proche de <INTERNAL_DOMAIN> :
+(Systeme de Design de l'Etat Francais), proche de <PUBLIC_SITE_HOSTNAME> :
 
 - `/catalog` : page d'accueil avec grille de plugins, badges maturite, statistiques
 - `/catalog/{slug}` : fiche plugin avec mode d'emploi, changelog, feedback utilisateurs, telechargement
@@ -110,7 +110,7 @@ Le catalogue expose une **vitrine publique** (sans authentification) au design D
 ### API JSON publique
 
 Le catalogue expose une API JSON (CORS ouvert, documentation Swagger) permettant
-a des sites externes (ex: <INTERNAL_DOMAIN>) d'afficher les plugins :
+a des sites externes (ex: <PUBLIC_SITE_HOSTNAME>) d'afficher les plugins :
 
 - `/catalog/api/plugins` : liste des plugins avec nom, intent, tags, version, installs
 - `/catalog/api/plugins/{slug}` : detail complet d'un plugin
@@ -184,7 +184,7 @@ Lors de la creation d'un plugin, le systeme analyse le package uploade et extrai
 - `/admin/cohorts`, `/admin/flags`, `/admin/artifacts`, `/admin/audit`
 
 ### Catalogue public (`/catalog/`)
-- `/catalog` : page d'accueil (DSFR, style <INTERNAL_DOMAIN>)
+- `/catalog` : page d'accueil (DSFR, style <PUBLIC_SITE_HOSTNAME>)
 - `/catalog/{slug}` : fiche plugin (mode d'emploi, changelog, feedback, telechargement)
 - `/catalog/{slug}/download` : telechargement derniere version
 - `/catalog/api/plugins` : API JSON publique (CORS ouvert)

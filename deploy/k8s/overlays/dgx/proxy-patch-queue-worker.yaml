@@ -14,10 +14,10 @@ spec:
             - name: http_proxy
               value: "http://<PROXY_IP>:3128"
             - name: no_proxy
-              value: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,<INTERNAL_DOMAIN>,.svc,.svc.cluster.local,device-management,device-management-admin,postgres,relay-assistant,telemetry-relay,adminer"
+              value: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.<INTERNAL_DOMAIN>,.svc,.svc.cluster.local,device-management,device-management-admin,postgres,relay-assistant,telemetry-relay,adminer"
             - name: HTTPS_PROXY
               value: "http://<PROXY_IP>:3128"
             - name: HTTP_PROXY
               value: "http://<PROXY_IP>:3128"
             - name: NO_PROXY
-              value: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,<INTERNAL_DOMAIN>,.svc,.svc.cluster.local,device-management,device-management-admin,postgres,relay-assistant,telemetry-relay,adminer"
+              value: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.<INTERNAL_DOMAIN>,.svc,.svc.cluster.local,device-management,device-management-admin,postgres,relay-assistant,telemetry-relay,adminer"
