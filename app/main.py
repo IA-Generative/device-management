@@ -710,20 +710,20 @@ def _verify_telemetry_token(token: str) -> dict:
     try:
         payload_b64, sig_b64 = token.split(".", 1)
     except ValueError:
-        raise HTTPException(status_code=401, detail="Malformed telemetry token.")
+        raise HTTPException(status_code=401, detail="Malformed telemetry token.") from None
 
     expected_sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
     try:
         provided_sig = _b64url_decode(sig_b64)
     except Exception:
-        raise HTTPException(status_code=401, detail="Malformed telemetry token signature.")
+        raise HTTPException(status_code=401, detail="Malformed telemetry token signature.") from None
     if not hmac.compare_digest(expected_sig, provided_sig):
         raise HTTPException(status_code=401, detail="Invalid telemetry token signature.")
 
     try:
         payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
     except Exception:
-        raise HTTPException(status_code=401, detail="Malformed telemetry token payload.")
+        raise HTTPException(status_code=401, detail="Malformed telemetry token payload.") from None
     if not isinstance(payload, dict):
         raise HTTPException(status_code=401, detail="Malformed telemetry token payload.")
 
@@ -1248,10 +1248,10 @@ def _verify_access_token(token: str) -> dict:
         )
     except PyJWTError as exc:
         logger.warning("JWT verification failed (PyJWTError): %s: %s", exc.__class__.__name__, exc)
-        raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
+        raise HTTPException(status_code=401, detail="Invalid PKCE access token.") from exc
     except Exception as exc:
         logger.warning("JWT verification failed with backend error: %s: %s", exc.__class__.__name__, exc)
-        raise HTTPException(status_code=503, detail="Access token verification service unavailable.")
+        raise HTTPException(status_code=503, detail="Access token verification service unavailable.") from exc
 
     if not isinstance(payload, dict):
         raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
@@ -1530,7 +1530,7 @@ def _forward_telemetry_to_upstream(body: bytes, *, content_type: str, user_agent
         response_ct = e.headers.get("Content-Type", "application/json")
         return Response(content=payload, status_code=e.code, headers={"Content-Type": response_ct})
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Telemetry upstream unreachable: {e!r}")
+        raise HTTPException(status_code=502, detail=f"Telemetry upstream unreachable: {e!r}") from e
 
 
 def _enqueue_telemetry_payload(
@@ -2620,7 +2620,7 @@ async def enroll(request: Request):
                 user_agent=user_agent,
             )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Cannot persist enroll payload: {e!r}")
+            raise HTTPException(status_code=500, detail=f"Cannot persist enroll payload: {e!r}") from e
 
     return JSONResponse(
         status_code=201,
@@ -4151,7 +4151,7 @@ def get_binary(path: str):
             )
             return RedirectResponse(url=url, status_code=302)
         except Exception as e:
-            raise HTTPException(status_code=404, detail=f"Binary not found or cannot presign: {e!r}")
+            raise HTTPException(status_code=404, detail=f"Binary not found or cannot presign: {e!r}") from e
 
     if settings.binaries_mode == "proxy":
         try:
@@ -4164,7 +4164,7 @@ def get_binary(path: str):
 
             return StreamingResponse(iterfile(), media_type=content_type)
         except Exception as e:
-            raise HTTPException(status_code=404, detail=f"Binary not found: {e!r}")
+            raise HTTPException(status_code=404, detail=f"Binary not found: {e!r}") from e
 
     raise HTTPException(status_code=500, detail="Invalid DM_BINARIES_MODE (must be presign or proxy or local).")
 
@@ -4231,7 +4231,7 @@ async def keycloak_token_proxy(request: Request):
     try:
         form_data = base64.b64decode(encoded_payload)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64 in 'p' field")
+        raise HTTPException(status_code=400, detail="Invalid base64 in 'p' field") from None
 
     token_url = f"{_KEYCLOAK_TOKEN_UPSTREAM}/protocol/openid-connect/token"
 

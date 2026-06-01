@@ -171,7 +171,7 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         with urllib.request.urlopen(req, timeout=10) as r:
             tokens = json.loads(r.read())
     except Exception:
-        raise HTTPException(502, "Token exchange failed")
+        raise HTTPException(502, "Token exchange failed") from None
 
     # Verify the ID Token as a JWS (VULN-017 / PA-080 R26/R28): JWKS signature
     # plus issuer/audience/expiry. HTTPS alone does NOT guarantee the integrity
@@ -197,7 +197,7 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         )
     except Exception as exc:
         _logging.getLogger("dm-admin-auth").warning("admin ID token verification failed: %s", exc)
-        raise HTTPException(401, "ID token verification failed")
+        raise HTTPException(401, "ID token verification failed") from exc
 
     if not _has_admin_group(claims):
         raise HTTPException(403, f"Acces refuse : groupe {REQUIRED_GROUP!r} requis")
@@ -452,7 +452,7 @@ async def device_revoke_relay(request: Request, client_uuid: str):
         return RedirectResponse(f"/admin/devices/{client_uuid}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -529,7 +529,7 @@ async def cohorts_create(request: Request, name: str = Form(...),
     except Exception as e:
         conn.rollback()
         logger.error("cohort create failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -575,7 +575,7 @@ async def cohort_add_members(request: Request, cohort_id: int,
         return RedirectResponse(f"/admin/cohorts/{cohort_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -595,7 +595,7 @@ async def cohort_delete(request: Request, cohort_id: int):
         return RedirectResponse("/admin/cohorts", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -649,7 +649,7 @@ async def flags_create(request: Request, name: str = Form(...),
         return RedirectResponse("/admin/flags", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -691,7 +691,7 @@ async def flag_update_default(request: Request, flag_id: int,
         return RedirectResponse(f"/admin/flags/{flag_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -719,7 +719,7 @@ async def flag_add_override(request: Request, flag_id: int,
         return RedirectResponse(f"/admin/flags/{flag_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -740,7 +740,7 @@ async def flag_delete_override(request: Request, flag_id: int, cohort_id: int):
         return RedirectResponse(f"/admin/flags/{flag_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -830,7 +830,7 @@ async def artifact_toggle(request: Request, artifact_id: int,
         return RedirectResponse("/admin/artifacts", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -902,7 +902,7 @@ async def campaign_create(request: Request,
     except Exception as e:
         conn.rollback()
         logger.error("campaign create failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -975,7 +975,7 @@ def _campaign_action(campaign_id: int, new_status: str, action_name: str,
         return RedirectResponse(f"/admin/{redirect_prefix}/{campaign_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -1319,7 +1319,7 @@ async def deploy_create(request: Request,
     except Exception as e:
         conn.rollback()
         logger.error("deploy create failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -1776,7 +1776,7 @@ async def catalog_purge_removed(request: Request):
         return RedirectResponse(f"/admin/catalog?purged={count}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -1989,7 +1989,7 @@ async def catalog_create(request: Request):
     except Exception as e:
         conn.rollback()
         logger.error("plugin create failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2129,7 +2129,7 @@ async def catalog_plugin_edit(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2151,7 +2151,7 @@ async def catalog_plugin_status(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2205,7 +2205,7 @@ async def catalog_plugin_duplicate(request: Request, plugin_id: int):
         raise
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2243,7 +2243,7 @@ async def catalog_version_create(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2265,7 +2265,7 @@ async def catalog_version_status(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2307,7 +2307,7 @@ async def catalog_versions_purge(request: Request, plugin_id: int):
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2362,7 +2362,7 @@ async def catalog_deployments_purge(request: Request, plugin_id: int):
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2611,7 +2611,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
     except Exception as e:
         conn.rollback()
         logger.error("catalog version upload failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2634,7 +2634,7 @@ def _catalog_deploy_action(plugin_id: int, campaign_id: int, new_status: str,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2735,7 +2735,7 @@ async def communication_create(request: Request,
         return RedirectResponse(f"/admin/communications/{comm_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2778,7 +2778,7 @@ async def communication_status(request: Request, comm_id: int,
         return RedirectResponse(f"/admin/communications/{comm_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2819,7 +2819,7 @@ async def catalog_env_upsert(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=env", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2841,7 +2841,7 @@ async def catalog_env_delete(request: Request, plugin_id: int, override_id: int)
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=env", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3047,7 +3047,7 @@ async def catalog_keycloak_link(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=keycloak", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3075,7 +3075,7 @@ async def catalog_access_update(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=access", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3099,7 +3099,7 @@ async def catalog_waitlist_approve(request: Request, plugin_id: int, wl_id: int)
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=access", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3119,7 +3119,7 @@ async def catalog_waitlist_reject(request: Request, plugin_id: int, wl_id: int):
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=access", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3145,7 +3145,7 @@ async def catalog_alias_add(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=alias", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3167,7 +3167,7 @@ async def catalog_alias_delete(request: Request, plugin_id: int, alias: str):
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=alias", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
