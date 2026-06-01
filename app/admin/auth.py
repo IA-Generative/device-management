@@ -103,24 +103,27 @@ def _get_oidc_config() -> dict:
         except Exception:
             logger.warning("OIDC discovery failed for %s", url)
             return _oidc_config
+        # Rewrite URLs: browser-facing endpoints use PUBLIC issuer,
+        # server-side token exchange uses INTERNAL issuer (e.g. wireguard-proxy).
+        if OIDC_PUBLIC_ISSUER and OIDC_ISSUER != OIDC_PUBLIC_ISSUER:
+            # The discovery response contains the issuer's own URLs (public).
+            # For server-side calls (token exchange), rewrite to internal URL.
+            public_base = cfg.get("issuer", "").rstrip("/")
+            internal_base = OIDC_ISSUER.rstrip("/")
+            # Save internal token endpoint (rewrite public → internal for server-side call)
+            raw_token_ep = cfg.get("token_endpoint", "")
+            if public_base and internal_base and public_base != internal_base:
+                cfg["_internal_token_endpoint"] = raw_token_ep.replace(
+                    public_base, internal_base
+                )
+            else:
+                cfg["_internal_token_endpoint"] = raw_token_ep
+            # Browser-facing URLs: keep as-is (they're already public from discovery)
+            # No rewriting needed since discovery returns public URLs.
+        # Publish the fully-initialised config last (still under the lock) so the
+        # atomic fast-path read never observes a dict missing
+        # _internal_token_endpoint (CT-7 / VULN-012).
         _oidc_config = cfg
-    # Rewrite URLs: browser-facing endpoints use PUBLIC issuer,
-    # server-side token exchange uses INTERNAL issuer (e.g. wireguard-proxy).
-    if OIDC_PUBLIC_ISSUER and OIDC_ISSUER != OIDC_PUBLIC_ISSUER:
-        # The discovery response contains the issuer's own URLs (public).
-        # For server-side calls (token exchange), rewrite to internal URL.
-        public_base = _oidc_config.get("issuer", "").rstrip("/")
-        internal_base = OIDC_ISSUER.rstrip("/")
-        # Save internal token endpoint (rewrite public → internal for server-side call)
-        raw_token_ep = _oidc_config.get("token_endpoint", "")
-        if public_base and internal_base and public_base != internal_base:
-            _oidc_config["_internal_token_endpoint"] = raw_token_ep.replace(
-                public_base, internal_base
-            )
-        else:
-            _oidc_config["_internal_token_endpoint"] = raw_token_ep
-        # Browser-facing URLs: keep as-is (they're already public from discovery)
-        # No rewriting needed since discovery returns public URLs.
     return _oidc_config
 
 
