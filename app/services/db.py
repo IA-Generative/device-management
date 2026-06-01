@@ -205,7 +205,7 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
         raise RuntimeError("psycopg2 is not installed.")
     if not os.path.isfile(schema_path):
         raise FileNotFoundError(f"Schema SQL not found: {schema_path}")
-    with open(schema_path, "r", encoding="utf-8") as f:
+    with open(schema_path, encoding="utf-8") as f:
         sql = f.read()
     conn = psycopg2.connect(db_url_str)
     conn.autocommit = True

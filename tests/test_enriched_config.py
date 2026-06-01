@@ -7,14 +7,12 @@ All DB interactions are mocked — no real PostgreSQL is required.
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import sys
 import types
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
-
 
 # ---------------------------------------------------------------------------
 # Module bootstrap helpers

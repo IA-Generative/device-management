@@ -10,37 +10,60 @@ import json
 import logging
 import os
 import time
-import uuid
 import urllib.parse
-
+import uuid
 from pathlib import Path, PurePosixPath
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, FileResponse
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from ..settings import settings
 from .auth import (
-    require_admin, require_admin_or_service_token,
-    _sign_session, _verify_session, _get_oidc_config,
-    _get_token_endpoint, _has_admin_group, _generate_csrf_token,
-    SESSION_COOKIE, SESSION_TTL, CSRF_COOKIE,
-    CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, REQUIRED_GROUP,
+    CLIENT_ID,
+    CLIENT_SECRET,
+    CSRF_COOKIE,
+    REDIRECT_URI,
+    REQUIRED_GROUP,
+    SESSION_COOKIE,
+    SESSION_TTL,
+    _generate_csrf_token,
+    _get_oidc_config,
+    _get_token_endpoint,
+    _has_admin_group,
+    _sign_session,
+    _verify_session,
+    require_admin,
+    require_admin_or_service_token,
 )
-from .helpers import audit_log, get_db_connection, timeago, span_label
-
+from .helpers import audit_log, get_db_connection, span_label, timeago
+from .services import (
+    artifacts as artifacts_svc,
+)
+from .services import (
+    audit as audit_svc,
+)
+from .services import (
+    campaigns as campaigns_svc,
+)
+from .services import (
+    catalog as catalog_svc,
+)
+from .services import (
+    cohorts as cohorts_svc,
+)
+from .services import (
+    communications as comms_svc,
+)
 from .services import (
     devices as devices_svc,
-    campaigns as campaigns_svc,
+)
+from .services import (
     flags as flags_svc,
-    cohorts as cohorts_svc,
-    artifacts as artifacts_svc,
-    audit as audit_svc,
-    catalog as catalog_svc,
-    communications as comms_svc,
+)
+from .services import (
     keycloak as keycloak_svc,
 )
-
-from ..settings import settings
 
 logger = logging.getLogger("dm-admin-router")
 
@@ -115,7 +138,6 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
     """Exchange authorization code for tokens, verify group, set session cookie."""
     import urllib.parse
     import urllib.request
-    import base64
 
     stored_state = request.cookies.get("dm_oidc_state")
     if state != stored_state:
@@ -154,6 +176,7 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
     # plus issuer/audience/expiry. HTTPS alone does NOT guarantee the integrity
     # of the token issued by Keycloak.
     import logging as _logging
+
     import jwt as _jwt
     from jwt import PyJWKClient as _PyJWKClient
     id_token = tokens.get("id_token") or ""
@@ -1020,9 +1043,9 @@ async def deploy_wizard(request: Request):
 @require_admin
 async def api_extract_version(request: Request, binary: UploadFile = File(...)):
     """Extract version from plugin package (ZIP: .xpi, .oxt, .crx)."""
-    import zipfile
     import io
     import re
+    import zipfile
 
     data = await binary.read()
     version = None
@@ -1540,9 +1563,9 @@ def _reassemble_upload(upload_id: str) -> tuple[bytes, str] | None:
 @require_admin
 async def api_catalog_suggest(request: Request):
     """Use LLM to suggest catalog fields from README and/or plugin content."""
+    import io
     import urllib.request as urlreq
     import zipfile
-    import io
 
     form = await request.form()
     texts = []
@@ -2920,7 +2943,7 @@ async def catalog_preview_config(request: Request, plugin_id: int, profile: str 
             if not plugin:
                 return JSONResponse({"error": "Plugin non trouve"}, status_code=404)
             # Simulate config loading
-            from app.main import _load_config_template, _substitute_env, _apply_overrides, _apply_catalog_overrides
+            from app.main import _apply_catalog_overrides, _apply_overrides, _load_config_template, _substitute_env
             cfg = _load_config_template(profile, device=plugin["device_type"],
                                         device_name=plugin["slug"], cur=cur)
             cfg = _substitute_env(cfg)
@@ -3282,8 +3305,8 @@ async def admin_files_list(request: Request, prefix: str = ""):
 @require_admin
 async def api_debug_status(request: Request):
     """HTMX fragment: service availability banner for dashboard."""
-    import urllib.request as urlreq
     import time as _time
+    import urllib.request as urlreq
 
     checks = {}
     # DB
@@ -3399,11 +3422,11 @@ async def api_adoption(request: Request, period: str = "1M"):
 @require_admin
 async def debug_page(request: Request):
     """Full debug page with all service health checks."""
-    import urllib.request as urlreq
-    import urllib.error as urllib_error
-    import time as _time
-    import socket
     import concurrent.futures
+    import socket
+    import time as _time
+    import urllib.error as urllib_error
+    import urllib.request as urlreq
 
     def _check(name, fn):
         t0 = _time.monotonic()

@@ -6,11 +6,10 @@ TC-ADM-01 a TC-ADM-31.
 
 from __future__ import annotations
 
-import json
 import os
 import time
-from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,9 +17,8 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "postgresql://dev:dev@localhost:5432/bootstrap")
 os.environ["ADMIN_SESSION_SECRET"] = "changeme-dev-only"
 
-from app.admin.auth import _sign_session, _verify_session, _has_admin_group, SESSION_SECRET
-from app.admin.helpers import compute_device_health, timeago, span_label
-
+from app.admin.auth import _has_admin_group, _sign_session, _verify_session
+from app.admin.helpers import compute_device_health, span_label, timeago
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -67,6 +65,7 @@ def _mock_db_connection(cursor=None):
 def admin_client():
     """FastAPI TestClient with admin session cookie."""
     from fastapi.testclient import TestClient
+
     from app.main import app
     client = TestClient(app)
     cookie = forge_admin_cookie()
@@ -78,6 +77,7 @@ def admin_client():
 def anon_client():
     """FastAPI TestClient without session cookie."""
     from fastapi.testclient import TestClient
+
     from app.main import app
     return TestClient(app)
 
@@ -90,8 +90,9 @@ def test_adm_01_no_session_redirect(anon_client):
     # so we test with a modified env
     with patch.dict(os.environ, {"ADMIN_OIDC_ISSUER_URL": "http://fake-keycloak/realms/test",
                                   "ADMIN_SESSION_SECRET": "not-dev-mode"}):
+
         from fastapi.testclient import TestClient
-        from importlib import reload
+
         import app.admin.auth as auth_mod
         # The auth module reads env at import time, so we mock at function level
         with patch.object(auth_mod, "OIDC_ISSUER", "http://fake-keycloak/realms/test"), \
@@ -199,7 +200,7 @@ def test_adm_08_upload_bad_extension(admin_client):
 
 def test_adm_09_upload_valid_oxt(admin_client):
     """TC-ADM-09: Upload valid .oxt should create artifact."""
-    from app.admin.services.artifacts import validate_upload, compute_checksum
+    from app.admin.services.artifacts import compute_checksum, validate_upload
     error = validate_upload("plugin.oxt", 5000)
     assert error is None
     checksum = compute_checksum(b"fake binary content")
@@ -236,7 +237,7 @@ def test_adm_11_device_detail(admin_client):
         ]
         mock_cur.fetchone.return_value = (
             "abc-123", "test@example.com", "CONFIG_GET", "TestAgent/1.0",
-            "127.0.0.1", datetime.now(timezone.utc), "ENROLLED", "Test Device",
+            "127.0.0.1", datetime.now(UTC), "ENROLLED", "Test Device",
         )
         mock_cur.fetchall.return_value = []
         mock_conn.return_value = _mock_db_connection(mock_cur)
@@ -374,7 +375,7 @@ def test_adm_20_health_never():
 
 def test_adm_21_health_error():
     """TC-ADM-21: compute_device_health with last_error should return 'error'."""
-    recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+    recent = datetime.now(UTC) - timedelta(minutes=5)
     assert compute_device_health(recent, last_error="some error") == "error"
 
 
@@ -382,7 +383,7 @@ def test_adm_21_health_error():
 
 def test_adm_22_health_stale():
     """TC-ADM-22: compute_device_health with old contact should return 'stale'."""
-    old = datetime.now(timezone.utc) - timedelta(hours=25)
+    old = datetime.now(UTC) - timedelta(hours=25)
     assert compute_device_health(old) == "stale"
 
 
@@ -390,7 +391,7 @@ def test_adm_22_health_stale():
 
 def test_adm_23_health_ok():
     """TC-ADM-23: compute_device_health with recent contact should return 'ok'."""
-    recent = datetime.now(timezone.utc) - timedelta(hours=1)
+    recent = datetime.now(UTC) - timedelta(hours=1)
     assert compute_device_health(recent) == "ok"
 
 
@@ -478,7 +479,7 @@ def test_adm_30_trim_trigger():
 
 def test_adm_31_device_list_last_action():
     """TC-ADM-31: timeago helper should format dates correctly."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     assert "quelques secondes" in timeago(now)
 
     old = now - timedelta(days=2)
@@ -510,7 +511,7 @@ def test_session_tampered():
 
 def test_validate_upload_extensions():
     """Upload validation should check extensions."""
-    from app.admin.services.artifacts import validate_upload, ALLOWED_EXTENSIONS
+    from app.admin.services.artifacts import validate_upload
     assert validate_upload("test.oxt", 100) is None
     assert validate_upload("test.xpi", 100) is None
     assert validate_upload("test.crx", 100) is None

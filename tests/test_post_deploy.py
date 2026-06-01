@@ -13,11 +13,11 @@ Skip with: pytest tests/test_post_deploy.py -k "not post_deploy"
 """
 from __future__ import annotations
 
-import os
 import json
+import os
 
-import pytest
 import httpx
+import pytest
 
 BASE = os.getenv("DM_BASE_URL", "https://<SCALEWAY_HOSTNAME>")
 ADMIN_TOKEN = os.getenv("DM_ADMIN_TOKEN", "change-me-queue-admin-token")

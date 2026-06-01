@@ -60,15 +60,13 @@ NETTOYAGE
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 
-import pytest
 import httpx
+import pytest
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -790,7 +788,6 @@ class TestPhase8Observability:
 
 def deploy_from_scratch():
     """Deployer la stack complete from scratch et lancer les tests."""
-    import shutil
 
     compose_dir = os.path.abspath(COMPOSE_DIR)
     project_root = os.path.abspath(PROJECT_ROOT)
@@ -892,9 +889,9 @@ def deploy_from_scratch():
             )
             if result.returncode == 0:
                 client_uuid = result.stdout.strip().split("'")[-2] if "'" in result.stdout else ""
-                print(f"  ✓ Client admin-dm-ui cree")
+                print("  ✓ Client admin-dm-ui cree")
             else:
-                print(f"  ℹ Client admin-dm-ui existait deja")
+                print("  ℹ Client admin-dm-ui existait deja")
 
             # Create group
             run(f"{kcadm} create groups -r openwebui -s name=admin-dm",

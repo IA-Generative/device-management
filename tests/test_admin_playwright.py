@@ -4,9 +4,7 @@ Requires Docker stack running at localhost:3001.
 Run with: pytest tests/test_admin_playwright.py --base-url http://localhost:3001
 """
 
-import pytest
 from playwright.sync_api import Page, expect
-
 
 BASE = "http://localhost:3001"
 

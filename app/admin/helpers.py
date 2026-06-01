@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger("dm-admin")
 
@@ -40,15 +40,15 @@ def timeago(dt) -> str:
     if dt is None:
         return "jamais"
     if isinstance(dt, (int, float)):
-        dt = datetime.fromtimestamp(dt, tz=timezone.utc)
+        dt = datetime.fromtimestamp(dt, tz=UTC)
     if isinstance(dt, str):
         try:
             dt = datetime.fromisoformat(dt)
         except Exception:
             return str(dt)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     delta = now - dt
     seconds = int(delta.total_seconds())
     if seconds < 60:
@@ -118,8 +118,8 @@ def compute_device_health(last_contact_at, enrollment_status=None, last_error=No
         except Exception:
             return "never"
     if last_contact_at.tzinfo is None:
-        last_contact_at = last_contact_at.replace(tzinfo=timezone.utc)
-    delta = datetime.now(timezone.utc) - last_contact_at
+        last_contact_at = last_contact_at.replace(tzinfo=UTC)
+    delta = datetime.now(UTC) - last_contact_at
     if last_error:
         return "error"
     if delta.total_seconds() > 86400:
