@@ -131,15 +131,30 @@ def _get_oidc_config() -> dict:
         internal_base = OIDC_ISSUER.rstrip("/")
         # Save internal token endpoint (rewrite public → internal for server-side call)
         raw_token_ep = _oidc_config.get("token_endpoint", "")
+        # JWKS fetch is ALSO server-side (verif de l'ID token) → rewrite public →
+        # internal, sinon le pod ne peut pas joindre le jwks_uri public
+        # (urlopen "Connection reset by peer"). Même traitement que le token endpoint.
+        raw_jwks = _oidc_config.get("jwks_uri", "")
         if public_base and internal_base and public_base != internal_base:
             _oidc_config["_internal_token_endpoint"] = raw_token_ep.replace(
                 public_base, internal_base
             )
+            _oidc_config["_internal_jwks_uri"] = raw_jwks.replace(
+                public_base, internal_base
+            )
         else:
             _oidc_config["_internal_token_endpoint"] = raw_token_ep
-        # Browser-facing URLs: keep as-is (they're already public from discovery)
-        # No rewriting needed since discovery returns public URLs.
+            _oidc_config["_internal_jwks_uri"] = raw_jwks
+        # Browser-facing URLs: keep as-is (they're already public from discovery).
+        # NB: on conserve cfg["issuer"] public pour la vérif du claim iss (le token
+        # est signé avec l'issuer frontend public).
     return _oidc_config
+
+
+def _get_jwks_uri() -> str:
+    """JWKS endpoint pour la vérif JWS server-side (URL interne si dispo)."""
+    cfg = _get_oidc_config()
+    return cfg.get("_internal_jwks_uri") or cfg.get("jwks_uri", "")
 
 
 def _get_token_endpoint() -> str:

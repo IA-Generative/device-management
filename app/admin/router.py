@@ -157,7 +157,9 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
     import jwt as _jwt
     from jwt import PyJWKClient as _PyJWKClient
     id_token = tokens.get("id_token") or ""
-    jwks_uri = cfg.get("jwks_uri")
+    # JWKS récupéré server-side → URL interne (wireguard-proxy) si dispo, sinon le
+    # jwks_uri public est injoignable depuis le pod (Connection reset by peer).
+    jwks_uri = cfg.get("_internal_jwks_uri") or cfg.get("jwks_uri")
     expected_iss = cfg.get("issuer")
     if not jwks_uri:
         raise HTTPException(502, "OIDC discovery missing jwks_uri")

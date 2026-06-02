@@ -1,135 +1,183 @@
-# Device Management (FastAPI)
+# Device Management
 
-Backend de gestion de plugins pour les outils bureautiques (LibreOffice, Thunderbird ou tout autre solutions permettant l'ajout de fonctionnalite).
-Configuration centralisee, catalogue de plugins, deploiement progressif, telemetrie et relay securise.
-Le systeme s'appuie sur un **LLM** (modele de langage) pour assister l'administrateur et automatiser certaines taches : analyse de packages, generation de fiches catalogue, suggestion de contenu a partir de README, et classification automatique des plugins.
+> Le serveur qui distribue, configure, met à jour et supervise les **extensions
+> bureautiques** (LibreOffice, Thunderbird, navigateurs) d'une organisation —
+> un peu comme un **magasin d'applications interne** doublé d'un **gestionnaire
+> de déploiement** pour ces plugins.
 
-> **Note de securite (depot public)** — Ce depot ne contient aucun secret reel : toutes les valeurs sensibles (tokens, cles, mots de passe) sont des placeholders `<...>`, injectees au deploiement via des secrets Kubernetes / overlays non versionnes. Les references d'infrastructure interne sont egalement des placeholders (`<SSO_HOSTNAME>`, `<INTERNAL_DOMAIN>`, `<DOCKERHUB_NAMESPACE>`...), a renseigner selon votre environnement. Un *boot gate* refuse le demarrage en production si un secret est reste a sa valeur par defaut.
+---
 
-## Plateformes supportees
+## En deux mots
 
-| Plateforme | Extension | Protocole de mise a jour |
+Imaginez une organisation qui veut équiper les postes de ses agents d'un **assistant
+IA** intégré directement dans LibreOffice, Thunderbird ou le navigateur (sous forme
+d'extension/plugin). Il faut alors :
+
+- **distribuer** ces extensions et leurs mises à jour,
+- les **configurer** différemment selon l'environnement (test, production…),
+- **déployer progressivement** une nouvelle version (d'abord 5 % des postes, puis 25 %, puis tout le monde),
+- **contrôler qui y a accès**,
+- et leur permettre de **parler à un service d'IA** de façon sécurisée.
+
+**Device Management** (« DM ») est le **serveur central** qui fait tout cela. Chaque
+extension installée est vue comme un « device » à gérer — d'où le nom.
+
+> 💡 **Analogie** : c'est l'équivalent d'un *app store d'entreprise* + un système de
+> *gestion de flotte* (type MDM), mais pour des **extensions de logiciels bureautiques**
+> au lieu de téléphones.
+
+## À quoi ça sert concrètement ?
+
+Un exemple de bout en bout, du point de vue d'un administrateur :
+
+1. Il a une nouvelle version de l'extension « Assistant LibreOffice ». Il l'**upload**
+   dans l'interface d'administration.
+2. Le serveur **analyse le paquet** et, à l'aide d'un modèle d'IA, **génère
+   automatiquement la fiche** (nom, description, fonctionnalités, logo) pour le catalogue.
+3. Il lance un **déploiement progressif** : 5 % des postes reçoivent la mise à jour,
+   puis 25 %, puis 100 %, avec un **suivi en temps réel**.
+4. Côté poste agent, l'extension **récupère sa configuration** auprès du serveur (quel
+   modèle d'IA utiliser, quels réglages selon l'environnement…) et **se met à jour** toute seule.
+5. Quand l'extension a besoin d'appeler l'IA, elle passe par un **relais sécurisé**
+   du serveur (jamais de secret exposé côté poste).
+
+## Pour qui ?
+
+- **Administrateurs / équipes support** : publient les plugins, pilotent les déploiements,
+  communiquent avec les utilisateurs (annonces, sondages), gèrent les accès.
+- **Développeurs de plugins** : enregistrent leur extension et son gabarit de configuration.
+- **Postes des utilisateurs finaux** (LibreOffice, Thunderbird, navigateurs) : consomment
+  la configuration et les mises à jour, de façon transparente.
+
+---
+
+> **Note de sécurité (dépôt public)** — Ce dépôt ne contient **aucun secret réel** :
+> toutes les valeurs sensibles (tokens, clés, mots de passe) sont des placeholders `<...>`,
+> injectées au déploiement via des secrets Kubernetes / overlays non versionnés. Les
+> références d'infrastructure interne sont également des placeholders (`<SSO_HOSTNAME>`,
+> `<INTERNAL_DOMAIN>`, `<DOCKERHUB_NAMESPACE>`...), à renseigner selon votre environnement.
+> Un *boot gate* refuse le démarrage en production si un secret est resté à sa valeur par défaut.
+
+## Ce que fait l'application (résumé)
+
+| Fonction | En clair |
+|---|---|
+| **Catalogue de plugins** | Une vitrine (publique et admin) listant les extensions disponibles, leurs versions et leur maturité. |
+| **Déploiement progressif** | Pousser une mise à jour par paliers (5 % → 25 % → 100 %) avec suivi, plutôt qu'à tout le monde d'un coup. |
+| **Configuration centralisée** | Chaque extension récupère ses réglages depuis le serveur, adaptés à l'environnement (test/prod…). |
+| **Contrôle d'accès** | Ouvert à tous, sur liste d'attente, ou réservé à un groupe (via le SSO Keycloak). |
+| **Assistance par IA** | Un modèle de langage (LLM) génère les fiches catalogue, classe les plugins, suggère du contenu à partir du README. |
+| **Relais sécurisé** | Les extensions appellent l'IA via le serveur, sans jamais manipuler de secret en clair. |
+| **Télémétrie** | Collecte (optionnelle) de traces d'usage, relayées vers un système d'observabilité. |
+| **Communication** | Annonces, alertes, sondages express et changelogs vers les utilisateurs. |
+
+## Comment ça marche (vue d'ensemble)
+
+```
+   Poste agent (extension)            Serveur Device Management            Services
+  ┌───────────────────────┐         ┌────────────────────────────┐      ┌──────────┐
+  │ LibreOffice / Thunder- │  config │  • Catalogue & versions     │      │ Keycloak │ (SSO)
+  │ bird / navigateur      │◄───────►│  • Configuration par env.   │◄────►│ LLM (IA) │
+  │  + plugin "Assistant"  │  maj/   │  • Déploiement progressif   │      │ Stockage │ (S3)
+  │                        │  relais │  • Admin UI + Catalogue web │      │ Postgres │ (BD)
+  └───────────────────────┘         └────────────────────────────┘      └──────────┘
+```
+
+Côté technique, c'est un **backend FastAPI (Python)** avec une base PostgreSQL, une
+interface d'administration web, un catalogue public, et un déploiement Kubernetes.
+
+## Plateformes supportées
+
+| Plateforme | Extension | Protocole de mise à jour |
 |------------|-----------|--------------------------|
-| LibreOffice | .oxt | Device Management (deploiement progressif) |
-| Thunderbird | .xpi | Device Management (deploiement progressif) |
+| LibreOffice | .oxt | Device Management (déploiement progressif) |
+| Thunderbird | .xpi | Device Management (déploiement progressif) |
 | Firefox | .xpi | Device Management ou AMO (addons.mozilla.org) |
 | Chrome / Chromium | .crx | Device Management ou Chrome Web Store |
 | Edge | .crx | Device Management ou Edge Add-ons |
 
-## Plugins actifs
+## Plugins actifs (exemples)
 
-| Plugin | device_name | device_type | Extension | Alias | Maturite |
-|--------|-------------|-------------|-----------|-------|----------|
-| Assistant Mirai LibreOffice | `mirai-libreoffice` | libreoffice | .oxt | `libreoffice` | release |
-| Matisse Thunderbird | `mirai-matisse` | matisse | .xpi | `matisse` | beta |
+| Plugin | Identifiant (`device_name`) | Extension | Maturité |
+|--------|-----------------------------|-----------|----------|
+| Assistant Mirai LibreOffice | `mirai-libreoffice` | .oxt | release |
+| Matisse Thunderbird | `mirai-matisse` | .xpi | beta |
 
-Le `device_name` est l'identifiant universel du plugin. Il sert dans les URLs,
-le catalogue, l'enrollment et le matching de configuration.
-Les **alias** assurent la retrocompatibilite avec les anciens plugins.
-De nouveaux plugins (Firefox, Chrome, Edge) peuvent etre ajoutes via le catalogue admin.
+De nouveaux plugins (Firefox, Chrome, Edge) s'ajoutent via le catalogue admin, sans
+redéploiement du serveur.
 
-## Documentation
+---
 
-- `developer-readme.md` : guide operations (dev/infra)
-- `consumer-readme.md` : integration client (PKCE, endpoints, cURL)
-- `prompts/` : prompts executables pour l'IA
+# Référence technique
 
-| Prompt | Description |
-|--------|-------------|
-| `prompts/prompt-admin-ui.md` | Interface d'administration (DSFR, OIDC) |
-| `prompts/prompt-deploy-wizard.md` | Assistant deploiement 1-2-3 |
-| `prompts/prompt-catalog-v2.md` | Catalogue v2 (alias, env, keycloak, maturite, page publique) |
-| `prompts/prompt-plugin-catalog.md` | Catalogue v1 (obsolete, remplace par v2) |
-| `prompts/prompt-public-catalog-dm.md` | Pages publiques du catalogue (HTML DSFR) |
-| `prompts/prompt-public-catalog-mirai.md` | Integration catalogue dans le portail MIrAI (Sites Faciles) |
+> Tout ce qui suit s'adresse aux développeurs et aux personnes qui exploitent le service.
 
-## Concepts cles
+## Concepts clés
 
 ### device_name, device_type, alias
 
 ```
 device_name  = slug = identifiant universel    ex: "mirai-libreoffice"
-device_type  = type interne (template config)  ex: "libreoffice"
-alias        = retrocompatibilite              ex: "libreoffice" → "mirai-libreoffice"
+device_type  = type interne (gabarit de config) ex: "libreoffice"
+alias        = rétrocompatibilité               ex: "libreoffice" → "mirai-libreoffice"
 ```
 
-Un plugin appelle `/config/mirai-libreoffice/config.json` (ou `/config/libreoffice/...` via alias).
-Le serveur resout le slug/alias, charge le template config, applique les overrides catalogue.
+Un plugin appelle `/config/mirai-libreoffice/config.json` (ou `/config/libreoffice/...`
+via alias). Le serveur résout le slug/alias, charge le gabarit de configuration, et
+applique les surcharges du catalogue. Les **alias** assurent la compatibilité avec
+les anciens plugins.
 
 ### Environnements (profils)
 
-Les environnements sont **libres** — pas de liste fermee. 4 profils standards sont recommandes :
+Les environnements sont **libres** — pas de liste fermée. 4 profils standards sont recommandés :
 
-| Profil | DM present ? | LLM | Usage |
+| Profil | DM présent ? | LLM | Usage |
 |--------|-------------|-----|-------|
-| `local` | Non | Ollama localhost | Dev autonome, zero infra |
+| `local` | Non | Ollama localhost | Dev autonome, zéro infra |
 | `dev` | Docker local | `${{LLM_BASE_URL}}` | Dev avec DM Docker Compose |
-| `int` | Serveur int | `${{LLM_BASE_URL}}` | Integration / recette |
+| `int` | Serveur int | `${{LLM_BASE_URL}}` | Intégration / recette |
 | `prod` | Serveur prod | `${{LLM_BASE_URL}}` | Production |
 
-Les valeurs `${{VAR}}` sont des **placeholders plateforme** substitues au runtime
-par les variables d'environnement du serveur DM.
+Les valeurs `${{VAR}}` sont des **placeholders plateforme** substitués au runtime par
+les variables d'environnement du serveur DM.
 
-### Maturite et acces
+### Maturité et accès
 
-| Maturite | Description |
-|----------|-------------|
-| `dev` | Developpement, equipe dev uniquement |
-| `alpha` | Experimental, interne |
-| `beta` | Early adopters valides |
-| `pre-release` | Validation finale |
-| `release` | Stable, tous |
-
-| Mode d'acces | Description |
-|-------------|-------------|
-| `open` | Libre |
-| `waitlist` | Validation admin requise |
-| `keycloak_group` | Groupe Keycloak requis |
+| Maturité | Description | | Mode d'accès | Description |
+|----------|-------------|-|--------------|-------------|
+| `dev` | Équipe dev uniquement | | `open` | Libre |
+| `alpha` | Expérimental, interne | | `waitlist` | Validation admin requise |
+| `beta` | Early adopters validés | | `keycloak_group` | Groupe Keycloak requis |
+| `pre-release` | Validation finale | | | |
+| `release` | Stable, tous | | | |
 
 ## Catalogue de plugins
 
-Le catalogue est le hub central de gestion des plugins. Il permet de :
+Le catalogue est le hub central de gestion. Il permet d'**enregistrer un plugin** (fiche
+produit, logo), de **gérer le cycle de vie** des versions (draft → published → deprecated
+→ yanked), de **définir la maturité**, de **contrôler l'accès**, de **configurer par
+environnement**, de **gérer les clients Keycloak** (export JSON), de **suivre les alias**
+(métriques de migration), de **déployer** via l'assistant 1-2-3, et de **communiquer**
+avec les utilisateurs (annonces, sondages, changelogs).
 
-- **Enregistrer un plugin** avec sa fiche produit (nom, description, intention, fonctionnalites cles, logo/mascotte)
-- **Gerer le cycle de vie** des versions : draft → published → deprecated → yanked
-- **Definir la maturite** du produit : dev → alpha → beta → pre-release → release
-- **Controler l'acces** : ouvert a tous, liste d'attente avec validation admin, ou groupe Keycloak requis
-- **Configurer par environnement** (local/dev/int/prod et profils libres) : surcharges de variables specifiques au plugin
-- **Gerer les clients Keycloak** par environnement avec export JSON pour import direct dans Keycloak
-- **Suivre les alias** avec metriques de migration (% de devices encore sur l'ancien chemin)
-- **Deployer** via l'assistant 1-2-3 directement depuis la fiche d'une version
-- **Communiquer** avec les utilisateurs : annonces, alertes, sondages express, changelogs
+### Pages publiques et API
 
-### Page publique
+Le catalogue expose une **vitrine publique** (sans authentification, design DSFR — Système
+de Design de l'État) et une **API JSON** (CORS ouvert, doc Swagger) pour qu'un portail
+externe affiche les plugins :
 
-Le catalogue expose une **vitrine publique** (sans authentification) au design DSFR
-(Systeme de Design de l'Etat Francais), proche de <PUBLIC_SITE_HOSTNAME> :
+- `/catalog` : page d'accueil (grille de plugins, badges maturité, statistiques)
+- `/catalog/{slug}` : fiche plugin (mode d'emploi, changelog, feedback, téléchargement)
+- `/catalog/{slug}/download` : téléchargement direct de la dernière version
+- `/catalog/api/plugins` · `/catalog/api/plugins/{slug}` · `/catalog/api/docs` : API JSON + Swagger
 
-- `/catalog` : page d'accueil avec grille de plugins, badges maturite, statistiques
-- `/catalog/{slug}` : fiche plugin avec mode d'emploi, changelog, feedback utilisateurs, telechargement
-- `/catalog/{slug}/download` : telechargement direct de la derniere version
+### Onboarding d'un plugin (découplage cluster / catalogue)
 
-### API JSON publique
+Le déploiement se fait en **2 temps** : (1) déployer le cluster DM une fois (générique,
+sans connaissance des plugins), puis (2) enregistrer un plugin via l'admin UI (upload du
+paquet, zéro redéploiement). Le gabarit de configuration vient du **plugin lui-même** via
+un fichier `dm-config.json` (bundlé dans le paquet .oxt/.xpi, ou uploadé séparément) :
 
-Le catalogue expose une API JSON (CORS ouvert, documentation Swagger) permettant
-a des sites externes (ex: <PUBLIC_SITE_HOSTNAME>) d'afficher les plugins :
-
-- `/catalog/api/plugins` : liste des plugins avec nom, intent, tags, version, installs
-- `/catalog/api/plugins/{slug}` : detail complet d'un plugin
-- `/catalog/api/docs` : documentation Swagger/OpenAPI interactive
-
-### Onboarding d'un plugin (decouplage cluster / catalogue)
-
-Le deploiement se fait en **2 temps** :
-
-1. **Deployer le cluster DM** (une fois, generique, aucune connaissance des plugins)
-2. **Enregistrer un plugin** via l'admin UI (upload package, zero redeploy)
-
-Le template de configuration vient du **plugin** lui-meme via un fichier `dm-config.json` :
-- **Bundle dans le package** (.oxt/.xpi) : extrait automatiquement, retire du binaire distribue
-- **Ou upload separe** dans le formulaire admin
-
-Format `dm-config.json` (default + sections par environnement) :
 ```json
 {
   "configVersion": 1,
@@ -140,124 +188,67 @@ Format `dm-config.json` (default + sections par environnement) :
 }
 ```
 
-Les placeholders `${{VAR}}` sont substitues par les variables de la plateforme DM.
-Les sections serveur sont **auto-completees** avec les placeholders si le dev ne les fournit pas.
+### Création assistée par IA
 
-### Creation assistee par IA
-
-Lors de la creation d'un plugin, le systeme analyse le package uploade et extrait :
-- Le type de plugin, la version, le README, le changelog
-- Le `dm-config.json` (template config)
-- Via un LLM : nom, intention, description, fonctionnalites cles, categorie
+À la création d'un plugin, le système analyse le paquet uploadé (type, version, README,
+changelog, `dm-config.json`) et, via un LLM, génère nom, intention, description,
+fonctionnalités clés et catégorie.
 
 ## Endpoints
 
-### Configuration
-- `GET /config/{device_name}/config.json?profile=local|dev|int|prod|...` : config specifique au plugin
-  - Accepte le slug (`mirai-libreoffice`) ou un alias (`libreoffice`)
-  - Profils libres (local, dev, int, prod, staging, dgx, etc.)
-  - Template depuis `plugins.config_template` (DB) avec fallback fichier
-  - Pipeline : merge default+profil → placeholders → overrides catalogue → keycloak → scrub
+**Configuration** — `GET /config/{device_name}/config.json?profile=local|dev|int|prod|...`
+(accepte slug ou alias ; pipeline : merge default+profil → placeholders → overrides
+catalogue → keycloak → scrub des secrets).
 
-### Enrollment et relay
-- `POST|PUT /enroll` : enregistrement d'un plugin (PKCE Bearer token)
-- `GET /relay/authorize` : autorisation relay (interne nginx)
-- `/relay-assistant/{path}` : proxy vers le relay-assistant
+**Enrollment & relais** — `POST|PUT /enroll` (PKCE Bearer), `GET /relay/authorize`,
+`/relay-assistant/{path}`.
 
-### Telemetrie
-- `GET /telemetry/token` : token Bearer court-duree (rotation)
-- `POST /telemetry/v1/traces` : relay telemetrie vers upstream
+**Télémétrie** — `GET /telemetry/token` (Bearer court), `POST /telemetry/v1/traces`.
 
-### Binaires
-- `GET /binaries/{path}` : binaires S3 (presign ou proxy)
+**Binaires** — `GET /binaries/{path}` (S3 presign ou proxy).
 
-### Sante
-- `GET /healthz` : verification dependances (DB, S3, storage)
-- `GET /livez` : liveness probe (toujours 200)
+**Santé** — `GET /healthz` (dépendances), `GET /livez` (liveness).
 
-### Administration (`/admin/`)
-- `/admin/` : tableau de bord (OIDC, groupe `admin-dm` requis)
-- `/admin/deploy` : assistant deploiement 1-2-3
-- `/admin/catalog` : catalogue de plugins (fiches, versions, overrides env, keycloak, alias)
-- `/admin/communications` : campagnes de communication et sondages
-- `/admin/devices` : appareils enregistres
-- `/admin/campaigns` : campagnes de deploiement (avance)
-- `/admin/debug` : sante des services (DB, Keycloak, LLM, relay, telemetrie)
-- `/admin/cohorts`, `/admin/flags`, `/admin/artifacts`, `/admin/audit`
+**Administration** (`/admin/`, OIDC + groupe `admin-dm`) — `/admin/` (tableau de bord),
+`/admin/deploy` (assistant 1-2-3), `/admin/catalog`, `/admin/communications`,
+`/admin/devices`, `/admin/campaigns`, `/admin/debug`, `/admin/{cohorts,flags,artifacts,audit}`.
 
-### Catalogue public (`/catalog/`)
-- `/catalog` : page d'accueil (DSFR, style <PUBLIC_SITE_HOSTNAME>)
-- `/catalog/{slug}` : fiche plugin (mode d'emploi, changelog, feedback, telechargement)
-- `/catalog/{slug}/download` : telechargement derniere version
-- `/catalog/api/plugins` : API JSON publique (CORS ouvert)
-- `/catalog/api/plugins/{slug}` : detail JSON d'un plugin
-- `/catalog/api/status` : disponibilite des services
-- `/catalog/api/docs` : documentation Swagger/OpenAPI
+**Catalogue public** (`/catalog/`) — voir section catalogue ci-dessus.
 
-### API de deploiement (`/api/`)
-- `POST /api/plugins/{slug}/deploy` : endpoint unifie de deploiement (token admin)
-  - Upload binaire + creation artifact (upsert) + version (upsert + deprecation anciennes)
-  - Extraction dm-config.json / dm-manifest.json + mise a jour changelog
-  - Creation campagne (auto-completion des anciennes) + activation
-  - Parametres : `binary` (fichier), `version` (auto-detect), `strategy` (canary/immediate), `urgency`
-- `GET /catalog/api/plugins/{slug}/icon.{ext}` : icone du plugin (binaire depuis DB)
+**API de déploiement** (`/api/`) — `POST /api/plugins/{slug}/deploy` (token admin) : upload
+binaire + upsert artifact/version + dm-config + changelog + campagne, en une requête.
 
-### Monitoring (`/ops/`)
-- `/ops/health/full` : sante detaillee (JSON, pour Grafana/alerting)
-- `/ops/metrics` : metriques Prometheus (text exposition)
+**Monitoring** (`/ops/`) — `/ops/health/full` (JSON), `/ops/metrics` (Prometheus).
 
 ## Architecture
 
 ```
 app/
-  main.py              # API FastAPI (config, enroll, relay, telemetrie, binaires)
+  main.py              # API FastAPI (config, enroll, relais, télémétrie, binaires)
   admin/
     router.py          # Admin UI (Jinja2 + HTMX)
     auth.py            # OIDC session + CSRF
-    services/          # Couche service (DB)
-      catalog.py       # Plugins, versions, overrides, alias
-      campaigns.py     # Campagnes de deploiement
-      communications.py # Annonces, alertes, sondages
-      keycloak.py      # Clients Keycloak, export JSON
-      devices.py, flags.py, cohorts.py, artifacts.py, audit.py
-    templates/         # Templates HTML (admin + catalogue preview)
-    static/            # CSS (dm-admin.css)
-  catalog/             # Templates DSFR publics (catalogue vitrine)
-
-config/
-  config.json          # Template config generique (fallback fichier)
-  # Les templates config vivent dans plugins.config_template (DB)
-  # Le dossier config/ est un fallback pour la retrocompatibilite
-
-db/
-  schema.sql           # Schema unique consolide (toutes les tables)
-
+    services/          # Couche service (DB) : catalog, campaigns, communications,
+                       #   keycloak, devices, flags, cohorts, artifacts, audit
+    templates/ static/ # HTML admin + CSS
+  catalog/             # Templates DSFR publics (vitrine)
+config/                # Gabarit de config générique (fallback ; les gabarits vivent en DB)
+db/schema.sql          # Schéma consolidé
 deploy/
   docker/              # Docker Compose (dev local)
-  k8s/
-    base/              # Manifests Kubernetes
-    overlays/          # Overlays (local, scaleway, dgx)
-
-scripts/
-  build-local.sh       # Build Docker arm64 (dev rapide)
-  build-k8s.sh         # Build multi-arch amd64+arm64 + push registry
-  k8s/                 # Scripts deploiement Kubernetes
+  k8s/{base,overlays}  # Manifests Kubernetes + overlays (local, scaleway, dgx)
+scripts/               # build-local.sh, build-k8s.sh, scripts/k8s/
 ```
 
-## Variables d'environnement (`DM_` prefix)
+## Variables d'environnement (préfixe `DM_`)
 
 | Variable | Description |
 |----------|-------------|
 | `PUBLIC_BASE_URL` | URL publique du service |
-| `DM_CONFIG_PROFILE` | Profil par defaut (dev/int/prod) |
-| `DM_TELEMETRY_ENABLED` | Activer la telemetrie |
-| `DM_RELAY_ENABLED` | Activer le relay |
-| `KEYCLOAK_ISSUER_URL` | Issuer Keycloak |
-| `KEYCLOAK_REALM` | Realm |
-| `KEYCLOAK_CLIENT_ID` | Client ID par defaut |
-| `LLM_BASE_URL` | Endpoint LLM (analyse IA catalogue) |
-| `LLM_API_TOKEN` | Token API LLM |
-| `DEFAULT_MODEL_NAME` | Modele LLM par defaut |
+| `DM_CONFIG_PROFILE` | Profil par défaut (dev/int/prod) |
+| `DM_TELEMETRY_ENABLED` / `DM_RELAY_ENABLED` | Activer télémétrie / relais |
+| `KEYCLOAK_ISSUER_URL` / `KEYCLOAK_REALM` / `KEYCLOAK_CLIENT_ID` | SSO Keycloak |
+| `LLM_BASE_URL` / `LLM_API_TOKEN` / `DEFAULT_MODEL_NAME` | Modèle IA (analyse catalogue) |
 | `DATABASE_URL` | PostgreSQL |
 
 ## Lancer en local
@@ -266,23 +257,17 @@ scripts/
 cd deploy/docker
 docker compose up --build
 ```
+Services : DM (3001), relay-assistant (8088), postgres (5432), adminer (8080).
 
-Services : DM (3001), relay-assistant (8088), postgres (5432), adminer (8080)
-
-## Build et deploiement
+## Build et déploiement
 
 ```bash
-# Local (arm64, rapide)
-./scripts/build-local.sh
-
-# Kubernetes (multi-arch)
-./scripts/build-k8s.sh 0.5.4
-./scripts/k8s/deploy.sh scaleway
+./scripts/build-local.sh                 # Local (arm64, rapide)
+./scripts/build-k8s.sh <version>         # Kubernetes (multi-arch amd64+arm64 + push)
+./scripts/k8s/deploy.sh scaleway         # Déploiement sur un overlay
 ```
 
-Rollout complet ~15s (probes optimisees, 4 replicas API + 1 admin).
-
-## Secure Relay Flow
+## Flux relais sécurisé
 
 ```mermaid
 sequenceDiagram
@@ -293,62 +278,36 @@ sequenceDiagram
   participant R as relay-assistant
 
   P->>DM: GET /config/mirai-libreoffice/config.json
-  DM-->>P: config publique (secrets masques)
+  DM-->>P: config publique (secrets masqués)
   P->>KC: Login PKCE
   KC-->>P: access_token
   P->>DM: POST /enroll (Bearer token)
   DM-->>P: relayClientId + relayClientKey
-  P->>DM: GET /config/mirai-libreoffice/config.json + relay headers
-  DM-->>P: config complete (avec secrets)
+  P->>DM: GET /config/... + relay headers
+  DM-->>P: config complète (avec secrets)
   P->>R: /relay-assistant/llm/... + relay headers
   R->>DM: GET /relay/authorize
   DM-->>R: 200/403
-  R-->>P: reponse upstream
+  R-->>P: réponse upstream
 ```
 
-## Deploiement progressif
+## Déploiement progressif
 
-L'admin UI propose un assistant **"Deploiement 1-2-3"** :
-1. Choisir le plugin et uploader le fichier (analyse IA automatique)
-2. Definir la cible (tous, groupe, pourcentage)
-3. Configurer le rythme (5% → 25% → 50% → 100%) et lancer
+L'admin UI propose un assistant **« Déploiement 1-2-3 »** : (1) choisir le plugin et
+uploader le fichier (analyse IA), (2) définir la cible (tous, groupe, pourcentage),
+(3) configurer le rythme et lancer. Suivi en temps réel.
 
-Suivi en temps reel avec courbe de progression.
+| Stratégie | Paliers |
+|----------|---------|
+| `canary` | 5 % (24 h) → 25 % (48 h) → 100 % |
+| `immediate` | 100 % immédiatement |
 
-### Deploiement par script (CI/CD)
+En CI/CD, tout passe par `POST /api/plugins/{slug}/deploy` (artifact upsert, version
+publiée, anciennes dépréciées, campagne activée — en une requête).
 
-```bash
-# Deploiement en une commande via l'API unifiee
-export DM_ADMIN_TOKEN="<token>"
-./scripts/deploy-release.sh \
-  --bootstrap-url https://bootstrap.example.com \
-  --strategy canary     # ou immediate
-```
-
-Le script appelle `POST /api/plugins/{slug}/deploy` qui fait tout en une requete :
-artifact upsert, version publiee, anciennes versions deprecees, campagne activee.
-
-### Strategies de rollout
-
-| Strategy | Paliers | Description |
-|----------|---------|-------------|
-| `canary` | 5% (24h) → 25% (48h) → 100% | Progressif avec validation |
-| `immediate` | 100% | Tous les devices immediatement |
-
-### Distribution des binaires (pull-on-miss)
-
-L'architecture multi-pods utilise un mecanisme de **pull-on-miss** :
-- Le pod **admin** a un stockage persistant (PVC 5Gi) et stocke les binaires uploades
-- Les pods **API** (4 replicas) n'ont pas de volume partage
-- Au premier telechargement, un pod API tire le binaire depuis le pod admin et le cache localement
-- Les telechargements suivants sur ce pod sont servis depuis le cache local
-
-### Icones
-
-Les icones des plugins sont stockees en base (data URL base64 dans `plugins.icon_url`) :
-- **Admin UI** : `<img src="{{ plugin.icon_url }}">`  (data URL inline)
-- **API publique** : `GET /catalog/api/plugins/{slug}/icon.{ext}` (binaire decode depuis DB)
-- Pas de fichier sur disque ni de volume partage
+**Distribution des binaires (pull-on-miss)** : le pod *admin* a un stockage persistant et
+détient les binaires uploadés ; les pods *API* (sans volume partagé) tirent le binaire au
+premier téléchargement et le cachent localement. Les icônes sont stockées en base (data URL).
 
 ## Validation
 
@@ -357,3 +316,9 @@ Les icones des plugins sont stockees en base (data URL base64 dans `plugins.icon
 ./scripts/k8s/validate-all.sh
 curl -sS http://localhost:3001/healthz
 ```
+
+## Documentation complémentaire
+
+- `developer-readme.md` — guide opérations (dev/infra)
+- `consumer-readme.md` — intégration client (PKCE, endpoints, cURL)
+- `prompts/` — prompts exécutables pour l'IA (admin UI, assistant de déploiement, catalogue…)
