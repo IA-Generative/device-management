@@ -460,7 +460,7 @@ Draft → Active → (Paused) → Completed | Rolled Back
 | Dockerfile | `deploy/docker/Dockerfile` |
 | Kustomize base | `deploy/k8s/base/` |
 | Overlay DGX | `deploy/k8s/overlays/dgx/` |
-| ADR deploiement DGX | `prompts/adr-dgx-deployment.md` |
+| ADR deploiement DGX | `architecture/adr-dgx-deployment.md` |
 | Test E2E WAF | `scripts/dgx-deploy/10-e2e-waf-test.sh` |
 | Deploiement DGX | `scripts/dgx-deploy/dumb-deploy.sh` |
 | Test connectivite | `scripts/dgx-deploy/09-connectivity-test.sh` |

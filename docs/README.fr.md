@@ -2,9 +2,20 @@
 
 Remplacement de l'implémentation Nginx/Lua par une API FastAPI.
 
-## Documentation
-- `developer-readme.md` : guide opératoire (dev/infra)
-- `consumer-readme.md` : intégration client (PKCE, endpoints, cURL)
+## Documentation — navigation par audience
+
+La doc est organisée par public cible :
+
+| Public | Dossier | Contenu |
+|---|---|---|
+| 🧩 **Développeur de plugin** | [plugin-developer/](plugin-developer/) | Intégration client (PKCE, endpoints, cURL), protocole update, packaging, intégration catalogue |
+| 🏛️ **Architecte** | [architecture/](architecture/) | ADR : [vue d'ensemble](architecture/adr-0001-vue-densemble.md), architecture produit détaillée, déploiement DGX |
+| 🔒 **Auditeur de sécurité** | [security/](security/) | Rapport de remédiation d'audit, conformité, doctrine de sécurité |
+| 🛠️ **Opérateur / exploitation** | [operations/](operations/) | Guide dev local + K8s, mode opératoire campagnes, cahier de tests, troubleshooting |
+
+> Démarrage rapide : développeur → [plugin-developer/consumer-readme.md](plugin-developer/consumer-readme.md) ·
+> architecte → [architecture/adr-0001-vue-densemble.md](architecture/adr-0001-vue-densemble.md) ·
+> auditeur → [security/audit-remediation-report.md](security/audit-remediation-report.md).
 
 ## Endpoints
 

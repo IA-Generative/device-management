@@ -101,6 +101,11 @@ bordel/
 # Private docs with real production values
 private/
 
+# Documentation interne (artefacts de travail : prompts, runbooks/capitalisation DGX)
+# — non destinée au dépôt public. La doc publique vit sous docs/{architecture,plugin-developer,security,operations}.
+docs/dgx/
+docs/prompts/
+
 # Secrets / valeurs réelles (déploiement) — utiliser les .example
 deploy/docker/.env
 # Tout env-secrets d'overlay (scaleway, dgx, local, prod-beta, …) est gitignored ;

@@ -319,6 +319,9 @@ curl -sS http://localhost:3001/healthz
 
 ## Documentation complémentaire
 
-- `developer-readme.md` — guide opérations (dev/infra)
-- `consumer-readme.md` — intégration client (PKCE, endpoints, cURL)
-- `prompts/` — prompts exécutables pour l'IA (admin UI, assistant de déploiement, catalogue…)
+La documentation est organisée par audience sous [`docs/`](docs/) (voir [docs/README.fr.md](docs/README.fr.md)) :
+
+- 🧩 **Développeur de plugin** — [`docs/plugin-developer/`](docs/plugin-developer/) (intégration client PKCE, endpoints, packaging, protocole update)
+- 🏛️ **Architecte** — [`docs/architecture/`](docs/architecture/) (ADR : vue d'ensemble, architecture produit, déploiement DGX)
+- 🔒 **Auditeur de sécurité** — [`docs/security/`](docs/security/) (remédiation d'audit, doctrine)
+- 🛠️ **Opérateur** — [`docs/operations/`](docs/operations/) (dev local + K8s, campagnes, tests, troubleshooting)

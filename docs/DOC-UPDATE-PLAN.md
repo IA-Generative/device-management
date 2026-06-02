@@ -2,7 +2,7 @@
 
 > Contexte : la remédiation sécurité (branche `fix/security-imm-quickwins`, mergée sur main) introduit
 > des comportements que la doc doit refléter. Ce plan liste, par fichier, ce qui est obsolète et l'action.
-> Source de vérité détaillée : [adr/audit-remediation-report.md](adr/audit-remediation-report.md).
+> Source de vérité détaillée : [security/audit-remediation-report.md](security/audit-remediation-report.md).
 
 ## Changements à documenter
 
@@ -48,6 +48,12 @@
 - **`guides/relay-credential-lifecycle.md`** : cycle enroll → TTL 30 j → revoke → ré-enrôlement.
 
 ## Note d'organisation
-Les fichiers `audit-remediation-report.md`, `consumer-readme.md`, `packaging-guide.md`,
-`plugin-integration-2-4-5.md`, `plugin-dm-protocol-update-features.md`, `config.default.example.json`
-ont été regroupés sous `docs/adr/` (déplacement pur, contenu identique) pour cohérence.
+La doc est désormais structurée **par audience** (2026-06-02) ; l'ancien dossier `docs/adr/`
+fourre-tout a été dissous :
+- `docs/architecture/` — ADR (architecte) : `adr-0001-vue-densemble.md`, `adr-product-architecture.md`, `adr-dgx-deployment.md`.
+- `docs/plugin-developer/` — `consumer-readme.md`, `packaging-guide.md`, `plugin-dm-protocol-update-features.md`, `plugin-integration-2-4-5.md`, `config.default.example.json`, `mirai-integration-README.md` (+ snippet).
+- `docs/security/` — `audit-remediation-report.md`.
+- `docs/operations/` — `developer-readme.md`, `mode-operatoire-campagnes.md`, `test-cahier.md`, `debug-campaign-not-serving.md`.
+- `docs/dgx/` et `docs/prompts/` sont des artefacts internes : **gitignorés** (hors dépôt public).
+
+> Les chemins cités dans les sections ci-dessus (`adr/…`, `guides/…`) sont **historiques** ; se reporter à l'arborescence ci-dessus.
