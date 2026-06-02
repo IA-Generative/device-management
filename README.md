@@ -86,6 +86,52 @@ Un exemple de bout en bout, du point de vue d'un administrateur :
 Côté technique, c'est un **backend FastAPI (Python)** avec une base PostgreSQL, une
 interface d'administration web, un catalogue public, et un déploiement Kubernetes.
 
+## Comment fonctionnent les mises à jour
+
+C'est le cœur de l'outil. Le principe : **le poste demande, le serveur décide**. Une
+extension installée ne « reçoit » pas une mise à jour poussée de force — elle **interroge
+régulièrement** le serveur, qui lui répond *s'il doit se mettre à jour ou non*.
+
+**Le cycle, étape par étape :**
+
+1. **Le plugin interroge le serveur** périodiquement en récupérant sa configuration :
+   `GET /config/{plugin}/config.json`, en indiquant *qui il est* (identifiant unique du
+   poste, version installée, type et version du logiciel hôte).
+2. **Le serveur décide pour CE poste précis** s'il y a une mise à jour à faire, et répond :
+   - soit `"update": null` → rien à faire, le plugin continue ;
+   - soit une **directive de mise à jour** : version cible, lien de téléchargement,
+     empreinte (checksum), urgence, échéance éventuelle.
+3. **Si une mise à jour est proposée**, le plugin **télécharge** le nouveau paquet
+   (`GET /binaries/...`), **vérifie son empreinte** SHA-256, puis l'**installe**.
+4. **Le plugin rend compte** au serveur (`POST /update/status`) : « installé en version X » —
+   ce qui alimente le **suivi en temps réel** côté admin.
+
+**Comment le serveur décide qui reçoit quoi ?** Quand un admin publie une nouvelle version,
+il crée une **campagne** de déploiement. Pour chaque poste qui interroge le serveur, celui-ci
+vérifie, dans l'ordre :
+
+- **À qui s'adresse la campagne ?** (les *cohortes*) : tout le monde, un groupe Keycloak, une
+  liste de postes, un motif d'e-mail, ou **un pourcentage** des postes.
+- **Le logiciel hôte est-il compatible ?** (versions min/max de LibreOffice, Thunderbird…).
+- **Où en est le déploiement progressif ?** En mode *canary*, la campagne monte par paliers
+  (ex. 5 % → 25 % → 100 % au fil des heures). Chaque poste est rangé de façon **stable** dans
+  un percentile (calculé à partir de son identifiant) : il « passe » dès que le palier atteint
+  son rang. Un même poste a donc toujours le même comportement — pas de tirage au sort à chaque appel.
+
+**Deux stratégies de déploiement :**
+
+| Stratégie | Effet |
+|-----------|-------|
+| `immediate` | 100 % des postes ciblés tout de suite |
+| `canary` | Montée progressive par paliers temporisés, avec possibilité de stopper en cours |
+
+> Une **seule campagne active à la fois** par type : publier une nouvelle version clôt
+> automatiquement la précédente. Les rollbacks (revenir en arrière) se font en publiant une
+> campagne qui cible une version antérieure.
+
+Détails techniques (endpoints, tables, stratégies) : voir [Déploiement progressif](#déploiement-progressif)
+plus bas et `docs/plugin-developer/plugin-dm-protocol-update-features.md`.
+
 ## Plateformes supportées
 
 | Plateforme | Extension | Protocole de mise à jour |
@@ -249,7 +295,6 @@ scripts/               # build-local.sh, build-k8s.sh, scripts/k8s/
 | `DM_TELEMETRY_ENABLED` / `DM_RELAY_ENABLED` | Activer télémétrie / relais |
 | `KEYCLOAK_ISSUER_URL` / `KEYCLOAK_REALM` / `KEYCLOAK_CLIENT_ID` | SSO Keycloak |
 | `LLM_BASE_URL` / `LLM_API_TOKEN` / `DEFAULT_MODEL_NAME` | Modèle IA (analyse catalogue) |
-| `DATABASE_URL` | PostgreSQL |
 
 ## Lancer en local
 
