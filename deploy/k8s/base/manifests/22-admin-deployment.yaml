@@ -94,12 +94,8 @@ spec:
                   key: DM_AUTH_JWKS_URL
             - name: ADMIN_OIDC_CLIENT_ID
               value: "bootstrap-iassistant"
-            - name: ADMIN_OIDC_REDIRECT_URI
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: ADMIN_OIDC_REDIRECT_URI
-                  optional: true
+            # ADMIN_OIDC_REDIRECT_URI supprimé : le callback est dérivé dynamiquement
+            # de PUBLIC_BASE_URL (origin + /admin/callback) dans app/admin/auth.py.
             - name: ADMIN_SESSION_SECRET
               valueFrom:
                 secretKeyRef:

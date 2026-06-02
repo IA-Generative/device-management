@@ -66,7 +66,25 @@ def _oidc_issuer_url() -> str:
 OIDC_ISSUER = _oidc_issuer_url()
 CLIENT_ID = os.getenv("ADMIN_OIDC_CLIENT_ID", "admin-dm-ui")
 CLIENT_SECRET = os.getenv("ADMIN_OIDC_CLIENT_SECRET", "")
-REDIRECT_URI = os.getenv("ADMIN_OIDC_REDIRECT_URI", "")
+
+
+def _admin_redirect_uri() -> str:
+    """Callback du login admin, dérivé dynamiquement de PUBLIC_BASE_URL.
+
+    Le routeur admin est monté sous /admin (cf. main.py), la route est /callback
+    → le callback est /admin/callback. On part de l'ORIGINE (scheme://host) de
+    PUBLIC_BASE_URL en ignorant un éventuel préfixe de chemin (ex. dgx: .../bootstrap) :
+    le callback admin est servi à la racine. Cette URL doit figurer dans les
+    "Valid redirect URIs" du client Keycloak. Retourne "" si PUBLIC_BASE_URL est
+    absent/invalide.
+    """
+    parts = urllib.parse.urlsplit(os.getenv("PUBLIC_BASE_URL", "").strip())
+    if not parts.scheme or not parts.netloc:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}/admin/callback"
+
+
+REDIRECT_URI = _admin_redirect_uri()
 REQUIRED_GROUP = os.getenv("ADMIN_REQUIRED_GROUP", "admin-dm")
 
 # Public issuer URL: what the browser sees (may differ from OIDC_ISSUER used for

@@ -60,7 +60,7 @@ services:
       ADMIN_OIDC_PUBLIC_ISSUER_URL: ${ADMIN_OIDC_PUBLIC_ISSUER_URL:-}
       ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-admin-dm-ui}
       ADMIN_OIDC_CLIENT_SECRET: ${ADMIN_OIDC_CLIENT_SECRET:-}
-      ADMIN_OIDC_REDIRECT_URI: ${ADMIN_OIDC_REDIRECT_URI:-http://localhost:3001/admin/callback}
+      # Callback admin dérivé dynamiquement de PUBLIC_BASE_URL (origin + /admin/callback)
       ADMIN_REQUIRED_GROUP: ${ADMIN_REQUIRED_GROUP:-admin-dm}
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-changeme-dev-only}
 
