@@ -1,7 +1,5 @@
 # Device Management (FastAPI)
 
-Remplacement de l'implémentation Nginx/Lua par une API FastAPI.
-
 ## Documentation — navigation par audience
 
 La doc est organisée par public cible :
