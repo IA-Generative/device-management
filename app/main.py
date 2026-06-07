@@ -4151,7 +4151,7 @@ def get_binary(path: str):
 _RELAY_UPSTREAM_MAP: dict[str, str] = {}
 for _target, _env_keys in (
     ("keycloak", ("RELAY_KEYCLOAK_UPSTREAM",)),
-    ("llm", ("RELAY_LLM_UPSTREAM", "LLM_BASE_URL")),
+    # relais "llm" retiré : les clients appellent l'API LLM en direct (llm_base_urls)
     ("compte-rendu", ("RELAY_COMPTE_RENDU_UPSTREAM",)),
     ("mcr-api", ("RELAY_MCR_API_UPSTREAM",)),
 ):

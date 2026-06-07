@@ -45,14 +45,7 @@ server {
     proxy_pass ${RELAY_KEYCLOAK_UPSTREAM}/protocol/openid-connect/$1$is_args$args;
   }
 
-  location ~ ^/llm/(.+)$ {
-    set $relay_target llm;
-    auth_request /__relay_auth;
-    proxy_set_header Authorization $http_authorization;
-    proxy_set_header Content-Type $http_content_type;
-    proxy_set_header User-Agent $http_user_agent;
-    proxy_pass ${RELAY_LLM_UPSTREAM}/$1$is_args$args;
-  }
+  # Relais /llm supprimé : appel LLM direct côté client (llm_base_urls).
 
   location ~ ^/mcr-api/(.+)$ {
     set $relay_target mcr-api;

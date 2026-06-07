@@ -32,11 +32,6 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: RELAY_KEYCLOAK_UPSTREAM
-            - name: RELAY_LLM_UPSTREAM
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: RELAY_LLM_UPSTREAM
             - name: RELAY_MCR_API_UPSTREAM
               valueFrom:
                 secretKeyRef:
