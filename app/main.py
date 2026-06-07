@@ -3521,7 +3521,7 @@ def catalog_index(request: Request, category: str | None = None):
     """Public HTML — plugin catalog grid."""
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
-        return _catalog_templates.TemplateResponse("catalog_index.html", {
+        return _catalog_templates.TemplateResponse(request, "catalog_index.html", {
             "request": request, "plugins": [], "categories": [], "current_category": None,
             "total_installs": 0,
         })
@@ -3582,7 +3582,7 @@ def catalog_index(request: Request, category: str | None = None):
                 "key_features": kf,
             })
         total_installs = sum(p.get("install_count", 0) for p in plugins)
-        return _catalog_templates.TemplateResponse("catalog_index.html", {
+        return _catalog_templates.TemplateResponse(request, "catalog_index.html", {
             "request": request, "plugins": plugins,
             "categories": all_categories, "current_category": category,
             "total_installs": total_installs,
@@ -4041,7 +4041,7 @@ def catalog_detail(request: Request, slug: str):
             "license": p.get("license"),
             "updated_at": updated_at,
         }
-        return _catalog_templates.TemplateResponse("catalog_detail.html", {
+        return _catalog_templates.TemplateResponse(request, "catalog_detail.html", {
             "request": request, "plugin": plugin, "file_ext": file_ext,
         })
     finally:
