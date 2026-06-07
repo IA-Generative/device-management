@@ -7,26 +7,36 @@
 
 ---
 
-## En deux mots
+## Le problème
 
-Imaginez une organisation qui veut équiper les postes de ses agents d'un **assistant
-IA** intégré directement dans LibreOffice, Thunderbird ou le navigateur (sous forme
-d'extension/plugin). Il faut alors :
+Une organisation veut équiper les postes de ses agents d'un **assistant IA** intégré
+directement dans LibreOffice, Thunderbird ou le navigateur (sous forme d'extension/plugin).
+**Poser le logiciel sur les postes**, un outil de gestion de parc (WAPT, SCCM, Intune) sait
+déjà le faire. Le vrai défi commence **après l'installation** :
 
-- **distribuer** ces extensions et leurs mises à jour,
+- **distribuer** les mises à jour des extensions,
 - les **configurer** différemment selon l'environnement (test, production…),
-- **déployer progressivement** une nouvelle version (d'abord 5 % des postes, puis 25 %, puis tout le monde),
+- **déployer progressivement** une nouvelle version (5 % des postes, puis 25 %, puis tout le monde),
 - **contrôler qui y a accès**,
 - et leur permettre de **parler à un service d'IA** de façon sécurisée.
 
-**Device Management** (« DM ») est le **serveur central** qui fait tout cela. Chaque
-extension installée est vue comme un « device » à gérer — d'où le nom.
+Et surtout, le faire **vite** : ces extensions évoluent au rythme des **retours de leurs
+utilisateurs**. Il faut pouvoir ajuster un réglage, activer une fonctionnalité pour un groupe
+pilote, mesurer son usage réel, puis la généraliser ou la couper — **sans réinstaller la flotte,
+sans exposer de secret sur les postes, et en gardant 100 % de la main sur sa politique de magasin**.
+
+## En deux mots
+
+**Device Management** (« DM ») est le **serveur central** qui répond à ce problème. Il ne pose
+pas le paquet sur le poste : il **gouverne tout ce qui se passe après l'installation** —
+configuration, mises à jour, déploiement progressif, accès sécurisé aux services et mesure
+d'usage. Chaque extension installée est vue comme un « device » à gouverner — d'où le nom.
 
 > 💡 **Analogie** : c'est l'équivalent d'un *app store d'entreprise* + un système de
 > *gestion de flotte* (type MDM), mais pour des **extensions de logiciels bureautiques**
 > au lieu de téléphones.
 
-## À quoi ça sert concrètement ?
+## Concrètement
 
 Un exemple de bout en bout, du point de vue d'un administrateur :
 
@@ -41,6 +51,25 @@ Un exemple de bout en bout, du point de vue d'un administrateur :
 5. Quand l'extension a besoin d'appeler l'IA, elle passe par un **relais sécurisé**
    du serveur (jamais de secret exposé côté poste).
 
+## Comment ça marche
+
+```
+   Poste agent (extension)            Serveur Device Management            Services
+  ┌───────────────────────┐         ┌────────────────────────────┐      ┌──────────┐
+  │ LibreOffice / Thunder- │  config │  • Catalogue & versions     │      │ Keycloak │ (SSO)
+  │ bird / navigateur      │◄───────►│  • Configuration par env.   │◄────►│ LLM (IA) │
+  │  + plugin "Assistant"  │  maj/   │  • Déploiement progressif   │      │ Stockage │ (S3)
+  │                        │  relais │  • Admin UI + Catalogue web │      │ Postgres │ (BD)
+  └───────────────────────┘         └────────────────────────────┘      └──────────┘
+```
+
+Le principe : **le poste demande, le serveur décide**. L'extension interroge périodiquement
+le serveur (sa configuration) ; le serveur lui répond, *pour ce poste précis*, ce qu'elle doit
+faire — quels réglages appliquer, s'il y a une mise à jour, quelles fonctionnalités sont actives.
+Côté technique, c'est un **backend FastAPI (Python)** avec une base PostgreSQL, une interface
+d'administration web, un catalogue public, et un déploiement Kubernetes. Le détail de la boucle de
+mise à jour est décrit plus bas (« [Comment fonctionnent les mises à jour](#comment-fonctionnent-les-mises-à-jour) »).
+
 ## Pour qui ?
 
 - **Administrateurs / équipes support** : publient les plugins, pilotent les déploiements,
@@ -48,6 +77,118 @@ Un exemple de bout en bout, du point de vue d'un administrateur :
 - **Développeurs de plugins** : enregistrent leur extension et son gabarit de configuration.
 - **Postes des utilisateurs finaux** (LibreOffice, Thunderbird, navigateurs) : consomment
   la configuration et les mises à jour, de façon transparente.
+
+## Positionnement : complément de la gestion de parc (WAPT, SCCM, Intune)
+
+Device Management **n'est pas un concurrent** des outils de télédistribution de parc
+(WAPT, SCCM, Intune…) — il en est le **complément naturel**. Les deux se passent le relais
+à une frontière nette :
+
+- **L'outil de gestion de parc pose le paquet sur la machine** : il installe le binaire de
+  l'extension (`.oxt`/`.xpi`/`.crx`) au **déploiement initial** et à chaque **montée de version
+  majeure**. C'est une opération **centrée machine**, pilotée par l'inventaire de parc.
+- **Device Management gouverne tout ce qui se passe après l'installation** : configuration
+  dynamique, activation progressive de fonctionnalités, télémétrie d'usage, accès sécurisé aux
+  services tiers. C'est une opération **centrée identité (IAM)**, pilotée par cohortes, au rythme
+  du produit.
+
+```
+   ┌────────────────────────────────┐
+   │      Gestionnaire de parc      │   ①  installe / met à jour le PAQUET
+   │     (WAPT · SCCM · Intune)     │       (.oxt/.xpi/.crx) : déploiement
+   └───────────────┬────────────────┘       initial + montées de version majeures
+                   │ ①
+                   ▼
+   ┌────────────────────── Poste agent ───────────────────────┐
+   │   ┌──────────────┐    héberge    ┌─────────────────────┐  │
+   │   │ Hôte         │ ────────────▶ │ Extension (plug-in) │  │
+   │   │ LibreOffice  │               │ « Assistant MirAI » │  │
+   │   │ Thunderbird  │               │ s'exécute dans      │  │
+   │   │ Navigateur   │               │ l'hôte              │  │
+   │   └──────────────┘               └──────────┬──────────┘  │
+   └─────────────────────────────────────────────┼────────────┘
+                                                 │ ②  configuration, directive
+                                                 │    d'update, feature flags
+                                                 │    (par cohorte), télémétrie
+                                                 ▼
+   ┌──────────────────────────────────────────────────────────┐
+   │  Device Management (DM) — cycle de vie APRÈS installation │
+   │  • configuration par environnement                       │
+   │  • déploiement progressif (canari) + feature toggling    │
+   │  • télémétrie d'usage   • relais sécurisé (médiation)     │
+   └───────────────────────────┬──────────────────────────────┘
+                               │ ③  médiation authentifiée
+                               │    (secrets jamais sur le poste)
+                               ▼
+   ┌──────────────────────────────────────────────────────────┐
+   │  Services tiers / fournisseurs                           │
+   │  Keycloak (SSO) · LLM (IA) · API métier · Stockage S3     │
+   └──────────────────────────────────────────────────────────┘
+```
+
+> **① Gestionnaire de parc → hôte** : pose le binaire sur le poste (initial + montées majeures),
+> opération *centrée machine*. **② Plug-in ↔ DM** : tout le cycle de vie post-installation, sans
+> réinstaller, opération *centrée identité*. **③ DM → services tiers** : point de médiation unique,
+> secrets côté serveur. **Frontière de responsabilité** : le gestionnaire de parc s'arrête à
+> l'installation du paquet, DM gouverne la suite, le plug-in s'exécute dans son hôte et consomme.
+
+| | Outil de gestion de parc (WAPT…) | Device Management |
+|---|---|---|
+| **Unité gérée** | Le paquet binaire (version) | La configuration et la fonctionnalité |
+| **Clé de ciblage** | La machine (inventaire) | L'identité (groupes Keycloak, e-mail, cohorte, %) |
+| **Cadence** | Cycle d'empaquetage | Cycle produit (changement serveur, sans réinstall) |
+| **Retour terrain** | Statut d'installation | Télémétrie d'**usage fonctionnel** (pertinence des fonctionnalités) |
+| **Config & secrets** | Figés dans le paquet (sur le disque) | Servis dynamiquement, secrets jamais sur le poste (relais) |
+
+**Cinq apports propres à DM :** (1) on bascule un *feature flag* ou on change le modèle d'IA
+**sans réinstaller** ; (2) le ciblage **épouse l'annuaire** (on adresse des agents, pas des postes) ;
+(3) un changement de config **ne repasse pas par l'outil de parc** → cycle de dev très rapide ;
+(4) la **télémétrie fonctionnelle** ferme la boucle produit et oriente la roadmap ; (5) la config
+est **dynamique et sécurisée**, les secrets restent côté serveur (révocation atomique).
+
+**Feature toggling par cohorte.** DM porte des *feature flags* surchargeables **par cohorte**
+(valeur par défaut globale + surcharges ciblées, avec seuil de version mini). On peut ainsi
+**activer une fonctionnalité pour une cohorte pilote** afin de la tester en conditions réelles avant
+généralisation, ou la **désactiver instantanément** (*kill switch*) en cas de défaut — **sans réinstaller
+ni faire de rollback de version du paquet**. Couplé à la télémétrie d'usage, cela permet d'éprouver une
+fonctionnalité sur une population restreinte, de mesurer son adoption, puis de l'étendre ou de la retirer.
+
+**Objectif directeur : un cycle dev/déploiement très rapide, piloté par le feedback utilisateur.**
+Tout ce qui précède sert une même finalité — **raccourcir au maximum la boucle entre un retour
+utilisateur et sa prise en compte en production**. DM collecte le feedback de deux façons : **implicite**
+(télémétrie d'usage : quelles fonctionnalités sont réellement utilisées, où sont les erreurs) et
+**explicite** (sondages, annonces et retours intégrés au catalogue). En face, les leviers d'action —
+config dynamique, *feature toggling* par cohorte, déploiement progressif — s'actionnent **côté serveur,
+sans ré-empaquetage ni réinstallation**. Résultat : **mesurer → décider → déployer** en heures plutôt
+qu'en cycles d'empaquetage, sur une cohorte pilote d'abord, puis à l'échelle.
+
+**Contrat et responsabilités face aux tiers.** Le couple **plugin + DM** forme un contrat explicite :
+le plugin déclare son besoin de config (`dm-config.json`) et consomme via le relais ; DM est le
+**point de médiation unique** (credentials, quotas, autorisations, audit, masquage des secrets) ;
+le fournisseur tiers (modèle d'IA, API métier) expose sa capacité sans connaître les postes.
+*Le tiers fournit la capacité, DM gouverne l'accès, le plugin consomme.* À noter : les **politiques
+d'autorisation et d'exception** (éligibilité des postes au déploiement, dérogations) restent **à la
+main du gestionnaire de parc** — DM opère dans ce cadre.
+
+**Souveraineté.** Contrairement aux magasins publics (Chrome Web Store, AMO), **l'organisation
+garde la main à 100 % sur la politique de son magasin** : catalogue, maturité, modes d'accès,
+rythme et cible de déploiement, retrait — sans dépendance à un store externe ni export de
+l'inventaire d'usage.
+
+**Sécurisation de la chaîne d'approvisionnement.** DM y contribue par des **mesures organisationnelles** :
+toute opération du cycle de déploiement (publication d'une version, activation / pause / retour arrière
+d'une campagne, mise en ligne d'un artefact) est **soumise à autorisation** — authentification OIDC,
+**groupe d'administration** requis, **journal d'audit** horodaté.
+
+**Sur la roadmap (après une phase de stabilisation).** (1) le **scan des packages** déposés — analyse de
+sécurité des artefacts (anti-malware, signature/intégrité, **analyse du contenu par inférence**) avant
+publication ; (2) la **distribution par plaque** selon la topologie et la charge réseau, pour éviter la
+**saturation d'un point unique** lors d'un déploiement massif (ex. *hotfix* de sécurité poussé à toute la flotte).
+
+> **En une phrase** : l'outil de gestion de parc **installe et met à jour le paquet** (déploiement
+> initial + montées majeures) ; Device Management **gouverne le cycle de vie post-installation** —
+> configuration, fonctionnalités, mesure d'usage, accès sécurisé — au rythme du produit, sur la
+> clé de l'identité.
 
 ---
 
@@ -70,21 +211,6 @@ Un exemple de bout en bout, du point de vue d'un administrateur :
 | **Relais sécurisé** | Les extensions appellent l'IA via le serveur, sans jamais manipuler de secret en clair. |
 | **Télémétrie** | Collecte (optionnelle) de traces d'usage, relayées vers un système d'observabilité. |
 | **Communication** | Annonces, alertes, sondages express et changelogs vers les utilisateurs. |
-
-## Comment ça marche (vue d'ensemble)
-
-```
-   Poste agent (extension)            Serveur Device Management            Services
-  ┌───────────────────────┐         ┌────────────────────────────┐      ┌──────────┐
-  │ LibreOffice / Thunder- │  config │  • Catalogue & versions     │      │ Keycloak │ (SSO)
-  │ bird / navigateur      │◄───────►│  • Configuration par env.   │◄────►│ LLM (IA) │
-  │  + plugin "Assistant"  │  maj/   │  • Déploiement progressif   │      │ Stockage │ (S3)
-  │                        │  relais │  • Admin UI + Catalogue web │      │ Postgres │ (BD)
-  └───────────────────────┘         └────────────────────────────┘      └──────────┘
-```
-
-Côté technique, c'est un **backend FastAPI (Python)** avec une base PostgreSQL, une
-interface d'administration web, un catalogue public, et un déploiement Kubernetes.
 
 ## Comment fonctionnent les mises à jour
 
