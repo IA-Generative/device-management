@@ -17,7 +17,7 @@ spec:
         - name: regcred
       containers:
         - name: relay-assistant
-          image: nginx:1.27-alpine
+          image: nginx:1.29-alpine
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

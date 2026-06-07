@@ -131,7 +131,7 @@ spec:
       imagePullSecrets: [{ name: regcred }]
       containers:
         - name: nginx
-          image: docker.io/<DOCKERHUB_NAMESPACE>/nginx:1.27-alpine
+          image: docker.io/<DOCKERHUB_NAMESPACE>/nginx:1.29-alpine
           ports: [{ containerPort: 8080 }]
           volumeMounts: [{ name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf }]
       volumes: [{ name: conf, configMap: { name: waf-nginx-config } }]
