@@ -424,6 +424,30 @@ Draft → Active → (Paused) → Completed | Rolled Back
     - Signatures de packages
     - SLA par editeur
 
+### Securisation supply chain & resilience (apres stabilisation)
+
+12. **Scan de securite des packages** : analyser les artefacts uploades avant publication (anti-malware,
+    verification de signature/integrite), complete par une **analyse du contenu par inference**. Reduit le
+    risque LLM01 (la generation de fiches consomme du contenu de paquet non maitrise) et le risque
+    d'artefact malveillant.
+
+13. **Distribution par plaque** : distribuer les binaires selon la topologie et la charge reseau
+    (miroirs / plaques regionales) pour eviter la saturation d'un point unique lors d'un deploiement massif
+    (ex. hotfix de securite pousse simultanement a toute la flotte).
+
+14. **DM bi-site avec failover cote client** : deployer DM sur 2 sites avec replication bas niveau
+    (cluster CloudNativePG replique bi-site pour la base) ; les plugins portent **2 URLs de DM** et
+    basculent de l'une a l'autre. Resilience assuree **sans composant reseau central** (pas de repartiteur
+    ni de bascule centralisee a operer).
+
+### Mesures organisationnelles de supply chain (en place)
+
+- **Cycle de deploiement soumis a autorisation** : publication de version, activation/pause/rollback de
+  campagne et mise en ligne d'artefact passent par l'IHM admin (OIDC + groupe requis) et sont traces
+  (`admin_audit_log`) — mesure de securite de la chaine d'approvisionnement.
+- **Politiques d'autorisation et d'exception** : a la main du gestionnaire de parc (WAPT / SCCM / Intune),
+  en amont de DM.
+
 ---
 
 ## 6. Stack technique resumee
