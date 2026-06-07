@@ -17,13 +17,6 @@ spec:
     - host: <SCALEWAY_HOSTNAME>
       http:
         paths:
-          - path: /files(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: filebrowser
-                port:
-                  number: 80
           - path: /relay-assistant(/|$)(.*)
             pathType: ImplementationSpecific
             backend:
