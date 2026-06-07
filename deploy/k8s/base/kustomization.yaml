@@ -21,8 +21,6 @@ resources:
   - manifests/29-postgres-pvc.yaml
   - manifests/30-postgres-deployment.yaml
   - manifests/31-postgres-service.yaml
-  - manifests/40-adminer-deployment.yaml
-  - manifests/41-adminer-service.yaml
   - manifests/50-ingress.yaml
   - manifests/60-device-management-hpa.yaml
   - manifests/61-queue-worker-hpa.yaml

@@ -17,13 +17,6 @@ spec:
     - host: <SCALEWAY_HOSTNAME>
       http:
         paths:
-          - path: /adminer(/|$)(.*)
-            pathType: ImplementationSpecific
-            backend:
-              service:
-                name: adminer
-                port:
-                  number: 8080
           - path: /files(/|$)(.*)
             pathType: ImplementationSpecific
             backend:

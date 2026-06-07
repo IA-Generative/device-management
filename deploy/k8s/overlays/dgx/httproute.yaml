@@ -48,24 +48,6 @@ spec:
     - backendRefs:
         - group: ""
           kind: Service
-          name: adminer
-          port: 8080
-          weight: 1
-      matches:
-        - path:
-            type: PathPrefix
-            value: /adminer
-      filters:
-        - type: URLRewrite
-          urlRewrite:
-            path:
-              type: ReplacePrefixMatch
-              replacePrefixMatch: /
-      timeouts:
-        request: 300s
-    - backendRefs:
-        - group: ""
-          kind: Service
           name: device-management-admin
           port: 80
           weight: 1

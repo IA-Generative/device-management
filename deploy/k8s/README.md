@@ -2,7 +2,7 @@
 
 This directory unifies Kubernetes deployment with one base and three overlays:
 
-- `base`: shared manifests (device-management, relay-assistant, telemetry-relay, postgres, adminer, filebrowser)
+- `base`: shared manifests (device-management, relay-assistant, telemetry-relay, postgres, filebrowser)
 - `overlays/local`: local Kubernetes profile (`http://bootstrap.home`)
 - `overlays/scaleway`: Scaleway profile (`https://<SCALEWAY_HOSTNAME>`)
 - `overlays/dgx`: DGX profile (`https://<DGX_HOSTNAME>/bootstrap`)
