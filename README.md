@@ -428,7 +428,7 @@ scripts/               # build-local.sh, build-k8s.sh, scripts/k8s/
 cd deploy/docker
 docker compose up --build
 ```
-Services : DM (3001), relay-assistant (8088), postgres (5432), adminer (8080).
+Services : DM (8089), relay-assistant (8088), postgres (5432), adminer (8080).
 
 ## Build et déploiement
 
@@ -485,7 +485,7 @@ premier téléchargement et le cachent localement. Les icônes sont stockées en
 ```bash
 ./scripts/test-all.sh
 ./scripts/k8s/validate-all.sh
-curl -sS http://localhost:3001/healthz
+curl -sS http://localhost:8089/healthz
 ```
 
 ## Documentation complémentaire

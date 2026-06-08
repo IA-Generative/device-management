@@ -3,7 +3,7 @@ Post-deployment smoke tests — run against a live DM instance.
 
 Usage:
     DM_BASE_URL=https://<SCALEWAY_HOSTNAME> pytest tests/test_post_deploy.py -v
-    DM_BASE_URL=http://localhost:3001 pytest tests/test_post_deploy.py -v
+    DM_BASE_URL=http://localhost:8089 pytest tests/test_post_deploy.py -v
 
 These tests verify that all endpoints are reachable and return expected
 status codes and response shapes after a deployment. They do NOT modify
