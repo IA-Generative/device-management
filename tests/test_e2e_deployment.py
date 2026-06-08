@@ -13,7 +13,7 @@ PREREQUIS
 1. Docker et docker compose installes
 2. Keycloak accessible sur le port 8082 (realm openwebui)
    → Si Keycloak n'est pas dispo, les tests OIDC sont marques skip
-3. Ports libres : 3001 (DM), 5432 (Postgres), 8080 (Adminer), 8088 (Relay)
+3. Ports libres : 8089 (DM), 5432 (Postgres), 8080 (Adminer), 8088 (Relay)
 
 LANCEMENT
 ---------
@@ -21,13 +21,13 @@ LANCEMENT
   ./tests/test_e2e_deployment.py --deploy
 
 # Tests seuls (stack deja en cours) :
-  pytest tests/test_e2e_deployment.py -v --base-url http://localhost:3001
+  pytest tests/test_e2e_deployment.py -v --base-url http://localhost:8089
 
 # Tests sans Keycloak :
-  pytest tests/test_e2e_deployment.py -v --base-url http://localhost:3001 -k "not keycloak"
+  pytest tests/test_e2e_deployment.py -v --base-url http://localhost:8089 -k "not keycloak"
 
 # Avec rapport HTML :
-  pytest tests/test_e2e_deployment.py -v --base-url http://localhost:3001 --html=reports/e2e.html
+  pytest tests/test_e2e_deployment.py -v --base-url http://localhost:8089 --html=reports/e2e.html
 
 STRUCTURE DES TESTS
 -------------------
@@ -74,7 +74,7 @@ import httpx
 # Configuration
 # ---------------------------------------------------------------------------
 
-DM_BASE_URL = os.getenv("DM_BASE_URL", "http://localhost:3001")
+DM_BASE_URL = os.getenv("DM_BASE_URL", "http://localhost:8089")
 POSTGRES_DSN = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/bootstrap")
 KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://localhost:8082")
 KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "openwebui")
@@ -238,15 +238,15 @@ class TestPhase0Infrastructure:
         assert r.status_code == 200
 
     def test_dm_port_open(self):
-        """Port 3001 est ouvert."""
+        """Port 8089 est ouvert."""
         import socket
         s = socket.socket()
         s.settimeout(3)
         try:
-            s.connect(("localhost", 3001))
+            s.connect(("localhost", 8089))
             s.close()
         except Exception:
-            pytest.fail("Port 3001 non accessible")
+            pytest.fail("Port 8089 non accessible")
 
     def test_postgres_port_open(self):
         """Port 5432 Postgres est ouvert."""
@@ -886,8 +886,8 @@ def deploy_from_scratch():
                 f"""{kcadm} create clients -r openwebui \
                     -s clientId=admin-dm-ui -s 'name=Admin DM UI' -s enabled=true \
                     -s publicClient=false -s standardFlowEnabled=true \
-                    -s 'redirectUris=["http://localhost:3001/admin/callback"]' \
-                    -s 'webOrigins=["http://localhost:3001"]' -s protocol=openid-connect""",
+                    -s 'redirectUris=["http://localhost:8089/admin/callback"]' \
+                    -s 'webOrigins=["http://localhost:8089"]' -s protocol=openid-connect""",
                 cwd=project_root, check=False,
             )
             if result.returncode == 0:

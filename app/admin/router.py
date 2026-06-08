@@ -266,7 +266,7 @@ async def dashboard(request: Request):
             # Recent audit
             recent_audit = audit_svc.list_audit_entries(cur, limit=10)
 
-        return templates.TemplateResponse("dashboard.html", {
+        return templates.TemplateResponse(request, "dashboard.html", {
             "request": request,
             "metrics": metrics,
             "active_campaigns": active_campaigns,
@@ -342,7 +342,7 @@ async def devices_list(request: Request, owner: str = "", platform: str = "",
                 health=health or None, limit=50, offset=page * 50,
             )
         filters = {"owner": owner, "platform": platform, "health": health}
-        return templates.TemplateResponse("devices.html", {
+        return templates.TemplateResponse(request, "devices.html", {
             "request": request, "devices": device_list, "summary": summary,
             "filters": filters, "page": page, "timeago": timeago,
         })
@@ -392,7 +392,7 @@ async def device_detail(request: Request, client_uuid: str):
             connections = devices_svc.get_device_connections(cur, client_uuid)
             campaign_statuses = devices_svc.get_device_campaign_statuses(cur, client_uuid)
             device_flags = devices_svc.get_device_flags(cur, client_uuid, device.get("email"))
-        return templates.TemplateResponse("device_detail.html", {
+        return templates.TemplateResponse(request, "device_detail.html", {
             "request": request, "device": device,
             "connections": connections, "campaign_statuses": campaign_statuses,
             "device_flags": device_flags, "timeago": timeago,
@@ -469,7 +469,7 @@ async def cohorts_list(request: Request):
     try:
         with conn.cursor() as cur:
             cohort_list = cohorts_svc.list_cohorts(cur)
-        return templates.TemplateResponse("cohorts.html", {
+        return templates.TemplateResponse(request, "cohorts.html", {
             "request": request, "cohorts": cohort_list,
         })
     finally:
@@ -522,7 +522,7 @@ async def cohort_detail(request: Request, cohort_id: int):
             if not cohort:
                 raise HTTPException(404, "Cohorte non trouvee")
             members = cohorts_svc.get_cohort_members(cur, cohort_id)
-        return templates.TemplateResponse("cohort_edit.html", {
+        return templates.TemplateResponse(request, "cohort_edit.html", {
             "request": request, "cohort": cohort, "members": members,
         })
     finally:
@@ -599,7 +599,7 @@ async def flags_list(request: Request):
     try:
         with conn.cursor() as cur:
             flag_list = flags_svc.list_flags(cur)
-        return templates.TemplateResponse("feature_flags.html", {
+        return templates.TemplateResponse(request, "feature_flags.html", {
             "request": request, "flags": flag_list,
         })
     finally:
@@ -643,7 +643,7 @@ async def flag_detail(request: Request, flag_id: int):
                 raise HTTPException(404, "Feature flag non trouve")
             overrides = flags_svc.get_flag_overrides(cur, flag_id)
             cohort_list = cohorts_svc.list_cohorts(cur)
-        return templates.TemplateResponse("flag_detail.html", {
+        return templates.TemplateResponse(request, "flag_detail.html", {
             "request": request, "flag": flag, "overrides": overrides,
             "cohorts": cohort_list,
         })
@@ -732,7 +732,7 @@ async def artifacts_list(request: Request):
     try:
         with conn.cursor() as cur:
             artifact_list = artifacts_svc.list_artifacts(cur)
-        return templates.TemplateResponse("artifacts.html", {
+        return templates.TemplateResponse(request, "artifacts.html", {
             "request": request, "artifacts": artifact_list,
         })
     finally:
@@ -822,7 +822,7 @@ async def campaigns_list(request: Request, status: str = ""):
     try:
         with conn.cursor() as cur:
             campaign_list = campaigns_svc.list_campaigns(cur, status=status or None)
-        return templates.TemplateResponse("campaigns.html", {
+        return templates.TemplateResponse(request, "campaigns.html", {
             "request": request, "campaigns": campaign_list,
             "filters": {"status": status},
         })
@@ -838,7 +838,7 @@ async def campaign_new_form(request: Request):
         with conn.cursor() as cur:
             artifact_list = artifacts_svc.list_artifacts(cur)
             cohort_list = cohorts_svc.list_cohorts(cur)
-        return templates.TemplateResponse("campaign_new.html", {
+        return templates.TemplateResponse(request, "campaign_new.html", {
             "request": request, "artifacts": artifact_list, "cohorts": cohort_list,
         })
     finally:
@@ -896,7 +896,7 @@ async def campaign_detail(request: Request, campaign_id: int):
                 raise HTTPException(404, "Campagne non trouvee")
             stats = campaigns_svc.get_campaign_stats(cur, campaign_id)
             events = campaigns_svc.get_campaign_events(cur, campaign_id)
-        return templates.TemplateResponse("campaign_detail.html", {
+        return templates.TemplateResponse(request, "campaign_detail.html", {
             "request": request, "campaign": campaign, "stats": stats, "events": events,
         })
     finally:
@@ -1007,7 +1007,7 @@ async def deploy_wizard(request: Request):
         with conn.cursor() as cur:
             cohort_list = cohorts_svc.list_cohorts(cur)
             artifact_list = artifacts_svc.list_artifacts(cur)
-        return templates.TemplateResponse("deploy_wizard.html", {
+        return templates.TemplateResponse(request, "deploy_wizard.html", {
             "request": request,
             "device_types": DEVICE_TYPES,
             "cohorts": cohort_list,
@@ -1327,7 +1327,7 @@ async def deploy_tracking(request: Request, campaign_id: int):
                     if row:
                         cols = [d[0] for d in cur.description]
                         plugin = dict(zip(cols, row))
-        return templates.TemplateResponse("deploy_wizard.html", {
+        return templates.TemplateResponse(request, "deploy_wizard.html", {
             "request": request,
             "mode": "tracking",
             "campaign": campaign,
@@ -1772,7 +1772,7 @@ async def catalog_list(request: Request, status: str = "", device_type: str = ""
                 cur, status=status or None, device_type=device_type or None,
                 category=category or None,
             )
-        return templates.TemplateResponse("catalog.html", {
+        return templates.TemplateResponse(request, "catalog.html", {
             "request": request, "plugins": plugins,
             "categories": PLUGIN_CATEGORIES,
             "filters": {"status": status, "device_type": device_type, "category": category},
@@ -1802,7 +1802,7 @@ async def catalog_new(request: Request):
             substitution_values[var] = mask_secret(val)
         else:
             substitution_values[var] = val
-    return templates.TemplateResponse("catalog_plugin_new.html", {
+    return templates.TemplateResponse(request, "catalog_plugin_new.html", {
         "request": request,
         "device_types": DEVICE_TYPES,
         "categories": PLUGIN_CATEGORIES,
@@ -2061,7 +2061,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                     d["progress_pct"] = s.get("progress_pct", 0)
                 except Exception:
                     d["progress_pct"] = 0
-        return templates.TemplateResponse("catalog_plugin.html", {
+        return templates.TemplateResponse(request, "catalog_plugin.html", {
             "request": request, "plugin": plugin, "versions": versions,
             "stats": stats, "installations": installations,
             "artifacts": artifact_list, "features": features,
@@ -2649,7 +2649,7 @@ async def communications_list(request: Request, type: str = "", status: str = ""
                 cur, type=type or None, status=status or None,
             )
             plugin_list = catalog_svc.list_plugins(cur)
-        return templates.TemplateResponse("communications.html", {
+        return templates.TemplateResponse(request, "communications.html", {
             "request": request, "communications": comm_list,
             "plugins": plugin_list,
             "filters": {"type": type, "status": status},
@@ -2666,7 +2666,7 @@ async def communication_new(request: Request, type: str = "announcement"):
         with conn.cursor() as cur:
             plugin_list = catalog_svc.list_plugins(cur)
             cohort_list = cohorts_svc.list_cohorts(cur)
-        return templates.TemplateResponse("communication_new.html", {
+        return templates.TemplateResponse(request, "communication_new.html", {
             "request": request, "comm_type": type,
             "plugins": plugin_list, "cohorts": cohort_list,
         })
@@ -2733,7 +2733,7 @@ async def communication_detail(request: Request, comm_id: int):
             survey_results = None
             if comm.get("type") == "survey":
                 survey_results = comms_svc.get_survey_results(cur, comm_id)
-        return templates.TemplateResponse("communication_detail.html", {
+        return templates.TemplateResponse(request, "communication_detail.html", {
             "request": request, "comm": comm, "stats": stats,
             "survey_results": survey_results,
         })
@@ -2768,7 +2768,7 @@ async def communication_status(request: Request, comm_id: int,
 @router.get("/catalog-preview", response_class=HTMLResponse)
 @require_admin
 async def catalog_preview(request: Request):
-    return templates.TemplateResponse("catalog_preview.html", {"request": request})
+    return templates.TemplateResponse(request, "catalog_preview.html", {"request": request})
 
 
 # ─── Env Overrides ───────────────────────────────────────────────────────
@@ -3539,7 +3539,7 @@ async def debug_page(request: Request):
         "grafana_url": os.getenv("DM_TELEMETRY_GRAFANA_URL", ""),
     }
 
-    return templates.TemplateResponse("debug.html", {
+    return templates.TemplateResponse(request, "debug.html", {
         "request": request, "checks": checks, "config_vars": config_vars,
         "db_stats": db_stats, "system_info": system_info,
         "telemetry_info": telemetry_info,
@@ -3560,7 +3560,7 @@ async def audit_list(request: Request, actor: str = "", action: str = "",
                 resource_type=resource_type or None,
                 limit=100, offset=page * 100,
             )
-        return templates.TemplateResponse("audit_log.html", {
+        return templates.TemplateResponse(request, "audit_log.html", {
             "request": request, "entries": entries, "page": page,
             "filters": {"actor": actor, "action": action, "resource_type": resource_type},
         })
@@ -3657,7 +3657,7 @@ async def files_index(request: Request):
         p = path_fn()
         count = len(list(p.iterdir())) if p.is_dir() else 0
         roots.append({"name": name, "path": name, "exists": p.is_dir(), "count": count})
-    return templates.TemplateResponse("files.html", {
+    return templates.TemplateResponse(request, "files.html", {
         "request": request,
         "mode": "roots",
         "roots": roots,
@@ -3695,7 +3695,7 @@ async def files_browse(request: Request, path: str):
 
     if resolved.is_dir():
         entries = _list_dir(resolved)
-        return templates.TemplateResponse("files.html", {
+        return templates.TemplateResponse(request, "files.html", {
             "request": request,
             "mode": "list",
             "roots": [],
@@ -3720,7 +3720,7 @@ async def files_browse(request: Request, path: str):
         except Exception:
             pass
 
-    return templates.TemplateResponse("files.html", {
+    return templates.TemplateResponse(request, "files.html", {
         "request": request,
         "mode": "detail",
         "roots": [],

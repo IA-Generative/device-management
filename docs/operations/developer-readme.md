@@ -6,7 +6,7 @@ Guide operations pour le service Device Management (dev local + Kubernetes).
 
 | Service | Port | Description |
 |---------|------|-------------|
-| device-management | 3001 | API FastAPI + Admin UI |
+| device-management | 8089 | API FastAPI + Admin UI |
 | relay-assistant | 8088 | Proxy nginx (Keycloak, LLM, MCR) |
 | queue-worker | — | Worker asynchrone (telemetrie, jobs) |
 | postgres | 5432 | Base de donnees |
@@ -32,11 +32,11 @@ docker compose up -d --build
 
 Verification :
 ```bash
-curl -sS http://localhost:3001/healthz | python3 -m json.tool
-curl -sS 'http://localhost:3001/config/mirai-libreoffice/config.json?profile=dev' | python3 -m json.tool
+curl -sS http://localhost:8089/healthz | python3 -m json.tool
+curl -sS 'http://localhost:8089/config/mirai-libreoffice/config.json?profile=dev' | python3 -m json.tool
 ```
 
-Admin UI : http://localhost:3001/admin/ (auto-login en dev)
+Admin UI : http://localhost:8089/admin/ (auto-login en dev)
 
 ## Pipeline de configuration
 
@@ -152,7 +152,7 @@ Rollout complet 6 services : ~12s.
 
 | Variable | Exemple |
 |----------|---------|
-| `PUBLIC_BASE_URL` | `http://localhost:3001` |
+| `PUBLIC_BASE_URL` | `http://localhost:8089` |
 | `DM_CONFIG_PROFILE` | `dev` |
 | `DATABASE_URL` | `postgresql://dev:dev@postgres:5432/bootstrap` |
 | `KEYCLOAK_ISSUER_URL` | `http://localhost:8082/realms/openwebui` |
@@ -170,7 +170,7 @@ Rollout complet 6 services : ~12s.
 ## Health check
 
 ```bash
-curl -sS http://localhost:3001/healthz
+curl -sS http://localhost:8089/healthz
 ```
 ```json
 {"type":"...","title":"OK","status":200,"detail":"All dependencies are healthy.",
@@ -188,7 +188,7 @@ kubectl -n bootstrap rollout restart deployment/device-management
 
 # Tester un endpoint depuis le cluster
 kubectl -n bootstrap exec deploy/device-management -- python -c "
-import urllib.request; r = urllib.request.urlopen('http://localhost:3001/admin/')
+import urllib.request; r = urllib.request.urlopen('http://localhost:8089/admin/')
 print(r.status, r.read()[:100].decode())
 "
 ```
