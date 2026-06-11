@@ -95,3 +95,17 @@ spec:
               replacePrefixMatch: /
       timeouts:
         request: 300s
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: grafana
+          port: 80
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: /grafana
+      # PAS de URLRewrite : Grafana sert nativement sous /grafana
+      # (GF_SERVER_SERVE_FROM_SUB_PATH=true + GF_SERVER_ROOT_URL=.../grafana).
+      timeouts:
+        request: 300s

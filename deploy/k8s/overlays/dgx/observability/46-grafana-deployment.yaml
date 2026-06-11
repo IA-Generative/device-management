@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: bootstrap
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      securityContext:
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+      containers:
+        - name: grafana
+          image: docker.io/grafana/grafana:11.3.0
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # Servi derrière Envoy sous le sous-chemin /grafana.
+            # PUBLIC_BASE_HOST est patché par l'overlay (env-secrets) ; en base
+            # on laisse un placeholder que kustomize ne remplace pas — l'overlay
+            # DGX surcharge GF_SERVER_ROOT_URL via le patch deployment.
+            - name: GF_SERVER_ROOT_URL
+              value: "%(protocol)s://%(domain)s/grafana"
+            - name: GF_SERVER_SERVE_FROM_SUB_PATH
+              value: "true"
+            # Admin password depuis le secret applicatif.
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: GRAFANA_ADMIN_PASSWORD
+            # Air-gap : pas de phone-home ni de check de version.
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES
+              value: "false"
+            # Pas de plugin externe à télécharger (air-gap).
+            - name: GF_INSTALL_PLUGINS
+              value: ""
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            # ── SSO Keycloak (realm mirai), generic OAuth ────────────────
+            # Les URLs auth/token/userinfo + role_attribute_path (groupe DGX)
+            # + le proxy sont injectés par l'overlay (grafana-dgx-patch.yaml),
+            # car spécifiques au DGX. Ici : les toggles non spécifiques.
+            - name: GF_AUTH_GENERIC_OAUTH_ENABLED
+              value: "true"
+            - name: GF_AUTH_GENERIC_OAUTH_NAME
+              value: "Mirai SSO"
+            - name: GF_AUTH_GENERIC_OAUTH_SCOPES
+              value: "openid email profile"
+            - name: GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP
+              value: "true"
+            - name: GF_AUTH_GENERIC_OAUTH_USE_PKCE
+              value: "true"
+            - name: GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH
+              value: "preferred_username"
+            - name: GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_PATH
+              value: "email"
+            - name: GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH
+              value: "name"
+            # Accès réservé aux membres du groupe (cf. role_attribute_path) :
+            # strict=true → un utilisateur sans rôle dérivé est refusé.
+            - name: GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT
+              value: "true"
+            - name: GF_AUTH_GENERIC_OAUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: GRAFANA_OAUTH_CLIENT_ID
+            - name: GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: GRAFANA_OAUTH_CLIENT_SECRET
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: provisioning-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+          readinessProbe:
+            httpGet:
+              path: /robots.txt
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data-pvc
+        - name: provisioning-datasources
+          configMap:
+            name: grafana-provisioning
+            items:
+              - key: datasources.yaml
+                path: datasources.yaml
