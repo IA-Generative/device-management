@@ -80,16 +80,15 @@ spec:
             # strict=true → un utilisateur sans rôle dérivé est refusé.
             - name: GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT
               value: "true"
+            # Réutilise le client device-management/admin (bootstrap-iassistant),
+            # client PUBLIC → pas de secret, PKCE obligatoire (USE_PKCE=true).
             - name: GF_AUTH_GENERIC_OAUTH_CLIENT_ID
               valueFrom:
                 secretKeyRef:
                   name: device-management-secrets
-                  key: GRAFANA_OAUTH_CLIENT_ID
+                  key: KEYCLOAK_CLIENT_ID
             - name: GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: GRAFANA_OAUTH_CLIENT_SECRET
+              value: ""
           volumeMounts:
             - name: data
               mountPath: /var/lib/grafana
