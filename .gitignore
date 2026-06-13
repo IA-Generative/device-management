@@ -80,7 +80,6 @@ config.default.json
 # Commit only example/template files
 !.env.example
 !.env.secrets.example
-!deploy/docker/.env
 !deploy/docker/.env.secrets.example
 
 ############################
