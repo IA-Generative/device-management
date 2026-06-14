@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import socket
+import ssl
 import threading
 import time
 import uuid
@@ -68,6 +69,16 @@ from .services.db import (
 
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
+
+# --- Vérification TLS des appels sortants (satellites HTTPS auto-signés) -----
+# DM_TLS_VERIFY=false → désactive la vérif TLS pour les appels SERVEUR :
+#   - httpx (relais token Keycloak, upstreams) via verify=_TLS_VERIFY
+#   - stdlib urllib/PyJWKClient via le contexte HTTPS par défaut non vérifié
+# INSECURE : réservé test/intégration (en prod, fournir la CA via SSL_CERT_FILE).
+_TLS_VERIFY = os.getenv("DM_TLS_VERIFY", "true").strip().lower() not in ("false", "0", "no", "off")
+if not _TLS_VERIFY:
+    ssl._create_default_https_context = ssl._create_unverified_context  # type: ignore[attr-defined]
+    logger.warning("DM_TLS_VERIFY=false : vérification TLS DÉSACTIVÉE (satellites auto-signés, INSECURE)")
 
 _RUNTIME_MODE = str(settings.runtime_mode or "api").strip().lower()
 
@@ -250,7 +261,7 @@ def _pull_binary_from_admin(s3_path: str) -> bool:
     url = f"{admin_url}/admin/api/files/{rel}"
     try:
         logger.info("pull_binary_from_admin: fetching %s", url)
-        resp = httpx.get(url, headers={"x-admin-token": token}, timeout=60, follow_redirects=True)
+        resp = httpx.get(url, headers={"x-admin-token": token}, timeout=60, follow_redirects=True, verify=_TLS_VERIFY)
         logger.info("pull_binary_from_admin: got %d (%d bytes)", resp.status_code, len(resp.content))
         if resp.status_code == 200 and resp.content:
             os.makedirs(os.path.dirname(s3_path), exist_ok=True)
@@ -2813,6 +2824,7 @@ async def api_plugin_deploy(slug: str, request: Request):
                     _resp = httpx.put(
                         f"{_admin_url}/admin/api/files/upload/{rel_path}",
                         files=_files, headers={"x-admin-token": _admin_token}, timeout=30,
+                        verify=_TLS_VERIFY,
                     )
                     if _resp.status_code == 200:
                         logger.info("api_plugin_deploy: forwarded %s to admin pod", rel_path)
@@ -4205,7 +4217,7 @@ async def keycloak_token_proxy(request: Request):
 
     token_url = f"{_KEYCLOAK_TOKEN_UPSTREAM}/protocol/openid-connect/token"
 
-    async with httpx.AsyncClient(trust_env=True, timeout=30) as client:
+    async with httpx.AsyncClient(trust_env=True, timeout=30, verify=_TLS_VERIFY) as client:
         upstream_resp = await client.post(
             token_url,
             content=form_data,
@@ -4245,7 +4257,7 @@ async def relay_assistant_proxy(path: str, request: Request):
     # HTTPS_PROXY and routes through the corporate forward proxy.
     # DNS resolution of corporate hostnames (<SSO_HOSTNAME> etc.)
     # only works through the proxy's HTTP CONNECT tunnel.
-    async with httpx.AsyncClient(trust_env=True, timeout=30) as client:
+    async with httpx.AsyncClient(trust_env=True, timeout=30, verify=_TLS_VERIFY) as client:
         upstream_resp = await client.request(
             method=request.method,
             url=upstream_url,
