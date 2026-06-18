@@ -116,7 +116,11 @@ def test_config_hides_secrets_without_relay_key():
     assert cfg.get("keycloakIssuerUrl") == "https://issuer.from.config.test/realms/bootstrap"
 
 
-def test_config_returns_secrets_with_valid_relay_key():
+def test_config_never_serves_shared_admin_llm_key():
+    # The shared admin LLM key (${{LLM_API_TOKEN}}) must not be served even to a
+    # relay-authenticated caller: devices receive their own per-device key instead.
+    # Here LiteLLM provisioning is unconfigured (no admin base URL), so no per-device
+    # key exists and llm_api_tokens must come back empty rather than leaking the admin key.
     mod = _load_module()
     client = TestClient(mod.app)
     relay_headers = _enroll_and_get_relay_headers(client)
@@ -125,7 +129,7 @@ def test_config_returns_secrets_with_valid_relay_key():
     assert res.status_code == 200
     cfg = res.json().get("config", {})
 
-    assert cfg.get("llm_api_tokens") == "very-secret-token"
+    assert cfg.get("llm_api_tokens", "") == ""
     assert cfg.get("relayAssistantBaseUrl") == "https://example.test/bootstrap/relay-assistant"
 
 

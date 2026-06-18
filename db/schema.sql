@@ -62,6 +62,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_active_client ON relay_clients(client
 CREATE UNIQUE INDEX IF NOT EXISTS uq_relay_active_id ON relay_clients(relay_client_id) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_relay_email ON relay_clients(email);
 
+-- Per-device LiteLLM keys: the minted key is stored encrypted at rest (Fernet,
+-- derived from the relay pepper) so it can be re-served on each /config poll.
+-- The alias is stored to revoke the previous key on rotation.
+CREATE TABLE IF NOT EXISTS device_llm_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    client_uuid UUID NOT NULL,
+    email CITEXT NOT NULL,
+    key_alias TEXT NOT NULL,
+    llm_key TEXT NOT NULL,
+    expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    comments TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_device_llm_active ON device_llm_keys(client_uuid) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_device_llm_email ON device_llm_keys(email);
+
 CREATE TABLE IF NOT EXISTS queue_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

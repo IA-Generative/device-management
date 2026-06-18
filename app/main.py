@@ -54,7 +54,10 @@ from .services.crypto import (
     b64url_decode as _svc_b64url_decode,
     hash_relay_secret as _svc_hash_relay_secret,
     SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
+    encrypt_secret as _svc_encrypt_secret,
+    decrypt_secret as _svc_decrypt_secret,
 )
+from .services import litellm as _litellm
 from .services.db import (
     db_url as _svc_db_url,
     db_url_bootstrap as _svc_db_url_bootstrap,
@@ -1362,6 +1365,116 @@ def _mint_or_rotate_relay_credentials(*, client_uuid: str, email: str) -> dict:
     }
 
 
+def _llm_admin_base_url() -> str:
+    return _litellm.resolve_admin_base_url(settings.llm_admin_base_url, settings.llm_base_url)
+
+
+def _mint_or_rotate_device_llm_key(*, client_uuid: str, email: str) -> dict:
+    """Mint a scoped per-device LiteLLM key, rotating any previous one.
+
+    Returns {"api_key", "base_url", "expires_at", "ttl_seconds"} on success, or a
+    dict with "error" when provisioning is configured but failed. Returns {} when
+    provisioning is disabled or unconfigured (the DM simply ships no LLM key).
+    """
+    if not settings.llm_key_provisioning_enabled:
+        return {}
+    admin_key = (settings.llm_admin_key or "").strip()
+    admin_base = _llm_admin_base_url()
+    if not admin_key or not admin_base:
+        return {}
+
+    key_alias = f"dm-{client_uuid}"
+    ttl_seconds = max(60, int(settings.llm_key_ttl_seconds or 0))
+    db_url = _db_url_bootstrap()
+
+    # The alias is deterministic, so rotating just means deleting this alias
+    # upstream before minting a fresh key under it.
+    _litellm.delete_device_key(admin_base_url=admin_base, admin_key=admin_key, key_alias=key_alias)
+
+    try:
+        result = _litellm.generate_device_key(
+            admin_base_url=admin_base,
+            admin_key=admin_key,
+            key_alias=key_alias,
+            duration_seconds=ttl_seconds,
+            metadata={"client_uuid": client_uuid, "email": email, "source": "dm-enroll"},
+        )
+    except Exception as exc:
+        logger.warning("LiteLLM key generation failed for %s: %s", client_uuid, exc)
+        return {"error": "llm_key_provisioning_failed"}
+
+    api_key = str(result.get("key") or "")
+    if not api_key:
+        logger.warning("LiteLLM key generation returned no key for %s", client_uuid)
+        return {"error": "llm_key_provisioning_failed"}
+
+    expires_at = int(time.time()) + ttl_seconds
+    encrypted_key = _svc_encrypt_secret(api_key, str(settings.relay_secret_pepper or ""))
+
+    if psycopg2 is not None and db_url:
+        try:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE device_llm_keys SET revoked_at = now() WHERE client_uuid = %s AND revoked_at IS NULL",
+                        (client_uuid,),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO device_llm_keys (client_uuid, email, key_alias, llm_key, expires_at, comments)
+                        VALUES (%s, %s, %s, %s, to_timestamp(%s), %s)
+                        """,
+                        (client_uuid, email, key_alias, encrypted_key, expires_at, "enroll"),
+                    )
+            finally:
+                conn.close()
+        except Exception as exc:
+            # The key exists upstream and is returned to the device; failing to persist
+            # it only means /config can't re-serve it (device must re-enroll to recover).
+            logger.warning("device_llm_keys persist failed for %s: %s", client_uuid, exc)
+
+    return {
+        "api_key": api_key,
+        "base_url": (settings.llm_base_url or "").strip(),
+        "expires_at": expires_at,
+        "ttl_seconds": ttl_seconds,
+    }
+
+
+def _get_device_llm_key(client_uuid: str) -> str:
+    """Return the decrypted per-device LiteLLM key for an enrolled device, or ""."""
+    cu = _normalize_client_uuid(client_uuid) if client_uuid else ""
+    if not cu:
+        return ""
+    db_url = _db_url_bootstrap()
+    if psycopg2 is None or not db_url:
+        return ""
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT llm_key FROM device_llm_keys
+                    WHERE client_uuid = %s AND revoked_at IS NULL
+                      AND (expires_at IS NULL OR expires_at > now())
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (cu,),
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return ""
+    if not row or not row[0]:
+        return ""
+    return _svc_decrypt_secret(str(row[0]), str(settings.relay_secret_pepper or "")) or ""
+
+
 def _verify_relay_credentials(relay_client_id: str, relay_key: str, target: str | None = None) -> tuple[bool, dict | str]:
     relay_client_id = str(relay_client_id or "").strip()
     relay_key = str(relay_key or "").strip()
@@ -2072,14 +2185,21 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     dev = (device or "").strip().lower()
 
     # ── P2: Check config cache ──
-    # Skip cache when enrichment headers are present (update directive is device-specific)
+    # Skip cache when the response is device-specific: enrichment headers drive the
+    # update directive, and relay credentials gate the per-device LLM key — neither
+    # may be shared across callers via the cache.
     _has_enrichment = bool(
         request.headers.get("X-Plugin-Version", "").strip()
         or request.headers.get("X-Client-UUID", "").strip()
         or request.headers.get("X-User-Email", "").strip()
     )
+    _has_relay = bool(
+        request.headers.get("x-relay-client") or request.headers.get("x-client-id")
+        or request.headers.get("x-relay-key") or request.headers.get("x-client-key")
+    )
+    _skip_cache = _has_enrichment or _has_relay
     cache_key = f"{dev or '_'}:{prof}"
-    if not _has_enrichment:
+    if not _skip_cache:
         cached = _config_cache_get(cache_key)
         if cached is not None:
             return JSONResponse(cached, headers={"Cache-Control": "public, max-age=60", "X-Cache": "HIT"})
@@ -2232,6 +2352,16 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     if settings.relay_require_key_for_secrets and not relay_ok:
         cfg = _scrub_secret_values(cfg)
 
+    # The shared admin LLM key (from ${{LLM_API_TOKEN}}) must never be served.
+    # Replace it with the caller's own per-device LiteLLM key, resolved from the
+    # relay-authenticated identity (not a spoofable header); empty otherwise.
+    inner = cfg.get("config")
+    if isinstance(inner, dict) and "llm_api_tokens" in inner:
+        device_llm_key = ""
+        if relay_ok and isinstance(relay_meta, dict):
+            device_llm_key = _get_device_llm_key(str(relay_meta.get("client_uuid") or ""))
+        inner["llm_api_tokens"] = device_llm_key
+
     # 3) keep top-level enable switch from service settings if you still want a global kill-switch
     cfg["enabled"] = bool(settings.config_enabled)
 
@@ -2366,12 +2496,12 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         "features": flags,
     }
 
-    # P2: Cache the response only when no enrichment headers (generic response)
-    if not _has_enrichment:
+    # P2: Cache only generic, non-device-specific responses
+    if not _skip_cache:
         _config_cache_set(cache_key, response_body)
 
     return JSONResponse(response_body, headers={
-        "Cache-Control": "public, max-age=60" if not _has_enrichment else "no-store",
+        "Cache-Control": "public, max-age=60" if not _skip_cache else "no-store",
         "X-Cache": "MISS",
     })
 
@@ -2602,6 +2732,7 @@ async def enroll(request: Request):
     user_agent = request.headers.get("user-agent")
 
     relay_data = _mint_or_rotate_relay_credentials(client_uuid=client_uuid, email=email)
+    llm_data = _mint_or_rotate_device_llm_key(client_uuid=client_uuid, email=email)
 
     idempotency_key = (
         request.headers.get("x-idempotency-key")
@@ -2649,6 +2780,10 @@ async def enroll(request: Request):
             "relayClientId": relay_data.get("client_id", ""),
             "relayClientKey": relay_data.get("client_key", ""),
             "relayKeyExpiresAt": relay_data.get("expires_at", 0),
+            "llm": llm_data,
+            "llmApiKey": llm_data.get("api_key", ""),
+            "llmBaseUrl": llm_data.get("base_url", ""),
+            "llmKeyExpiresAt": llm_data.get("expires_at", 0),
         },
     )
 
