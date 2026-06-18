@@ -51,6 +51,12 @@
           <li>&#x26A0;&#xFE0F; Aucune connexion enregistree</li>
           {% endif %}
         </ul>
+
+        <h3 style="font-size: 1rem; margin-top: 1.5rem;">Actions</h3>
+        <form method="post" action="/admin/devices/{{ device.client_uuid }}/revoke-llm-key"
+              onsubmit="return confirm('Revoquer la cle LLM de cet appareil ? Il devra se re-enroler pour en obtenir une nouvelle.');">
+          <button type="submit" class="dm-btn dm-btn--danger dm-btn--sm">Revoquer la cle LLM</button>
+        </form>
       </div>
     </div>
   </div>
