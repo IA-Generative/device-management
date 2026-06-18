@@ -132,6 +132,19 @@ class Settings(BaseSettings):
     relay_require_key_for_secrets: bool = Field(default=True)
     relay_force_keycloak_endpoints: bool = Field(default=False)
 
+    # Per-device LiteLLM key provisioning (DM admin key mints a scoped key per device)
+    llm_key_provisioning_enabled: bool = Field(default=True)
+    llm_admin_base_url: str = Field(
+        default_factory=lambda: _env_default("LLM_ADMIN_BASE_URL", default="")
+    )
+    llm_admin_key: str = Field(
+        default_factory=lambda: _env_default("LLM_ADMIN_KEY", "LLM_API_TOKEN", default="")
+    )
+    llm_base_url: str = Field(
+        default_factory=lambda: _env_default("LLM_BASE_URL", default="")
+    )
+    llm_key_ttl_seconds: int = Field(default=30 * 24 * 3600)
+
     # PKCE/OIDC access-token verification
     auth_verify_access_token: bool = Field(default=True)
     auth_issuer_url: str = Field(

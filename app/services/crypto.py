@@ -11,7 +11,32 @@ import json
 import logging
 import time
 
+from cryptography.fernet import Fernet, InvalidToken
+
 logger = logging.getLogger("device-management")
+
+
+def _fernet_from_pepper(pepper: str) -> Fernet:
+    """Derive a Fernet instance from the relay pepper (a mandatory prod secret).
+
+    Reusing the pepper avoids introducing a separate key to manage; rotating it
+    invalidates stored ciphertexts, which only forces an enrollment refresh.
+    """
+    key = base64.urlsafe_b64encode(hashlib.sha256(pepper.encode("utf-8")).digest())
+    return Fernet(key)
+
+
+def encrypt_secret(plaintext: str, pepper: str) -> str:
+    """Encrypt a secret for storage at rest. Returns a urlsafe token string."""
+    return _fernet_from_pepper(pepper).encrypt(plaintext.encode("utf-8")).decode("ascii")
+
+
+def decrypt_secret(token: str, pepper: str) -> str | None:
+    """Decrypt a value produced by encrypt_secret. Returns None if undecryptable."""
+    try:
+        return _fernet_from_pepper(pepper).decrypt(token.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError, TypeError):
+        return None
 
 
 def b64url_encode(raw: bytes) -> str:
