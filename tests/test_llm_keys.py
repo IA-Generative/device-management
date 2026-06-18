@@ -80,3 +80,51 @@ def test_generate_device_key_builds_request(monkeypatch):
     assert captured["body"]["key_alias"] == "dm-abc"
     assert captured["body"]["duration"] == "3600s"
     assert captured["body"]["metadata"] == {"client_uuid": "abc"}
+
+
+class _FakeCursor:
+    def __init__(self):
+        self.sql = None
+        self.params = None
+
+    def execute(self, sql, params):
+        self.sql = sql
+        self.params = params
+
+
+def test_revoke_device_llm_key_deletes_on_hub_and_marks_db(monkeypatch):
+    from app.admin.services import devices
+
+    calls = {}
+    monkeypatch.setattr(devices.settings, "llm_admin_key", "sk-admin")
+    monkeypatch.setattr(devices.settings, "llm_admin_base_url", "https://hub.example")
+    monkeypatch.setattr(devices.settings, "llm_base_url", "")
+    monkeypatch.setattr(devices._litellm, "delete_device_key", lambda **kw: calls.update(kw))
+
+    cur = _FakeCursor()
+    devices.revoke_device_llm_key(cur, "abc-uuid")
+
+    assert calls["key_alias"] == "dm-abc-uuid"
+    assert calls["admin_base_url"] == "https://hub.example"
+    assert "device_llm_keys" in cur.sql
+    assert cur.params == ("abc-uuid",)
+
+
+def test_revoke_device_llm_key_skips_hub_when_unconfigured(monkeypatch):
+    from app.admin.services import devices
+
+    called = {"hit": False}
+    monkeypatch.setattr(devices.settings, "llm_admin_key", "")
+    monkeypatch.setattr(devices.settings, "llm_admin_base_url", "")
+    monkeypatch.setattr(devices.settings, "llm_base_url", "")
+
+    def _boom(**kw):
+        called["hit"] = True
+
+    monkeypatch.setattr(devices._litellm, "delete_device_key", _boom)
+
+    cur = _FakeCursor()
+    devices.revoke_device_llm_key(cur, "abc-uuid")
+
+    assert called["hit"] is False
+    assert "device_llm_keys" in cur.sql

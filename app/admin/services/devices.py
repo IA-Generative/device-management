@@ -2,6 +2,31 @@
 
 from __future__ import annotations
 
+from ...settings import settings
+from ...services import litellm as _litellm
+
+
+def revoke_device_llm_key(cur, client_uuid: str) -> None:
+    """Revoke a device's per-device LLM key.
+
+    Deletes the key on the LLM hub (best-effort, by its deterministic alias) and
+    marks the stored row revoked using the caller's cursor. Idempotent.
+    """
+    admin_key = (settings.llm_admin_key or "").strip()
+    admin_base = _litellm.resolve_admin_base_url(settings.llm_admin_base_url, settings.llm_base_url)
+    if admin_key and admin_base:
+        _litellm.delete_device_key(
+            admin_base_url=admin_base, admin_key=admin_key, key_alias=f"dm-{client_uuid}"
+        )
+    cur.execute(
+        """
+        UPDATE device_llm_keys
+        SET revoked_at = now(), comments = 'revoked-by-admin'
+        WHERE client_uuid = %s AND revoked_at IS NULL
+        """,
+        (client_uuid,),
+    )
+
 
 def list_devices(cur, *, owner: str = None, platform: str = None,
                  health: str = None, enrollment: str = None,

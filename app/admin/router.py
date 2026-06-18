@@ -436,6 +436,31 @@ async def device_revoke_relay(request: Request, client_uuid: str):
         conn.close()
 
 
+@router.post("/devices/{client_uuid}/revoke-llm-key")
+@require_admin
+async def device_revoke_llm_key(request: Request, client_uuid: str):
+    """Revoke a device's per-device LLM key: delete it on the LLM hub and mark
+    the stored row revoked. The device must re-enroll to obtain a new key.
+    Idempotent."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            devices_svc.revoke_device_llm_key(cur, client_uuid)
+            revoked = cur.rowcount
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="llm_key.revoke",
+                      resource_type="device_llm_key", resource_id=str(client_uuid),
+                      payload={"revoked_rows": revoked},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/devices/{client_uuid}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+
+
 @router.get("/api/devices/{client_uuid}/activity", response_class=HTMLResponse)
 @require_admin
 async def api_device_activity(request: Request, client_uuid: str):
