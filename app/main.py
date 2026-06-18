@@ -2732,7 +2732,7 @@ async def enroll(request: Request):
     user_agent = request.headers.get("user-agent")
 
     relay_data = _mint_or_rotate_relay_credentials(client_uuid=client_uuid, email=email)
-    llm_data = _mint_or_rotate_device_llm_key(client_uuid=client_uuid, email=email)
+    _mint_or_rotate_device_llm_key(client_uuid=client_uuid, email=email)
 
     idempotency_key = (
         request.headers.get("x-idempotency-key")
@@ -2780,10 +2780,6 @@ async def enroll(request: Request):
             "relayClientId": relay_data.get("client_id", ""),
             "relayClientKey": relay_data.get("client_key", ""),
             "relayKeyExpiresAt": relay_data.get("expires_at", 0),
-            "llm": llm_data,
-            "llmApiKey": llm_data.get("api_key", ""),
-            "llmBaseUrl": llm_data.get("base_url", ""),
-            "llmKeyExpiresAt": llm_data.get("expires_at", 0),
         },
     )
 

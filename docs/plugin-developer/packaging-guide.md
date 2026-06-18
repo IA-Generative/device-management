@@ -151,7 +151,7 @@ Ce fichier definit la configuration servie aux plugins par DM. Il est structure 
 | Placeholder | Variable serveur | Description |
 |-------------|-----------------|-------------|
 | `${{LLM_BASE_URL}}` | `LLM_BASE_URL` | Endpoint LLM |
-| `${{LLM_API_TOKEN}}` | `LLM_API_TOKEN` | Clé admin du hub LLM. **N'est plus servie aux devices** : le DM s'en sert pour frapper une clé propre à chaque device, renvoyée à l'enrôlement et dans `llm_api_tokens` (avec relay auth). |
+| `${{LLM_API_TOKEN}}` | `LLM_API_TOKEN` | Clé admin du hub LLM. **N'est plus servie aux devices** : le DM s'en sert pour frapper une clé propre à chaque device, servie dans `llm_api_tokens` (avec relay auth). |
 | `${{DEFAULT_MODEL_NAME}}` | `DEFAULT_MODEL_NAME` | Modele LLM par defaut |
 | `${{KEYCLOAK_ISSUER_URL}}` | `KEYCLOAK_ISSUER_URL` | URL issuer Keycloak |
 | `${{KEYCLOAK_REALM}}` | `KEYCLOAK_REALM` | Realm Keycloak |
