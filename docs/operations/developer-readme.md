@@ -163,8 +163,11 @@ Rollout complet 6 services : ~12s.
 
 | Variable | Description |
 |----------|-------------|
-| `LLM_BASE_URL` | Endpoint OpenAI-compatible |
-| `LLM_API_TOKEN` | Token API |
+| `LLM_BASE_URL` | Endpoint OpenAI-compatible du hub LLM |
+| `LLM_API_TOKEN` | Cle admin du hub LLM — sert a frapper une cle par device (jamais servie telle quelle) |
+| `LLM_ADMIN_BASE_URL` | URL de gestion du hub (defaut : `LLM_BASE_URL` sans `/v1`) |
+| `DM_LLM_KEY_TTL_SECONDS` | Duree de vie d'une cle device (defaut 30 j) |
+| `DM_LLM_KEY_PROVISIONING_ENABLED` | Active la frappe de cles par device (defaut `true`) |
 | `DEFAULT_MODEL_NAME` | Modele par defaut |
 
 ## Health check
