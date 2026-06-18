@@ -22,7 +22,7 @@ sequenceDiagram
     P->>KC: Authorization Code + PKCE
     KC-->>P: access_token + refresh_token
     P->>DM: POST /enroll  { plugin_uuid, device_name }<br/>Authorization: Bearer <access_token>
-    DM-->>P: 200 { relayClientId, relayClientKey, expiresAt,<br/>llmApiKey, llmBaseUrl, llmKeyExpiresAt }
+    DM-->>P: 200 { relayClientId, relayClientKey, expiresAt }
 
     Note over P,DM: ── Phase 3 : Config authentifiée (TTL refresh) ───
     P->>DM: GET /config/{device}/config.json<br/>X-Client-UUID: <uuid><br/>X-Plugin-Version: 1.2.0<br/>X-Platform-Type: libreoffice<br/>X-Platform-Version: 24.8.1<br/>X-Relay-Client-Id: <id><br/>X-Relay-Client-Key: <key>
@@ -166,13 +166,12 @@ EnrichedConfigResponse
 ```
 
 > **Clé LLM par device.** `llm_api_tokens` ne contient **jamais** la clé admin
-> partagée. Le DM frappe une clé LLM dédiée à chaque device à l'enrôlement (voir
-> §2, champs `llmApiKey` / `llmBaseUrl` / `llmKeyExpiresAt` de la réponse `/enroll`)
-> et ré-sert cette même clé dans `llm_api_tokens` — uniquement aux requêtes
-> porteuses de credentials relay valides, l'identité du device étant résolue à
-> partir de la clé relay (pas d'un en-tête). Sans relay auth, le champ est vide.
-> La clé expire (`llmKeyExpiresAt`) et peut être révoquée par un admin : le device
-> doit alors se ré-enrôler pour en obtenir une nouvelle.
+> partagée. Le DM frappe une clé LLM dédiée à chaque device à l'enrôlement et la
+> sert dans `llm_api_tokens` — uniquement aux requêtes porteuses de credentials
+> relay valides, l'identité du device étant résolue à partir de la clé relay (pas
+> d'un en-tête). Sans relay auth, le champ est vide. La clé expire et peut être
+> révoquée par un admin : le device doit alors se ré-enrôler pour en obtenir une
+> nouvelle.
 
 ### 4.3 Objet `update` — directive de mise à jour
 

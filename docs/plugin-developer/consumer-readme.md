@@ -94,9 +94,8 @@ Sans relay headers, les valeurs secretes (`llm_api_tokens`, etc.) sont vides.
 
 `llm_api_tokens` contient la cle LLM **propre au device** (frappee par le DM a
 l'enrolement, jamais la cle admin partagee). Elle n'est servie qu'aux requetes
-porteuses de credentials relay valides, et est aussi renvoyee directement dans la
-reponse `/enroll` (`llmApiKey` / `llmBaseUrl` / `llmKeyExpiresAt`). Elle expire et
-peut etre revoquee par un admin : le device doit alors se re-enroler.
+porteuses de credentials relay valides. Elle expire et peut etre revoquee par un
+admin : le device doit alors se re-enroler.
 
 #### Acces restreint
 
