@@ -615,12 +615,9 @@ def _load_config_template(profile: str, device: str | None = None,
     return {"configVersion": 1, "config": {}}
 
 
-def _safe_path_join(base_dir: str, relative_path: str) -> str:
-    base_abs = os.path.abspath(base_dir)
-    candidate = os.path.abspath(os.path.join(base_abs, relative_path.lstrip("/")))
-    if candidate == base_abs or candidate.startswith(base_abs + os.sep):
-        return candidate
-    raise HTTPException(status_code=400, detail="Invalid path")
+# Jointure de chemin sûre : helper unifié (cf. app/pathsafe.py). Alias conservés
+# pour les appelants historiques.
+from app.pathsafe import safe_path_join as _safe_path_join, safe_segment as _safe_segment
 
 
 def _substitute_env_in_str(value: str) -> str:
@@ -2802,13 +2799,18 @@ async def api_plugin_deploy(slug: str, request: Request):
                 pass
 
             checksum = "sha256:" + hashlib.sha256(data).hexdigest()
-            filename = binary.filename or f"{slug}-{version}.oxt"
+            # Assainir chaque composant fourni par l'utilisateur avant de
+            # construire un chemin disque (filename d'upload, version détectée
+            # dans le package, device_type) — cf. app/pathsafe.py.
+            device_type = _safe_segment(device_type, "device_type")
+            version = _safe_segment(version, "version")
+            filename = _safe_segment(binary.filename or f"{slug}-{version}.oxt", "filename")
             rel_path = f"{device_type}/{version}_{filename}"
 
             # Store locally (API pod cache)
             _binaries_base = settings.local_binaries_dir
-            os.makedirs(os.path.join(_binaries_base, device_type), exist_ok=True)
-            full_path = os.path.join(_binaries_base, rel_path)
+            os.makedirs(_safe_path_join(_binaries_base, device_type), exist_ok=True)
+            full_path = _safe_path_join(_binaries_base, rel_path)
             with open(full_path, "wb") as f:
                 f.write(data)
 

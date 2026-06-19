@@ -27,6 +27,7 @@ from .auth import (
     CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, REQUIRED_GROUP,
 )
 from .helpers import audit_log, get_db_connection, timeago, span_label
+from app.pathsafe import safe_path_join, safe_segment
 
 from .services import (
     devices as devices_svc,
@@ -758,11 +759,16 @@ async def artifact_upload(request: Request,
 
     checksum = artifacts_svc.compute_checksum(data)
 
-    # Store locally + push to DM API pods
+    # Store locally + push to DM API pods. Assainir chaque composant
+    # utilisateur (device_type, version, filename) avant de construire le
+    # chemin disque — cf. app/pathsafe.py.
     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    rel_path = f"{device_type}/{version}_{binary.filename}"
-    os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
-    local_path = f"{binaries_dir}/{rel_path}"
+    device_type = safe_segment(device_type, "device_type")
+    version = safe_segment(version, "version")
+    filename = safe_segment(binary.filename or f"upload-{version}.oxt", "filename")
+    rel_path = f"{device_type}/{version}_{filename}"
+    os.makedirs(safe_path_join(binaries_dir, device_type), exist_ok=True)
+    local_path = safe_path_join(binaries_dir, rel_path)
     with open(local_path, "wb") as f:
         f.write(data)
 
@@ -1480,7 +1486,11 @@ async def api_upload_chunk(request: Request,
     if not upload_id:
         upload_id = uuid.uuid4().hex[:16]
 
-    upload_dir = os.path.join(_CHUNK_DIR, upload_id)
+    # Défense en profondeur : upload_id est réémis par le client aux chunks
+    # suivants, donc contrôlé par l'utilisateur — valider avant de l'utiliser
+    # comme nom de répertoire (cf. app/pathsafe.py).
+    upload_id = safe_segment(upload_id, "upload_id")
+    upload_dir = safe_path_join(_CHUNK_DIR, upload_id)
     os.makedirs(upload_dir, exist_ok=True)
 
     # Save chunk
@@ -2438,17 +2448,24 @@ async def catalog_version_upload(request: Request, plugin_id: int):
             plugin = catalog_svc.get_plugin(cur, plugin_id)
             if not plugin:
                 raise HTTPException(404, "Plugin introuvable")
-            device_type = plugin.get("device_type", "libreoffice")
-            _slug = plugin.get("slug", "plugin")
-
-            binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+            # Assainir tous les composants du chemin (device_type/slug issus de
+            # la DB, version/platform_variant fournis par l'utilisateur,
+            # extension dérivée du filename d'upload) — cf. app/pathsafe.py.
+            import re as _re
+            device_type = safe_segment(plugin.get("device_type", "libreoffice"), "device_type")
+            _slug = safe_segment(plugin.get("slug", "plugin"), "slug")
+            version = safe_segment(version, "version")
             _ext = os.path.splitext(bin_filename or "")[1] or ".oxt"
+            if not _re.fullmatch(r"\.[A-Za-z0-9._+-]+", _ext):
+                _ext = ".oxt"
             # Variant-aware filename so multiple binaries of the same version
             # (e.g. chromium + gecko × cibles) ne s'écrasent pas sur disque.
-            _suffix = f"-{platform_variant}" if platform_variant else ""
+            _suffix = f"-{safe_segment(platform_variant, 'platform_variant')}" if platform_variant else ""
+
+            binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
             rel_path = f"{device_type}/{_slug}-{version}{_suffix}{_ext}"
-            os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
-            local_path = f"{binaries_dir}/{rel_path}"
+            os.makedirs(safe_path_join(binaries_dir, device_type), exist_ok=True)
+            local_path = safe_path_join(binaries_dir, rel_path)
             with open(local_path, "wb") as f:
                 f.write(data)
 
@@ -3234,9 +3251,7 @@ async def admin_files_upload(request: Request, path: str, file: UploadFile = Fil
     if not _files_token_check(request):
         raise HTTPException(403, "Invalid token")
     base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    full = os.path.normpath(os.path.join(base, path))
-    if not full.startswith(os.path.normpath(base)):
-        raise HTTPException(400, "Invalid path")
+    full = safe_path_join(base, path)
     os.makedirs(os.path.dirname(full), exist_ok=True)
     data = await file.read()
     with open(full, "wb") as f:
@@ -3250,9 +3265,7 @@ async def admin_files_get(request: Request, path: str):
     if not _files_token_check(request):
         raise HTTPException(403, "Invalid token")
     base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    full = os.path.normpath(os.path.join(base, path))
-    if not full.startswith(os.path.normpath(base)):
-        raise HTTPException(400, "Invalid path")
+    full = safe_path_join(base, path)
     if not os.path.isfile(full):
         raise HTTPException(404, "File not found")
     return FileResponse(full)
@@ -3264,9 +3277,7 @@ async def admin_files_list(request: Request, prefix: str = ""):
     if not _files_token_check(request):
         raise HTTPException(403, "Invalid token")
     base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    target = os.path.normpath(os.path.join(base, prefix)) if prefix else base
-    if not target.startswith(os.path.normpath(base)):
-        raise HTTPException(400, "Invalid path")
+    target = safe_path_join(base, prefix) if prefix else base
     if not os.path.isdir(target):
         return JSONResponse({"files": []})
     result = []
@@ -3625,11 +3636,12 @@ def _human_size(size_bytes: int) -> str:
 
 
 def _safe_resolve(root: Path, subpath: str) -> Path:
-    """Resolve subpath under root, preventing directory traversal."""
-    resolved = (root / subpath).resolve()
-    if not str(resolved).startswith(str(root.resolve())):
-        raise HTTPException(403, "Acces interdit")
-    return resolved
+    """Resolve subpath under root, preventing directory traversal.
+
+    Délègue à la jointure de chemin unifiée (cf. app/pathsafe.py) qui résout les
+    symlinks et teste la frontière sur le séparateur.
+    """
+    return Path(safe_path_join(str(root), subpath))
 
 
 def _list_dir(directory: Path) -> list[dict]:
