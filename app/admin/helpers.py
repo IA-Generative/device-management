@@ -33,6 +33,19 @@ def audit_log(cur, *, actor: dict, action: str, resource_type: str,
         json.dumps(payload) if payload else None,
         ip, ua
     ))
+    # Émet aussi l'entrée d'audit sur stdout (visible via `kubectl logs` / SIEM).
+    # La table admin_audit_log reste la source de vérité ; ce log assure qu'une
+    # action laisse une trace même si elle n'est consultée qu'au fil de l'eau.
+    # Aucune valeur sensible (payload) n'est journalisée ici.
+    logger.info(
+        "audit action=%s actor=%s sub=%s resource=%s id=%s ip=%s",
+        action,
+        actor.get("email", "unknown"),
+        actor.get("sub", "unknown"),
+        resource_type,
+        resource_id,
+        ip,
+    )
 
 
 def timeago(dt) -> str:

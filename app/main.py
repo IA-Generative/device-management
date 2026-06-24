@@ -6,6 +6,7 @@ import os
 import re
 import socket
 import ssl
+import sys
 import threading
 import time
 import uuid
@@ -69,6 +70,38 @@ from .services.db import (
 
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
+
+
+# ---- Logging: configuration applicative + filtrage des sondes de santé -------
+# Sous uvicorn (lancement CLI du conteneur), le logger racine n'a pas de handler :
+# les logs applicatifs `logger.info(...)` (dont l'audit) sont avalés. On installe
+# un handler stdout (niveau LOG_LEVEL, défaut INFO) pour qu'ils soient visibles
+# dans `kubectl logs` / le SIEM. On attache aussi HealthProbeFilter à
+# `uvicorn.access` pour ne pas saturer les logs avec /livez & /healthz, tout en
+# émettant un récap horaire des lignes filtrées (preuve que le filtrage est actif).
+def _configure_logging() -> None:
+    from .logfilters import HealthProbeFilter
+
+    level_name = os.getenv("LOG_LEVEL", "info").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root = logging.getLogger()
+    if not any(getattr(h, "_dm_stdout", False) for h in root.handlers):
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+        )
+        handler._dm_stdout = True  # type: ignore[attr-defined]
+        root.addHandler(handler)
+    root.setLevel(level)
+    for name in ("device-management", "dm-admin", "dm-admin-router", "dm-admin-auth"):
+        logging.getLogger(name).setLevel(level)
+
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(type(f).__name__ == "HealthProbeFilter" for f in access_logger.filters):
+        access_logger.addFilter(HealthProbeFilter())
+
+
+_configure_logging()
 
 # --- Vérification TLS des appels sortants (satellites HTTPS auto-signés) -----
 # DM_TLS_VERIFY=false → désactive la vérif TLS pour les appels SERVEUR :

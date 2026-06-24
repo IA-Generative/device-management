@@ -1551,10 +1551,52 @@ def _reassemble_upload(upload_id: str) -> tuple[bytes, str] | None:
 @router.post("/api/catalog/suggest")
 @require_admin
 async def api_catalog_suggest(request: Request):
-    """Use LLM to suggest catalog fields from README and/or plugin content."""
-    import urllib.request as urlreq
-    import zipfile
-    import io
+    """Use LLM to suggest catalog fields from README and/or plugin content.
+
+    Durci (audit Advens) : I/O réseau non bloquantes (httpx async) et parsing
+    zip déporté en threadpool — l'event-loop ne gèle plus, donc la liveness
+    probe /livez reste répondante même sous charge (plus de kill 137). Anti-SSRF
+    sur readme_url, bornes anti zip-bomb, parsing LLM défensif sans fuite, rate
+    limit optionnel, et audit de l'endpoint.
+    """
+    import base64 as _b64
+    from starlette.concurrency import run_in_threadpool
+    from .suggest_utils import (
+        validate_public_url, parse_plugin_zip, extract_suggestion_json,
+        sanitize_suggestion, rate_limit_ok, MAX_README_BYTES,
+    )
+
+    def _tls_verify() -> bool:
+        return os.getenv("DM_TLS_VERIFY", "true").strip().lower() not in ("false", "0", "no", "off")
+
+    # Anti-matraquage (OFF par défaut ; activable via DM_RATELIMIT_ENABLED)
+    client_ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                 or (request.client.host if request.client else "unknown"))
+    if settings.ratelimit_enabled and not rate_limit_ok(
+        f"suggest:{client_ip}", settings.ratelimit_suggest_per_min, 60
+    ):
+        return JSONResponse({"error": "Trop de requêtes, réessayez plus tard"}, status_code=429)
+
+    actor = getattr(request.state, "admin_session", {}) or {}
+
+    def _icon_data_url(icon_data, icon_filename):
+        ext = icon_filename.rsplit(".", 1)[-1].lower()
+        mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "svg": "image/svg+xml", "webp": "image/webp"}.get(ext, "image/png")
+        return f"data:{mime};base64,{_b64.b64encode(icon_data).decode()}"
+
+    def _audit(source: str):
+        try:
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    audit_log(cur, actor=actor, action="catalog.suggest",
+                              resource_type="catalog", resource_id=source, ip=client_ip)
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:  # l'audit ne doit jamais casser la réponse
+            logger.warning("audit catalog.suggest failed: %s", e)
 
     form = await request.form()
     texts = []
@@ -1565,85 +1607,36 @@ async def api_catalog_suggest(request: Request):
         data = await readme_file.read()
         texts.append(f"=== README ({readme_file.filename}) ===\n" + data.decode("utf-8", errors="replace")[:15000])
 
-    # 2. README from URL
+    # 2. README from URL — anti-SSRF (valide la cible) + fetch async borné
     readme_url = str(form.get("readme_url", "")).strip()
     if readme_url:
+        safe_url = validate_public_url(readme_url)  # lève 400 si interne/scheme interdit
         try:
-            with urlreq.urlopen(readme_url, timeout=10) as r:
-                content = r.read().decode("utf-8", errors="replace")[:15000]
-            texts.append("=== README (URL) ===\n" + content)
-        except Exception as e:
-            texts.append(f"=== README URL error: {e} ===")
+            async with httpx.AsyncClient(verify=_tls_verify(), timeout=10,
+                                         follow_redirects=False) as client:
+                resp = await client.get(safe_url)
+            texts.append("=== README (URL) ===\n" + resp.text[:15000])
+        except Exception:
+            texts.append("=== README URL error ===")  # pas de détail interne reflété
 
-    # 3. Plugin file — extract manifest/description from ZIP
-    has_readme = False
-    has_manifest = False
-    dm_manifest = None
-    oxt_version = ""
-    oxt_identifier = ""
-    icon_data = None
-    icon_filename = None
+    # 3. Plugin file — parsing zip borné, déporté hors event-loop
     plugin_file = form.get("plugin_file")
+    parsed: dict = {}
     if plugin_file and getattr(plugin_file, "filename", None):
         pdata = await plugin_file.read()
-        extracted = []
-        interesting_files = {
-            "manifest.json", "description.xml", "package.json",
-            "readme.md", "readme.txt", "readme", "readme.rst",
-            "notice-utilisateur.md", "notice-utilisateur.txt",
-            "notice_utilisateur.md", "notice_utilisateur.txt",
-            "changelog.md", "changelog.txt", "changes.md", "history.md",
-            "dm-config.json", "dm_config.json",
-            "dm-manifest.json", "dm_manifest.json",
-        }
-        icon_basenames = {"logo.png", "icon128.png", "icon48.png"}
-        config_template = None
-        has_config_template = False
-        try:
-            with zipfile.ZipFile(io.BytesIO(pdata)) as zf:
-                for name in zf.namelist():
-                    basename = name.rsplit("/", 1)[-1].lower()
-                    # Extract icon from assets/ directory
-                    if basename in icon_basenames and "assets/" in name.lower():
-                        icon_data = zf.read(name)
-                        icon_filename = basename
-                        continue
-                    if basename in interesting_files:
-                        raw = zf.read(name).decode("utf-8", errors="replace")
-                        if basename in ("dm-config.json", "dm_config.json"):
-                            try:
-                                config_template = json.loads(raw)
-                                has_config_template = True
-                            except json.JSONDecodeError:
-                                pass
-                        elif basename in ("dm-manifest.json", "dm_manifest.json"):
-                            try:
-                                dm_manifest = json.loads(raw)
-                                has_manifest = True
-                            except json.JSONDecodeError:
-                                pass
-                        elif basename == "description.xml":
-                            try:
-                                import xml.etree.ElementTree as ET
-                                root = ET.fromstring(raw)
-                                ns = {"d": "http://openoffice.org/extensions/description/2006"}
-                                ver_el = root.find(".//d:version", ns)
-                                if ver_el is not None:
-                                    oxt_version = ver_el.get("value", "")
-                                ident_el = root.find(".//d:identifier", ns)
-                                if ident_el is not None:
-                                    oxt_identifier = ident_el.get("value", "")
-                            except Exception:
-                                pass
-                            extracted.append(f"--- {name} ---\n{raw[:8000]}")
-                        else:
-                            extracted.append(f"--- {name} ---\n{raw[:8000]}")
-                            if basename.startswith(("readme", "notice")):
-                                has_readme = True
-        except zipfile.BadZipFile:
-            pass
-        if extracted:
-            texts.append(f"=== Plugin ({plugin_file.filename}) ===\n" + "\n\n".join(extracted))
+        parsed = await run_in_threadpool(parse_plugin_zip, pdata)
+        if parsed.get("extracted"):
+            texts.append(f"=== Plugin ({plugin_file.filename}) ===\n" + "\n\n".join(parsed["extracted"]))
+
+    has_readme = parsed.get("has_readme", False)
+    has_manifest = parsed.get("has_manifest", False)
+    has_config_template = parsed.get("has_config_template", False)
+    dm_manifest = parsed.get("dm_manifest")
+    config_template = parsed.get("config_template")
+    oxt_version = parsed.get("oxt_version", "")
+    oxt_identifier = parsed.get("oxt_identifier", "")
+    icon_data = parsed.get("icon_data")
+    icon_filename = parsed.get("icon_filename")
 
     # If dm-manifest.json found, use it directly as suggestion (skip LLM)
     if has_manifest and dm_manifest:
@@ -1674,23 +1667,17 @@ async def api_catalog_suggest(request: Request):
             suggestion["oxt_identifier"] = oxt_identifier
         if config_template:
             suggestion["config_template"] = config_template
-        # Store icon as base64 data URL (no shared filesystem needed)
         if icon_data and icon_filename:
-            import base64 as _b64
-            ext = icon_filename.rsplit(".", 1)[-1].lower()
-            mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-                    "svg": "image/svg+xml", "webp": "image/webp"}.get(ext, "image/png")
-            data_url = f"data:{mime};base64,{_b64.b64encode(icon_data).decode()}"
-            suggestion["icon_url"] = data_url
-            suggestion["icon_data_url"] = data_url
-        return JSONResponse(suggestion)
+            suggestion["icon_url"] = suggestion["icon_data_url"] = _icon_data_url(icon_data, icon_filename)
+        _audit("dm-manifest.json")
+        return JSONResponse(sanitize_suggestion(suggestion))
 
     if not texts:
         return JSONResponse({"error": "Aucune source fournie"}, status_code=400)
 
     combined = "\n\n".join(texts)[:20000]
 
-    # Call LLM (OpenAI-compatible)
+    # Call LLM (OpenAI-compatible) — async, non bloquant
     llm_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
     llm_token = os.getenv("LLM_API_TOKEN", "")
     llm_model = os.getenv("DEFAULT_MODEL_NAME", "gpt-oss-120b")
@@ -1698,7 +1685,7 @@ async def api_catalog_suggest(request: Request):
     if not llm_url or not llm_token:
         return JSONResponse({"error": "LLM non configure (LLM_BASE_URL / LLM_API_TOKEN)"}, status_code=503)
 
-    payload = json.dumps({
+    payload = {
         "model": llm_model,
         "messages": [
             {"role": "system", "content": LLM_SUGGEST_PROMPT},
@@ -1706,47 +1693,32 @@ async def api_catalog_suggest(request: Request):
         ],
         "temperature": 0.2,
         "max_tokens": 2000,
-    }).encode()
-
-    req = urlreq.Request(
-        f"{llm_url}/chat/completions",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {llm_token}",
-        },
-    )
+    }
     try:
-        with urlreq.urlopen(req, timeout=30) as r:
-            result = json.loads(r.read())
+        async with httpx.AsyncClient(verify=_tls_verify(), timeout=30) as client:
+            r = await client.post(f"{llm_url}/chat/completions", json=payload,
+                                  headers={"Authorization": f"Bearer {llm_token}"})
+            r.raise_for_status()
+            result = r.json()
         content = result["choices"][0]["message"]["content"]
-        # Extract JSON from response (handle markdown code blocks)
-        if "```" in content:
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        suggestion = json.loads(content.strip())
-        suggestion["_has_readme"] = has_readme
-        suggestion["_has_config_template"] = has_config_template
-        if oxt_version:
-            suggestion["oxt_version"] = oxt_version
-        if oxt_identifier:
-            suggestion["oxt_identifier"] = oxt_identifier
-        if config_template:
-            suggestion["config_template"] = config_template
-        # Store icon as base64 data URL (even for LLM path)
-        if icon_data and icon_filename:
-            import base64 as _b64
-            ext = icon_filename.rsplit(".", 1)[-1].lower()
-            mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-                    "svg": "image/svg+xml", "webp": "image/webp"}.get(ext, "image/png")
-            data_url = f"data:{mime};base64,{_b64.b64encode(icon_data).decode()}"
-            suggestion["icon_url"] = data_url
-            suggestion["icon_data_url"] = data_url
-        return JSONResponse(suggestion)
+        suggestion = extract_suggestion_json(content)  # défensif, jamais d'IndexError
     except Exception as e:
-        logger.error("LLM suggest failed: %s", e)
-        return JSONResponse({"error": f"Erreur LLM: {e}"}, status_code=502)
+        # Détail en log (côté serveur), message GÉNÉRIQUE au client (anti fuite).
+        logger.warning("LLM suggest failed: %s", e)
+        return JSONResponse({"error": "Réponse du modèle invalide ou indisponible"}, status_code=502)
+
+    suggestion["_has_readme"] = has_readme
+    suggestion["_has_config_template"] = has_config_template
+    if oxt_version:
+        suggestion["oxt_version"] = oxt_version
+    if oxt_identifier:
+        suggestion["oxt_identifier"] = oxt_identifier
+    if config_template:
+        suggestion["config_template"] = config_template
+    if icon_data and icon_filename:
+        suggestion["icon_url"] = suggestion["icon_data_url"] = _icon_data_url(icon_data, icon_filename)
+    _audit("llm")
+    return JSONResponse(sanitize_suggestion(suggestion))
 
 
 @router.post("/catalog/purge-removed")

@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     uvicorn_access_log: bool = Field(default=False)
     uvicorn_timeout_keep_alive: int = Field(default=10)
 
+    # Rate limiting léger (en mémoire, par IP). OFF par défaut pour ne rien
+    # casser ; à activer via DM_RATELIMIT_ENABLED sur les environnements exposés.
+    ratelimit_enabled: bool = Field(default=False)
+    ratelimit_suggest_per_min: int = Field(default=30)
+
     # Config endpoint
     config_enabled: bool = Field(default=True)
     app_env: str = Field(default="dev")
