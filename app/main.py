@@ -186,8 +186,8 @@ async def security_headers(request: Request, call_next):
 
 # ---- Security boot gate (IMM-1/IMM-6): refuse to start a prod-like deployment
 # that still carries insecure defaults.
-_DEFAULT_ADMIN_SESSION_SECRET = "changeme-dev-only"
-_DEFAULT_RELAY_SECRET_PEPPER = "change-me-relay-pepper"
+_DEFAULT_ADMIN_SESSION_SECRET = "changeme-dev-only"  # nosec B105: défaut volontaire, le code refuse/averti en prod
+_DEFAULT_RELAY_SECRET_PEPPER = "change-me-relay-pepper"  # nosec B105: défaut volontaire, le code refuse/averti en prod
 _PROD_LIKE_ENVS = {"prod", "production", "staging"}
 
 
@@ -1093,7 +1093,7 @@ def _build_update_directive(
         if stages:
             current_percent = _get_current_rollout_percent(campaign, stages)
             if current_percent < 100:
-                device_hash = int(hashlib.md5(client_uuid.encode()).hexdigest()[:8], 16) % 100
+                device_hash = int(hashlib.md5(client_uuid.encode(), usedforsecurity=False).hexdigest()[:8], 16) % 100
                 if device_hash >= current_percent:
                     return None  # Not yet eligible for this rollout stage
 
@@ -1529,7 +1529,7 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
             config_obj["keycloakTokenEndpoint"] = f"{public_base}/auth/token"
             config_obj["keycloakUserinfoEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/userinfo"
 
-    token = ""
+    token = ""  # nosec B105: valeur vide par défaut, pas un secret
     expires_at: int | None = None
     if settings.telemetry_enabled and settings.telemetry_authorization_type.lower() == "bearer":
         token, expires_at = _mint_telemetry_token(device=device, profile=profile)
@@ -4365,7 +4365,7 @@ if __name__ == "__main__":
             workers = 1
         uvicorn.run(
             "app.main:app",
-            host=os.getenv("HOST", "0.0.0.0"),
+            host=os.getenv("HOST", "0.0.0.0"),  # nosec B104: bind 0.0.0.0 volontaire (service conteneurisé)
             port=_get_port(),
             reload=reload_enabled,
             workers=workers,

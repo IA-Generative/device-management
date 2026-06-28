@@ -2807,8 +2807,8 @@ async def catalog_env_upsert(request: Request, plugin_id: int,
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (plugin_id, environment, key)
                 DO UPDATE SET value = %s, is_secret = %s, updated_at = NOW()
-            """, (plugin_id, environment, key, value, is_secret == "on",
-                  value, is_secret == "on"))
+            """, (plugin_id, environment, key, value, is_secret == "on",  # nosec B105: "on" = valeur de checkbox, pas un secret
+                  value, is_secret == "on"))  # nosec B105: idem (valeur répétée pour l'UPSERT)
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="env.override.upsert",
                       resource_type="plugin", resource_id=str(plugin_id),
@@ -3415,6 +3415,7 @@ async def api_adoption(request: Request, period: str = "1M"):
 async def debug_page(request: Request):
     """Full debug page with all service health checks."""
     import concurrent.futures
+    import platform
     import socket
     import time as _time
     import urllib.error as urllib_error
@@ -3538,7 +3539,7 @@ async def debug_page(request: Request):
     # System
     system_info = {
         "hostname": socket.gethostname(),
-        "python": os.popen("python3 --version 2>&1").read().strip(),
+        "python": platform.python_version(),
         "uptime": "N/A",
     }
 
