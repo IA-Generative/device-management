@@ -4,15 +4,15 @@ target-version = "py311"
 extend-exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
-# E/F: pyflakes+pycodestyle, B: bugbear, S: bandit-style, UP: pyupgrade.
-select = ["E", "F", "B", "S", "UP", "I"]
+# E/F: pyflakes+pycodestyle, B: bugbear, UP: pyupgrade, I: isort.
+# Security (bandit-style "S") is owned by the dedicated Bandit job below
+# (its own config/skips) — running both duplicates findings with conflicting
+# suppression syntaxes (# noqa vs # nosec), so we keep a single SAST source.
+select = ["E", "F", "B", "UP", "I"]
 ignore = [
     "E501",   # line length handled by formatter, not blocking
     "B008",   # FastAPI uses callables in defaults (Depends/Form)
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101"]  # asserts are expected in tests
 
 [tool.bandit]
 # Skip asserts (B101) project-wide; the security-sensitive checks remain on.
