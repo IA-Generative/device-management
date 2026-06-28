@@ -299,6 +299,19 @@ def applied_generation() -> int:
     return _applied_generation
 
 
+def editing_enabled() -> bool:
+    """Kill-switch (default on): set DM_RUNTIME_CONFIG_EDITABLE=false to freeze edits."""
+    return os.getenv("DM_RUNTIME_CONFIG_EDITABLE", "true").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def to_stored_value(spec: "ConfigKeySpec", py: Any) -> str:
+    """Canonical string stored in config_overrides.value (before encryption)."""
+    if spec.type == "list":
+        return json.dumps(_parse_list(py))
+    return _to_env_str(py, spec.type)
+
+
 def wait_until_ready(timeout: float) -> bool:
     """Block up to `timeout` seconds for the first successful config load."""
     deadline = time.monotonic() + timeout
@@ -446,7 +459,12 @@ def enroll(conn, role: str | None) -> None:
 
 
 def heartbeat(conn, role: str | None) -> None:
-    """Refresh heartbeat + health + applied generation (does not touch restart_count)."""
+    """Refresh heartbeat + health + applied generation (does not touch restart_count).
+
+    If our row was reaped while we are still alive (transient DB loss longer than
+    the TTL), the UPDATE matches nothing — fall back to enroll so the pod
+    reappears in the fleet on its next tick.
+    """
     ident = _pod_identity(role)
     h = health.read_health()
     with conn.cursor() as cur:
@@ -468,6 +486,27 @@ def heartbeat(conn, role: str | None) -> None:
              h["rss_bytes"], h["mem_limit_bytes"], h["load1"], h["cpu_count"],
              h["requests_total"], ident["pod_name"]),
         )
+        updated = cur.rowcount
+    if not updated:
+        enroll(conn, role)
+
+
+def _pod_ttl_seconds() -> int:
+    """A pod silent longer than this is considered gone and reaped from the fleet."""
+    try:
+        return max(60, int(os.getenv("DM_CONFIG_POD_TTL_SECONDS", "600")))
+    except ValueError:
+        return 600
+
+
+def reap_stale_pods(conn) -> int:
+    """Delete pods whose heartbeat is older than the TTL. Returns rows removed."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM config_pod_state "
+            "WHERE last_heartbeat_at < now() - (%s || ' seconds')::interval",
+            (str(_pod_ttl_seconds()),))
+        return cur.rowcount
 
 
 # ── Background loops ──────────────────────────────────────────────────────
@@ -516,6 +555,10 @@ def run_config_sync_loop(stop_event: threading.Event, role: str | None = None) -
     """Per-pod loop: poll generation, reload on change, enroll/heartbeat. Resilient."""
     snapshot_baseline()
     enrolled = False
+    # Stale-pod GC runs only on the admin/all role (single writer) and at most
+    # once per minute, so it never races across the fleet.
+    reaper_role = (role or "").strip().lower() in ("admin", "all")
+    last_reap = 0.0
     logger.info("config sync loop started (role=%s)", role)
     while not stop_event.is_set():
         try:
@@ -531,6 +574,11 @@ def run_config_sync_loop(stop_event: threading.Event, role: str | None = None) -
                     enrolled = True
                 else:
                     heartbeat(conn, role)
+                if reaper_role and (time.monotonic() - last_reap) > 60:
+                    removed = reap_stale_pods(conn)
+                    last_reap = time.monotonic()
+                    if removed:
+                        logger.info("reaped %d stale pod(s) from fleet", removed)
         except Exception as exc:
             logger.warning("config sync loop iteration failed: %s", exc)
             _reset_loop_conn()
