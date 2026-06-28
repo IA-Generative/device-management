@@ -23,7 +23,7 @@ def list_clients(cur, realm: str = None) -> list[dict]:
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     cur.execute(f"SELECT * FROM keycloak_clients {where} ORDER BY client_id", params)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_client(cur, client_db_id: int) -> dict | None:
@@ -32,7 +32,7 @@ def get_client(cur, client_db_id: int) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def create_client(cur, *, client_id: str, realm: str, description: str = "",
@@ -109,4 +109,4 @@ def get_plugin_clients(cur, plugin_id: int) -> list[dict]:
         ORDER BY pkc.environment
     """, (plugin_id,))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]

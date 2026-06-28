@@ -21,7 +21,7 @@ def list_artifacts(cur) -> list[dict]:
         ORDER BY a.released_at DESC
     """)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_artifact(cur, artifact_id: int) -> dict | None:
@@ -34,7 +34,7 @@ def get_artifact(cur, artifact_id: int) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def validate_upload(filename: str, content_length: int) -> str | None:

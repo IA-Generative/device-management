@@ -31,7 +31,7 @@ def list_campaigns(cur, *, status: str = None, limit: int = 50,
         LIMIT %s OFFSET %s
     """, params)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_campaign(cur, campaign_id: int) -> dict | None:
@@ -49,7 +49,7 @@ def get_campaign(cur, campaign_id: int) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def get_campaign_stats(cur, campaign_id: int) -> dict:
@@ -92,7 +92,7 @@ def get_campaign_events(cur, campaign_id: int, limit: int = 20) -> list[dict]:
         LIMIT %s
     """, (campaign_id, limit))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def create_campaign(cur, *, name: str, description: str = "", type: str = "plugin_update",

@@ -77,7 +77,7 @@ def validate_public_url(url: str) -> str:
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except OSError:
-        raise HTTPException(400, "URL invalide : hôte non résolvable")
+        raise HTTPException(400, "URL invalide : hôte non résolvable") from None
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if (ip.is_private or ip.is_loopback or ip.is_link_local
@@ -182,7 +182,7 @@ def extract_suggestion_json(content: str) -> dict:
     except json.JSONDecodeError:
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if not m:
-            raise ValueError("aucun JSON exploitable dans la réponse LLM")
+            raise ValueError("aucun JSON exploitable dans la réponse LLM") from None
         obj = json.loads(m.group(0))  # JSONDecodeError est un ValueError
     if not isinstance(obj, dict):
         raise ValueError("réponse LLM non conforme (objet attendu)")

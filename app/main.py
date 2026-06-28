@@ -674,8 +674,8 @@ def _load_config_template(profile: str, device: str | None = None,
 
 # Jointure de chemin sûre : helper unifié (cf. app/pathsafe.py). Alias conservés
 # pour les appelants historiques.
-from app.pathsafe import safe_path_join as _safe_path_join
-from app.pathsafe import safe_segment as _safe_segment
+from app.pathsafe import safe_path_join as _safe_path_join  # noqa: E402 (alias historique placé près des appelants)
+from app.pathsafe import safe_segment as _safe_segment  # noqa: E402 (alias historique placé près des appelants)
 
 
 def _substitute_env_in_str(value: str) -> str:
@@ -751,20 +751,20 @@ def _verify_telemetry_token(token: str) -> dict:
     try:
         payload_b64, sig_b64 = token.split(".", 1)
     except ValueError:
-        raise HTTPException(status_code=401, detail="Malformed telemetry token.")
+        raise HTTPException(status_code=401, detail="Malformed telemetry token.") from None
 
     expected_sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
     try:
         provided_sig = _b64url_decode(sig_b64)
     except Exception:
-        raise HTTPException(status_code=401, detail="Malformed telemetry token signature.")
+        raise HTTPException(status_code=401, detail="Malformed telemetry token signature.") from None
     if not hmac.compare_digest(expected_sig, provided_sig):
         raise HTTPException(status_code=401, detail="Invalid telemetry token signature.")
 
     try:
         payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
     except Exception:
-        raise HTTPException(status_code=401, detail="Malformed telemetry token payload.")
+        raise HTTPException(status_code=401, detail="Malformed telemetry token payload.") from None
     if not isinstance(payload, dict):
         raise HTTPException(status_code=401, detail="Malformed telemetry token payload.")
 
@@ -1289,10 +1289,10 @@ def _verify_access_token(token: str) -> dict:
         )
     except PyJWTError as exc:
         logger.warning("JWT verification failed (PyJWTError): %s: %s", exc.__class__.__name__, exc)
-        raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
+        raise HTTPException(status_code=401, detail="Invalid PKCE access token.") from exc
     except Exception as exc:
         logger.warning("JWT verification failed with backend error: %s: %s", exc.__class__.__name__, exc)
-        raise HTTPException(status_code=503, detail="Access token verification service unavailable.")
+        raise HTTPException(status_code=503, detail="Access token verification service unavailable.") from exc
 
     if not isinstance(payload, dict):
         raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
@@ -1571,7 +1571,7 @@ def _forward_telemetry_to_upstream(body: bytes, *, content_type: str, user_agent
         response_ct = e.headers.get("Content-Type", "application/json")
         return Response(content=payload, status_code=e.code, headers={"Content-Type": response_ct})
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Telemetry upstream unreachable: {e!r}")
+        raise HTTPException(status_code=502, detail=f"Telemetry upstream unreachable: {e!r}") from e
 
 
 def _enqueue_telemetry_payload(
@@ -2661,7 +2661,7 @@ async def enroll(request: Request):
                 user_agent=user_agent,
             )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Cannot persist enroll payload: {e!r}")
+            raise HTTPException(status_code=500, detail=f"Cannot persist enroll payload: {e!r}") from e
 
     return JSONResponse(
         status_code=201,
@@ -3261,7 +3261,7 @@ def api_public_plugins():
                 GROUP BY p.id ORDER BY p.name
             """)
             cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
         maturity_labels = {"dev":"Dev","alpha":"Alpha","beta":"Beta","pre-release":"Pre-release","release":"Stable"}
         plugins = []
@@ -3320,7 +3320,7 @@ def api_public_plugin_detail(slug: str):
             if not row:
                 raise HTTPException(404)
             cols = [d[0] for d in cur.description]
-            p = dict(zip(cols, row))
+            p = dict(zip(cols, row, strict=False))
             # Latest version
             cur.execute("""
                 SELECT version, release_notes FROM plugin_versions
@@ -3479,7 +3479,10 @@ def ops_health_full():
     db_url = _db_url_bootstrap() or _db_url()
     if psycopg2 and db_url:
         def _db():
-            c = psycopg2.connect(db_url); c.cursor().execute("SELECT 1"); c.close(); return "ok"
+            c = psycopg2.connect(db_url)
+            c.cursor().execute("SELECT 1")
+            c.close()
+            return "ok"
         _do("postgres", _db)
 
     # Keycloak: probe the endpoint the app ACTUALLY uses for token validation —
@@ -3527,7 +3530,10 @@ def ops_metrics():
     db_ok = 0
     if psycopg2 and db_url:
         try:
-            c = psycopg2.connect(db_url); c.cursor().execute("SELECT 1"); c.close(); db_ok = 1
+            c = psycopg2.connect(db_url)
+            c.cursor().execute("SELECT 1")
+            c.close()
+            db_ok = 1
         except Exception:
             pass
     lines += ["# HELP dm_service_up Service health (1=ok, 0=error)", "# TYPE dm_service_up gauge",
@@ -3536,7 +3542,9 @@ def ops_metrics():
     # Business metrics
     if psycopg2 and db_url:
         try:
-            conn = psycopg2.connect(db_url); conn.autocommit = True; cur = conn.cursor()
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            cur = conn.cursor()
             cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM provisioning WHERE status='ENROLLED'")
             enrolled = cur.fetchone()[0]
             cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM device_connections WHERE created_at > NOW() - INTERVAL '7 days'")
@@ -3578,7 +3586,7 @@ def catalog_api_cors():
 
 # ─── Public Catalog HTML Pages ──────────────────────────────────────────
 
-from fastapi.templating import Jinja2Templates as _Jinja2Templates
+from fastapi.templating import Jinja2Templates as _Jinja2Templates  # noqa: E402 (import local à la section HTML)
 
 _catalog_templates = _Jinja2Templates(
     directory=os.path.join(os.path.dirname(__file__), "catalog", "templates")
@@ -3620,7 +3628,7 @@ def catalog_index(request: Request, category: str | None = None):
                 GROUP BY p.id ORDER BY p.name
             """)
             cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
         # Build category list and filter
         all_categories = sorted({r.get("category") or "" for r in rows} - {""})
@@ -4053,7 +4061,7 @@ def catalog_detail(request: Request, slug: str):
             if not row:
                 raise HTTPException(404, "Plugin introuvable")
             cols = [d[0] for d in cur.description]
-            p = dict(zip(cols, row))
+            p = dict(zip(cols, row, strict=False))
 
             cur.execute("""
                 SELECT version, release_notes FROM plugin_versions
@@ -4192,7 +4200,7 @@ def get_binary(path: str):
             )
             return RedirectResponse(url=url, status_code=302)
         except Exception as e:
-            raise HTTPException(status_code=404, detail=f"Binary not found or cannot presign: {e!r}")
+            raise HTTPException(status_code=404, detail=f"Binary not found or cannot presign: {e!r}") from e
 
     if settings.binaries_mode == "proxy":
         try:
@@ -4201,12 +4209,11 @@ def get_binary(path: str):
             content_type = obj.get("ContentType") or "application/octet-stream"
 
             def iterfile():
-                for chunk in iter(lambda: body_stream.read(1024 * 1024), b""):
-                    yield chunk
+                yield from iter(lambda: body_stream.read(1024 * 1024), b"")
 
             return StreamingResponse(iterfile(), media_type=content_type)
         except Exception as e:
-            raise HTTPException(status_code=404, detail=f"Binary not found: {e!r}")
+            raise HTTPException(status_code=404, detail=f"Binary not found: {e!r}") from e
 
     raise HTTPException(status_code=500, detail="Invalid DM_BINARIES_MODE (must be presign or proxy or local).")
 
@@ -4273,7 +4280,7 @@ async def keycloak_token_proxy(request: Request):
     try:
         form_data = base64.b64decode(encoded_payload)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64 in 'p' field")
+        raise HTTPException(status_code=400, detail="Invalid base64 in 'p' field") from None
 
     token_url = f"{_KEYCLOAK_TOKEN_UPSTREAM}/protocol/openid-connect/token"
 
