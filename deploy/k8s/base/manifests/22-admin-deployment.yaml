@@ -194,8 +194,11 @@ spec:
               port: 3001
             initialDelaySeconds: 10
             periodSeconds: 15
-            timeoutSeconds: 5
-            failureThreshold: 4
+            # Tolérance accrue (défense en profondeur) : évite un kill du pod si
+            # l'event-loop est momentanément occupé. Le vrai fix est le passage
+            # de /admin/api/catalog/suggest en I/O non bloquantes (httpx async).
+            timeoutSeconds: 10
+            failureThreshold: 6
       volumes:
         - name: admin-data
           persistentVolumeClaim:

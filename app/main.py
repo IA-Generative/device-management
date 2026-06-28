@@ -5,6 +5,8 @@ import logging
 import os
 import re
 import socket
+import ssl
+import sys
 import threading
 import time
 import uuid
@@ -68,6 +70,48 @@ from .services.db import (
 
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
+
+
+# ---- Logging: configuration applicative + filtrage des sondes de santé -------
+# Sous uvicorn (lancement CLI du conteneur), le logger racine n'a pas de handler :
+# les logs applicatifs `logger.info(...)` (dont l'audit) sont avalés. On installe
+# un handler stdout (niveau LOG_LEVEL, défaut INFO) pour qu'ils soient visibles
+# dans `kubectl logs` / le SIEM. On attache aussi HealthProbeFilter à
+# `uvicorn.access` pour ne pas saturer les logs avec /livez & /healthz, tout en
+# émettant un récap horaire des lignes filtrées (preuve que le filtrage est actif).
+def _configure_logging() -> None:
+    from .logfilters import HealthProbeFilter
+
+    level_name = os.getenv("LOG_LEVEL", "info").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root = logging.getLogger()
+    if not any(getattr(h, "_dm_stdout", False) for h in root.handlers):
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+        )
+        handler._dm_stdout = True  # type: ignore[attr-defined]
+        root.addHandler(handler)
+    root.setLevel(level)
+    for name in ("device-management", "dm-admin", "dm-admin-router", "dm-admin-auth"):
+        logging.getLogger(name).setLevel(level)
+
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(type(f).__name__ == "HealthProbeFilter" for f in access_logger.filters):
+        access_logger.addFilter(HealthProbeFilter())
+
+
+_configure_logging()
+
+# --- Vérification TLS des appels sortants (satellites HTTPS auto-signés) -----
+# DM_TLS_VERIFY=false → désactive la vérif TLS pour les appels SERVEUR :
+#   - httpx (relais token Keycloak, upstreams) via verify=_TLS_VERIFY
+#   - stdlib urllib/PyJWKClient via le contexte HTTPS par défaut non vérifié
+# INSECURE : réservé test/intégration (en prod, fournir la CA via SSL_CERT_FILE).
+_TLS_VERIFY = os.getenv("DM_TLS_VERIFY", "true").strip().lower() not in ("false", "0", "no", "off")
+if not _TLS_VERIFY:
+    ssl._create_default_https_context = ssl._create_unverified_context  # type: ignore[attr-defined]
+    logger.warning("DM_TLS_VERIFY=false : vérification TLS DÉSACTIVÉE (satellites auto-signés, INSECURE)")
 
 _RUNTIME_MODE = str(settings.runtime_mode or "api").strip().lower()
 
@@ -250,7 +294,7 @@ def _pull_binary_from_admin(s3_path: str) -> bool:
     url = f"{admin_url}/admin/api/files/{rel}"
     try:
         logger.info("pull_binary_from_admin: fetching %s", url)
-        resp = httpx.get(url, headers={"x-admin-token": token}, timeout=60, follow_redirects=True)
+        resp = httpx.get(url, headers={"x-admin-token": token}, timeout=60, follow_redirects=True, verify=_TLS_VERIFY)
         logger.info("pull_binary_from_admin: got %d (%d bytes)", resp.status_code, len(resp.content))
         if resp.status_code == 200 and resp.content:
             os.makedirs(os.path.dirname(s3_path), exist_ok=True)
@@ -604,12 +648,9 @@ def _load_config_template(profile: str, device: str | None = None,
     return {"configVersion": 1, "config": {}}
 
 
-def _safe_path_join(base_dir: str, relative_path: str) -> str:
-    base_abs = os.path.abspath(base_dir)
-    candidate = os.path.abspath(os.path.join(base_abs, relative_path.lstrip("/")))
-    if candidate == base_abs or candidate.startswith(base_abs + os.sep):
-        return candidate
-    raise HTTPException(status_code=400, detail="Invalid path")
+# Jointure de chemin sûre : helper unifié (cf. app/pathsafe.py). Alias conservés
+# pour les appelants historiques.
+from app.pathsafe import safe_path_join as _safe_path_join, safe_segment as _safe_segment
 
 
 def _substitute_env_in_str(value: str) -> str:
@@ -2791,13 +2832,18 @@ async def api_plugin_deploy(slug: str, request: Request):
                 pass
 
             checksum = "sha256:" + hashlib.sha256(data).hexdigest()
-            filename = binary.filename or f"{slug}-{version}.oxt"
+            # Assainir chaque composant fourni par l'utilisateur avant de
+            # construire un chemin disque (filename d'upload, version détectée
+            # dans le package, device_type) — cf. app/pathsafe.py.
+            device_type = _safe_segment(device_type, "device_type")
+            version = _safe_segment(version, "version")
+            filename = _safe_segment(binary.filename or f"{slug}-{version}.oxt", "filename")
             rel_path = f"{device_type}/{version}_{filename}"
 
             # Store locally (API pod cache)
             _binaries_base = settings.local_binaries_dir
-            os.makedirs(os.path.join(_binaries_base, device_type), exist_ok=True)
-            full_path = os.path.join(_binaries_base, rel_path)
+            os.makedirs(_safe_path_join(_binaries_base, device_type), exist_ok=True)
+            full_path = _safe_path_join(_binaries_base, rel_path)
             with open(full_path, "wb") as f:
                 f.write(data)
 
@@ -2813,6 +2859,7 @@ async def api_plugin_deploy(slug: str, request: Request):
                     _resp = httpx.put(
                         f"{_admin_url}/admin/api/files/upload/{rel_path}",
                         files=_files, headers={"x-admin-token": _admin_token}, timeout=30,
+                        verify=_TLS_VERIFY,
                     )
                     if _resp.status_code == 200:
                         logger.info("api_plugin_deploy: forwarded %s to admin pod", rel_path)
@@ -3521,7 +3568,7 @@ def catalog_index(request: Request, category: str | None = None):
     """Public HTML — plugin catalog grid."""
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
-        return _catalog_templates.TemplateResponse("catalog_index.html", {
+        return _catalog_templates.TemplateResponse(request, "catalog_index.html", {
             "request": request, "plugins": [], "categories": [], "current_category": None,
             "total_installs": 0,
         })
@@ -3582,7 +3629,7 @@ def catalog_index(request: Request, category: str | None = None):
                 "key_features": kf,
             })
         total_installs = sum(p.get("install_count", 0) for p in plugins)
-        return _catalog_templates.TemplateResponse("catalog_index.html", {
+        return _catalog_templates.TemplateResponse(request, "catalog_index.html", {
             "request": request, "plugins": plugins,
             "categories": all_categories, "current_category": category,
             "total_installs": total_installs,
@@ -4041,7 +4088,7 @@ def catalog_detail(request: Request, slug: str):
             "license": p.get("license"),
             "updated_at": updated_at,
         }
-        return _catalog_templates.TemplateResponse("catalog_detail.html", {
+        return _catalog_templates.TemplateResponse(request, "catalog_detail.html", {
             "request": request, "plugin": plugin, "file_ext": file_ext,
         })
     finally:
@@ -4205,7 +4252,7 @@ async def keycloak_token_proxy(request: Request):
 
     token_url = f"{_KEYCLOAK_TOKEN_UPSTREAM}/protocol/openid-connect/token"
 
-    async with httpx.AsyncClient(trust_env=True, timeout=30) as client:
+    async with httpx.AsyncClient(trust_env=True, timeout=30, verify=_TLS_VERIFY) as client:
         upstream_resp = await client.post(
             token_url,
             content=form_data,
@@ -4245,7 +4292,7 @@ async def relay_assistant_proxy(path: str, request: Request):
     # HTTPS_PROXY and routes through the corporate forward proxy.
     # DNS resolution of corporate hostnames (<SSO_HOSTNAME> etc.)
     # only works through the proxy's HTTP CONNECT tunnel.
-    async with httpx.AsyncClient(trust_env=True, timeout=30) as client:
+    async with httpx.AsyncClient(trust_env=True, timeout=30, verify=_TLS_VERIFY) as client:
         upstream_resp = await client.request(
             method=request.method,
             url=upstream_url,

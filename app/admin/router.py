@@ -27,6 +27,7 @@ from .auth import (
     CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, REQUIRED_GROUP,
 )
 from .helpers import audit_log, get_db_connection, timeago, span_label
+from app.pathsafe import safe_path_join, safe_segment
 
 from .services import (
     devices as devices_svc,
@@ -266,7 +267,7 @@ async def dashboard(request: Request):
             # Recent audit
             recent_audit = audit_svc.list_audit_entries(cur, limit=10)
 
-        return templates.TemplateResponse("dashboard.html", {
+        return templates.TemplateResponse(request, "dashboard.html", {
             "request": request,
             "metrics": metrics,
             "active_campaigns": active_campaigns,
@@ -342,7 +343,7 @@ async def devices_list(request: Request, owner: str = "", platform: str = "",
                 health=health or None, limit=50, offset=page * 50,
             )
         filters = {"owner": owner, "platform": platform, "health": health}
-        return templates.TemplateResponse("devices.html", {
+        return templates.TemplateResponse(request, "devices.html", {
             "request": request, "devices": device_list, "summary": summary,
             "filters": filters, "page": page, "timeago": timeago,
         })
@@ -392,7 +393,7 @@ async def device_detail(request: Request, client_uuid: str):
             connections = devices_svc.get_device_connections(cur, client_uuid)
             campaign_statuses = devices_svc.get_device_campaign_statuses(cur, client_uuid)
             device_flags = devices_svc.get_device_flags(cur, client_uuid, device.get("email"))
-        return templates.TemplateResponse("device_detail.html", {
+        return templates.TemplateResponse(request, "device_detail.html", {
             "request": request, "device": device,
             "connections": connections, "campaign_statuses": campaign_statuses,
             "device_flags": device_flags, "timeago": timeago,
@@ -469,7 +470,7 @@ async def cohorts_list(request: Request):
     try:
         with conn.cursor() as cur:
             cohort_list = cohorts_svc.list_cohorts(cur)
-        return templates.TemplateResponse("cohorts.html", {
+        return templates.TemplateResponse(request, "cohorts.html", {
             "request": request, "cohorts": cohort_list,
         })
     finally:
@@ -522,7 +523,7 @@ async def cohort_detail(request: Request, cohort_id: int):
             if not cohort:
                 raise HTTPException(404, "Cohorte non trouvee")
             members = cohorts_svc.get_cohort_members(cur, cohort_id)
-        return templates.TemplateResponse("cohort_edit.html", {
+        return templates.TemplateResponse(request, "cohort_edit.html", {
             "request": request, "cohort": cohort, "members": members,
         })
     finally:
@@ -599,7 +600,7 @@ async def flags_list(request: Request):
     try:
         with conn.cursor() as cur:
             flag_list = flags_svc.list_flags(cur)
-        return templates.TemplateResponse("feature_flags.html", {
+        return templates.TemplateResponse(request, "feature_flags.html", {
             "request": request, "flags": flag_list,
         })
     finally:
@@ -643,7 +644,7 @@ async def flag_detail(request: Request, flag_id: int):
                 raise HTTPException(404, "Feature flag non trouve")
             overrides = flags_svc.get_flag_overrides(cur, flag_id)
             cohort_list = cohorts_svc.list_cohorts(cur)
-        return templates.TemplateResponse("flag_detail.html", {
+        return templates.TemplateResponse(request, "flag_detail.html", {
             "request": request, "flag": flag, "overrides": overrides,
             "cohorts": cohort_list,
         })
@@ -732,7 +733,7 @@ async def artifacts_list(request: Request):
     try:
         with conn.cursor() as cur:
             artifact_list = artifacts_svc.list_artifacts(cur)
-        return templates.TemplateResponse("artifacts.html", {
+        return templates.TemplateResponse(request, "artifacts.html", {
             "request": request, "artifacts": artifact_list,
         })
     finally:
@@ -758,11 +759,16 @@ async def artifact_upload(request: Request,
 
     checksum = artifacts_svc.compute_checksum(data)
 
-    # Store locally + push to DM API pods
+    # Store locally + push to DM API pods. Assainir chaque composant
+    # utilisateur (device_type, version, filename) avant de construire le
+    # chemin disque — cf. app/pathsafe.py.
     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    rel_path = f"{device_type}/{version}_{binary.filename}"
-    os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
-    local_path = f"{binaries_dir}/{rel_path}"
+    device_type = safe_segment(device_type, "device_type")
+    version = safe_segment(version, "version")
+    filename = safe_segment(binary.filename or f"upload-{version}.oxt", "filename")
+    rel_path = f"{device_type}/{version}_{filename}"
+    os.makedirs(safe_path_join(binaries_dir, device_type), exist_ok=True)
+    local_path = safe_path_join(binaries_dir, rel_path)
     with open(local_path, "wb") as f:
         f.write(data)
 
@@ -822,7 +828,7 @@ async def campaigns_list(request: Request, status: str = ""):
     try:
         with conn.cursor() as cur:
             campaign_list = campaigns_svc.list_campaigns(cur, status=status or None)
-        return templates.TemplateResponse("campaigns.html", {
+        return templates.TemplateResponse(request, "campaigns.html", {
             "request": request, "campaigns": campaign_list,
             "filters": {"status": status},
         })
@@ -838,7 +844,7 @@ async def campaign_new_form(request: Request):
         with conn.cursor() as cur:
             artifact_list = artifacts_svc.list_artifacts(cur)
             cohort_list = cohorts_svc.list_cohorts(cur)
-        return templates.TemplateResponse("campaign_new.html", {
+        return templates.TemplateResponse(request, "campaign_new.html", {
             "request": request, "artifacts": artifact_list, "cohorts": cohort_list,
         })
     finally:
@@ -896,7 +902,7 @@ async def campaign_detail(request: Request, campaign_id: int):
                 raise HTTPException(404, "Campagne non trouvee")
             stats = campaigns_svc.get_campaign_stats(cur, campaign_id)
             events = campaigns_svc.get_campaign_events(cur, campaign_id)
-        return templates.TemplateResponse("campaign_detail.html", {
+        return templates.TemplateResponse(request, "campaign_detail.html", {
             "request": request, "campaign": campaign, "stats": stats, "events": events,
         })
     finally:
@@ -1007,7 +1013,7 @@ async def deploy_wizard(request: Request):
         with conn.cursor() as cur:
             cohort_list = cohorts_svc.list_cohorts(cur)
             artifact_list = artifacts_svc.list_artifacts(cur)
-        return templates.TemplateResponse("deploy_wizard.html", {
+        return templates.TemplateResponse(request, "deploy_wizard.html", {
             "request": request,
             "device_types": DEVICE_TYPES,
             "cohorts": cohort_list,
@@ -1327,7 +1333,7 @@ async def deploy_tracking(request: Request, campaign_id: int):
                     if row:
                         cols = [d[0] for d in cur.description]
                         plugin = dict(zip(cols, row))
-        return templates.TemplateResponse("deploy_wizard.html", {
+        return templates.TemplateResponse(request, "deploy_wizard.html", {
             "request": request,
             "mode": "tracking",
             "campaign": campaign,
@@ -1480,7 +1486,11 @@ async def api_upload_chunk(request: Request,
     if not upload_id:
         upload_id = uuid.uuid4().hex[:16]
 
-    upload_dir = os.path.join(_CHUNK_DIR, upload_id)
+    # Défense en profondeur : upload_id est réémis par le client aux chunks
+    # suivants, donc contrôlé par l'utilisateur — valider avant de l'utiliser
+    # comme nom de répertoire (cf. app/pathsafe.py).
+    upload_id = safe_segment(upload_id, "upload_id")
+    upload_dir = safe_path_join(_CHUNK_DIR, upload_id)
     os.makedirs(upload_dir, exist_ok=True)
 
     # Save chunk
@@ -1541,10 +1551,52 @@ def _reassemble_upload(upload_id: str) -> tuple[bytes, str] | None:
 @router.post("/api/catalog/suggest")
 @require_admin
 async def api_catalog_suggest(request: Request):
-    """Use LLM to suggest catalog fields from README and/or plugin content."""
-    import urllib.request as urlreq
-    import zipfile
-    import io
+    """Use LLM to suggest catalog fields from README and/or plugin content.
+
+    Durci (audit Advens) : I/O réseau non bloquantes (httpx async) et parsing
+    zip déporté en threadpool — l'event-loop ne gèle plus, donc la liveness
+    probe /livez reste répondante même sous charge (plus de kill 137). Anti-SSRF
+    sur readme_url, bornes anti zip-bomb, parsing LLM défensif sans fuite, rate
+    limit optionnel, et audit de l'endpoint.
+    """
+    import base64 as _b64
+    from starlette.concurrency import run_in_threadpool
+    from .suggest_utils import (
+        validate_public_url, parse_plugin_zip, extract_suggestion_json,
+        sanitize_suggestion, rate_limit_ok, MAX_README_BYTES,
+    )
+
+    def _tls_verify() -> bool:
+        return os.getenv("DM_TLS_VERIFY", "true").strip().lower() not in ("false", "0", "no", "off")
+
+    # Anti-matraquage (OFF par défaut ; activable via DM_RATELIMIT_ENABLED)
+    client_ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                 or (request.client.host if request.client else "unknown"))
+    if settings.ratelimit_enabled and not rate_limit_ok(
+        f"suggest:{client_ip}", settings.ratelimit_suggest_per_min, 60
+    ):
+        return JSONResponse({"error": "Trop de requêtes, réessayez plus tard"}, status_code=429)
+
+    actor = getattr(request.state, "admin_session", {}) or {}
+
+    def _icon_data_url(icon_data, icon_filename):
+        ext = icon_filename.rsplit(".", 1)[-1].lower()
+        mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "svg": "image/svg+xml", "webp": "image/webp"}.get(ext, "image/png")
+        return f"data:{mime};base64,{_b64.b64encode(icon_data).decode()}"
+
+    def _audit(source: str):
+        try:
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    audit_log(cur, actor=actor, action="catalog.suggest",
+                              resource_type="catalog", resource_id=source, ip=client_ip)
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:  # l'audit ne doit jamais casser la réponse
+            logger.warning("audit catalog.suggest failed: %s", e)
 
     form = await request.form()
     texts = []
@@ -1555,85 +1607,36 @@ async def api_catalog_suggest(request: Request):
         data = await readme_file.read()
         texts.append(f"=== README ({readme_file.filename}) ===\n" + data.decode("utf-8", errors="replace")[:15000])
 
-    # 2. README from URL
+    # 2. README from URL — anti-SSRF (valide la cible) + fetch async borné
     readme_url = str(form.get("readme_url", "")).strip()
     if readme_url:
+        safe_url = validate_public_url(readme_url)  # lève 400 si interne/scheme interdit
         try:
-            with urlreq.urlopen(readme_url, timeout=10) as r:
-                content = r.read().decode("utf-8", errors="replace")[:15000]
-            texts.append("=== README (URL) ===\n" + content)
-        except Exception as e:
-            texts.append(f"=== README URL error: {e} ===")
+            async with httpx.AsyncClient(verify=_tls_verify(), timeout=10,
+                                         follow_redirects=False) as client:
+                resp = await client.get(safe_url)
+            texts.append("=== README (URL) ===\n" + resp.text[:15000])
+        except Exception:
+            texts.append("=== README URL error ===")  # pas de détail interne reflété
 
-    # 3. Plugin file — extract manifest/description from ZIP
-    has_readme = False
-    has_manifest = False
-    dm_manifest = None
-    oxt_version = ""
-    oxt_identifier = ""
-    icon_data = None
-    icon_filename = None
+    # 3. Plugin file — parsing zip borné, déporté hors event-loop
     plugin_file = form.get("plugin_file")
+    parsed: dict = {}
     if plugin_file and getattr(plugin_file, "filename", None):
         pdata = await plugin_file.read()
-        extracted = []
-        interesting_files = {
-            "manifest.json", "description.xml", "package.json",
-            "readme.md", "readme.txt", "readme", "readme.rst",
-            "notice-utilisateur.md", "notice-utilisateur.txt",
-            "notice_utilisateur.md", "notice_utilisateur.txt",
-            "changelog.md", "changelog.txt", "changes.md", "history.md",
-            "dm-config.json", "dm_config.json",
-            "dm-manifest.json", "dm_manifest.json",
-        }
-        icon_basenames = {"logo.png", "icon128.png", "icon48.png"}
-        config_template = None
-        has_config_template = False
-        try:
-            with zipfile.ZipFile(io.BytesIO(pdata)) as zf:
-                for name in zf.namelist():
-                    basename = name.rsplit("/", 1)[-1].lower()
-                    # Extract icon from assets/ directory
-                    if basename in icon_basenames and "assets/" in name.lower():
-                        icon_data = zf.read(name)
-                        icon_filename = basename
-                        continue
-                    if basename in interesting_files:
-                        raw = zf.read(name).decode("utf-8", errors="replace")
-                        if basename in ("dm-config.json", "dm_config.json"):
-                            try:
-                                config_template = json.loads(raw)
-                                has_config_template = True
-                            except json.JSONDecodeError:
-                                pass
-                        elif basename in ("dm-manifest.json", "dm_manifest.json"):
-                            try:
-                                dm_manifest = json.loads(raw)
-                                has_manifest = True
-                            except json.JSONDecodeError:
-                                pass
-                        elif basename == "description.xml":
-                            try:
-                                import xml.etree.ElementTree as ET
-                                root = ET.fromstring(raw)
-                                ns = {"d": "http://openoffice.org/extensions/description/2006"}
-                                ver_el = root.find(".//d:version", ns)
-                                if ver_el is not None:
-                                    oxt_version = ver_el.get("value", "")
-                                ident_el = root.find(".//d:identifier", ns)
-                                if ident_el is not None:
-                                    oxt_identifier = ident_el.get("value", "")
-                            except Exception:
-                                pass
-                            extracted.append(f"--- {name} ---\n{raw[:8000]}")
-                        else:
-                            extracted.append(f"--- {name} ---\n{raw[:8000]}")
-                            if basename.startswith(("readme", "notice")):
-                                has_readme = True
-        except zipfile.BadZipFile:
-            pass
-        if extracted:
-            texts.append(f"=== Plugin ({plugin_file.filename}) ===\n" + "\n\n".join(extracted))
+        parsed = await run_in_threadpool(parse_plugin_zip, pdata)
+        if parsed.get("extracted"):
+            texts.append(f"=== Plugin ({plugin_file.filename}) ===\n" + "\n\n".join(parsed["extracted"]))
+
+    has_readme = parsed.get("has_readme", False)
+    has_manifest = parsed.get("has_manifest", False)
+    has_config_template = parsed.get("has_config_template", False)
+    dm_manifest = parsed.get("dm_manifest")
+    config_template = parsed.get("config_template")
+    oxt_version = parsed.get("oxt_version", "")
+    oxt_identifier = parsed.get("oxt_identifier", "")
+    icon_data = parsed.get("icon_data")
+    icon_filename = parsed.get("icon_filename")
 
     # If dm-manifest.json found, use it directly as suggestion (skip LLM)
     if has_manifest and dm_manifest:
@@ -1664,23 +1667,17 @@ async def api_catalog_suggest(request: Request):
             suggestion["oxt_identifier"] = oxt_identifier
         if config_template:
             suggestion["config_template"] = config_template
-        # Store icon as base64 data URL (no shared filesystem needed)
         if icon_data and icon_filename:
-            import base64 as _b64
-            ext = icon_filename.rsplit(".", 1)[-1].lower()
-            mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-                    "svg": "image/svg+xml", "webp": "image/webp"}.get(ext, "image/png")
-            data_url = f"data:{mime};base64,{_b64.b64encode(icon_data).decode()}"
-            suggestion["icon_url"] = data_url
-            suggestion["icon_data_url"] = data_url
-        return JSONResponse(suggestion)
+            suggestion["icon_url"] = suggestion["icon_data_url"] = _icon_data_url(icon_data, icon_filename)
+        _audit("dm-manifest.json")
+        return JSONResponse(sanitize_suggestion(suggestion))
 
     if not texts:
         return JSONResponse({"error": "Aucune source fournie"}, status_code=400)
 
     combined = "\n\n".join(texts)[:20000]
 
-    # Call LLM (OpenAI-compatible)
+    # Call LLM (OpenAI-compatible) — async, non bloquant
     llm_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
     llm_token = os.getenv("LLM_API_TOKEN", "")
     llm_model = os.getenv("DEFAULT_MODEL_NAME", "gpt-oss-120b")
@@ -1688,7 +1685,7 @@ async def api_catalog_suggest(request: Request):
     if not llm_url or not llm_token:
         return JSONResponse({"error": "LLM non configure (LLM_BASE_URL / LLM_API_TOKEN)"}, status_code=503)
 
-    payload = json.dumps({
+    payload = {
         "model": llm_model,
         "messages": [
             {"role": "system", "content": LLM_SUGGEST_PROMPT},
@@ -1696,47 +1693,32 @@ async def api_catalog_suggest(request: Request):
         ],
         "temperature": 0.2,
         "max_tokens": 2000,
-    }).encode()
-
-    req = urlreq.Request(
-        f"{llm_url}/chat/completions",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {llm_token}",
-        },
-    )
+    }
     try:
-        with urlreq.urlopen(req, timeout=30) as r:
-            result = json.loads(r.read())
+        async with httpx.AsyncClient(verify=_tls_verify(), timeout=30) as client:
+            r = await client.post(f"{llm_url}/chat/completions", json=payload,
+                                  headers={"Authorization": f"Bearer {llm_token}"})
+            r.raise_for_status()
+            result = r.json()
         content = result["choices"][0]["message"]["content"]
-        # Extract JSON from response (handle markdown code blocks)
-        if "```" in content:
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        suggestion = json.loads(content.strip())
-        suggestion["_has_readme"] = has_readme
-        suggestion["_has_config_template"] = has_config_template
-        if oxt_version:
-            suggestion["oxt_version"] = oxt_version
-        if oxt_identifier:
-            suggestion["oxt_identifier"] = oxt_identifier
-        if config_template:
-            suggestion["config_template"] = config_template
-        # Store icon as base64 data URL (even for LLM path)
-        if icon_data and icon_filename:
-            import base64 as _b64
-            ext = icon_filename.rsplit(".", 1)[-1].lower()
-            mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-                    "svg": "image/svg+xml", "webp": "image/webp"}.get(ext, "image/png")
-            data_url = f"data:{mime};base64,{_b64.b64encode(icon_data).decode()}"
-            suggestion["icon_url"] = data_url
-            suggestion["icon_data_url"] = data_url
-        return JSONResponse(suggestion)
+        suggestion = extract_suggestion_json(content)  # défensif, jamais d'IndexError
     except Exception as e:
-        logger.error("LLM suggest failed: %s", e)
-        return JSONResponse({"error": f"Erreur LLM: {e}"}, status_code=502)
+        # Détail en log (côté serveur), message GÉNÉRIQUE au client (anti fuite).
+        logger.warning("LLM suggest failed: %s", e)
+        return JSONResponse({"error": "Réponse du modèle invalide ou indisponible"}, status_code=502)
+
+    suggestion["_has_readme"] = has_readme
+    suggestion["_has_config_template"] = has_config_template
+    if oxt_version:
+        suggestion["oxt_version"] = oxt_version
+    if oxt_identifier:
+        suggestion["oxt_identifier"] = oxt_identifier
+    if config_template:
+        suggestion["config_template"] = config_template
+    if icon_data and icon_filename:
+        suggestion["icon_url"] = suggestion["icon_data_url"] = _icon_data_url(icon_data, icon_filename)
+    _audit("llm")
+    return JSONResponse(sanitize_suggestion(suggestion))
 
 
 @router.post("/catalog/purge-removed")
@@ -1772,7 +1754,7 @@ async def catalog_list(request: Request, status: str = "", device_type: str = ""
                 cur, status=status or None, device_type=device_type or None,
                 category=category or None,
             )
-        return templates.TemplateResponse("catalog.html", {
+        return templates.TemplateResponse(request, "catalog.html", {
             "request": request, "plugins": plugins,
             "categories": PLUGIN_CATEGORIES,
             "filters": {"status": status, "device_type": device_type, "category": category},
@@ -1802,7 +1784,7 @@ async def catalog_new(request: Request):
             substitution_values[var] = mask_secret(val)
         else:
             substitution_values[var] = val
-    return templates.TemplateResponse("catalog_plugin_new.html", {
+    return templates.TemplateResponse(request, "catalog_plugin_new.html", {
         "request": request,
         "device_types": DEVICE_TYPES,
         "categories": PLUGIN_CATEGORIES,
@@ -2061,7 +2043,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                     d["progress_pct"] = s.get("progress_pct", 0)
                 except Exception:
                     d["progress_pct"] = 0
-        return templates.TemplateResponse("catalog_plugin.html", {
+        return templates.TemplateResponse(request, "catalog_plugin.html", {
             "request": request, "plugin": plugin, "versions": versions,
             "stats": stats, "installations": installations,
             "artifacts": artifact_list, "features": features,
@@ -2438,17 +2420,24 @@ async def catalog_version_upload(request: Request, plugin_id: int):
             plugin = catalog_svc.get_plugin(cur, plugin_id)
             if not plugin:
                 raise HTTPException(404, "Plugin introuvable")
-            device_type = plugin.get("device_type", "libreoffice")
-            _slug = plugin.get("slug", "plugin")
-
-            binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
+            # Assainir tous les composants du chemin (device_type/slug issus de
+            # la DB, version/platform_variant fournis par l'utilisateur,
+            # extension dérivée du filename d'upload) — cf. app/pathsafe.py.
+            import re as _re
+            device_type = safe_segment(plugin.get("device_type", "libreoffice"), "device_type")
+            _slug = safe_segment(plugin.get("slug", "plugin"), "slug")
+            version = safe_segment(version, "version")
             _ext = os.path.splitext(bin_filename or "")[1] or ".oxt"
+            if not _re.fullmatch(r"\.[A-Za-z0-9._+-]+", _ext):
+                _ext = ".oxt"
             # Variant-aware filename so multiple binaries of the same version
             # (e.g. chromium + gecko × cibles) ne s'écrasent pas sur disque.
-            _suffix = f"-{platform_variant}" if platform_variant else ""
+            _suffix = f"-{safe_segment(platform_variant, 'platform_variant')}" if platform_variant else ""
+
+            binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
             rel_path = f"{device_type}/{_slug}-{version}{_suffix}{_ext}"
-            os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
-            local_path = f"{binaries_dir}/{rel_path}"
+            os.makedirs(safe_path_join(binaries_dir, device_type), exist_ok=True)
+            local_path = safe_path_join(binaries_dir, rel_path)
             with open(local_path, "wb") as f:
                 f.write(data)
 
@@ -2649,7 +2638,7 @@ async def communications_list(request: Request, type: str = "", status: str = ""
                 cur, type=type or None, status=status or None,
             )
             plugin_list = catalog_svc.list_plugins(cur)
-        return templates.TemplateResponse("communications.html", {
+        return templates.TemplateResponse(request, "communications.html", {
             "request": request, "communications": comm_list,
             "plugins": plugin_list,
             "filters": {"type": type, "status": status},
@@ -2666,7 +2655,7 @@ async def communication_new(request: Request, type: str = "announcement"):
         with conn.cursor() as cur:
             plugin_list = catalog_svc.list_plugins(cur)
             cohort_list = cohorts_svc.list_cohorts(cur)
-        return templates.TemplateResponse("communication_new.html", {
+        return templates.TemplateResponse(request, "communication_new.html", {
             "request": request, "comm_type": type,
             "plugins": plugin_list, "cohorts": cohort_list,
         })
@@ -2733,7 +2722,7 @@ async def communication_detail(request: Request, comm_id: int):
             survey_results = None
             if comm.get("type") == "survey":
                 survey_results = comms_svc.get_survey_results(cur, comm_id)
-        return templates.TemplateResponse("communication_detail.html", {
+        return templates.TemplateResponse(request, "communication_detail.html", {
             "request": request, "comm": comm, "stats": stats,
             "survey_results": survey_results,
         })
@@ -2768,7 +2757,7 @@ async def communication_status(request: Request, comm_id: int,
 @router.get("/catalog-preview", response_class=HTMLResponse)
 @require_admin
 async def catalog_preview(request: Request):
-    return templates.TemplateResponse("catalog_preview.html", {"request": request})
+    return templates.TemplateResponse(request, "catalog_preview.html", {"request": request})
 
 
 # ─── Env Overrides ───────────────────────────────────────────────────────
@@ -3234,9 +3223,7 @@ async def admin_files_upload(request: Request, path: str, file: UploadFile = Fil
     if not _files_token_check(request):
         raise HTTPException(403, "Invalid token")
     base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    full = os.path.normpath(os.path.join(base, path))
-    if not full.startswith(os.path.normpath(base)):
-        raise HTTPException(400, "Invalid path")
+    full = safe_path_join(base, path)
     os.makedirs(os.path.dirname(full), exist_ok=True)
     data = await file.read()
     with open(full, "wb") as f:
@@ -3250,9 +3237,7 @@ async def admin_files_get(request: Request, path: str):
     if not _files_token_check(request):
         raise HTTPException(403, "Invalid token")
     base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    full = os.path.normpath(os.path.join(base, path))
-    if not full.startswith(os.path.normpath(base)):
-        raise HTTPException(400, "Invalid path")
+    full = safe_path_join(base, path)
     if not os.path.isfile(full):
         raise HTTPException(404, "File not found")
     return FileResponse(full)
@@ -3264,9 +3249,7 @@ async def admin_files_list(request: Request, prefix: str = ""):
     if not _files_token_check(request):
         raise HTTPException(403, "Invalid token")
     base = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    target = os.path.normpath(os.path.join(base, prefix)) if prefix else base
-    if not target.startswith(os.path.normpath(base)):
-        raise HTTPException(400, "Invalid path")
+    target = safe_path_join(base, prefix) if prefix else base
     if not os.path.isdir(target):
         return JSONResponse({"files": []})
     result = []
@@ -3539,7 +3522,7 @@ async def debug_page(request: Request):
         "grafana_url": os.getenv("DM_TELEMETRY_GRAFANA_URL", ""),
     }
 
-    return templates.TemplateResponse("debug.html", {
+    return templates.TemplateResponse(request, "debug.html", {
         "request": request, "checks": checks, "config_vars": config_vars,
         "db_stats": db_stats, "system_info": system_info,
         "telemetry_info": telemetry_info,
@@ -3560,7 +3543,7 @@ async def audit_list(request: Request, actor: str = "", action: str = "",
                 resource_type=resource_type or None,
                 limit=100, offset=page * 100,
             )
-        return templates.TemplateResponse("audit_log.html", {
+        return templates.TemplateResponse(request, "audit_log.html", {
             "request": request, "entries": entries, "page": page,
             "filters": {"actor": actor, "action": action, "resource_type": resource_type},
         })
@@ -3625,11 +3608,12 @@ def _human_size(size_bytes: int) -> str:
 
 
 def _safe_resolve(root: Path, subpath: str) -> Path:
-    """Resolve subpath under root, preventing directory traversal."""
-    resolved = (root / subpath).resolve()
-    if not str(resolved).startswith(str(root.resolve())):
-        raise HTTPException(403, "Acces interdit")
-    return resolved
+    """Resolve subpath under root, preventing directory traversal.
+
+    Délègue à la jointure de chemin unifiée (cf. app/pathsafe.py) qui résout les
+    symlinks et teste la frontière sur le séparateur.
+    """
+    return Path(safe_path_join(str(root), subpath))
 
 
 def _list_dir(directory: Path) -> list[dict]:
@@ -3657,7 +3641,7 @@ async def files_index(request: Request):
         p = path_fn()
         count = len(list(p.iterdir())) if p.is_dir() else 0
         roots.append({"name": name, "path": name, "exists": p.is_dir(), "count": count})
-    return templates.TemplateResponse("files.html", {
+    return templates.TemplateResponse(request, "files.html", {
         "request": request,
         "mode": "roots",
         "roots": roots,
@@ -3695,7 +3679,7 @@ async def files_browse(request: Request, path: str):
 
     if resolved.is_dir():
         entries = _list_dir(resolved)
-        return templates.TemplateResponse("files.html", {
+        return templates.TemplateResponse(request, "files.html", {
             "request": request,
             "mode": "list",
             "roots": [],
@@ -3720,7 +3704,7 @@ async def files_browse(request: Request, path: str):
         except Exception:
             pass
 
-    return templates.TemplateResponse("files.html", {
+    return templates.TemplateResponse(request, "files.html", {
         "request": request,
         "mode": "detail",
         "roots": [],
