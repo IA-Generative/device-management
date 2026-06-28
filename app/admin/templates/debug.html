@@ -32,15 +32,60 @@
   </tbody>
 </table>
 
-<h3 style="font-size:1rem;margin-top:1.5rem;margin-bottom:0.75rem;">Configuration</h3>
-<table class="dm-table-compact">
-  <thead><tr><th>Variable</th><th>Valeur</th></tr></thead>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-top:1.5rem;margin-bottom:0.5rem;">
+  <h3 style="font-size:1rem;margin:0;">Configuration éditable (runtime)</h3>
+  <label style="font-size:0.8rem;color:#666;cursor:pointer;">
+    <input type="checkbox" id="cfg-only-modified"> Modifiées seulement
+    <span id="cfg-modcount" style="margin-left:0.5rem;"></span>
+  </label>
+</div>
+{% if not config_editing_enabled %}
+<p class="dm-hint" style="color:#B34000;">Édition désactivée (DM_RUNTIME_CONFIG_EDITABLE=false) — lecture seule.</p>
+{% endif %}
+{% if not config_secrets_encryption %}
+<p class="dm-hint" style="color:#B34000;">Secrets non éditables : DM_CONFIG_SECRET_KEY absent (chiffrement indisponible).</p>
+{% endif %}
+<table class="dm-table-compact" id="cfg-table">
+  <thead><tr><th style="width:26%">Clé</th><th>Baseline (ENV)</th><th>Valeur effective</th><th style="width:16%">Statut</th><th style="width:16%">Actions</th></tr></thead>
   <tbody>
-    {% for v in config_vars %}
-    <tr>
-      <td><code>{{ v.key }}</code></td>
-      <td style="font-size:0.85rem;">{{ v.value }}</td>
+    {% for group, rows in editable_config|groupby('group') %}
+    <tr><td colspan="5" style="background:#f0f0f7;font-weight:600;font-size:0.8rem;">{{ group }}</td></tr>
+    {% for v in rows %}
+    <tr class="cfg-row{% if v.modified %} cfg-row--modified{% endif %}"
+        data-key="{{ v.key }}" data-type="{{ v.type }}"
+        data-sensitive="{{ '1' if v.sensitive else '0' }}"
+        data-hot="{{ '1' if v.hot_reloadable else '0' }}"
+        data-modified="{{ '1' if v.modified else '0' }}"
+        data-override="{{ '1' if v.override_present else '0' }}"
+        data-effective='{{ v.effective|tojson }}'
+        {% if v.modified %}style="border-left:3px solid #B34000;"{% endif %}>
+      <td><code>{{ v.key }}</code><div class="dm-hint">{{ v.label }}</div></td>
+      <td class="cfg-baseline" style="font-size:0.82rem;color:#666;">
+        {%- if v.type == 'list' -%}{{ v.baseline|join(', ') or '(vide)' }}
+        {%- elif v.baseline == '' or v.baseline is none -%}(vide)
+        {%- else -%}{{ v.baseline }}{%- endif -%}
+      </td>
+      <td class="cfg-effective" style="font-size:0.82rem;">
+        {%- if v.type == 'list' -%}{{ v.effective|join(', ') or '(vide)' }}
+        {%- elif v.effective == '' or v.effective is none -%}(vide)
+        {%- else -%}{{ v.effective }}{%- endif -%}
+      </td>
+      <td class="cfg-status">
+        {% if v.modified %}<span class="dm-badge dm-badge--warning">modifié</span>{% endif %}
+        {% if not v.hot_reloadable %}<span class="dm-badge dm-badge--neutral">redémarrage requis</span>{% endif %}
+        {% if v.sensitive %}<span class="dm-badge dm-badge--neutral">secret</span>{% endif %}
+      </td>
+      <td class="cfg-actions">
+        {% if config_editing_enabled and (not v.sensitive or config_secrets_encryption) %}
+        <button type="button" class="dm-btn dm-btn--sm dm-btn--secondary cfg-edit">Modifier</button>
+        {% endif %}
+        <button type="button" class="dm-btn dm-btn--sm dm-btn--ghost cfg-reload" title="Recharger depuis la base">↻</button>
+        {% if v.override_present and config_editing_enabled %}
+        <button type="button" class="dm-btn dm-btn--sm dm-btn--ghost cfg-reset" style="color:#CE0500;">Réinitialiser</button>
+        {% endif %}
+      </td>
     </tr>
+    {% endfor %}
     {% endfor %}
   </tbody>
 </table>
@@ -90,6 +135,19 @@
   </tbody>
 </table>
 
+<div style="display:flex;justify-content:space-between;align-items:center;margin-top:1.5rem;margin-bottom:0.5rem;">
+  <h3 style="font-size:1rem;margin:0;">Flotte souscrite — propagation &amp; santé</h3>
+  <button type="button" id="cfg-verify" class="dm-btn dm-btn--sm dm-btn--secondary">Vérifier maintenant</button>
+</div>
+<div id="cfg-prop-summary" class="dm-hint">Chargement…</div>
+<table class="dm-table-compact" id="cfg-pods">
+  <thead><tr>
+    <th>Pod</th><th>Nœud</th><th>Rôle</th><th>Version</th><th>À jour</th>
+    <th>RAM</th><th>Load</th><th>Req.</th><th>Reboots</th><th>Uptime</th><th>Vu il y a</th>
+  </tr></thead>
+  <tbody><tr><td colspan="11" style="color:#666;">Chargement…</td></tr></tbody>
+</table>
+
 <h3 style="font-size:1rem;margin-top:1.5rem;margin-bottom:0.75rem;">Systeme</h3>
 <table class="dm-table-compact">
   <tbody>
@@ -97,4 +155,186 @@
     <tr><td>Python</td><td>{{ system_info.python }}</td></tr>
   </tbody>
 </table>
+
+<script>
+(function () {
+  function csrf() { return (document.cookie.match(/(?:^|;\s*)dm_csrf_token=([^;]+)/) || [])[1] || ''; }
+  function esc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
+  function fmtBytes(b) {
+    if (b == null) return '—';
+    var u = ['o', 'Ko', 'Mo', 'Go'], i = 0; b = Number(b);
+    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+    return b.toFixed(i ? 1 : 0) + ' ' + u[i];
+  }
+  function fmtDur(s) {
+    if (s == null) return '—'; s = Math.floor(s);
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'min';
+    if (s < 86400) return Math.floor(s / 3600) + 'h';
+    return Math.floor(s / 86400) + 'j';
+  }
+  function dot(color) { return '<span style="color:' + color + ';">&#9679;</span>'; }
+
+  // ── Inline editing ──────────────────────────────────────────────────────
+  var tbody = document.querySelector('#cfg-table tbody');
+  function listEditor(items) {
+    var wrap = document.createElement('div');
+    function addRow(val) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:0.25rem;margin-bottom:0.25rem;';
+      row.innerHTML = '<input class="dm-input li-val" style="flex:1;" value="' + esc(val) + '">' +
+        '<button type="button" class="dm-btn dm-btn--sm dm-btn--ghost li-up">▲</button>' +
+        '<button type="button" class="dm-btn dm-btn--sm dm-btn--ghost li-down">▼</button>' +
+        '<button type="button" class="dm-btn dm-btn--sm dm-btn--ghost li-del" style="color:#CE0500;">✕</button>';
+      wrap.insertBefore(row, addBtn);
+    }
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button'; addBtn.className = 'dm-btn dm-btn--sm dm-btn--secondary';
+    addBtn.textContent = '+ Ajouter'; wrap.appendChild(addBtn);
+    (items || []).forEach(addRow);
+    if (!items || !items.length) addRow('');
+    wrap.addEventListener('click', function (e) {
+      var row = e.target.closest('div'); if (!row) return;
+      if (e.target.classList.contains('li-del')) row.remove();
+      else if (e.target.classList.contains('li-up') && row.previousElementSibling) wrap.insertBefore(row, row.previousElementSibling);
+      else if (e.target.classList.contains('li-down') && row.nextElementSibling && row.nextElementSibling !== addBtn) wrap.insertBefore(row.nextElementSibling, row);
+      else if (e.target === addBtn) addRow('');
+    });
+    wrap.getValue = function () {
+      return Array.from(wrap.querySelectorAll('.li-val')).map(function (i) { return i.value.trim(); }).filter(Boolean);
+    };
+    return wrap;
+  }
+
+  tbody.addEventListener('click', function (e) {
+    var row = e.target.closest('tr.cfg-row'); if (!row) return;
+    var key = row.dataset.key, type = row.dataset.type, secret = row.dataset.sensitive === '1';
+
+    if (e.target.classList.contains('cfg-edit')) {
+      var cell = row.querySelector('.cfg-effective');
+      cell.dataset.orig = cell.innerHTML;
+      var cur; try { cur = JSON.parse(row.dataset.effective); } catch (x) { cur = ''; }
+      var editor;
+      if (type === 'list') editor = listEditor(cur || []);
+      else if (type === 'bool') {
+        editor = document.createElement('select'); editor.className = 'dm-select';
+        editor.innerHTML = '<option value="true">true</option><option value="false">false</option>';
+        editor.value = cur ? 'true' : 'false';
+      } else if (secret) {
+        editor = document.createElement('input'); editor.className = 'dm-input';
+        editor.type = 'password'; editor.placeholder = 'nouvelle valeur';
+      } else {
+        editor = document.createElement('input'); editor.className = 'dm-input';
+        editor.type = (type === 'int' || type === 'float') ? 'number' : 'text';
+        editor.value = (cur == null ? '' : cur);
+      }
+      cell.innerHTML = '';
+      cell.appendChild(editor);
+      var bar = document.createElement('div'); bar.style.marginTop = '0.4rem';
+      bar.innerHTML = '<button type="button" class="dm-btn dm-btn--sm dm-btn--primary cfg-save">Enregistrer</button> ' +
+        '<button type="button" class="dm-btn dm-btn--sm dm-btn--ghost cfg-cancel">Annuler</button>';
+      cell.appendChild(bar);
+      cell._editor = editor;
+    } else if (e.target.classList.contains('cfg-cancel')) {
+      var c = row.querySelector('.cfg-effective'); c.innerHTML = c.dataset.orig;
+    } else if (e.target.classList.contains('cfg-save')) {
+      var ed = row.querySelector('.cfg-effective')._editor, value;
+      if (type === 'list') value = ed.getValue();
+      else if (type === 'bool') value = ed.value === 'true';
+      else value = ed.value;
+      if (secret && !String(value).trim()) { alert('Valeur secrète vide.'); return; }
+      e.target.disabled = true;
+      fetch('/admin/api/config/' + encodeURIComponent(key), {
+        method: 'PUT', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() },
+        body: JSON.stringify({ value: value })
+      }).then(function (r) {
+        if (r.ok) { r.json().then(function (d) { if (d.restart_required) alert('Valeur enregistrée — redémarrage du pod requis pour prise en compte.'); location.reload(); }); }
+        else r.text().then(function (t) { var m = 'Erreur ' + r.status; try { m = JSON.parse(t).detail || m; } catch (x) {} alert(m); e.target.disabled = false; });
+      }).catch(function (err) { alert('Erreur réseau : ' + err.message); e.target.disabled = false; });
+    } else if (e.target.classList.contains('cfg-reset')) {
+      if (!confirm('Réinitialiser ' + key + ' à la valeur de déploiement ?')) return;
+      fetch('/admin/api/config/' + encodeURIComponent(key), {
+        method: 'DELETE', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf() }
+      }).then(function (r) { if (r.ok) location.reload(); else alert('Erreur ' + r.status); });
+    } else if (e.target.classList.contains('cfg-reload')) {
+      reloadOneRow(key);
+    }
+  });
+
+  function reloadOneRow(key) {
+    fetch('/admin/api/config', { credentials: 'same-origin' }).then(function (r) { return r.json(); }).then(function (d) {
+      var v = (d.editable || []).find(function (x) { return x.key === key; }); if (!v) return;
+      var row = tbody.querySelector('tr[data-key="' + key + '"]'); if (!row) return;
+      var eff = v.type === 'list' ? (v.effective.join(', ') || '(vide)') : (v.effective === '' || v.effective == null ? '(vide)' : v.effective);
+      row.querySelector('.cfg-effective').textContent = eff;
+      row.dataset.effective = JSON.stringify(v.effective);
+      row.dataset.modified = v.modified ? '1' : '0';
+      row.style.borderLeft = v.modified ? '3px solid #B34000' : '';
+      var st = row.querySelector('.cfg-status'); st.innerHTML = '';
+      if (v.modified) st.innerHTML += '<span class="dm-badge dm-badge--warning">modifié</span> ';
+      if (!v.hot_reloadable) st.innerHTML += '<span class="dm-badge dm-badge--neutral">redémarrage requis</span> ';
+      if (v.sensitive) st.innerHTML += '<span class="dm-badge dm-badge--neutral">secret</span>';
+      updateModCount();
+    });
+  }
+
+  // ── Filter "modified only" ──────────────────────────────────────────────
+  function updateModCount() {
+    var n = tbody.querySelectorAll('tr.cfg-row[data-modified="1"]').length;
+    var tot = tbody.querySelectorAll('tr.cfg-row').length;
+    document.getElementById('cfg-modcount').textContent = '(' + n + '/' + tot + ')';
+  }
+  document.getElementById('cfg-only-modified').addEventListener('change', function (e) {
+    tbody.querySelectorAll('tr.cfg-row').forEach(function (r) {
+      r.style.display = (e.target.checked && r.dataset.modified !== '1') ? 'none' : '';
+    });
+  });
+  updateModCount();
+
+  // ── Propagation / fleet health ──────────────────────────────────────────
+  var podsBody = document.querySelector('#cfg-pods tbody');
+  function renderPods(gen, pods, summary) {
+    document.getElementById('cfg-prop-summary').textContent =
+      'Génération courante ' + gen + ' — ' + summary.up_to_date + '/' + summary.total + ' à jour, ' + summary.alive + ' vivants.';
+    if (!pods.length) { podsBody.innerHTML = '<tr><td colspan="11" style="color:#666;">Aucun pod enrôlé.</td></tr>'; return; }
+    podsBody.innerHTML = pods.map(function (p) {
+      var color = !p.alive ? '#929292' : (p.up_to_date ? '#18753C' : '#B34000');
+      var ram = fmtBytes(p.rss_bytes) + (p.mem_limit_bytes ? ' / ' + fmtBytes(p.mem_limit_bytes) : '');
+      return '<tr style="' + (p.alive ? '' : 'opacity:0.55;') + '">' +
+        '<td><code>' + esc(p.pod_name) + '</code></td>' +
+        '<td style="font-size:0.8rem;">' + esc(p.node_name || '—') + '</td>' +
+        '<td>' + esc(p.runtime_mode) + '</td>' +
+        '<td>' + esc(p.app_version || '—') + '</td>' +
+        '<td>' + dot(color) + ' ' + esc(p.applied_generation) + '</td>' +
+        '<td style="font-size:0.8rem;">' + ram + '</td>' +
+        '<td>' + (p.load1 == null ? '—' : p.load1) + '</td>' +
+        '<td>' + (p.requests_total == null ? '—' : p.requests_total) + '</td>' +
+        '<td>' + (p.restart_count ? '<span class="dm-badge dm-badge--warning">' + p.restart_count + '</span>' : '0') + '</td>' +
+        '<td>' + fmtDur(p.uptime_s) + '</td>' +
+        '<td>' + fmtDur(p.heartbeat_age_s) + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+  function loadProp() {
+    fetch('/admin/api/config/propagation', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { renderPods(d.generation, d.pods, d.summary); })
+      .catch(function () { document.getElementById('cfg-prop-summary').textContent = 'Propagation indisponible.'; });
+  }
+  document.getElementById('cfg-verify').addEventListener('click', function (e) {
+    e.target.disabled = true;
+    fetch('/admin/api/config/verify', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf() } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var ok = d.results.filter(function (x) { return x.up_to_date; }).length;
+        var reach = d.results.filter(function (x) { return x.reachable; }).length;
+        alert('Vérification active (gen ' + d.generation + ') : ' + reach + '/' + d.results.length + ' joignables, ' + ok + ' à jour.');
+        e.target.disabled = false; loadProp();
+      }).catch(function (err) { alert('Erreur : ' + err.message); e.target.disabled = false; });
+  });
+  loadProp();
+  setInterval(loadProp, 5000);
+})();
+</script>
 {% endblock %}
