@@ -9,9 +9,18 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
 
 logger = logging.getLogger("device-management")
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+    _HAS_FERNET = True
+except Exception:  # pragma: no cover - cryptography is a transitive dep (PyJWT[crypto])
+    Fernet = None  # type: ignore
+    InvalidToken = Exception  # type: ignore
+    _HAS_FERNET = False
 
 
 def b64url_encode(raw: bytes) -> str:
@@ -94,6 +103,7 @@ SENSITIVE_ENV_VARS = frozenset({
     "ADMIN_SESSION_SECRET",
     "ADMIN_OIDC_CLIENT_SECRET",
     "DM_RELAY_SECRET_PEPPER",
+    "DM_CONFIG_SECRET_KEY",
     "DM_RELAY_PROXY_SHARED_TOKEN",
     "DM_TELEMETRY_TOKEN_SIGNING_KEY",
     "DM_TELEMETRY_UPSTREAM_KEY",
@@ -138,3 +148,68 @@ def mask_secret(val: str) -> str:
         return val
     digest = hashlib.sha256(val.encode("utf-8")).hexdigest()[:8]
     return f"*** ({len(val)} chars, sha256:{digest})"
+
+
+# ── Reversible encryption for runtime-config secret overrides ────────────────
+# Editable secrets (e.g. LLM_API_TOKEN) persisted in config_overrides must be
+# encrypted at rest. We use Fernet (authenticated symmetric encryption) keyed by
+# DM_CONFIG_SECRET_KEY. The env value can be any string: we derive a valid Fernet
+# key from its SHA-256 so operators don't have to generate a base64 32-byte key.
+_ENC_PREFIX = "enc:v1:"
+_fernet_cache: tuple[str, object] | None = None
+
+
+def _config_fernet():
+    """Return a Fernet instance derived from DM_CONFIG_SECRET_KEY, or None.
+
+    Cached on the (raw key) value so a runtime change of the env is picked up.
+    """
+    global _fernet_cache
+    if not _HAS_FERNET:
+        return None
+    raw = os.getenv("DM_CONFIG_SECRET_KEY", "")
+    if not raw:
+        return None
+    if _fernet_cache is not None and _fernet_cache[0] == raw:
+        return _fernet_cache[1]
+    key = base64.urlsafe_b64encode(hashlib.sha256(raw.encode("utf-8")).digest())
+    fernet = Fernet(key)
+    _fernet_cache = (raw, fernet)
+    return fernet
+
+
+def secrets_encryption_available() -> bool:
+    """True if editable secrets can be encrypted at rest (key + lib present)."""
+    return _config_fernet() is not None
+
+
+def encrypt_secret(plaintext: str) -> str:
+    """Encrypt a secret override value. Raises RuntimeError if unavailable."""
+    fernet = _config_fernet()
+    if fernet is None:
+        raise RuntimeError(
+            "secret encryption unavailable: set DM_CONFIG_SECRET_KEY "
+            "(and ensure 'cryptography' is installed)"
+        )
+    token = fernet.encrypt((plaintext or "").encode("utf-8")).decode("ascii")
+    return _ENC_PREFIX + token
+
+
+def decrypt_secret(stored: str) -> str:
+    """Decrypt a stored secret override. Values without the enc prefix are
+    returned as-is (defensive: tolerates legacy/plaintext rows)."""
+    if not stored or not stored.startswith(_ENC_PREFIX):
+        return stored
+    fernet = _config_fernet()
+    if fernet is None:
+        raise RuntimeError("cannot decrypt secret: DM_CONFIG_SECRET_KEY missing")
+    token = stored[len(_ENC_PREFIX):].encode("ascii")
+    try:
+        return fernet.decrypt(token).decode("utf-8")
+    except InvalidToken as exc:
+        raise RuntimeError("secret decryption failed (wrong DM_CONFIG_SECRET_KEY?)") from exc
+
+
+def is_encrypted_secret(stored: str) -> bool:
+    """True if the stored value is an enc:v1: ciphertext."""
+    return bool(stored) and stored.startswith(_ENC_PREFIX)
