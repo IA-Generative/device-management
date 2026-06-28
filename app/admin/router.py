@@ -35,11 +35,15 @@ from .auth import (
     _get_token_endpoint,
     _has_admin_group,
     _sign_session,
+    _verify_csrf,
     _verify_session,
     require_admin,
     require_admin_or_service_token,
 )
+from .. import runtime_config as rcfg
+from ..services.crypto import encrypt_secret, secrets_encryption_available
 from .helpers import audit_log, get_db_connection, span_label, timeago
+from .services import runtime_config as rcfg_svc
 from .services import (
     artifacts as artifacts_svc,
 )
@@ -3560,7 +3564,204 @@ async def debug_page(request: Request):
         "request": request, "checks": checks, "config_vars": config_vars,
         "db_stats": db_stats, "system_info": system_info,
         "telemetry_info": telemetry_info,
+        "editable_config": rcfg.effective_view(),
+        "config_editing_enabled": rcfg.editing_enabled(),
+        "config_secrets_encryption": secrets_encryption_available(),
     })
+
+
+# ─── Runtime config overrides (editable from the debug page) ────────────────
+
+def _audit_config_denied(request: Request, key: str, reason: str) -> None:
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            audit_log(cur, actor=getattr(request.state, "admin_session", {}),
+                      action="config.override.denied", resource_type="runtime_config",
+                      resource_id=key, payload={"reason": reason},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+@router.get("/api/config")
+@require_admin
+async def config_list(request: Request):
+    # Refresh from DB so the admin view reflects other admins' changes (best-effort).
+    try:
+        rcfg.force_local_reload()
+    except Exception:
+        pass
+    return JSONResponse({
+        "editable": rcfg.effective_view(),
+        "editing_enabled": rcfg.editing_enabled(),
+        "secrets_encryption": secrets_encryption_available(),
+    })
+
+
+@router.put("/api/config/{key}")
+@require_admin
+async def config_set(request: Request, key: str):
+    if not rcfg.editing_enabled():
+        _audit_config_denied(request, key, "editing disabled")
+        raise HTTPException(403, "runtime config editing is disabled")
+    if not _verify_csrf(request):
+        raise HTTPException(403, "CSRF token invalid")
+    spec = rcfg.EDITABLE_KEYS.get(key)
+    if spec is None:
+        _audit_config_denied(request, key, "unknown key")
+        raise HTTPException(404, "unknown or non-editable key")
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "invalid JSON body") from None
+    try:
+        py = rcfg.coerce_input(spec, body.get("value"))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, f"invalid value: {e}") from e
+
+    is_secret = spec.sensitive
+    if is_secret:
+        if not secrets_encryption_available():
+            raise HTTPException(503, "secret editing unavailable: DM_CONFIG_SECRET_KEY missing")
+        stored = encrypt_secret(str(py))
+    else:
+        stored = rcfg.to_stored_value(spec, py)
+
+    actor = getattr(request.state, "admin_session", {})
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            old = rcfg_svc.get_override(cur, key)
+            rcfg_svc.set_override(cur, key=key, value=stored, value_type=spec.type,
+                                  is_secret=is_secret, actor_email=actor.get("email"))
+            gen = rcfg.bump_generation(conn, actor.get("email"))
+            payload = {"hot_reloadable": spec.hot_reloadable, "generation": gen}
+            if is_secret:
+                payload["secret"] = True
+            else:
+                payload["after"] = py
+                if old is not None:
+                    payload["before"] = old.get("value")
+            audit_log(cur, actor=actor, action="config.override.set",
+                      resource_type="runtime_config", resource_id=key, payload=payload,
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e)) from e
+    finally:
+        conn.close()
+    try:
+        rcfg.force_local_reload()
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "key": key,
+                         "restart_required": not spec.hot_reloadable, "generation": gen})
+
+
+@router.delete("/api/config/{key}")
+@require_admin
+async def config_reset(request: Request, key: str):
+    if not rcfg.editing_enabled():
+        raise HTTPException(403, "runtime config editing is disabled")
+    if not _verify_csrf(request):
+        raise HTTPException(403, "CSRF token invalid")
+    if key not in rcfg.EDITABLE_KEYS:
+        raise HTTPException(404, "unknown or non-editable key")
+    actor = getattr(request.state, "admin_session", {})
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            existed = rcfg_svc.delete_override(cur, key)
+            gen = rcfg.bump_generation(conn, actor.get("email"))
+            audit_log(cur, actor=actor, action="config.override.reset",
+                      resource_type="runtime_config", resource_id=key,
+                      payload={"existed": existed, "generation": gen},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e)) from e
+    finally:
+        conn.close()
+    try:
+        rcfg.force_local_reload()
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "key": key, "reset": existed, "generation": gen})
+
+
+@router.get("/api/config/propagation")
+@require_admin
+async def config_propagation(request: Request):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            state = rcfg_svc.get_state(cur)
+            pods = rcfg_svc.list_pods(cur)
+    finally:
+        conn.close()
+    gen = int(state.get("generation") or 0)
+    stale_after = 30
+    for p in pods:
+        age = p.get("heartbeat_age_s") or 0
+        p["alive"] = age <= stale_after
+        p["up_to_date"] = bool(p["alive"] and int(p.get("applied_generation") or 0) >= gen)
+    return JSONResponse({
+        "generation": gen, "pods": pods,
+        "summary": {"total": len(pods),
+                    "alive": sum(1 for p in pods if p["alive"]),
+                    "up_to_date": sum(1 for p in pods if p["up_to_date"])},
+    })
+
+
+@router.post("/api/config/verify")
+@require_admin
+async def config_verify(request: Request):
+    """Actively probe each enrolled pod's /internal/config/state to confirm reload."""
+    if not _verify_csrf(request):
+        raise HTTPException(403, "CSRF token invalid")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            state = rcfg_svc.get_state(cur)
+            pods = rcfg_svc.list_pods(cur)
+    finally:
+        conn.close()
+    gen = int(state.get("generation") or 0)
+    token = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
+    results = []
+    for p in pods:
+        ip = p.get("pod_ip")
+        port = p.get("port") or 3001
+        entry = {"pod_name": p["pod_name"], "runtime_mode": p.get("runtime_mode")}
+        if not ip:
+            entry.update({"reachable": False, "detail": "no pod_ip"})
+            results.append(entry)
+            continue
+        try:
+            r = httpx.get(f"http://{ip}:{port}/internal/config/state",
+                          headers={"X-Internal-Token": token}, timeout=3)
+            if r.status_code == 200:
+                data = r.json()
+                entry.update({
+                    "reachable": True,
+                    "applied_generation": data.get("applied_generation"),
+                    "up_to_date": int(data.get("applied_generation") or 0) >= gen,
+                    "health": data.get("health"),
+                })
+            else:
+                entry.update({"reachable": False, "detail": f"HTTP {r.status_code}"})
+        except Exception as e:
+            entry.update({"reachable": False, "detail": str(e)[:80]})
+        results.append(entry)
+    return JSONResponse({"generation": gen, "results": results})
 
 
 # ─── Audit Log ────────────────────────────────────────────────────────────

@@ -160,6 +160,7 @@ _CACHE_INVALIDATION_PATH_PREFIXES = (
     "/api/campaigns",       # REST API campaign lifecycle
     "/api/artifacts",       # artifact uploads
     "/api/keycloak",        # keycloak client changes
+    "/admin/api/config",    # runtime config overrides (feed bootstrapUrls etc.)
 )
 
 
@@ -1540,6 +1541,11 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
     config_obj["telemetryEndpoint"] = _resolve_public_telemetry_endpoint()
     config_obj["telemetryAuthorizationType"] = settings.telemetry_authorization_type
 
+    # Ordered bootstrap URLs (priority order) — override-aware, hot-reloadable.
+    bootstrap_urls = runtime_config.cfg("DM_BOOTSTRAP_URLS", as_list=True)
+    if bootstrap_urls:
+        config_obj["bootstrapUrls"] = bootstrap_urls
+
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if public_base:
         config_obj["relayAssistantBaseUrl"] = f"{public_base}/relay-assistant"
@@ -1998,6 +2004,30 @@ def readyz():
         status_code=200,
         content={"status": "ok", "ready": True, "generation": runtime_config.applied_generation()},
     )
+
+
+@app.get("/internal/config/state")
+def internal_config_state(request: Request):
+    """Cluster-internal: report this pod's config generation + live health.
+
+    Guarded by a service token (constant-time compare with DM_QUEUE_ADMIN_TOKEN).
+    Returns no config values — only propagation/health state. Used by the admin
+    'verify' button to actively probe each pod.
+    """
+    expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
+    provided = request.headers.get("X-Internal-Token", "")
+    if not expected or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    ident = runtime_config._pod_identity(str(settings.runtime_mode or "api"))
+    return JSONResponse({
+        "pod_name": ident["pod_name"],
+        "node_name": ident["node_name"],
+        "runtime_mode": ident["runtime_mode"],
+        "applied_generation": runtime_config.applied_generation(),
+        "app_version": ident["app_version"],
+        "ready": runtime_config.is_config_ready(),
+        "health": _health.read_health(),
+    })
 
 
 @app.get("/ops/queue/health")
