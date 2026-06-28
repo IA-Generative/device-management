@@ -36,3 +36,7 @@ exclude_dirs = ["tests", "alembic"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["."]          # rend le package `app` importable (collecte CI)
+markers = [
+    "integration: nécessite une infra live (Postgres/Keycloak/serveur/navigateur) ; exclu du gate CI unitaire via `pytest -m 'not integration'`",
+]
