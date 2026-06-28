@@ -816,7 +816,7 @@ def deploy_from_scratch():
     print("\n[3/8] Demarrage PostgreSQL...")
     run("docker compose up -d postgres")
     print("  Attente readiness Postgres...")
-    for i in range(30):
+    for _ in range(30):
         result = run(
             "docker compose exec -T postgres pg_isready -U dev -d bootstrap",
             check=False,
@@ -888,7 +888,6 @@ def deploy_from_scratch():
                 cwd=project_root, check=False,
             )
             if result.returncode == 0:
-                client_uuid = result.stdout.strip().split("'")[-2] if "'" in result.stdout else ""
                 print("  ✓ Client admin-dm-ui cree")
             else:
                 print("  ℹ Client admin-dm-ui existait deja")
@@ -899,11 +898,11 @@ def deploy_from_scratch():
             print("  ✓ Groupe admin-dm")
 
             # Assign user1
-            user1_result = run(
+            run(
                 f"{kcadm} get users -r openwebui -q username=user1 --fields id",
                 cwd=project_root, check=False,
             )
-            group_result = run(
+            run(
                 f"{kcadm} get groups -r openwebui --fields id,name",
                 cwd=project_root, check=False,
             )
