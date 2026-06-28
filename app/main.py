@@ -89,6 +89,8 @@ from .services.db import (
 from .services.db import (
     wait_for_db as _svc_wait_for_db,
 )
+from . import runtime_config
+from .services import health as _health
 from .settings import settings
 
 app = FastAPI(title="Device Management API", version="0.1.0")
@@ -161,8 +163,29 @@ _CACHE_INVALIDATION_PATH_PREFIXES = (
 )
 
 
+# Paths exempt from the runtime-config readiness gate (probes, internal, static).
+_CONFIG_GATE_EXEMPT_PREFIXES = (
+    "/healthz", "/livez", "/readyz", "/internal", "/admin/static", "/metrics",
+)
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    # Health metric: count every served request.
+    _health.incr_request()
+
+    # Readiness gate (Stage 9): a pod that never loaded its config must not serve
+    # business traffic — reply 503 + Retry-After so clients retry elsewhere.
+    path = request.url.path
+    if runtime_config.should_gate_requests() and not any(
+        path.startswith(p) for p in _CONFIG_GATE_EXEMPT_PREFIXES
+    ):
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "3"},
+            content={"status": "starting", "detail": "config not loaded", "retry": True},
+        )
+
     response = await call_next(request)
 
     # Auto-invalidate config cache on successful mutations
@@ -1958,6 +1981,22 @@ def livez():
             "status": 200,
             "detail": "Process is alive.",
         },
+    )
+
+
+@app.get("/readyz")
+def readyz():
+    """Readiness: 503 until the runtime config has been loaded at least once, so
+    a cold-started pod that cannot read its config is kept out of the Service."""
+    if runtime_config.should_gate_requests():
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "3"},
+            content={"status": "starting", "ready": False, "detail": "config not loaded"},
+        )
+    return JSONResponse(
+        status_code=200,
+        content={"status": "ok", "ready": True, "generation": runtime_config.applied_generation()},
     )
 
 
@@ -4447,3 +4486,39 @@ def _shutdown_embedded_queue_worker() -> None:
         _embedded_worker_thread.join(timeout=5)
     _embedded_worker_thread = None
     _embedded_worker_stop = None
+
+
+# ---- Runtime config sync (all FastAPI roles: api / admin / all) -------------
+_config_sync_stop: threading.Event | None = None
+_config_sync_threads: list[threading.Thread] = []
+
+
+@app.on_event("startup")
+def _startup_config_sync() -> None:
+    """Start the per-pod config sync loop + NOTIFY listener, and arm the readiness
+    gate. Runs in every FastAPI role; skipped (gate stays inactive) without a DB."""
+    global _config_sync_stop, _config_sync_threads
+    runtime_config.snapshot_baseline()
+    if psycopg2 is None or not _db_url_bootstrap():
+        logger.info("Runtime config sync disabled (no DB); serving with ENV baseline only.")
+        return
+    if _config_sync_threads:
+        return
+    runtime_config.enable_request_gate()
+    _config_sync_stop = threading.Event()
+    _config_sync_threads = runtime_config.start_background(
+        _config_sync_stop, role=str(settings.runtime_mode or "api"))
+    logger.info("Runtime config sync started (readiness gate armed).")
+
+
+@app.on_event("shutdown")
+def _shutdown_config_sync() -> None:
+    global _config_sync_stop, _config_sync_threads
+    if _config_sync_stop:
+        _config_sync_stop.set()
+        runtime_config.request_wake()
+    for t in _config_sync_threads:
+        if t.is_alive():
+            t.join(timeout=3)
+    _config_sync_threads = []
+    _config_sync_stop = None

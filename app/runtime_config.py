@@ -24,6 +24,7 @@ import os
 import random
 import socket
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -268,13 +269,59 @@ def effective_view() -> list[dict]:
     return out
 
 
-# ── Readiness ─────────────────────────────────────────────────────────────
+# ── Readiness & request gate (Stage 9) ───────────────────────────────────
+# The gate is only *active* once the background sync has been started on a real
+# pod (DB present). In tests / DB-less runs it stays inactive so requests are
+# never blocked.
+_gate_enabled: bool = False
+
+
+def enable_request_gate() -> None:
+    global _gate_enabled
+    _gate_enabled = True
+
+
+def disable_request_gate() -> None:
+    global _gate_enabled
+    _gate_enabled = False
+
+
 def is_config_ready() -> bool:
     return _config_ready
 
 
+def should_gate_requests() -> bool:
+    """True if this pod must refuse business traffic (config never loaded)."""
+    return _gate_enabled and not _config_ready
+
+
 def applied_generation() -> int:
     return _applied_generation
+
+
+def wait_until_ready(timeout: float) -> bool:
+    """Block up to `timeout` seconds for the first successful config load."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _config_ready:
+            return True
+        time.sleep(0.2)
+    return _config_ready
+
+
+def start_background(stop_event: threading.Event, role: str | None = None) -> list[threading.Thread]:
+    """Start the sync loop + NOTIFY listener as daemon threads. Reusable by the
+    FastAPI lifespan and the worker entrypoint."""
+    snapshot_baseline()
+    threads = [
+        threading.Thread(target=run_config_sync_loop, args=(stop_event, role),
+                         daemon=True, name="dm-config-sync"),
+        threading.Thread(target=run_notify_listener, args=(stop_event,),
+                         daemon=True, name="dm-config-notify"),
+    ]
+    for t in threads:
+        t.start()
+    return threads
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────
