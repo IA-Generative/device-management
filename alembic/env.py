@@ -7,8 +7,8 @@ Database URL is resolved from environment variables in this order:
 """
 from __future__ import annotations
 
-import os
 import logging
+import os
 from logging.config import fileConfig
 
 from alembic import context

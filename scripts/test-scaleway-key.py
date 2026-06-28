@@ -100,7 +100,7 @@ def check_models(base: str, token: str, timeout: float):
         return "INVALIDE", False, f"HTTP {status} (auth refusée)"
     if status == 0:
         return "ERREUR RÉSEAU", False, payload
-    return f"INATTENDU", False, f"HTTP {status} : {payload[:200]}"
+    return "INATTENDU", False, f"HTTP {status} : {payload[:200]}"
 
 
 def check_chat(base: str, token: str, model: str, timeout: float):

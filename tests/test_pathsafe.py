@@ -12,7 +12,6 @@ from fastapi import HTTPException
 
 from app.pathsafe import safe_path_join, safe_segment
 
-
 # ---------------------------------------------------------------------------
 # safe_path_join
 # ---------------------------------------------------------------------------

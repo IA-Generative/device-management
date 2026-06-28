@@ -7,7 +7,6 @@ import threading
 from .main import _run_queue_worker_loop
 from .settings import settings
 
-
 logger = logging.getLogger("device-management.worker")
 
 

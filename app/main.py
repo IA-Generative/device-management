@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -10,23 +13,19 @@ import sys
 import threading
 import time
 import uuid
-import base64
-import hmac
-import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlparse
-from urllib import request as urllib_request
 from urllib import error as urllib_error
+from urllib import request as urllib_request
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-
+import boto3
 import httpx
 import uvicorn
-import boto3
 from botocore.client import Config
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 try:
     import psycopg2  # type: ignore
@@ -46,27 +45,51 @@ except ModuleNotFoundError:  # pragma: no cover
 if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.environ:
     os.environ["DATABASE_URL"] = "postgresql://dev:dev@localhost:5432/bootstrap"
 
-from .settings import settings
-from .s3 import s3_client
 from .postgres_queue import PostgresQueue, QueueJob
+from .s3 import s3_client
+from .services.crypto import (
+    SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
+)
+from .services.crypto import (
+    b64url_decode as _svc_b64url_decode,
+)
 from .services.crypto import (
     b64url_encode as _svc_b64url_encode,
-    b64url_decode as _svc_b64url_decode,
+)
+from .services.crypto import (
     hash_relay_secret as _svc_hash_relay_secret,
-    SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
+)
+from .services.db import (
+    _with_db,
+)
+from .services.db import (
+    admin_db_url as _svc_admin_db_url,
+)
+from .services.db import (
+    apply_schema as _svc_apply_schema,
 )
 from .services.db import (
     db_url as _svc_db_url,
-    db_url_bootstrap as _svc_db_url_bootstrap,
-    pooled_conn as _svc_pooled_conn,
-    admin_db_url as _svc_admin_db_url,
-    ensure_database_exists as _svc_ensure_database_exists,
-    ensure_dev_role as _svc_ensure_dev_role,
-    ensure_dev_privileges as _svc_ensure_dev_privileges,
-    apply_schema as _svc_apply_schema,
-    wait_for_db as _svc_wait_for_db,
-    _with_db,
 )
+from .services.db import (
+    db_url_bootstrap as _svc_db_url_bootstrap,
+)
+from .services.db import (
+    ensure_database_exists as _svc_ensure_database_exists,
+)
+from .services.db import (
+    ensure_dev_privileges as _svc_ensure_dev_privileges,
+)
+from .services.db import (
+    ensure_dev_role as _svc_ensure_dev_role,
+)
+from .services.db import (
+    pooled_conn as _svc_pooled_conn,
+)
+from .services.db import (
+    wait_for_db as _svc_wait_for_db,
+)
+from .settings import settings
 
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
@@ -118,6 +141,7 @@ _RUNTIME_MODE = str(settings.runtime_mode or "api").strip().lower()
 # ---- Admin UI router (Jinja2 + HTMX, no external JS build)
 if _RUNTIME_MODE in ("admin", "all"):
     from fastapi.staticfiles import StaticFiles
+
     from .admin.router import router as admin_router
     app.include_router(admin_router, prefix="/admin")
     _admin_static = os.path.join(os.path.dirname(__file__), "admin", "static")
@@ -638,7 +662,7 @@ def _load_config_template(profile: str, device: str | None = None,
         ])
         for p in candidates:
             if os.path.isfile(p):
-                with open(p, "r", encoding="utf-8") as f:
+                with open(p, encoding="utf-8") as f:
                     return json.load(f)
 
     # No DB template and no filesystem fallback — return a minimal empty config
@@ -650,7 +674,8 @@ def _load_config_template(profile: str, device: str | None = None,
 
 # Jointure de chemin sûre : helper unifié (cf. app/pathsafe.py). Alias conservés
 # pour les appelants historiques.
-from app.pathsafe import safe_path_join as _safe_path_join, safe_segment as _safe_segment
+from app.pathsafe import safe_path_join as _safe_path_join
+from app.pathsafe import safe_segment as _safe_segment
 
 
 def _substitute_env_in_str(value: str) -> str:
@@ -1700,7 +1725,7 @@ def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
                 email = span_attrs.get("user.email") or res_attrs.get("user.email") or ""
                 plugin_version = span_attrs.get("extension.version") or res_attrs.get("service.version") or ""
                 start_ns = int(span.get("startTimeUnixNano", 0))
-                span_ts = datetime.fromtimestamp(start_ns / 1e9, tz=timezone.utc) if start_ns else None
+                span_ts = datetime.fromtimestamp(start_ns / 1e9, tz=UTC) if start_ns else None
                 rows.append((client_uuid, email, name, span_ts, json.dumps(span_attrs), plugin_version))
     if not rows:
         return
@@ -2354,7 +2379,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     response_body = {
         "meta": {
             "schema_version": 2,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "device_type": device_type or "misc",
             "device_name": device_name or dev or "misc",
             "platform_variant": platform_variant,
@@ -2762,8 +2787,8 @@ async def api_plugin_deploy(slug: str, request: Request):
     if not psycopg2 or not db_url:
         return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
 
-    import zipfile as _zf
     import io as _io
+    import zipfile as _zf
 
     # 1. Resolve plugin
     conn = psycopg2.connect(db_url)
@@ -3272,7 +3297,7 @@ def api_public_plugins():
             })
         return JSONResponse(
             {"plugins": plugins, "total": len(plugins),
-             "generated_at": datetime.now(timezone.utc).isoformat()},
+             "generated_at": datetime.now(UTC).isoformat()},
             headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=300"},
         )
     finally:
@@ -3437,8 +3462,8 @@ def api_catalog_status():
 @app.get("/ops/health/full")
 def ops_health_full():
     """Detailed health for Grafana/alerting."""
-    import urllib.request as urlreq
     import time as _time
+    import urllib.request as urlreq
 
     checks = {}
     critical_svcs = {"postgres"}
@@ -3488,7 +3513,7 @@ def ops_health_full():
 
     return JSONResponse({
         "status": global_status,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_at": datetime.now(UTC).isoformat(),
         "services": checks,
     })
 

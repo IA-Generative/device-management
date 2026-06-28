@@ -2,8 +2,8 @@
 
 import os
 import sys
-import pytest
 
+import pytest
 
 # Env vars that test modules may set and that must not leak between modules
 _VOLATILE_ENV_KEYS = [
