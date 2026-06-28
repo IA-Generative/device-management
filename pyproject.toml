@@ -15,8 +15,22 @@ ignore = [
 ]
 
 [tool.bandit]
-# Skip asserts (B101) project-wide; the security-sensitive checks remain on.
-skips = ["B101"]
+# Bandit est la source unique de SAST (cf. [tool.ruff.lint]).
+# Règles désactivées, chacune auditée le 2026-06-28 :
+#   B101 — asserts (hors prod, pattern de tests).
+#   B110 — try/except/pass : blocs best-effort (sondes, télémétrie, cleanup)
+#          dont l'échec est non-fatal par conception ; sévérité LOW.
+#   B310 — urllib.urlopen : n'est appelé que sur des URLs de services
+#          configurées par l'opérateur (OIDC/Keycloak/relay/LLM via env),
+#          jamais sur une entrée requête. Le fetch exposé à l'utilisateur
+#          (readme_url du wizard) passe par validate_public_url + httpx.
+#   B608 — SQL dynamique : les 13 sites n'interpolent que des identifiants
+#          contrôlés par le code (allowlists de colonnes, noms de pg_tables) ;
+#          toutes les VALEURS passent par des paramètres %s. Pas d'entrée
+#          utilisateur dans la structure des requêtes.
+# Les findings restants (secrets, bind, hash, XML, shell) sont traités par
+# vrai correctif ou # nosec inline justifié.
+skips = ["B101", "B110", "B310", "B608"]
 exclude_dirs = ["tests", "alembic"]
 
 [tool.pytest.ini_options]

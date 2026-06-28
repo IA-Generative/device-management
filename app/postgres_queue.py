@@ -190,7 +190,7 @@ class PostgresQueue:
         exponent = max(0, int(attempts) - 1)
         delay = min(self._retry_max_seconds, self._retry_base_seconds * (2 ** exponent))
         if self._retry_jitter_seconds > 0:
-            delay += random.uniform(0.0, self._retry_jitter_seconds)
+            delay += random.uniform(0.0, self._retry_jitter_seconds)  # nosec B311: random non-crypto, uniquement pour le jitter de backoff
         return max(1, int(delay))
 
     def retry(

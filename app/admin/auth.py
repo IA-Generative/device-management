@@ -43,7 +43,7 @@ DEV_AUTOLOGIN = (os.getenv("DM_DEV_AUTOLOGIN") or "").strip().lower() in ("1", "
 
 # Warn loudly if session secret is the insecure default in production
 _app_env = os.getenv("DM_APP_ENV", "").strip().lower()
-if SESSION_SECRET == "changeme-dev-only" and _app_env in ("prod", "production", "staging"):
+if SESSION_SECRET == "changeme-dev-only" and _app_env in ("prod", "production", "staging"):  # nosec B105: comparaison à la sentinelle de défaut non sécurisé, pas un secret en dur
     logger.critical(
         "ADMIN_SESSION_SECRET is set to the insecure default 'changeme-dev-only' "
         "in %s environment. Anyone can forge admin sessions. "

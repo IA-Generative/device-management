@@ -21,10 +21,10 @@ import re
 import socket
 import threading
 import time
-import xml.etree.ElementTree as ET
 import zipfile
 from urllib.parse import urlparse
 
+import defusedxml.ElementTree as ET
 from fastapi import HTTPException
 
 # --- Bornes anti-DoS (zip-bomb / gros uploads) -------------------------------
