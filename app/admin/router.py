@@ -14,6 +14,7 @@ import urllib.parse
 import uuid
 from pathlib import Path, PurePosixPath
 
+import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -3223,7 +3224,7 @@ async def catalog_upload_logo(request: Request, plugin_id: int,
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="plugin.logo.upload",
                       resource_type="plugin", resource_id=str(plugin_id),
-                      payload={"filename": icon_filename, "size": len(data)},
+                      payload={"filename": filename, "size": len(data)},
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=edit", status_code=303)
