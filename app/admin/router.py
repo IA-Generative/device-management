@@ -10,38 +10,63 @@ import json
 import logging
 import os
 import time
-import uuid
 import urllib.parse
-
+import uuid
 from pathlib import Path, PurePosixPath
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, FileResponse
+import httpx
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from .auth import (
-    require_admin, require_admin_or_service_token,
-    _sign_session, _verify_session, _get_oidc_config,
-    _get_token_endpoint, _has_admin_group, _generate_csrf_token,
-    SESSION_COOKIE, SESSION_TTL, CSRF_COOKIE,
-    CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, REQUIRED_GROUP,
-)
-from .helpers import audit_log, get_db_connection, timeago, span_label
 from app.pathsafe import safe_path_join, safe_segment
 
+from ..settings import settings
+from .auth import (
+    CLIENT_ID,
+    CLIENT_SECRET,
+    CSRF_COOKIE,
+    REDIRECT_URI,
+    REQUIRED_GROUP,
+    SESSION_COOKIE,
+    SESSION_TTL,
+    _generate_csrf_token,
+    _get_oidc_config,
+    _get_token_endpoint,
+    _has_admin_group,
+    _sign_session,
+    _verify_session,
+    require_admin,
+    require_admin_or_service_token,
+)
+from .helpers import audit_log, get_db_connection, span_label, timeago
+from .services import (
+    artifacts as artifacts_svc,
+)
+from .services import (
+    audit as audit_svc,
+)
+from .services import (
+    campaigns as campaigns_svc,
+)
+from .services import (
+    catalog as catalog_svc,
+)
+from .services import (
+    cohorts as cohorts_svc,
+)
+from .services import (
+    communications as comms_svc,
+)
 from .services import (
     devices as devices_svc,
-    campaigns as campaigns_svc,
+)
+from .services import (
     flags as flags_svc,
-    cohorts as cohorts_svc,
-    artifacts as artifacts_svc,
-    audit as audit_svc,
-    catalog as catalog_svc,
-    communications as comms_svc,
+)
+from .services import (
     keycloak as keycloak_svc,
 )
-
-from ..settings import settings
 
 logger = logging.getLogger("dm-admin-router")
 
@@ -116,7 +141,6 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
     """Exchange authorization code for tokens, verify group, set session cookie."""
     import urllib.parse
     import urllib.request
-    import base64
 
     stored_state = request.cookies.get("dm_oidc_state")
     if state != stored_state:
@@ -149,12 +173,13 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         with urllib.request.urlopen(req, timeout=10) as r:
             tokens = json.loads(r.read())
     except Exception:
-        raise HTTPException(502, "Token exchange failed")
+        raise HTTPException(502, "Token exchange failed") from None
 
     # Verify the ID Token as a JWS (VULN-017 / PA-080 R26/R28): JWKS signature
     # plus issuer/audience/expiry. HTTPS alone does NOT guarantee the integrity
     # of the token issued by Keycloak.
     import logging as _logging
+
     import jwt as _jwt
     from jwt import PyJWKClient as _PyJWKClient
     id_token = tokens.get("id_token") or ""
@@ -176,7 +201,7 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         )
     except Exception as exc:
         _logging.getLogger("dm-admin-auth").warning("admin ID token verification failed: %s", exc)
-        raise HTTPException(401, "ID token verification failed")
+        raise HTTPException(401, "ID token verification failed") from exc
 
     if not _has_admin_group(claims):
         raise HTTPException(403, f"Acces refuse : groupe {REQUIRED_GROUP!r} requis")
@@ -431,7 +456,7 @@ async def device_revoke_relay(request: Request, client_uuid: str):
         return RedirectResponse(f"/admin/devices/{client_uuid}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -508,7 +533,7 @@ async def cohorts_create(request: Request, name: str = Form(...),
     except Exception as e:
         conn.rollback()
         logger.error("cohort create failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -554,7 +579,7 @@ async def cohort_add_members(request: Request, cohort_id: int,
         return RedirectResponse(f"/admin/cohorts/{cohort_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -574,7 +599,7 @@ async def cohort_delete(request: Request, cohort_id: int):
         return RedirectResponse("/admin/cohorts", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -628,7 +653,7 @@ async def flags_create(request: Request, name: str = Form(...),
         return RedirectResponse("/admin/flags", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -670,7 +695,7 @@ async def flag_update_default(request: Request, flag_id: int,
         return RedirectResponse(f"/admin/flags/{flag_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -698,7 +723,7 @@ async def flag_add_override(request: Request, flag_id: int,
         return RedirectResponse(f"/admin/flags/{flag_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -719,7 +744,7 @@ async def flag_delete_override(request: Request, flag_id: int, cohort_id: int):
         return RedirectResponse(f"/admin/flags/{flag_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -814,7 +839,7 @@ async def artifact_toggle(request: Request, artifact_id: int,
         return RedirectResponse("/admin/artifacts", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -886,7 +911,7 @@ async def campaign_create(request: Request,
     except Exception as e:
         conn.rollback()
         logger.error("campaign create failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -959,7 +984,7 @@ def _campaign_action(campaign_id: int, new_status: str, action_name: str,
         return RedirectResponse(f"/admin/{redirect_prefix}/{campaign_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -1028,9 +1053,9 @@ async def deploy_wizard(request: Request):
 @require_admin
 async def api_extract_version(request: Request, binary: UploadFile = File(...)):
     """Extract version from plugin package (ZIP: .xpi, .oxt, .crx)."""
-    import zipfile
     import io
     import re
+    import zipfile
 
     data = await binary.read()
     version = None
@@ -1303,7 +1328,7 @@ async def deploy_create(request: Request,
     except Exception as e:
         conn.rollback()
         logger.error("deploy create failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -1332,7 +1357,7 @@ async def deploy_tracking(request: Request, campaign_id: int):
                     row = cur.fetchone()
                     if row:
                         cols = [d[0] for d in cur.description]
-                        plugin = dict(zip(cols, row))
+                        plugin = dict(zip(cols, row, strict=False))
         return templates.TemplateResponse(request, "deploy_wizard.html", {
             "request": request,
             "mode": "tracking",
@@ -1466,7 +1491,7 @@ Si tu ne trouves pas une info, mets une chaine vide ou une liste vide. Reponds u
 # file chunks of ≤512 KB each, stores them in /tmp, and returns an
 # upload_id that catalog_create/version_upload use instead of the file.
 
-import tempfile as _tempfile
+import tempfile as _tempfile  # noqa: E402 (import local à l'endpoint chunked-upload)
 
 _CHUNK_DIR = os.path.join(_tempfile.gettempdir(), "dm-upload-chunks")
 _CHUNK_MAX_SIZE = 768 * 1024  # 768 KB per chunk (leaves room for headers)
@@ -1560,10 +1585,15 @@ async def api_catalog_suggest(request: Request):
     limit optionnel, et audit de l'endpoint.
     """
     import base64 as _b64
+
     from starlette.concurrency import run_in_threadpool
+
     from .suggest_utils import (
-        validate_public_url, parse_plugin_zip, extract_suggestion_json,
-        sanitize_suggestion, rate_limit_ok, MAX_README_BYTES,
+        extract_suggestion_json,
+        parse_plugin_zip,
+        rate_limit_ok,
+        sanitize_suggestion,
+        validate_public_url,
     )
 
     def _tls_verify() -> bool:
@@ -1738,7 +1768,7 @@ async def catalog_purge_removed(request: Request):
         return RedirectResponse(f"/admin/catalog?purged={count}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -1951,7 +1981,7 @@ async def catalog_create(request: Request):
     except Exception as e:
         conn.rollback()
         logger.error("plugin create failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -1975,7 +2005,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                 ORDER BY environment, key
             """, (plugin_id,))
             env_cols = [d[0] for d in cur.description]
-            env_overrides = [dict(zip(env_cols, r)) for r in cur.fetchall()]
+            env_overrides = [dict(zip(env_cols, r, strict=False)) for r in cur.fetchall()]
             # Keycloak clients
             kc_clients = keycloak_svc.get_plugin_clients(cur, plugin_id)
             all_kc_clients = keycloak_svc.list_clients(cur)
@@ -1986,7 +2016,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                 ORDER BY created_at DESC LIMIT 50
             """, (plugin_id,))
             wl_cols = [d[0] for d in cur.description]
-            waitlist = [dict(zip(wl_cols, r)) for r in cur.fetchall()]
+            waitlist = [dict(zip(wl_cols, r, strict=False)) for r in cur.fetchall()]
             # Aliases
             cur.execute("SELECT alias FROM plugin_aliases WHERE plugin_id = %s ORDER BY alias", (plugin_id,))
             aliases = [r[0] for r in cur.fetchall()]
@@ -2035,7 +2065,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                 ORDER BY c.created_at DESC LIMIT 50
             """, (plugin_id,))
             dep_cols = [d[0] for d in cur2.description]
-            deployments = [dict(zip(dep_cols, r)) for r in cur2.fetchall()]
+            deployments = [dict(zip(dep_cols, r, strict=False)) for r in cur2.fetchall()]
             # Add progress_pct
             for d in deployments:
                 try:
@@ -2091,7 +2121,7 @@ async def catalog_plugin_edit(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2113,7 +2143,7 @@ async def catalog_plugin_status(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2167,7 +2197,7 @@ async def catalog_plugin_duplicate(request: Request, plugin_id: int):
         raise
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2205,7 +2235,7 @@ async def catalog_version_create(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2227,7 +2257,7 @@ async def catalog_version_status(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2269,7 +2299,7 @@ async def catalog_versions_purge(request: Request, plugin_id: int):
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2324,7 +2354,7 @@ async def catalog_deployments_purge(request: Request, plugin_id: int):
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2580,7 +2610,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
     except Exception as e:
         conn.rollback()
         logger.error("catalog version upload failed: %s", e)
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2603,7 +2633,7 @@ def _catalog_deploy_action(plugin_id: int, campaign_id: int, new_status: str,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2704,7 +2734,7 @@ async def communication_create(request: Request,
         return RedirectResponse(f"/admin/communications/{comm_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2747,7 +2777,7 @@ async def communication_status(request: Request, comm_id: int,
         return RedirectResponse(f"/admin/communications/{comm_id}", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2777,8 +2807,8 @@ async def catalog_env_upsert(request: Request, plugin_id: int,
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (plugin_id, environment, key)
                 DO UPDATE SET value = %s, is_secret = %s, updated_at = NOW()
-            """, (plugin_id, environment, key, value, is_secret == "on",
-                  value, is_secret == "on"))
+            """, (plugin_id, environment, key, value, is_secret == "on",  # nosec B105: "on" = valeur de checkbox, pas un secret
+                  value, is_secret == "on"))  # nosec B105: idem (valeur répétée pour l'UPSERT)
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="env.override.upsert",
                       resource_type="plugin", resource_id=str(plugin_id),
@@ -2788,7 +2818,7 @@ async def catalog_env_upsert(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=env", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2810,7 +2840,7 @@ async def catalog_env_delete(request: Request, plugin_id: int, override_id: int)
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=env", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -2827,7 +2857,7 @@ async def catalog_migrate_config_templates(request: Request):
         with conn.cursor() as cur:
             cur.execute("SELECT id, slug, device_type, config_template FROM plugins")
             cols = [d[0] for d in cur.description]
-            plugins = [dict(zip(cols, r)) for r in cur.fetchall()]
+            plugins = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
             for p in plugins:
                 if p["config_template"]:
                     migrated.append({"slug": p["slug"], "status": "skipped (already has template)"})
@@ -2911,7 +2941,7 @@ async def catalog_preview_config(request: Request, plugin_id: int, profile: str 
             if not plugin:
                 return JSONResponse({"error": "Plugin non trouve"}, status_code=404)
             # Simulate config loading
-            from app.main import _load_config_template, _substitute_env, _apply_overrides, _apply_catalog_overrides
+            from app.main import _apply_catalog_overrides, _apply_overrides, _load_config_template, _substitute_env
             cfg = _load_config_template(profile, device=plugin["device_type"],
                                         device_name=plugin["slug"], cur=cur)
             cfg = _substitute_env(cfg)
@@ -3016,7 +3046,7 @@ async def catalog_keycloak_link(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=keycloak", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3044,7 +3074,7 @@ async def catalog_access_update(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=access", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3068,7 +3098,7 @@ async def catalog_waitlist_approve(request: Request, plugin_id: int, wl_id: int)
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=access", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3088,7 +3118,7 @@ async def catalog_waitlist_reject(request: Request, plugin_id: int, wl_id: int):
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=access", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3114,7 +3144,7 @@ async def catalog_alias_add(request: Request, plugin_id: int,
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=alias", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3136,7 +3166,7 @@ async def catalog_alias_delete(request: Request, plugin_id: int, alias: str):
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=alias", status_code=303)
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     finally:
         conn.close()
 
@@ -3155,7 +3185,7 @@ async def catalog_alias_stats(request: Request, plugin_id: int):
                 GROUP BY alias ORDER BY total_calls DESC
             """, (plugin_id,))
             cols = [d[0] for d in cur.description]
-            stats = [dict(zip(cols, row)) for row in cur.fetchall()]
+            stats = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
         return JSONResponse(stats)
     finally:
         conn.close()
@@ -3194,7 +3224,7 @@ async def catalog_upload_logo(request: Request, plugin_id: int,
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="plugin.logo.upload",
                       resource_type="plugin", resource_id=str(plugin_id),
-                      payload={"filename": icon_filename, "size": len(data)},
+                      payload={"filename": filename, "size": len(data)},
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=edit", status_code=303)
@@ -3267,8 +3297,8 @@ async def admin_files_list(request: Request, prefix: str = ""):
 @require_admin
 async def api_debug_status(request: Request):
     """HTMX fragment: service availability banner for dashboard."""
-    import urllib.request as urlreq
     import time as _time
+    import urllib.request as urlreq
 
     checks = {}
     # DB
@@ -3384,11 +3414,12 @@ async def api_adoption(request: Request, period: str = "1M"):
 @require_admin
 async def debug_page(request: Request):
     """Full debug page with all service health checks."""
-    import urllib.request as urlreq
-    import urllib.error as urllib_error
-    import time as _time
-    import socket
     import concurrent.futures
+    import platform
+    import socket
+    import time as _time
+    import urllib.error as urllib_error
+    import urllib.request as urlreq
 
     def _check(name, fn):
         t0 = _time.monotonic()
@@ -3417,14 +3448,16 @@ async def debug_page(request: Request):
         # Fallback: openid-configuration via issuer
         from app.admin.auth import _oidc_issuer_url
         issuer = _oidc_issuer_url()
-        if not issuer: return "non configure"
+        if not issuer:
+            return "non configure"
         with urlreq.urlopen(f"{issuer.rstrip('/')}/.well-known/openid-configuration", timeout=5) as r:
             data = json.loads(r.read())
         return f"{os.getenv('KEYCLOAK_REALM','?')}, {len([k for k in data if 'endpoint' in k])} endpoints"
 
     def check_llm():
         llm_url = os.getenv("LLM_BASE_URL", "")
-        if not llm_url: return "non configure"
+        if not llm_url:
+            return "non configure"
         token = os.getenv("LLM_API_TOKEN", "")
         model = os.getenv("DEFAULT_MODEL_NAME", "?")
         req = urlreq.Request(f"{llm_url.rstrip('/')}/models",
@@ -3448,7 +3481,8 @@ async def debug_page(request: Request):
 
     def check_telemetry():
         url = os.getenv("DM_TELEMETRY_UPSTREAM_ENDPOINT", "")
-        if not url: return "non configure"
+        if not url:
+            return "non configure"
         payload = b'{"resourceSpans":[]}'
         req = urlreq.Request(url, data=payload, method="POST",
                              headers={"Content-Type": "application/json"})
@@ -3505,7 +3539,7 @@ async def debug_page(request: Request):
     # System
     system_info = {
         "hostname": socket.gethostname(),
-        "python": os.popen("python3 --version 2>&1").read().strip(),
+        "python": platform.python_version(),
         "uptime": "N/A",
     }
 

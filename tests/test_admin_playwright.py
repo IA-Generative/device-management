@@ -5,8 +5,13 @@ Run with: pytest tests/test_admin_playwright.py --base-url http://localhost:8089
 """
 
 import pytest
-from playwright.sync_api import Page, expect
 
+# Skippé proprement si playwright n'est pas installé (cas du runner CI, qui
+# n'embarque pas le navigateur) — évite une erreur de collecte avant même que
+# le marqueur `integration` ne puisse désélectionner le module.
+pytest.importorskip("playwright")
+
+from playwright.sync_api import Page, expect  # noqa: E402 (après importorskip)
 
 BASE = "http://localhost:8089"
 

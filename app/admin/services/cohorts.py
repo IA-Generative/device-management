@@ -16,7 +16,7 @@ def list_cohorts(cur) -> list[dict]:
         ORDER BY c.name
     """)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_cohort(cur, cohort_id: int) -> dict | None:
@@ -28,7 +28,7 @@ def get_cohort(cur, cohort_id: int) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def get_cohort_members(cur, cohort_id: int, limit: int = 100,
@@ -41,7 +41,7 @@ def get_cohort_members(cur, cohort_id: int, limit: int = 100,
         LIMIT %s OFFSET %s
     """, (cohort_id, limit, offset))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def create_cohort(cur, *, name: str, description: str, type: str,

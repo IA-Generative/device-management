@@ -27,7 +27,7 @@ def b64url_decode(raw: str) -> bytes:
 
 def hash_relay_secret(relay_client_id: str, relay_key: str, pepper: str = "") -> str:
     """SHA256 hash of relay credentials with pepper."""
-    base = f"{relay_client_id}:{relay_key}:{pepper}".encode("utf-8")
+    base = f"{relay_client_id}:{relay_key}:{pepper}".encode()
     return hashlib.sha256(base).hexdigest()
 
 

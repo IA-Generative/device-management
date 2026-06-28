@@ -7,7 +7,7 @@ les supprimer, laisser passer le reste, et émettre un récap périodique.
 
 import logging
 
-from app.logfilters import HealthProbeFilter, PROBE_PATHS
+from app.logfilters import PROBE_PATHS, HealthProbeFilter
 
 
 def _access_record(path: str) -> logging.LogRecord:

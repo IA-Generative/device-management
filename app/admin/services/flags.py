@@ -14,7 +14,7 @@ def list_flags(cur) -> list[dict]:
         ORDER BY ff.name
     """)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_flag(cur, flag_id: int) -> dict | None:
@@ -26,7 +26,7 @@ def get_flag(cur, flag_id: int) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def get_flag_overrides(cur, flag_id: int) -> list[dict]:
@@ -40,7 +40,7 @@ def get_flag_overrides(cur, flag_id: int) -> list[dict]:
         ORDER BY c.name
     """, (flag_id,))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def create_flag(cur, *, name: str, description: str, default_value: bool) -> int:

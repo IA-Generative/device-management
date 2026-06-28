@@ -25,5 +25,7 @@ jobs:
         run: pip-audit -r requirements.txt || true  # report-only initially
       - name: Semgrep (SAST)
         run: semgrep --config auto app || true       # report-only initially
-      - name: Pytest
-        run: pytest
+      - name: Pytest (unit)
+        # Les tests `integration` (Postgres/Keycloak/serveur/navigateur live)
+        # ne tournent pas sur le runner CI sans infra — lancés à la demande.
+        run: pytest -m "not integration"
