@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 # Chemins de sonde dont l'access-log est filtré.
 PROBE_PATHS = ("/livez", "/healthz")
@@ -39,11 +39,11 @@ class HealthProbeFilter(logging.Filter):
         self._summary_interval = summary_interval
         self._summary_logger = logging.getLogger(summary_logger)
         self._time = time_func
-        self._last_summary: Optional[float] = None
+        self._last_summary: float | None = None
         self._lock = threading.Lock()
 
     @staticmethod
-    def _extract_path(record: logging.LogRecord) -> Optional[str]:
+    def _extract_path(record: logging.LogRecord) -> str | None:
         """Best-effort extraction of the request path from an access-log record.
 
         uvicorn.access logs with ``record.args`` =
@@ -71,7 +71,7 @@ class HealthProbeFilter(logging.Filter):
         return None
 
     @staticmethod
-    def _match_probe(path: Optional[str]) -> Optional[str]:
+    def _match_probe(path: str | None) -> str | None:
         if not path:
             return None
         for p in PROBE_PATHS:

@@ -4,8 +4,8 @@ import os
 import sys
 import tempfile
 
-from fastapi.testclient import TestClient
 from fastapi.responses import Response
+from fastapi.testclient import TestClient
 
 # Minimal config fixture for filesystem fallback
 _TEST_CONFIG = {

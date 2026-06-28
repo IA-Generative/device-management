@@ -1,8 +1,8 @@
 """Catalog service — plugins, versions, bundles, installations."""
 
 from __future__ import annotations
-import json
 
+import json
 
 # ─── Plugins ──────────────────────────────────────────────────────────
 

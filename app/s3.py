@@ -7,6 +7,7 @@ from botocore.client import Config
 
 from .settings import settings
 
+
 def s3_client():
     # Compatible AWS S3 et S3 compatibles (MinIO, etc.)
     endpoint_url = settings.s3_endpoint_url or None

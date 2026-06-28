@@ -1,6 +1,7 @@
 """Communications service — announcements, alerts, surveys, changelogs."""
 
 from __future__ import annotations
+
 import json
 
 
