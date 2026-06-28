@@ -240,8 +240,12 @@ async def logout(request: Request):
         if base.startswith("http://") and "localhost" not in base:
             base = "https://" + base[len("http://"):]
         post_logout = f"{base}/admin/"
-        params = {"post_logout_redirect_uri": post_logout}
-        # Pass id_token_hint from session (required by Keycloak)
+        # client_id lets Keycloak identify the RP + validate post_logout_redirect_uri
+        # even when no id_token_hint is available (e.g. a dev-autologin session, or a
+        # session minted before SSO was enabled). Keycloak 18+ requires one or the
+        # other — without either it returns "Missing parameters: id_token_hint".
+        params = {"post_logout_redirect_uri": post_logout, "client_id": CLIENT_ID}
+        # Prefer id_token_hint when the session carries it (RP-initiated logout).
         cookie = request.cookies.get(SESSION_COOKIE)
         session = _verify_session(cookie) if cookie else None
         if session and session.get("id_token"):

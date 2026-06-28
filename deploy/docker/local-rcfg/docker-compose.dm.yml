@@ -23,6 +23,8 @@ services:
       context: ../../..
       dockerfile: deploy/docker/Dockerfile
     env_file: [.env]
+    volumes:
+      - ../../../app:/app/app:ro   # code live (restart suffit, pas de rebuild)
     environment:
       DM_RUNTIME_MODE: "all"
       DM_DEV_AUTOLOGIN: "true"
@@ -41,6 +43,8 @@ services:
     image: dm-local:rcfg
     command: ["python", "-m", "app.worker_main"]
     env_file: [.env]
+    volumes:
+      - ../../../app:/app/app:ro
     environment:
       DM_RUNTIME_MODE: "worker"
       POD_IP: "dm-worker"
