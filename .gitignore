@@ -1,0 +1,120 @@
+############################
+# macOS
+############################
+.DS_Store
+.AppleDouble
+.LSOverride
+
+bordel/*
+
+# Icon must end with two \r
+Icon
+
+# Thumbnails
+._*
+
+# Spotlight / Time Machine
+.Spotlight-V100
+.Trashes
+.TimeMachine
+
+############################
+# Python
+############################
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Logs
+*.log
+
+############################
+# FastAPI / Uvicorn
+############################
+# Reload / runtime artifacts
+*.pid
+
+############################
+# VS Code
+############################
+.vscode/*
+!.vscode/launch.json
+!.vscode/extensions.json
+
+############################
+# Docker
+############################
+# Local volumes / data
+data/
+*.tar
+*.tar.gz
+
+############################
+# Environment & secrets
+############################
+.env
+.env.*
+config.default.json
+# Commit only example/template files
+!.env.example
+!.env.secrets.example
+!deploy/docker/.env.secrets.example
+
+############################
+# IDE / Tools
+############################
+.idea/
+.claude/
+
+############################
+# macOS extras
+############################
+*.DS_Store
+Thumbs.db
+
+# Bonus
+bordel/
+
+# Private docs with real production values
+private/
+
+# Documentation interne (artefacts de travail : prompts, runbooks/capitalisation DGX)
+# — non destinée au dépôt public. La doc publique vit sous docs/{architecture,plugin-developer,security,operations}.
+docs/dgx/
+docs/prompts/
+
+# Secrets / valeurs réelles (déploiement) — utiliser les .example
+deploy/docker/.env
+# Tout env-secrets d'overlay (scaleway, dgx, local, prod-beta, …) est gitignored ;
+# seuls les .example sont versionnés. Les secrets se posent APRÈS création du cluster.
+deploy/k8s/overlays/*/env-secrets.yaml
+!deploy/k8s/overlays/*/env-secrets.yaml.example
+
+# Backups / éditeurs (peuvent contenir des secrets en clair)
+*.bak
+*.bak*
+*~
+*.swp
+*.swo

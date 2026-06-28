@@ -1,0 +1,30 @@
+{
+  "configVersion": 1,
+  "config": {
+    "enabled": true,
+
+    "llm_base_urls": "",
+    "llm_default_models": "",
+    "llm_api_tokens": "",
+    "llm_request_timeout_seconds": 45,
+
+    "authHeaderName": "Authorization",
+    "authHeaderPrefix": "Bearer ",
+
+    "keycloakIssuerUrl": "",
+    "keycloakRealm": "",
+    "keycloakClientId": "",
+    "keycloak_redirect_uri": "",
+    "keycloak_allowed_redirect_uri": "",
+
+    "bootstrap_url": "",
+    "config_path": "",
+    "device_name": "",
+
+    "telemetryEnabled": true,
+    "telemetryEndpoint": "${{PUBLIC_BASE_URL}}/telemetry/v1/traces",
+    "telemetryAuthorizationType": "Bearer",
+    "telemetryKey": "",
+    "telemetrylogJson": true
+  }
+}

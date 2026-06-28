@@ -1,0 +1,115 @@
+{% extends "catalog_base.html" %}
+
+{% block title %}Catalogue de plugins{% endblock %}
+
+{% block hero %}
+<div class="dm-hero">
+  <div class="fr-container">
+    <div class="fr-grid-row fr-grid-row--gutters fr-grid-row--middle">
+      <div class="fr-col-12 fr-col-md-7">
+        <h1 class="fr-display--sm" style="color:#fff;">Extensions pour vos outils bureautiques</h1>
+        <p class="fr-text--lead" style="color:rgba(255,255,255,0.85);">
+          Outils d'intelligence artificielle et de productivite pour les agents du Ministere de l'Interieur.
+        </p>
+      </div>
+      <div class="fr-col-12 fr-col-md-5">
+        <div class="fr-grid-row fr-grid-row--gutters">
+          <div class="fr-col-4">
+            <div class="dm-stat-card">
+              <strong>{{ total_installs }}</strong>
+              <span>installations</span>
+            </div>
+          </div>
+          <div class="fr-col-4">
+            <div class="dm-stat-card">
+              <strong>{{ plugins|length }}</strong>
+              <span>plugin{{ 's' if plugins|length != 1 else '' }}</span>
+            </div>
+          </div>
+          <div class="fr-col-4">
+            <div class="dm-stat-card">
+              <strong>Auto</strong>
+              <span>mises a jour</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+  {# ── Filtres par catégorie ── #}
+  <div class="dm-filter-group">
+    <a href="/catalog" class="fr-btn fr-btn--sm {% if not current_category %}fr-btn--primary{% else %}fr-btn--secondary{% endif %}">Tous</a>
+    {% for cat in categories %}
+      <a href="/catalog?category={{ cat }}" class="fr-btn fr-btn--sm {% if current_category == cat %}fr-btn--primary{% else %}fr-btn--secondary{% endif %}">{{ cat|capitalize }}</a>
+    {% endfor %}
+  </div>
+
+  {# ── Grille de plugins ── #}
+  {% if plugins %}
+  <div class="fr-grid-row fr-grid-row--gutters">
+    {% for p in plugins %}
+    <div class="fr-col-12 fr-col-md-6 fr-col-lg-4">
+      <div class="fr-card fr-enlarge-link" style="height:100%;">
+        <div class="fr-card__body">
+          <div class="fr-card__content">
+            <div style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:0.75rem;">
+              {% if p.icon_url %}
+                <img class="dm-plugin-icon" src="{{ p.icon_url }}" alt="{{ p.name }}">
+              {% else %}
+                <div class="dm-plugin-icon-placeholder">{{ p.name[:2] }}</div>
+              {% endif %}
+              <div style="flex:1;">
+                <h3 class="fr-card__title" style="margin:0;">
+                  <a href="/catalog/{{ p.slug }}">{{ p.name }}</a>
+                </h3>
+                <div style="margin-top:0.25rem;font-size:0.85rem;color:#666;">
+                  par {{ p.publisher }}
+                  {% if p.latest_version %} — v{{ p.latest_version }}{% endif %}
+                </div>
+              </div>
+            </div>
+
+            <p class="fr-card__desc">{{ p.intent or p.description or '' }}</p>
+
+            <div class="fr-card__start" style="margin-top:0.75rem;">
+              {% if p.maturity == 'release' %}
+                <p class="fr-badge fr-badge--success fr-badge--no-icon">Stable</p>
+              {% elif p.maturity == 'beta' %}
+                <p class="fr-badge fr-badge--warning fr-badge--no-icon">Beta</p>
+              {% elif p.maturity == 'alpha' %}
+                <p class="fr-badge fr-badge--new fr-badge--no-icon">Alpha</p>
+              {% elif p.maturity == 'pre-release' %}
+                <p class="fr-badge fr-badge--info fr-badge--no-icon">Pre-release</p>
+              {% elif p.maturity == 'dev' %}
+                <p class="fr-badge fr-badge--no-icon">Dev</p>
+              {% endif %}
+              <span style="font-size:0.85rem;color:#666;margin-left:0.5rem;">
+                {{ p.install_count }} installation{{ 's' if p.install_count != 1 else '' }}
+              </span>
+            </div>
+
+            {% if p.key_features %}
+            <div class="fr-card__end" style="margin-top:0.75rem;">
+              <ul class="fr-tags-group">
+                {% for feat in p.key_features[:5] %}
+                  <li><p class="fr-tag">{{ feat }}</p></li>
+                {% endfor %}
+              </ul>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="fr-callout">
+    <p class="fr-callout__text">Aucun plugin disponible pour le moment.</p>
+  </div>
+  {% endif %}
+{% endblock %}

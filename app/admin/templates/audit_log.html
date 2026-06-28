@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Journal d'audit{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Journal d'audit</h1>
+
+<!-- Filters -->
+<form class="dm-search" method="GET" action="/admin/audit">
+  <input class="dm-input" name="actor" placeholder="Acteur (email)" value="{{ filters.actor or '' }}" style="flex:1;">
+  <input class="dm-input" name="action" placeholder="Action" value="{{ filters.action or '' }}" style="flex:1;">
+  <select class="dm-select" name="resource_type">
+    <option value="">Toutes les ressources</option>
+    <option value="campaign" {% if filters.resource_type == 'campaign' %}selected{% endif %}>Campagne</option>
+    <option value="cohort" {% if filters.resource_type == 'cohort' %}selected{% endif %}>Cohorte</option>
+    <option value="flag" {% if filters.resource_type == 'flag' %}selected{% endif %}>Feature flag</option>
+    <option value="artifact" {% if filters.resource_type == 'artifact' %}selected{% endif %}>Artifact</option>
+    <option value="device" {% if filters.resource_type == 'device' %}selected{% endif %}>Appareil</option>
+  </select>
+  <button type="submit" class="dm-btn dm-btn--primary dm-btn--sm">Filtrer</button>
+  <a href="/admin/audit/export?actor={{ filters.actor or '' }}&action={{ filters.action or '' }}&resource_type={{ filters.resource_type or '' }}"
+     class="dm-btn dm-btn--secondary dm-btn--sm">Export CSV</a>
+</form>
+
+<table>
+  <thead>
+    <tr>
+      <th>Horodatage</th>
+      <th>Acteur</th>
+      <th>Action</th>
+      <th>Ressource</th>
+      <th>Details</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for a in entries %}
+    <tr>
+      <td>{{ a.created_at.strftime('%d/%m/%Y %H:%M') if a.created_at else '-' }}</td>
+      <td>{{ a.actor_email }}</td>
+      <td><code>{{ a.action }}</code></td>
+      <td>{{ a.resource_type }}{% if a.resource_id %}:{{ a.resource_id }}{% endif %}</td>
+      <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;">
+        {% if a.payload %}
+        <code title="{{ a.payload }}">{{ a.payload | string | truncate(60) }}</code>
+        {% else %}-{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not entries %}
+    <tr><td colspan="5" style="text-align: center; color: #666;">Aucune entree d'audit.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+
+{% if page > 0 or entries | length >= 100 %}
+<div class="dm-pagination">
+  {% if page > 0 %}
+  <a href="/admin/audit?page={{ page - 1 }}" class="dm-btn dm-btn--sm dm-btn--secondary">&laquo; Precedent</a>
+  {% endif %}
+  <span>Page {{ page + 1 }}</span>
+  {% if entries | length >= 100 %}
+  <a href="/admin/audit?page={{ page + 1 }}" class="dm-btn dm-btn--sm dm-btn--secondary">Suivant &raquo;</a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

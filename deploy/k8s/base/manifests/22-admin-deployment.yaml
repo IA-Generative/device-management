@@ -1,0 +1,205 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: device-management-admin
+  namespace: bootstrap
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: device-management-admin
+  template:
+    metadata:
+      labels:
+        app: device-management-admin
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: device-management-admin
+          image: <SCALEWAY_REGISTRY>/device-management:0.5.15
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+          env:
+            - name: DM_RUNTIME_MODE
+              value: "admin"
+            - name: DM_APP_ENV
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_APP_ENV
+            - name: DM_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_PORT
+            - name: DM_ALLOW_ORIGINS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_ALLOW_ORIGINS
+            - name: PUBLIC_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: PUBLIC_BASE_URL
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DATABASE_URL
+            - name: DATABASE_ADMIN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DATABASE_ADMIN_URL
+            # Keycloak / OIDC
+            - name: ADMIN_REQUIRED_GROUP
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_REQUIRED_GROUP
+            - name: ADMIN_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_OIDC_ISSUER_URL
+            - name: ADMIN_OIDC_PUBLIC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_OIDC_PUBLIC_ISSUER_URL
+            - name: KEYCLOAK_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_ISSUER_URL
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_REALM
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: KEYCLOAK_CLIENT_ID
+            - name: DM_AUTH_JWKS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_AUTH_JWKS_URL
+            - name: ADMIN_OIDC_CLIENT_ID
+              value: "bootstrap-iassistant"
+            # ADMIN_OIDC_REDIRECT_URI supprimé : le callback est dérivé dynamiquement
+            # de PUBLIC_BASE_URL (origin + /admin/callback) dans app/admin/auth.py.
+            - name: ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: ADMIN_SESSION_SECRET
+                  optional: true
+            # LLM (for debug page)
+            - name: LLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: LLM_BASE_URL
+            - name: LLM_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: LLM_API_TOKEN
+            - name: DEFAULT_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DEFAULT_MODEL_NAME
+            # Telemetry (for debug page)
+            - name: DM_TELEMETRY_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_ENABLED
+            - name: DM_TELEMETRY_UPSTREAM_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_UPSTREAM_ENDPOINT
+            - name: DM_TELEMETRY_GRAFANA_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_TELEMETRY_GRAFANA_URL
+            # Relay (for debug page)
+            - name: DM_RELAY_ASSISTANT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_ASSISTANT_URL
+            # Files API token (shared with DM API pods for binary distribution)
+            - name: DM_QUEUE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_QUEUE_ADMIN_TOKEN
+            - name: DM_INTERNAL_URL
+              value: "http://device-management"
+            # S3 (for artifact management)
+            - name: DM_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_S3_BUCKET
+            - name: DM_S3_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_S3_ENDPOINT_URL
+            - name: DM_BINARIES_MODE
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_BINARIES_MODE
+          volumeMounts:
+            - name: admin-data
+              mountPath: /data/content
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: 3001
+            periodSeconds: 2
+            failureThreshold: 15
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /livez
+              port: 3001
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            # Tolérance accrue (défense en profondeur) : évite un kill du pod si
+            # l'event-loop est momentanément occupé. Le vrai fix est le passage
+            # de /admin/api/catalog/suggest en I/O non bloquantes (httpx async).
+            timeoutSeconds: 10
+            failureThreshold: 6
+      volumes:
+        - name: admin-data
+          persistentVolumeClaim:
+            claimName: admin-content-pvc

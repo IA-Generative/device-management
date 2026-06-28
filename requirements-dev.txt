@@ -1,0 +1,9 @@
+# Developer / CI tooling (CT-9). Kept separate from runtime requirements.txt.
+-r requirements.txt
+# pytest est un outil de test : il ne doit pas être embarqué dans l'image
+# runtime. >=9.0.3 corrige CVE-2025-71176 (tmpdir TOCTOU, GHSA-6w46-j5rx-g56g).
+pytest>=9.0.3,<10
+ruff>=0.6,<1.0
+bandit>=1.7,<2.0
+pip-audit>=2.7,<3.0
+semgrep>=1.80,<2.0

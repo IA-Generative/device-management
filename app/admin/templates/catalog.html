@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Catalogue{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+  <div>
+    <h1 class="dm-page-title" style="margin:0;">Catalogue de plugins</h1>
+    <div style="font-size:0.8rem;color:#666;margin-top:0.25rem;">
+      <a href="/catalog/api/plugins" target="_blank" style="color:#000091;">Catalogue public (JSON)</a>
+      &middot;
+      <a href="/docs" target="_blank" style="color:#000091;">Documentation API</a>
+    </div>
+  </div>
+  <a href="/admin/catalog/new" class="dm-btn dm-btn--primary">+ Nouveau plugin</a>
+</div>
+
+<div class="dm-search">
+  <form method="get" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <select name="category" class="dm-select" onchange="this.form.submit()">
+      <option value="">Toutes categories</option>
+      {% for c in categories %}
+      <option value="{{ c }}" {% if filters.category == c %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+    <select name="status" class="dm-select" onchange="this.form.submit()">
+      <option value="">Tous statuts</option>
+      <option value="active" {% if filters.status == 'active' %}selected{% endif %}>Actif</option>
+      <option value="draft" {% if filters.status == 'draft' %}selected{% endif %}>Brouillon</option>
+      <option value="deprecated" {% if filters.status == 'deprecated' %}selected{% endif %}>Obsolete</option>
+      <option value="removed" {% if filters.status == 'removed' %}selected{% endif %}>Supprime</option>
+    </select>
+  </form>
+  <form method="post" action="/admin/catalog/purge-removed" style="margin-left:auto;"
+        onsubmit="return confirm('Supprimer definitivement tous les plugins en statut Supprime ?');">
+    <button type="submit" class="dm-btn dm-btn--secondary dm-btn--sm" title="Supprimer definitivement les plugins en statut Supprime">Purger les supprimes</button>
+  </form>
+</div>
+
+{% set purged = request.query_params.get('purged', '') %}
+{% if purged %}
+<div class="dm-flash dm-flash--success" style="margin-bottom:1rem;">{{ purged }} plugin(s) supprime(s) definitivement.</div>
+{% endif %}
+
+{% if plugins %}
+<div class="dm-grid-3">
+  {% for p in plugins %}
+  <a href="/admin/catalog/{{ p.id }}" class="dm-plugin-card">
+    <div class="dm-plugin-card__header">
+      {% if p.icon_url %}
+      <img src="{{ p.icon_url }}" alt=""
+           style="width:40px;height:40px;border-radius:8px;object-fit:cover;"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+      <div class="dm-plugin-card__icon" style="display:none;">{{ p.device_type[:2].upper() }}</div>
+      {% else %}
+      <div class="dm-plugin-card__icon">{{ p.device_type[:2].upper() }}</div>
+      {% endif %}
+      <div>
+        <div class="dm-plugin-card__name">{{ p.name }}</div>
+        <div class="dm-plugin-card__meta">{{ p.device_type }} &mdash; {{ p.category }}</div>
+      </div>
+    </div>
+    {% if p.intent %}
+    <div class="dm-plugin-card__intent">{{ p.intent[:120] }}{% if p.intent|length > 120 %}...{% endif %}</div>
+    {% endif %}
+    <div class="dm-plugin-card__footer">
+      <span>{{ p.install_count or 0 }} installs</span>
+      <span>{{ p.latest_version or 'aucune version' }}</span>
+      {% if p.status == 'active' %}<span class="dm-badge dm-badge--success">Actif</span>
+      {% elif p.status == 'deprecated' %}<span class="dm-badge dm-badge--warning">Obsolete</span>
+      {% elif p.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
+      {% else %}<span class="dm-badge dm-badge--error">{{ p.status }}</span>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p style="color:#666;">Aucun plugin dans le catalogue. <a href="/admin/catalog/new">Creer le premier</a>.</p>
+{% endif %}
+{% endblock %}

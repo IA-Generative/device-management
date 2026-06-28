@@ -1,0 +1,936 @@
+{% extends "base.html" %}
+{% block title %}{{ plugin.name }}{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb"><a href="/admin/catalog">Catalogue</a> &rsaquo; {{ plugin.name }}</div>
+{% endblock %}
+{% block content %}
+
+{# Post-creation guide #}
+{% if request.query_params.get('created') == '1' %}
+<div style="background:#F5F5FE;border:2px solid #000091;border-radius:8px;padding:1.25rem;margin-bottom:1.5rem;">
+  <h3 style="margin:0 0 0.75rem 0;font-size:1rem;color:#000091;">Plugin cree avec succes</h3>
+  <p style="margin:0 0 0.75rem 0;font-size:0.9rem;">
+    <strong>{{ plugin.name }}</strong> est maintenant enregistre dans le catalogue.
+    Voici les prochaines etapes pour le rendre disponible :
+  </p>
+  {% set _has_version = versions|length > 0 %}
+  {% if _has_version %}
+  <p style="margin:0 0 0.5rem 0;font-size:0.9rem;color:#18753C;">
+    La version <strong>{{ versions[0].version }}</strong> a ete creee et publiee automatiquement depuis le package.
+  </p>
+  {% endif %}
+  <ol style="margin:0;padding-left:1.5rem;font-size:0.875rem;line-height:1.8;">
+    {% if _has_version %}
+    <li><strong>Deployer</strong> &mdash; Onglet <em>Versions</em>, cliquez sur la version puis <em>Deployer</em> pour creer une campagne de mise a jour</li>
+    {% else %}
+    <li><strong>Uploader une version</strong> &mdash; Onglet <em>Versions</em>, cliquez sur <em>Nouvelle version</em> et deposez le fichier du plugin (.oxt, .xpi, .crx)</li>
+    {% endif %}
+    <li><strong>Configurer les environnements</strong> &mdash; Onglet <em>Environnements</em> pour ajouter des overrides par profil (dev, int, prod)</li>
+    <li><strong>Verifier la config</strong> &mdash; Onglet <em>Configuration</em> pour voir le template dm-config.json et previsualiser les substitutions</li>
+    <li><strong>Tester</strong> &mdash; Installez le plugin et verifiez qu'il recupere sa config via <code>/config/{{ plugin.slug }}/config.json?profile=int</code></li>
+  </ol>
+  <p style="margin:0.75rem 0 0 0;font-size:0.85rem;color:#666;">
+    Astuce : les fichiers <code>dm-config.json</code> et <code>dm-manifest.json</code> embarques dans le package sont extraits automatiquement a chaque upload de version.
+    Les notes de version et le changelog sont mis a jour depuis le manifest.
+  </p>
+</div>
+{% endif %}
+
+{# Header #}
+<div style="display:flex;gap:1.5rem;margin-bottom:1.5rem;align-items:flex-start;">
+  {% if plugin.icon_url %}
+  <img src="{{ plugin.icon_url }}" alt="{{ plugin.name }}"
+       style="width:60px;height:60px;border-radius:12px;object-fit:cover;"
+       onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+  <div class="dm-plugin-icon-lg" style="display:none;">{{ plugin.device_type[:2].upper() }}</div>
+  {% else %}
+  <div class="dm-plugin-icon-lg">{{ plugin.device_type[:2].upper() }}</div>
+  {% endif %}
+  <div style="flex:1;">
+    <h1 class="dm-page-title" style="margin-bottom:0.25rem;">{{ plugin.name }}</h1>
+    <div style="font-size:0.875rem;color:#666;margin-bottom:0.5rem;">
+      <code style="background:#f0f0f5;padding:1px 6px;border-radius:3px;font-size:0.85em;">{{ plugin.slug }}</code>
+      &mdash; {{ plugin.device_type }} &mdash; {{ plugin.category }} &mdash; {{ plugin.publisher }}
+      {% set _latest = versions|selectattr('status', 'equalto', 'published')|first %}
+      {% if _latest %}
+      &mdash; <strong>v{{ _latest.version }}</strong>
+      {% elif versions %}
+      &mdash; <span style="color:#B34000;">aucune version publiee</span>
+      {% else %}
+      &mdash; <span style="color:#B34000;">aucune version</span>
+      {% endif %}
+      {% if plugin.status == 'active' %}<span class="dm-badge dm-badge--success">Actif</span>
+      {% elif plugin.status == 'deprecated' %}<span class="dm-badge dm-badge--warning">Obsolete</span>
+      {% elif plugin.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
+      {% elif plugin.status == 'removed' %}<span class="dm-badge dm-badge--error">Supprime</span>{% endif %}
+    </div>
+    {% if plugin.intent %}
+    <div style="font-size:0.9rem;color:#3a3a3a;margin-bottom:0.5rem;">{{ plugin.intent }}</div>
+    {% endif %}
+    {% if features %}
+    <div style="display:flex;flex-wrap:wrap;gap:0.25rem;">
+      {% for f in features %}
+      <span class="dm-badge dm-badge--info" style="font-weight:normal;">{{ f }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    {% if plugin.homepage_url %}<a href="{{ plugin.homepage_url }}" target="_blank" class="dm-btn dm-btn--ghost dm-btn--sm">Docs</a>{% endif %}
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/duplicate" style="display:inline;">
+      <button class="dm-btn dm-btn--secondary dm-btn--sm" onclick="return confirm('Dupliquer ce plugin ?')">Dupliquer</button>
+    </form>
+    {% if plugin.status == 'active' %}
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/status" style="display:inline;">
+      <input type="hidden" name="status" value="deprecated">
+      <button class="dm-btn dm-btn--warning dm-btn--sm" onclick="return confirm('Deprecier ce plugin ?')">Deprecier</button>
+    </form>
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/status" style="display:inline;">
+      <input type="hidden" name="status" value="removed">
+      <button class="dm-btn dm-btn--danger dm-btn--sm" onclick="return confirm('Supprimer definitivement ce plugin ?')">Supprimer</button>
+    </form>
+    {% elif plugin.status == 'deprecated' %}
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/status" style="display:inline;">
+      <input type="hidden" name="status" value="removed">
+      <button class="dm-btn dm-btn--danger dm-btn--sm" onclick="return confirm('Supprimer definitivement ?')">Supprimer</button>
+    </form>
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/status" style="display:inline;">
+      <input type="hidden" name="status" value="active">
+      <button class="dm-btn dm-btn--primary dm-btn--sm">Re-activer</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{# Stats tiles #}
+<div class="dm-grid-4">
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.active }}</div>
+    <div style="font-size:0.875rem;color:#666;">Installations actives</div>
+  </div>
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ versions|selectattr('status','eq','published')|list|length }}</div>
+    <div style="font-size:0.875rem;color:#666;">Versions publiees</div>
+  </div>
+  <div class="dm-metric-tile dm-metric-tile--success">
+    <div style="font-size:1.5rem;font-weight:bold;">
+      {% set latest = versions|selectattr('status','eq','published')|list %}
+      {{ latest[0].version if latest else '-' }}
+    </div>
+    <div style="font-size:0.875rem;">Derniere version</div>
+  </div>
+  <div class="dm-metric-tile">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ stats.inactive }}</div>
+    <div style="font-size:0.875rem;color:#666;">Inactifs / en retard</div>
+  </div>
+</div>
+
+{# Tabs #}
+<div class="dm-tabs">
+  <div class="dm-tabs__list">
+    <button class="dm-tabs__tab {% if tab == 'versions' %}dm-tabs__tab--active{% endif %}" data-tab="tab-versions">Versions</button>
+    <button class="dm-tabs__tab {% if tab == 'deployments' %}dm-tabs__tab--active{% endif %}" data-tab="tab-deployments">Deploiements</button>
+    <button class="dm-tabs__tab {% if tab == 'changelog' %}dm-tabs__tab--active{% endif %}" data-tab="tab-changelog">Changelog</button>
+    <button class="dm-tabs__tab {% if tab == 'config' %}dm-tabs__tab--active{% endif %}" data-tab="tab-config">Configuration</button>
+    <button class="dm-tabs__tab {% if tab == 'installations' %}dm-tabs__tab--active{% endif %}" data-tab="tab-installations">Installations</button>
+    <button class="dm-tabs__tab {% if tab == 'edit' %}dm-tabs__tab--active{% endif %}" data-tab="tab-edit">Editer</button>
+  </div>
+</div>
+
+{# Tab: Versions #}
+<div id="tab-versions" class="dm-tabs__panel {% if tab == 'versions' %}dm-tabs__panel--active{% endif %}">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+    <h3 style="margin:0;">Versions</h3>
+    <div style="display:flex;gap:0.5rem;">
+      {% set _old_count = versions|selectattr('status', 'in', ['deprecated','yanked'])|list|length %}
+      {% if _old_count > 0 %}
+      <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/purge" style="display:inline;"
+            onsubmit="return confirm('Supprimer {{ _old_count }} version(s) obsolete(s) (deprecated + yanked) ?');">
+        <button class="dm-btn dm-btn--secondary dm-btn--sm">Nettoyer ({{ _old_count }})</button>
+      </form>
+      {% endif %}
+      <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="document.getElementById('new-version-form').style.display='block'">+ Nouvelle version</button>
+    </div>
+  </div>
+
+  {# ── Upload-first new version form ── #}
+  <div id="new-version-form" style="display:none;background:#F5F5FE;padding:1.25rem;border-radius:8px;margin-bottom:1.5rem;">
+
+    {# Step indicator #}
+    <div class="dm-steps" id="nv-steps" style="margin-bottom:1.25rem;">
+      <div class="dm-step dm-step--active dm-step--arrow" id="nv-si-1">1. Upload</div>
+      <div class="dm-step dm-step--arrow" id="nv-si-2">2. Details</div>
+      <div class="dm-step" id="nv-si-3">3. Deployer</div>
+    </div>
+
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/upload" enctype="multipart/form-data" id="nv-form">
+
+      {# Step 1: Upload #}
+      <div id="nv-step-1">
+        <div class="dm-form-row">
+          <label class="dm-label">Fichier du plugin (.oxt, .xpi, .crx)</label>
+          <input type="file" name="binary" required class="dm-input" accept=".oxt,.xpi,.crx" id="nv-file-input">
+          <div id="nv-file-analysis" style="margin-top:0.75rem;"></div>
+        </div>
+
+        <div id="nv-detected-info" style="display:none;background:#fff;border:1px solid #e5e5e5;border-radius:6px;padding:1rem;margin-top:0.75rem;">
+          <div class="dm-grid-2" style="gap:0.75rem;">
+            <div>
+              <span style="font-size:0.8rem;color:#666;">Version detectee</span>
+              <div style="font-size:1.1rem;font-weight:600;" id="nv-detected-version">-</div>
+            </div>
+            <div>
+              <span style="font-size:0.8rem;color:#666;">Type detecte</span>
+              <div style="font-size:1.1rem;font-weight:600;" id="nv-detected-type">-</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dm-form-actions" style="margin-top:1rem;">
+          <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="document.getElementById('new-version-form').style.display='none'; resetNvForm();">Annuler</button>
+          <button type="button" class="dm-btn dm-btn--primary dm-btn--sm" id="nv-btn-step2" disabled onclick="nvGoStep(2)">Suivant</button>
+        </div>
+      </div>
+
+      {# Step 2: Details (pre-filled) #}
+      <div id="nv-step-2" style="display:none;">
+        <div class="dm-grid-2">
+          <div class="dm-form-row">
+            <label class="dm-label">Version</label>
+            <input type="text" name="version" required class="dm-input" id="nv-version-input" placeholder="2.2.0">
+          </div>
+          <div class="dm-form-row">
+            <label class="dm-label">Mode de distribution</label>
+            <select name="distribution_mode" class="dm-select" style="width:100%;">
+              <option value="managed" selected>Gere (catalogue)</option>
+              <option value="download_link">Lien de telechargement</option>
+              <option value="store">Store officiel</option>
+              <option value="manual">Manuel</option>
+            </select>
+          </div>
+        </div>
+        <div class="dm-form-row">
+          <label class="dm-label">Notes de version (markdown)</label>
+          <textarea name="release_notes" class="dm-input" rows="4" placeholder="- Correction de bugs..."></textarea>
+        </div>
+        <div class="dm-grid-2">
+          <div class="dm-form-row">
+            <label class="dm-label">Version hote min</label>
+            <input type="text" name="min_host_version" class="dm-input" placeholder="7.4">
+          </div>
+          <div class="dm-form-row">
+            <label class="dm-label">Version hote max</label>
+            <input type="text" name="max_host_version" class="dm-input" placeholder="">
+          </div>
+        </div>
+
+        <div class="dm-form-actions">
+          <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvGoStep(1)">Retour</button>
+          <button type="button" class="dm-btn dm-btn--primary dm-btn--sm" onclick="nvGoStep(3)">Suivant — Deployer</button>
+        </div>
+      </div>
+
+      {# Step 3: Deploy environment selection #}
+      <div id="nv-step-3" style="display:none;">
+        <h4 style="margin:0 0 1rem 0;">Deployer sur un environnement</h4>
+
+        <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-bottom:1.25rem;" id="nv-env-cards">
+          {% for env in deploy_environments %}
+          <label class="dm-env-card" data-env="{{ env.name }}" data-strategy="{{ env.strategy }}" data-confirm="{{ env.confirm_name|lower }}">
+            <input type="radio" name="environment" value="{{ env.name }}" style="display:none;" {% if loop.first %}checked{% endif %}>
+            <div class="dm-env-card__name">{{ env.label }}</div>
+            <div class="dm-env-card__hint">
+              {% if env.strategy == 'patch_all' %}Patch all
+              {% elif env.strategy == 'progressive' %}Progressif
+              {% else %}Choix de strategie{% endif %}
+            </div>
+          </label>
+          {% endfor %}
+        </div>
+
+        {# Strategy options (shown for "choice" and "progressive" environments) #}
+        <div id="nv-strategy-panel" style="margin-bottom:1.25rem;">
+          <h5 style="margin:0 0 0.75rem 0;">Strategie de deploiement</h5>
+          <div class="dm-form-row">
+            <label style="display:block;margin-bottom:0.5rem;">
+              <input type="radio" name="deploy_strategy" value="patch_all" onchange="nvToggleStrategy()">
+              <strong>Patch all</strong> — deploiement immediat a 100%
+            </label>
+            <label style="display:block;margin-bottom:0.5rem;">
+              <input type="radio" name="deploy_strategy" value="progressive" checked onchange="nvToggleStrategy()">
+              <strong>Progressif</strong> — paliers automatiques
+            </label>
+          </div>
+
+          <div id="nv-progressive-opts" style="margin-left:1.5rem;margin-bottom:0.75rem;">
+            <label class="dm-label">Duree entre paliers</label>
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+              <input type="number" name="stage_hours" value="24" min="1" max="720" class="dm-input" style="max-width:100px;" id="nv-stage-hours" oninput="nvUpdateEstimate()">
+              <span>heures</span>
+              <span style="margin-left:1rem;color:#666;font-size:0.85rem;" id="nv-duration-estimate">~ 3 jours (5% → 25% → 50% → 100%)</span>
+            </div>
+          </div>
+        </div>
+
+        {# Target options (collapsible) #}
+        <details style="margin-bottom:1.25rem;">
+          <summary style="cursor:pointer;color:#000091;font-size:0.875rem;">Options de ciblage avancees</summary>
+          <div style="margin-top:0.75rem;">
+            <div class="dm-form-row">
+              <label style="display:block;margin-bottom:0.5rem;">
+                <input type="radio" name="target_mode" value="all" checked onchange="nvToggleTarget()">
+                Tous les utilisateurs
+              </label>
+              <label style="display:block;margin-bottom:0.5rem;">
+                <input type="radio" name="target_mode" value="existing" onchange="nvToggleTarget()">
+                Cohorte existante
+              </label>
+              <label style="display:block;margin-bottom:0.5rem;">
+                <input type="radio" name="target_mode" value="percent" onchange="nvToggleTarget()">
+                Pourcentage de comptes
+              </label>
+              <label style="display:block;margin-bottom:0.5rem;">
+                <input type="radio" name="target_mode" value="emails" onchange="nvToggleTarget()">
+                Adresses email specifiques
+              </label>
+            </div>
+            <div id="nv-target-existing" style="display:none;margin-left:1.5rem;" class="dm-form-row">
+              <label class="dm-label">Cohorte</label>
+              <select name="cohort_id" class="dm-select" style="width:100%;max-width:400px;">
+                <option value="">-- Choisir --</option>
+                {% for c in cohorts %}
+                <option value="{{ c.id }}">{{ c.name }} ({{ c.member_count }} membres)</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div id="nv-target-percent" style="display:none;margin-left:1.5rem;" class="dm-form-row">
+              <label class="dm-label">Pourcentage</label>
+              <div style="display:flex;align-items:center;gap:0.5rem;">
+                <input type="number" name="percent" value="10" min="1" max="100" class="dm-input" style="max-width:100px;">
+                <span>% des comptes</span>
+              </div>
+            </div>
+            <div id="nv-target-emails" style="display:none;margin-left:1.5rem;" class="dm-form-row">
+              <label class="dm-label">Emails (une par ligne)</label>
+              <textarea name="emails" class="dm-input" rows="4" placeholder="alice@example.com&#10;bob@example.com"></textarea>
+            </div>
+          </div>
+        </details>
+
+        {# Prod confirmation #}
+        <div id="nv-confirm-name" style="display:none;background:#FFF3F3;border:1px solid #CE0500;border-radius:6px;padding:1rem;margin-bottom:1rem;">
+          <label class="dm-label" style="color:#CE0500;">Confirmation requise — tapez le nom du plugin : <strong>{{ plugin.name }}</strong></label>
+          <input type="text" id="nv-confirm-input" class="dm-input" placeholder="{{ plugin.name }}" autocomplete="off" style="max-width:400px;">
+        </div>
+
+        <div id="nv-deploy-error" style="display:none;color:#CE0500;font-size:0.85rem;margin-bottom:0.5rem;"></div>
+
+        <div class="dm-form-actions">
+          <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvGoStep(2)">Retour</button>
+          <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvSubmit('publish_only')">Publier sans deployer</button>
+          <button type="button" class="dm-btn dm-btn--primary" id="nv-btn-deploy" onclick="nvSubmit('deploy')">
+            Publier et deployer
+          </button>
+        </div>
+      </div>
+
+      <input type="hidden" name="action" id="nv-action" value="deploy">
+    </form>
+  </div>
+
+  {# Version history table #}
+  <table>
+    <thead><tr><th>Version</th><th>Statut</th><th>Distribution</th><th>Date</th><th>Installs</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for v in versions %}
+      <tr>
+        <td><strong>{{ v.version }}</strong></td>
+        <td>
+          {% if v.status == 'published' %}<span class="dm-badge dm-badge--success">Publie</span>
+          {% elif v.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
+          {% elif v.status == 'deprecated' %}<span class="dm-badge dm-badge--warning">Obsolete</span>
+          {% elif v.status == 'yanked' %}<span class="dm-badge dm-badge--error">Retire</span>{% endif %}
+        </td>
+        <td>{{ v.distribution_mode }}</td>
+        <td>{{ v.published_at.strftime('%d/%m/%Y') if v.published_at else v.created_at.strftime('%d/%m/%Y') }}</td>
+        <td>{{ v.install_count or 0 }}</td>
+        <td style="display:flex;gap:0.25rem;">
+          {% if v.status == 'published' %}
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/status" style="display:inline;">
+            <input type="hidden" name="status" value="deprecated">
+            <button class="dm-btn dm-btn--warning dm-btn--sm">Deprecier</button>
+          </form>
+          {% endif %}
+          {% if v.status in ('published', 'deprecated') %}
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/status" style="display:inline;">
+            <input type="hidden" name="status" value="yanked">
+            <button class="dm-btn dm-btn--danger dm-btn--sm" onclick="return confirm('Retirer cette version ?')">Retirer</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% if v.release_notes %}
+      <tr><td colspan="6" style="background:#f9f9f9;font-size:0.85rem;color:#555;padding:0.5rem 0.75rem;white-space:pre-line;">{{ v.release_notes }}</td></tr>
+      {% endif %}
+      {% endfor %}
+      {% if not versions %}
+      <tr><td colspan="6" style="color:#666;text-align:center;">Aucune version. Uploadez la premiere ci-dessus.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{# Tab: Deployments #}
+<div id="tab-deployments" class="dm-tabs__panel {% if tab == 'deployments' %}dm-tabs__panel--active{% endif %}">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+    <h3 style="margin:0;">Deploiements</h3>
+    {% set _old_deploys = deployments|selectattr('status', 'in', ['completed','rolled_back','draft'])|list|length %}
+    {% if _old_deploys > 0 %}
+    <form method="post" action="/admin/catalog/{{ plugin.id }}/deployments/purge" style="display:inline;"
+          onsubmit="return confirm('Supprimer {{ _old_deploys }} deploiement(s) termine(s) ? Les deploiements actifs et en pause sont conserves.');">
+      <button class="dm-btn dm-btn--secondary dm-btn--sm">Nettoyer ({{ _old_deploys }})</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if deployments %}
+  <table>
+    <thead><tr><th>Nom</th><th>Version</th><th>Env</th><th>Statut</th><th>Progression</th><th>Date</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for d in deployments %}
+      <tr>
+        <td>{{ d.name }}</td>
+        <td><strong>{{ d.version or '-' }}</strong></td>
+        <td><span class="dm-badge dm-badge--info">{{ d.environment or '-' }}</span></td>
+        <td>
+          {% if d.status == 'active' %}<span class="dm-badge dm-badge--success">Actif</span>
+          {% elif d.status == 'paused' %}<span class="dm-badge dm-badge--warning">Pause</span>
+          {% elif d.status == 'completed' %}<span class="dm-badge dm-badge--neutral">Termine</span>
+          {% elif d.status == 'rolled_back' %}<span class="dm-badge dm-badge--error">Annule</span>
+          {% else %}<span class="dm-badge dm-badge--neutral">{{ d.status }}</span>{% endif %}
+        </td>
+        <td>
+          {% if d.progress_pct is defined %}
+          <div class="dm-progress-bar" style="width:100px;display:inline-block;vertical-align:middle;">
+            <div class="dm-progress-bar__fill" style="width:{{ d.progress_pct }}%;"></div>
+          </div>
+          <span style="font-size:0.8rem;margin-left:0.25rem;">{{ d.progress_pct }}%</span>
+          {% else %}-{% endif %}
+        </td>
+        <td>{{ d.created_at.strftime('%d/%m/%Y %H:%M') if d.created_at else '-' }}</td>
+        <td style="display:flex;gap:0.25rem;">
+          {% if d.status == 'active' %}
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/deployments/{{ d.id }}/pause" style="display:inline;">
+            <button class="dm-btn dm-btn--warning dm-btn--sm">Pause</button>
+          </form>
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/deployments/{{ d.id }}/abort" style="display:inline;">
+            <button class="dm-btn dm-btn--danger dm-btn--sm" onclick="return confirm('Annuler ce deploiement ?')">Annuler</button>
+          </form>
+          {% elif d.status == 'paused' %}
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/deployments/{{ d.id }}/resume" style="display:inline;">
+            <button class="dm-btn dm-btn--primary dm-btn--sm">Reprendre</button>
+          </form>
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/deployments/{{ d.id }}/abort" style="display:inline;">
+            <button class="dm-btn dm-btn--danger dm-btn--sm" onclick="return confirm('Annuler ce deploiement ?')">Annuler</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:#666;text-align:center;">Aucun deploiement pour ce plugin.</p>
+  {% endif %}
+</div>
+
+{# ── Versions tab JavaScript ── #}
+<script>
+const PLUGIN_NAME = {{ plugin.name|tojson }};
+
+function nvGoStep(n) {
+  for (let i = 1; i <= 3; i++) {
+    document.getElementById('nv-step-' + i).style.display = i === n ? 'block' : 'none';
+    const si = document.getElementById('nv-si-' + i);
+    si.classList.remove('dm-step--active', 'dm-step--done');
+    if (i < n) si.classList.add('dm-step--done');
+    if (i === n) si.classList.add('dm-step--active');
+  }
+  if (n === 3) nvUpdateEnvUI();
+}
+
+function resetNvForm() {
+  document.getElementById('nv-file-analysis').innerHTML = '';
+  document.getElementById('nv-detected-info').style.display = 'none';
+  document.getElementById('nv-btn-step2').disabled = true;
+  nvGoStep(1);
+}
+
+// File upload analysis
+document.getElementById('nv-file-input').addEventListener('change', function() {
+  const file = this.files[0];
+  const box = document.getElementById('nv-file-analysis');
+  const info = document.getElementById('nv-detected-info');
+  const btn = document.getElementById('nv-btn-step2');
+
+  if (!file) { box.innerHTML = ''; info.style.display = 'none'; btn.disabled = true; return; }
+
+  box.innerHTML = '<div style="display:flex;align-items:center;gap:0.5rem;color:#666;"><span class="dm-spinner" style="width:16px;height:16px;border-width:2px;"></span>Analyse du fichier...</div>';
+  btn.disabled = true;
+
+  const fd = new FormData();
+  fd.append('binary', file);
+  fetch('/admin/api/deploy/extract-version', {method: 'POST', body: fd, credentials: 'same-origin'})
+    .then(r => r.json())
+    .then(data => {
+      const sizeMB = (data.file_size / (1024*1024)).toFixed(1);
+      if (!data.valid) {
+        box.innerHTML = '<div class="dm-flash dm-flash--error" style="margin-bottom:0;">' +
+          data.errors.map(e => '<div>' + e + '</div>').join('') + '</div>';
+        btn.disabled = true;
+        return;
+      }
+      const checks = [
+        'Format : .' + data.extension + (data.is_valid_zip ? ' (ZIP valide)' : ''),
+        'Taille : ' + sizeMB + ' Mo',
+      ];
+      if (data.version) checks.push('Version : ' + data.version + ' (' + data.source + ')');
+      if (data.device_type) {
+        const labels = {libreoffice:'LibreOffice', matisse:'Thunderbird (Matisse)', firefox:'Firefox', chrome:'Chrome'};
+        checks.push('Type : ' + (labels[data.device_type] || data.device_type));
+      }
+      box.innerHTML = '<div class="dm-flash dm-flash--success" style="margin-bottom:0;">' +
+        checks.map(c => '<div>&#10003; ' + c + '</div>').join('') +
+        (data.warnings || []).map(w => '<div style="color:#B34000;">&#9888; ' + w + '</div>').join('') +
+        '</div>';
+
+      // Pre-fill
+      if (data.version) {
+        document.getElementById('nv-version-input').value = data.version;
+        document.getElementById('nv-detected-version').textContent = data.version;
+      }
+      if (data.release_notes) {
+        const rn = document.querySelector('textarea[name="release_notes"]');
+        if (rn) rn.value = data.release_notes;
+      }
+      if (data.device_type) {
+        const labels = {libreoffice:'LibreOffice', matisse:'Thunderbird', firefox:'Firefox', chrome:'Chrome'};
+        document.getElementById('nv-detected-type').textContent = labels[data.device_type] || data.device_type;
+      }
+      info.style.display = 'block';
+      btn.disabled = false;
+    })
+    .catch(() => {
+      box.innerHTML = '<div class="dm-flash dm-flash--warning" style="margin-bottom:0;">Analyse impossible — saisie manuelle</div>';
+      btn.disabled = false;
+    });
+});
+
+// Environment card selection
+document.getElementById('nv-env-cards').addEventListener('click', function(e) {
+  const card = e.target.closest('.dm-env-card');
+  if (!card) return;
+  this.querySelectorAll('.dm-env-card').forEach(c => c.classList.remove('dm-env-card--selected'));
+  card.classList.add('dm-env-card--selected');
+  card.querySelector('input[type=radio]').checked = true;
+  nvUpdateEnvUI();
+});
+// Init first card
+document.querySelector('.dm-env-card')?.classList.add('dm-env-card--selected');
+
+function nvUpdateEnvUI() {
+  const card = document.querySelector('.dm-env-card--selected');
+  if (!card) return;
+  const strategy = card.dataset.strategy;
+  const confirmRequired = card.dataset.confirm === 'true';
+  const panel = document.getElementById('nv-strategy-panel');
+  const confirmBox = document.getElementById('nv-confirm-name');
+
+  if (strategy === 'patch_all') {
+    panel.style.display = 'none';
+    document.querySelector('input[name=deploy_strategy][value=patch_all]').checked = true;
+  } else if (strategy === 'progressive') {
+    panel.style.display = 'block';
+    document.querySelector('input[name=deploy_strategy][value=progressive]').checked = true;
+    // Show but pre-select progressive
+  } else {
+    // "choice" — show both options
+    panel.style.display = 'block';
+  }
+  nvToggleStrategy();
+  confirmBox.style.display = confirmRequired ? 'block' : 'none';
+  if (!confirmRequired) document.getElementById('nv-confirm-input').value = '';
+}
+
+function nvToggleStrategy() {
+  const isProg = document.querySelector('input[name=deploy_strategy]:checked')?.value === 'progressive';
+  document.getElementById('nv-progressive-opts').style.display = isProg ? 'block' : 'none';
+}
+
+function nvToggleTarget() {
+  ['existing','percent','emails'].forEach(id => {
+    document.getElementById('nv-target-' + id).style.display = 'none';
+  });
+  const mode = document.querySelector('input[name=target_mode]:checked')?.value;
+  if (mode && mode !== 'all') {
+    document.getElementById('nv-target-' + mode).style.display = 'block';
+  }
+}
+
+function nvUpdateEstimate() {
+  const h = parseInt(document.getElementById('nv-stage-hours').value) || 24;
+  const totalH = h * 3;
+  const days = (totalH / 24).toFixed(1);
+  document.getElementById('nv-duration-estimate').textContent =
+    '~ ' + days + ' jours (5% \u2192 25% \u2192 50% \u2192 100%)';
+}
+
+// ═══════ Chunked upload (WAF bypass) ═══════
+const NV_CHUNK_SIZE = 512 * 1024; // 512 KB per chunk
+
+async function nvUploadFileChunked(file) {
+  const totalChunks = Math.ceil(file.size / NV_CHUNK_SIZE);
+  let uploadId = '';
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * NV_CHUNK_SIZE;
+    const end = Math.min(start + NV_CHUNK_SIZE, file.size);
+    const blob = file.slice(start, end);
+    const fd = new FormData();
+    fd.append('chunk', blob, file.name);
+    fd.append('chunk_index', i);
+    fd.append('total_chunks', totalChunks);
+    fd.append('filename', file.name);
+    if (uploadId) fd.append('upload_id', uploadId);
+    const resp = await fetch('/admin/api/upload-chunk', {
+      method: 'POST', body: fd, credentials: 'same-origin',
+    });
+    if (!resp.ok) throw new Error('Chunk upload failed: ' + resp.status);
+    const data = await resp.json();
+    uploadId = data.upload_id;
+    const pct = Math.round(((i + 1) / totalChunks) * 100);
+    document.getElementById('nv-btn-deploy').innerHTML =
+      '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
+      'Upload ' + pct + '%...';
+  }
+  return uploadId;
+}
+
+async function nvSubmit(action) {
+  const errBox = document.getElementById('nv-deploy-error');
+  errBox.style.display = 'none';
+
+  // Validate version
+  const version = document.getElementById('nv-version-input').value.trim();
+  if (!version) {
+    errBox.textContent = 'La version est requise.';
+    errBox.style.display = 'block';
+    nvGoStep(2);
+    return;
+  }
+
+  // Validate file
+  const file = document.getElementById('nv-file-input').files[0];
+  if (!file) {
+    errBox.textContent = 'Le fichier du plugin est requis.';
+    errBox.style.display = 'block';
+    nvGoStep(1);
+    return;
+  }
+
+  // Validate prod confirmation
+  if (action === 'deploy') {
+    const card = document.querySelector('.dm-env-card--selected');
+    if (card && card.dataset.confirm === 'true') {
+      const typed = document.getElementById('nv-confirm-input').value.trim();
+      if (typed !== PLUGIN_NAME) {
+        errBox.textContent = 'Confirmation requise : tapez exactement "' + PLUGIN_NAME + '"';
+        errBox.style.display = 'block';
+        return;
+      }
+    }
+  }
+
+  // Show loading state on buttons
+  document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => {
+    b.disabled = true;
+  });
+  document.getElementById('nv-btn-deploy').innerHTML =
+    '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
+    'Upload du fichier...';
+
+  try {
+    // 1. Upload file in chunks (WAF bypass)
+    const uploadId = await nvUploadFileChunked(file);
+
+    // 2. Collect form fields as JSON payload
+    const form = document.getElementById('nv-form');
+    const formData = new FormData(form);
+    const payload = {};
+    for (const [key, value] of formData.entries()) {
+      if (key === 'binary') continue;
+      payload[key] = value;
+    }
+    payload.action = action;
+    payload.upload_id = uploadId;
+
+    document.getElementById('nv-btn-deploy').innerHTML =
+      '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
+      (action === 'deploy' ? 'Deploiement en cours...' : 'Publication en cours...');
+
+    // 3. Send as JSON (not multipart) — WAF blocks multipart POST
+    const resp = await fetch(form.getAttribute('action'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+      redirect: 'manual',
+    });
+
+    if (resp.type === 'opaqueredirect' || resp.status === 303 || resp.status === 302) {
+      window.location.href = resp.headers.get('Location') || window.location.href;
+    } else if (resp.ok) {
+      window.location.reload();
+    } else {
+      const t = await resp.text();
+      let msg = 'Erreur ' + resp.status;
+      try { msg = JSON.parse(t).detail || msg; } catch {}
+      errBox.textContent = msg;
+      errBox.style.display = 'block';
+      document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => b.disabled = false);
+      document.getElementById('nv-btn-deploy').innerHTML = 'Deployer';
+    }
+  } catch (err) {
+    errBox.textContent = 'Erreur : ' + err.message;
+    errBox.style.display = 'block';
+    document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => b.disabled = false);
+    document.getElementById('nv-btn-deploy').innerHTML = 'Deployer';
+  }
+}
+</script>
+
+{# Tab: Changelog #}
+<div id="tab-changelog" class="dm-tabs__panel {% if tab == 'changelog' %}dm-tabs__panel--active{% endif %}">
+  <div style="background:#f9f9f9;padding:1.5rem;border-radius:8px;white-space:pre-line;font-size:0.9rem;line-height:1.6;">{{ plugin.changelog or 'Aucun changelog. Editez le plugin pour en ajouter un.' }}</div>
+</div>
+
+{# Tab: Configuration (dm-config.json template) #}
+<div id="tab-config" class="dm-tabs__panel {% if tab == 'config' %}dm-tabs__panel--active{% endif %}">
+  <div style="margin-bottom:1rem;">
+    <h3 style="margin:0 0 0.5rem 0;">Template de configuration</h3>
+    <p style="font-size:0.875rem;color:#666;margin:0;">
+      Ce template (dm-config.json) est la base de la config servie aux plugins.
+      Les overrides par environnement (onglet Environnements) s'appliquent par-dessus.
+    </p>
+  </div>
+
+  {% if plugin.config_template %}
+  <div style="background:#f0f5ff;border:1px solid #c5d5f0;border-radius:6px;padding:0.75rem;margin-bottom:1rem;font-size:0.85rem;">
+    <strong>Source :</strong> {% if config_from_package %}Extrait du package{% else %}Saisi manuellement{% endif %}
+    &mdash; Les valeurs <span style="color:#000091;background:#e8e8ff;padding:1px 6px;border-radius:3px;font-family:monospace;font-size:0.85em;">$&lbrace;&lbrace;VAR&rbrace;&rbrace;</span>
+    sont des variables de la plateforme, substituees au runtime.
+  </div>
+
+  {# JSON editor #}
+  <div style="position:relative;">
+    <textarea id="config-template-editor" class="dm-input" rows="20"
+              style="font-family:monospace;font-size:0.8rem;width:100%;tab-size:2;"
+    >{{ config_template_json }}</textarea>
+    <div id="config-save-status" style="font-size:0.85rem;margin-top:0.5rem;"></div>
+  </div>
+
+  <div style="display:flex;gap:0.5rem;margin-top:0.75rem;align-items:center;">
+    <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="saveConfigTemplate()">Enregistrer</button>
+    <button class="dm-btn dm-btn--secondary dm-btn--sm" onclick="resetConfigTemplate()">Reinitialiser</button>
+    <div style="flex:1;"></div>
+    <label class="dm-label" style="margin:0;font-size:0.85rem;">Apercu profil :</label>
+    <select id="preview-profile" class="dm-select" style="width:auto;min-width:100px;">
+      <option value="local">local</option>
+      <option value="dev" selected>dev</option>
+      <option value="int">int</option>
+      <option value="prod">prod</option>
+    </select>
+    <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="previewConfig()">Previsualiser</button>
+  </div>
+
+  {# Preview panel #}
+  <div id="config-preview-panel" style="display:none;margin-top:1rem;">
+    <h4 style="margin:0 0 0.5rem 0;">Config finale (apres merge + overrides)</h4>
+    <pre id="config-preview-json" style="background:#1e1e2e;color:#cdd6f4;padding:1rem;border-radius:6px;font-size:0.8rem;max-height:400px;overflow:auto;white-space:pre-wrap;"></pre>
+  </div>
+
+  {% else %}
+  <div style="background:#f9f9f9;border:1px solid #e5e5e5;border-radius:8px;padding:2rem;text-align:center;">
+    <p style="color:#666;margin-bottom:1rem;">Aucun template de configuration enregistre pour ce plugin.</p>
+    <p style="font-size:0.85rem;color:#999;margin-bottom:1rem;">
+      Uploadez un package contenant <code>dm-config.json</code> via le deploy wizard,
+      ou collez le template ci-dessous.
+    </p>
+    <textarea id="config-template-editor" class="dm-input" rows="15"
+              style="font-family:monospace;font-size:0.8rem;width:100%;tab-size:2;text-align:left;"
+              placeholder='{"configVersion": 1, "default": { ... }, "dev": { ... }, "prod": { ... }}'></textarea>
+    <div id="config-save-status" style="font-size:0.85rem;margin-top:0.5rem;"></div>
+    <div style="margin-top:0.75rem;">
+      <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="saveConfigTemplate()">Enregistrer le template</button>
+    </div>
+  </div>
+  {% endif %}
+
+  <script>
+  async function saveConfigTemplate() {
+    const editor = document.getElementById('config-template-editor');
+    const status = document.getElementById('config-save-status');
+    let parsed;
+    try {
+      parsed = JSON.parse(editor.value);
+    } catch (e) {
+      status.innerHTML = '<span style="color:#CE0500;">JSON invalide : ' + e.message + '</span>';
+      return;
+    }
+    status.innerHTML = '<span style="color:#666;">Enregistrement...</span>';
+    try {
+      const resp = await fetch('/admin/api/catalog/{{ plugin.id }}/config-template', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({config_template: parsed}),
+        credentials: 'same-origin'
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        status.innerHTML = '<span style="color:#18753C;">&#10003; Template enregistre.</span>';
+        // Reformat the editor
+        editor.value = JSON.stringify(parsed, null, 2);
+      } else {
+        status.innerHTML = '<span style="color:#CE0500;">' + (data.error || 'Erreur') + '</span>';
+      }
+    } catch (e) {
+      status.innerHTML = '<span style="color:#CE0500;">Erreur : ' + e.message + '</span>';
+    }
+  }
+
+  function resetConfigTemplate() {
+    if (!confirm('Reinitialiser le template ? Les modifications non enregistrees seront perdues.')) return;
+    location.reload();
+  }
+
+  async function previewConfig() {
+    const profile = document.getElementById('preview-profile').value;
+    const panel = document.getElementById('config-preview-panel');
+    const pre = document.getElementById('config-preview-json');
+    pre.textContent = 'Chargement...';
+    panel.style.display = 'block';
+    try {
+      const resp = await fetch('/admin/api/catalog/{{ plugin.id }}/preview?profile=' + profile, {credentials: 'same-origin'});
+      const data = await resp.json();
+      pre.textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      pre.textContent = 'Erreur : ' + e.message;
+    }
+  }
+  </script>
+</div>
+
+{# Tab: Installations #}
+<div id="tab-installations" class="dm-tabs__panel {% if tab == 'installations' %}dm-tabs__panel--active{% endif %}">
+  <table>
+    <thead><tr><th>Client UUID</th><th>Email</th><th>Version</th><th>Derniere activite</th><th>Statut</th></tr></thead>
+    <tbody>
+      {% for i in installations %}
+      <tr>
+        <td><code>{{ i.client_uuid[:12] }}...</code></td>
+        <td>{{ i.email or '-' }}</td>
+        <td>{{ i.installed_version or '-' }}</td>
+        <td>{{ timeago(i.last_seen_at) }}</td>
+        <td>
+          {% if i.status == 'active' %}<span class="dm-badge dm-badge--success">Actif</span>
+          {% elif i.status == 'inactive' %}<span class="dm-badge dm-badge--warning">Inactif</span>
+          {% else %}<span class="dm-badge dm-badge--neutral">{{ i.status }}</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not installations %}
+      <tr><td colspan="5" style="color:#666;text-align:center;">Aucune installation enregistree.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{# Tab: Edit #}
+<div id="tab-edit" class="dm-tabs__panel {% if tab == 'edit' %}dm-tabs__panel--active{% endif %}">
+
+  {# Logo upload (separate form with enctype) #}
+  <div class="dm-form-row" style="margin-bottom:1.5rem;max-width:700px;">
+    <label class="dm-label">Logo / Mascotte</label>
+    <div style="display:flex;align-items:center;gap:1rem;">
+      {% if plugin.icon_url %}
+      <img src="{{ plugin.icon_url }}" alt="{{ plugin.name }}"
+           style="width:64px;height:64px;border-radius:12px;object-fit:cover;"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+      <div class="dm-plugin-icon-lg" style="display:none;">{{ plugin.device_type[:2]|upper }}</div>
+      {% else %}
+      <div class="dm-plugin-icon-lg">{{ plugin.device_type[:2]|upper }}</div>
+      {% endif %}
+      <form method="post" action="/admin/catalog/{{ plugin.id }}/logo" enctype="multipart/form-data" style="display:flex;gap:0.5rem;align-items:center;">
+        <input type="file" name="logo" accept=".png,.jpg,.jpeg,.svg,.webp" class="dm-input" style="max-width:300px;">
+        <button type="submit" class="dm-btn dm-btn--secondary dm-btn--sm">Uploader</button>
+      </form>
+    </div>
+    <div class="dm-hint">PNG, JPG, SVG ou WebP. Max 2 Mo. 256x256 px recommande.</div>
+  </div>
+
+  <form method="post" action="/admin/catalog/{{ plugin.id }}/edit" style="max-width:700px;">
+    <div class="dm-form-row">
+      <label class="dm-label">Nom</label>
+      <input type="text" name="name" required class="dm-input" value="{{ plugin.name }}">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Intention</label>
+      <textarea name="intent" class="dm-input" rows="2">{{ plugin.intent or '' }}</textarea>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Description</label>
+      <textarea name="description" class="dm-input" rows="4">{{ plugin.description or '' }}</textarea>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Fonctionnalites cles (separees par des virgules)</label>
+      <input type="text" name="key_features" class="dm-input" value="{{ features|join(', ') }}">
+    </div>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Categorie</label>
+        <select name="category" class="dm-select" style="width:100%;">
+          {% for c in ['productivity','security','communication','tools','other'] %}
+          <option value="{{ c }}" {% if plugin.category == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Visibilite</label>
+        <select name="visibility" class="dm-select" style="width:100%;">
+          {% for v in ['public','internal','hidden'] %}
+          <option value="{{ v }}" {% if plugin.visibility == v %}selected{% endif %}>{{ v }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Editeur</label>
+      <input type="text" name="publisher" class="dm-input" value="{{ plugin.publisher or 'DNUM' }}">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">URL doc</label>
+      <input type="url" name="homepage_url" class="dm-input" value="{{ plugin.homepage_url or '' }}">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Email support</label>
+      <input type="email" name="support_email" class="dm-input" value="{{ plugin.support_email or '' }}">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Changelog (markdown)</label>
+      <textarea name="changelog" class="dm-input" rows="10">{{ plugin.changelog or '' }}</textarea>
+    </div>
+    <div class="dm-form-actions">
+      <button type="submit" class="dm-btn dm-btn--primary">Enregistrer</button>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

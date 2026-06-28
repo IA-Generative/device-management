@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: relay-assistant-nginx
+  namespace: bootstrap
+data:
+  default.conf.template: |
+    server {
+      listen 8080;
+      server_name _;
+
+      # Resolve external hostnames via cluster DNS (10.32.0.10 = kube-dns ClusterIP)
+      resolver 10.32.0.10 valid=30s ipv6=off;
+
+      proxy_ssl_server_name on;
+      proxy_http_version 1.1;
+
+      location = /healthz {
+        add_header Content-Type text/plain;
+        return 200 'ok';
+      }
+
+      # JWKs are public material: expose them without relay credential checks
+      # so device-management can verify PKCE access tokens with local cluster routing.
+      location = /keycloak/protocol/openid-connect/certs {
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass ${RELAY_KEYCLOAK_UPSTREAM}/protocol/openid-connect/certs$is_args$args;
+      }
+
+      location = /__relay_auth {
+        internal;
+        proxy_pass http://device-management:3001/relay/authorize;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Relay-Client $http_x_relay_client;
+        proxy_set_header X-Relay-Key $http_x_relay_key;
+        proxy_set_header X-Relay-Proxy-Token ${RELAY_PROXY_SHARED_TOKEN};
+        proxy_set_header X-Relay-Target $relay_target;
+        proxy_set_header X-Original-Method $request_method;
+        proxy_set_header X-Original-URI $request_uri;
+      }
+
+      # Keycloak OIDC endpoints — public by design (same as /certs).
+      # /auth is a browser redirect endpoint: the user-agent cannot inject
+      # custom X-Relay-* headers, so auth_request here creates a chicken-and-egg
+      # at first login (credentials are only distributed after enrollment,
+      # which itself requires a valid Keycloak token).
+      # /token is protected by PKCE (code_verifier) and /userinfo by the
+      # Bearer token — Keycloak validates them natively, no relay gatekeeping
+      # needed for cryptographic safety.
+      location ~ ^/keycloak/protocol/openid-connect/(auth|token|userinfo)$ {
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Content-Type $http_content_type;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass ${RELAY_KEYCLOAK_UPSTREAM}/protocol/openid-connect/$1$is_args$args;
+      }
+
+      # Relais /llm supprimé : les clients appellent l'API LLM en direct via
+      # llm_base_urls (servi dans /config). Le proxy ne masquait ni l'URL ni le
+      # token (il transférait l'Authorization du client), donc sans valeur.
+
+      location ~ ^/mcr-api/(.+)$ {
+        set $relay_target mcr-api;
+        auth_request /__relay_auth;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Content-Type $http_content_type;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass ${RELAY_MCR_API_UPSTREAM}/$1$is_args$args;
+      }
+
+      location ~ ^/compte-rendu/(.+)$ {
+        set $relay_target compte-rendu;
+        auth_request /__relay_auth;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Content-Type $http_content_type;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass ${RELAY_COMPTE_RENDU_UPSTREAM}/$1$is_args$args;
+      }
+
+      location = /telemetry/v1/traces {
+        set $relay_target telemetry;
+        auth_request /__relay_auth;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Content-Type $http_content_type;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass http://device-management:3001/telemetry/v1/traces$is_args$args;
+      }
+
+      location / {
+        return 404;
+      }
+    }

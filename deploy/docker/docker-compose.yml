@@ -1,0 +1,158 @@
+services:
+  device-management:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    ports:
+      - "${DM_PORT:-8089}:3001"
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.secrets
+        required: false
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://server.com}
+      DM_APP_ENV: ${DM_APP_ENV:-dev}
+      DM_CONFIG_ENABLED: ${DM_CONFIG_ENABLED:-true}
+      DM_CONFIG_PROFILE: ${DM_CONFIG_PROFILE:-prod}
+      DM_ENROLL_URL: ${DM_ENROLL_URL:-/enroll}
+      DM_ALLOW_ORIGINS: ${DM_ALLOW_ORIGINS:-*}
+      DM_MAX_BODY_SIZE_MB: ${DM_MAX_BODY_SIZE_MB:-10}
+      DM_RUNTIME_MODE: ${DM_RUNTIME_MODE:-api}
+      DM_QUEUE_ENABLED: ${DM_QUEUE_ENABLED:-true}
+      DM_QUEUE_BATCH_SIZE: ${DM_QUEUE_BATCH_SIZE:-50}
+      DM_QUEUE_POLL_INTERVAL_SECONDS: ${DM_QUEUE_POLL_INTERVAL_SECONDS:-0.5}
+      DM_QUEUE_LOCK_TTL_SECONDS: ${DM_QUEUE_LOCK_TTL_SECONDS:-60}
+      DM_QUEUE_DEFAULT_MAX_ATTEMPTS: ${DM_QUEUE_DEFAULT_MAX_ATTEMPTS:-8}
+      DM_QUEUE_RETRY_BASE_SECONDS: ${DM_QUEUE_RETRY_BASE_SECONDS:-2}
+      DM_QUEUE_RETRY_MAX_SECONDS: ${DM_QUEUE_RETRY_MAX_SECONDS:-300}
+      DM_QUEUE_RETRY_JITTER_SECONDS: ${DM_QUEUE_RETRY_JITTER_SECONDS:-1.0}
+      DM_QUEUE_ADMIN_TOKEN: ${DM_QUEUE_ADMIN_TOKEN:-}
+      DM_METRICS_ENABLED: ${DM_METRICS_ENABLED:-true}
+
+      # Local enroll storage
+      DM_STORE_ENROLL_LOCALLY: ${DM_STORE_ENROLL_LOCALLY:-true}
+      DM_ENROLL_DIR: ${DM_ENROLL_DIR:-/data/enroll}
+
+      # Relay auth service (used by relay-assistant)
+      DM_RELAY_ENABLED: ${DM_RELAY_ENABLED:-true}
+      DM_RELAY_PROXY_SHARED_TOKEN: ${DM_RELAY_PROXY_SHARED_TOKEN:-change-me-relay-proxy-token}
+      DM_RELAY_SECRET_PEPPER: ${DM_RELAY_SECRET_PEPPER:-change-me-relay-secret-pepper}
+      DM_RELAY_KEY_TTL_SECONDS: ${DM_RELAY_KEY_TTL_SECONDS:-2592000}
+      DM_RELAY_ALLOWED_TARGETS_CSV: ${DM_RELAY_ALLOWED_TARGETS_CSV:-keycloak,config,llm,mcr-api,telemetry}
+      DM_RELAY_REQUIRE_KEY_FOR_SECRETS: ${DM_RELAY_REQUIRE_KEY_FOR_SECRETS:-true}
+
+      # Optional S3
+      DM_STORE_ENROLL_S3: ${DM_STORE_ENROLL_S3:-false}
+      DM_S3_BUCKET: ${DM_S3_BUCKET:-}
+      DM_S3_PREFIX_ENROLL: ${DM_S3_PREFIX_ENROLL:-enroll/}
+      DM_S3_PREFIX_BINARIES: ${DM_S3_PREFIX_BINARIES:-binaries/}
+      DM_BINARIES_MODE: ${DM_BINARIES_MODE:-presign}
+      DM_PRESIGN_TTL_SECONDS: ${DM_PRESIGN_TTL_SECONDS:-300}
+      DM_S3_ENDPOINT_URL: ${DM_S3_ENDPOINT_URL:-}
+      AWS_REGION: ${AWS_REGION:-}
+      # Credentials AWS/Scaleway — heritees de l'hote, jamais ecrites dans un fichier
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-${SCW_ACCESS_KEY:-}}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-${SCW_SECRET_KEY:-}}
+
+      # Admin UI OIDC
+      ADMIN_OIDC_ISSUER_URL: ${ADMIN_OIDC_ISSUER_URL:-}
+      ADMIN_OIDC_PUBLIC_ISSUER_URL: ${ADMIN_OIDC_PUBLIC_ISSUER_URL:-}
+      ADMIN_OIDC_CLIENT_ID: ${ADMIN_OIDC_CLIENT_ID:-admin-dm-ui}
+      ADMIN_OIDC_CLIENT_SECRET: ${ADMIN_OIDC_CLIENT_SECRET:-}
+      # Callback admin dérivé dynamiquement de PUBLIC_BASE_URL (origin + /admin/callback)
+      ADMIN_REQUIRED_GROUP: ${ADMIN_REQUIRED_GROUP:-admin-dm}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-changeme-dev-only}
+
+      # Database — by default uses owuicore shared PostgreSQL on owui-net
+      DATABASE_URL: ${DATABASE_URL:-postgresql://owui:owui@postgres:5432/bootstrap}
+    volumes:
+      - ./data:/data
+      - ../../app:/app/app
+    networks:
+      - default
+      - owui-net
+      - telemetry
+    depends_on:
+      postgres-local:
+        condition: service_started
+        required: false
+
+  queue-worker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.secrets
+        required: false
+    command: ["python", "-m", "app.worker_main"]
+    environment:
+      DM_RUNTIME_MODE: worker
+      DM_QUEUE_ENABLED: ${DM_QUEUE_ENABLED:-true}
+      DM_QUEUE_BATCH_SIZE: ${DM_QUEUE_BATCH_SIZE:-50}
+      DM_QUEUE_POLL_INTERVAL_SECONDS: ${DM_QUEUE_POLL_INTERVAL_SECONDS:-0.5}
+      DM_QUEUE_LOCK_TTL_SECONDS: ${DM_QUEUE_LOCK_TTL_SECONDS:-60}
+      DM_QUEUE_DEFAULT_MAX_ATTEMPTS: ${DM_QUEUE_DEFAULT_MAX_ATTEMPTS:-8}
+      DM_QUEUE_RETRY_BASE_SECONDS: ${DM_QUEUE_RETRY_BASE_SECONDS:-2}
+      DM_QUEUE_RETRY_MAX_SECONDS: ${DM_QUEUE_RETRY_MAX_SECONDS:-300}
+      DM_QUEUE_RETRY_JITTER_SECONDS: ${DM_QUEUE_RETRY_JITTER_SECONDS:-1.0}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://owui:owui@postgres:5432/bootstrap}
+    volumes:
+      - ./data:/data
+      - ../../app:/app/app
+    networks:
+      - default
+      - owui-net
+    depends_on:
+      postgres-local:
+        condition: service_started
+        required: false
+
+  relay-assistant:
+    image: nginx:1.29-alpine
+    ports:
+      - "${RELAY_PORT:-8088}:8080"
+    environment:
+      RELAY_PROXY_SHARED_TOKEN: ${DM_RELAY_PROXY_SHARED_TOKEN:-change-me-relay-proxy-token}
+      RELAY_KEYCLOAK_UPSTREAM: ${RELAY_KEYCLOAK_UPSTREAM:-https://<SSO_HOSTNAME>/realms/mirai}
+      RELAY_LLM_UPSTREAM: ${RELAY_LLM_UPSTREAM:-https://<LLM_API_HOSTNAME>/v1}
+      RELAY_MCR_API_UPSTREAM: ${RELAY_MCR_API_UPSTREAM:-https://<MCR_PLACEHOLDER>}
+    volumes:
+      - ./relay-assistant.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      - device-management
+
+  # -------------------------------------------------------------------
+  # Local standalone PostgreSQL (disabled by default).
+  # To use this instead of the owuicore shared instance:
+  #   1. Set DM_POSTGRES_LOCAL=true in .env
+  #   2. Set DATABASE_URL=postgresql://dev:dev@postgres-local:5432/bootstrap
+  # -------------------------------------------------------------------
+  postgres-local:
+    profiles: ["postgres-local"]
+    image: postgres:16
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    environment:
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+      LANG: C
+      LC_ALL: C
+      POSTGRES_DB: ${POSTGRES_DB:-bootstrap}
+      POSTGRES_USER: ${POSTGRES_USER:-dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev}
+    volumes:
+      - postgres-local-data:/var/lib/postgresql/data
+
+networks:
+  default:
+  owui-net:
+    external: true
+    name: owui-net
+  telemetry:
+    external: true
+    name: docker_default
+
+volumes:
+  postgres-local-data:

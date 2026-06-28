@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Cohortes{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Cohortes</h1>
+
+<!-- Create cohort form -->
+<details style="margin-bottom: 1.5rem; border: 1px solid #e5e5e5; border-radius: 4px; padding: 1rem;">
+  <summary style="cursor: pointer; font-weight: 600;">+ Creer une cohorte</summary>
+  <form hx-post="/admin/cohorts" hx-target="#cohort-list" hx-swap="outerHTML"
+        style="margin-top: 1rem;">
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label" for="name">Nom</label>
+        <input class="dm-input" id="name" name="name" required placeholder="ex: pilotes-dsi">
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label" for="type">Type</label>
+        <select class="dm-select" id="type" name="type" style="width: 100%;">
+          <option value="manual">Manuel (liste emails/UUIDs)</option>
+          <option value="percentage">Pourcentage</option>
+          <option value="email_pattern">Pattern email (regex)</option>
+          <option value="keycloak_group">Groupe Keycloak</option>
+        </select>
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label" for="description">Description</label>
+      <input class="dm-input" id="description" name="description" placeholder="Description optionnelle">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label" for="members">Membres (un par ligne, pour type manuel)</label>
+      <textarea class="dm-input" id="members" name="members" rows="3"
+                placeholder="email1@example.com&#10;email2@example.com"></textarea>
+    </div>
+    <div class="dm-form-actions">
+      <button type="submit" class="dm-btn dm-btn--primary">Creer</button>
+    </div>
+  </form>
+</details>
+
+<!-- Cohort list -->
+<div id="cohort-list">
+  <table>
+    <thead>
+      <tr>
+        <th>Nom</th>
+        <th>Type</th>
+        <th>Membres</th>
+        <th>Description</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in cohorts %}
+      <tr>
+        <td><a href="/admin/cohorts/{{ c.id }}">{{ c.name }}</a></td>
+        <td><span class="dm-badge dm-badge--info">{{ c.type }}</span></td>
+        <td>{{ c.member_count }}</td>
+        <td>{{ c.description or '-' }}</td>
+        <td>
+          <a href="/admin/cohorts/{{ c.id }}" class="dm-btn dm-btn--sm dm-btn--ghost">Detail</a>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not cohorts %}
+      <tr><td colspan="5" style="text-align: center; color: #666;">Aucune cohorte.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

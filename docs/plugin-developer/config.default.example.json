@@ -1,0 +1,18 @@
+{
+  "configVersion": 1,
+  "environment": "prod",
+  "lastversion": -1,
+  "updateUrl": "https://<SCALEWAY_HOSTNAME>/binaries/libreoffice/mirai.oxt",
+  "config": {
+    "enabled": true,
+    "bootstrap_url": "https://<SCALEWAY_HOSTNAME>/",
+    "config_path": "/config/libreoffice/config.json",
+    "device_name": "mirai-libreoffice",
+    "keycloakIssuerUrl": "https://<SSO_HOSTNAME>/",
+    "keycloakRealm": "mirai",
+    "keycloakClientId": "bootstrap-iassistant",
+    "access_token": "",
+    "refresh_token": "",
+    "enrolled": false
+  }
+}

@@ -1,0 +1,64 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - httproute.yaml
+  # Observabilité auto-hébergée (DGX-only) : Tempo (backend traces) + Grafana.
+  - observability/40-tempo-pvc.yaml
+  - observability/41-tempo-config.yaml
+  - observability/42-tempo-deployment.yaml
+  - observability/43-tempo-service.yaml
+  - observability/44-grafana-pvc.yaml
+  - observability/45-grafana-config.yaml
+  - observability/46-grafana-deployment.yaml
+  - observability/47-grafana-service.yaml
+
+# Override all images to pull from <DOCKERHUB_NAMESPACE>'s DockerHub mirror
+# (Scaleway registry was unreachable from DGX, DockerHub is accessible)
+images:
+  - name: <SCALEWAY_REGISTRY>/device-management
+    newName: docker.io/<DOCKERHUB_NAMESPACE>/device-management
+    newTag: "0.6.0"
+  - name: nginx
+    newName: docker.io/<DOCKERHUB_NAMESPACE>/nginx
+    newTag: "1.29-alpine"
+  - name: docker.io/library/postgres
+    newName: docker.io/<DOCKERHUB_NAMESPACE>/postgres
+    newTag: "16-alpine"
+  - name: docker.io/grafana/tempo
+    newName: docker.io/<DOCKERHUB_NAMESPACE>/tempo
+    newTag: "2.6.1"
+  - name: docker.io/grafana/grafana
+    newName: docker.io/<DOCKERHUB_NAMESPACE>/grafana
+    newTag: "11.3.0"
+
+# DGX single node: 1 replica for all DM deployments
+replicas:
+  - name: device-management
+    count: 1
+  - name: queue-worker
+    count: 1
+
+patches:
+  - path: env-secrets.yaml
+  - path: proxy-patch-device-management.yaml
+    target:
+      kind: Deployment
+      name: device-management
+  - path: proxy-patch-relay-assistant.yaml
+    target:
+      kind: Deployment
+      name: relay-assistant
+  - path: proxy-patch-queue-worker.yaml
+    target:
+      kind: Deployment
+      name: queue-worker
+  - path: proxy-patch-device-management-admin.yaml
+    target:
+      kind: Deployment
+      name: device-management-admin
+  - path: grafana-dgx-patch.yaml
+    target:
+      kind: Deployment
+      name: grafana

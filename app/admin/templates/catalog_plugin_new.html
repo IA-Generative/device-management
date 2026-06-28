@@ -1,0 +1,675 @@
+{% extends "base.html" %}
+{% block title %}Nouveau plugin{% endblock %}
+{% block breadcrumb %}
+<div class="dm-breadcrumb"><a href="/admin/catalog">Catalogue</a> &rsaquo; Nouveau plugin</div>
+{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Nouveau plugin</h1>
+
+{# ── Step 1: Plugin file (required) ── #}
+<div style="background:#F5F5FE;border:2px solid #000091;border-radius:8px;padding:1.25rem;margin-bottom:1.5rem;">
+  <h3 style="margin:0 0 0.5rem 0;font-size:1rem;">1. Fichier du plugin *</h3>
+  <p style="font-size:0.85rem;color:#666;margin-bottom:0.75rem;">
+    Selectionnez le fichier plugin (.oxt, .xpi, .crx). Le contenu sera analyse automatiquement.
+  </p>
+  <input type="file" id="plugin-file" class="dm-input" accept=".oxt,.xpi,.crx" style="max-width:500px;">
+  <div id="analysis-status" style="margin-top:0.75rem;"></div>
+</div>
+
+{# ── Step 2: Optional README ── #}
+<div id="readme-section" style="display:none;background:#f9f9f9;border:1px solid #e5e5e5;border-radius:8px;padding:1rem;margin-bottom:1.5rem;">
+  <h3 style="margin:0 0 0.5rem 0;font-size:1rem;">2. Completer avec un README (optionnel)</h3>
+  <div class="dm-grid-2">
+    <div>
+      <label class="dm-label">Fichier README</label>
+      <input type="file" id="readme-file" class="dm-input" accept=".md,.txt,.rst,.html">
+    </div>
+    <div>
+      <label class="dm-label">ou URL du README</label>
+      <input type="url" id="readme-url" class="dm-input" placeholder="https://github.com/.../README.md">
+    </div>
+  </div>
+  <div style="margin-top:0.75rem;">
+    <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="enrichWithReadme()" id="enrich-btn">Enrichir avec le README</button>
+    <span id="enrich-status" style="font-size:0.85rem;color:#666;margin-left:0.5rem;"></span>
+  </div>
+</div>
+
+{# ── Step 3: Form ── #}
+<div id="form-section" style="display:none;">
+  <h3 style="font-size:1rem;margin-bottom:1rem;">3. Verifier et completer la fiche</h3>
+
+  <form method="post" action="/admin/catalog" style="max-width:700px;" id="catalog-form" enctype="multipart/form-data">
+    {# Icon preview (shown when extracted from package) #}
+    <div id="icon-preview" style="display:none;margin-bottom:1rem;display:none;align-items:center;gap:1rem;">
+      <img id="icon-preview-img" src="" alt="Icone du plugin"
+           style="width:64px;height:64px;border-radius:12px;object-fit:cover;border:1px solid #ddd;">
+      <div style="font-size:0.85rem;color:#666;">Icone extraite du package</div>
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Nom *</label>
+      <input type="text" name="name" id="f-name" required class="dm-input" placeholder="Assistant Mirai LibreOffice" oninput="autoSlug()">
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Slug *</label>
+      <div style="display:flex;gap:0.5rem;align-items:center;">
+        <input type="text" name="slug" id="f-slug" required class="dm-input" placeholder="mirai-libreoffice" pattern="[a-z0-9\-]+" style="max-width:300px;" oninput="checkSlug()">
+        <span id="slug-status" style="font-size:0.8rem;"></span>
+      </div>
+      <div id="slug-alternatives" style="display:none;margin-top:0.25rem;font-size:0.8rem;"></div>
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Alias</label>
+      <input type="text" name="alias" id="f-alias" class="dm-input" placeholder="libreoffice" style="max-width:300px;">
+      <div class="dm-hint">Nom court pour identifier le plugin (ex: libreoffice, matisse). Utilise dans les URLs de config.</div>
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Intention / Proposition de valeur</label>
+      <textarea name="intent" id="f-intent" class="dm-input" rows="2" placeholder="Augmenter la productivite des agents..."></textarea>
+    </div>
+
+    <div class="dm-form-row">
+      <label class="dm-label">Description</label>
+      <textarea name="description" id="f-description" class="dm-input" rows="4" placeholder="Description detaillee..."></textarea>
+    </div>
+
+    {# Tags input for key features #}
+    <div class="dm-form-row">
+      <label class="dm-label">Fonctionnalites cles</label>
+      <input type="hidden" name="key_features" id="f-key_features">
+      <div id="tags-container" class="dm-tags-container">
+        <input type="text" id="tag-input" class="dm-tags-input" placeholder="Ajouter un tag + Entree">
+      </div>
+      <div class="dm-hint">Tapez un tag puis Entree. Cliquez sur x pour supprimer.</div>
+    </div>
+
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Type de plugin *</label>
+        <select name="device_type" id="f-device_type" class="dm-select" style="width:100%;" required>
+          {% for dt in device_types %}
+          <option value="{{ dt.id }}">{{ dt.label }} ({{ dt.ext }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Categorie</label>
+        <select name="category" id="f-category" class="dm-select" style="width:100%;">
+          {% for c in categories %}
+          <option value="{{ c }}">{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Editeur</label>
+        <input type="text" name="publisher" id="f-publisher" class="dm-input" value="DNUM">
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Visibilite</label>
+        <select name="visibility" class="dm-select" style="width:100%;">
+          <option value="public">Public</option>
+          <option value="internal">Interne</option>
+          <option value="hidden">Cache</option>
+        </select>
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">URL page d'accueil</label>
+      <input type="url" name="homepage_url" id="f-homepage_url" class="dm-input" placeholder="https://...">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">URL documentation</label>
+      <input type="url" name="doc_url" id="f-doc_url" class="dm-input" placeholder="https://...">
+    </div>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">Email support</label>
+        <input type="email" name="support_email" id="f-support_email" class="dm-input" placeholder="support@example.com">
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Licence</label>
+        <input type="text" name="license" id="f-license" class="dm-input" placeholder="MPL-2.0, MIT, Apache-2.0...">
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">URL icone</label>
+      <input type="text" name="icon_url" id="f-icon_url" class="dm-input" placeholder="assets/logo.png ou https://...">
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label">Changelog (markdown)</label>
+      <textarea name="changelog" id="f-changelog" class="dm-input" rows="5" placeholder="## v1.0.0&#10;- Premiere version..."></textarea>
+    </div>
+
+    {# Hidden fields for auto-version creation #}
+    <input type="hidden" name="config_template" id="f-config_template" value="">
+    <input type="hidden" name="initial_version" id="f-initial_version" value="">
+    <input type="hidden" name="initial_release_notes" id="f-initial_release_notes" value="">
+    <input type="file" name="binary" id="f-binary" style="display:none;">
+
+    {# dm-config.json preview (shown when extracted from package) #}
+    <div id="config-template-preview" style="display:none;margin-bottom:1rem;">
+      <label class="dm-label">Template de configuration (extrait du package)</label>
+      <div style="background:#f0f0f5;border:1px solid #ddd;border-radius:6px;padding:0.75rem;max-height:200px;overflow:auto;">
+        <pre id="config-template-json" style="margin:0;font-size:0.8rem;white-space:pre-wrap;"></pre>
+      </div>
+      <div class="dm-hint">Ce template sera stocke en base et servira de base pour la configuration du plugin.</div>
+      <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" style="margin-top:0.5rem;" onclick="previewSubstitutedConfig()">
+        Voir la config avec substitutions
+      </button>
+    </div>
+
+    {# Config example button (always visible) #}
+    <div style="margin-bottom:1rem;">
+      <button type="button" class="dm-btn dm-btn--ghost dm-btn--sm" onclick="showConfigExample()">
+        Voir un exemple de fichier de config
+      </button>
+    </div>
+
+    <div class="dm-form-actions">
+      <a href="/admin/catalog" class="dm-btn dm-btn--secondary">Annuler</a>
+      <button type="submit" class="dm-btn dm-btn--primary" id="submit-btn">Creer le plugin</button>
+    </div>
+  </form>
+</div>
+
+<script>
+const DM_SUBSTITUTIONS = {{ substitution_values | tojson }};
+</script>
+{% raw %}<script>
+// ═══════ Tags system ═══════
+let tags = [];
+
+function renderTags() {
+  const container = document.getElementById('tags-container');
+  const input = document.getElementById('tag-input');
+  // Remove existing tag elements
+  container.querySelectorAll('.dm-tag').forEach(t => t.remove());
+  // Add tags before input
+  tags.forEach((tag, i) => {
+    const el = document.createElement('span');
+    el.className = 'dm-tag';
+    el.innerHTML = tag + ' <span class="dm-tag__remove" onclick="removeTag(' + i + ')">&times;</span>';
+    container.insertBefore(el, input);
+  });
+  // Update hidden field
+  document.getElementById('f-key_features').value = tags.join(', ');
+}
+
+function addTag(text) {
+  text = text.trim();
+  if (!text || tags.includes(text)) return;
+  tags.push(text);
+  renderTags();
+}
+
+function removeTag(index) {
+  tags.splice(index, 1);
+  renderTags();
+}
+
+document.getElementById('tag-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault();
+    addTag(this.value);
+    this.value = '';
+  }
+  if (e.key === 'Backspace' && !this.value && tags.length) {
+    removeTag(tags.length - 1);
+  }
+});
+
+// Also add on blur
+document.getElementById('tag-input').addEventListener('blur', function() {
+  if (this.value.trim()) { addTag(this.value); this.value = ''; }
+});
+
+// ═══════ Slug auto-generation ═══════
+let slugManuallyEdited = false;
+let slugCheckTimer = null;
+
+document.getElementById('f-slug').addEventListener('input', function() {
+  slugManuallyEdited = true;
+});
+
+function autoSlug() {
+  if (slugManuallyEdited) return;
+  const name = document.getElementById('f-name').value;
+  const deviceType = document.getElementById('f-device_type').value;
+  const base = name.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const slug = base && deviceType ? base + '-' + deviceType : base;
+  document.getElementById('f-slug').value = slug;
+  checkSlug();
+}
+
+// Re-generate slug when device type changes
+document.getElementById('f-device_type').addEventListener('change', function() {
+  if (!slugManuallyEdited) autoSlug();
+});
+
+function checkSlug() {
+  clearTimeout(slugCheckTimer);
+  const slug = document.getElementById('f-slug').value.trim();
+  if (!slug) {
+    document.getElementById('slug-status').innerHTML = '';
+    document.getElementById('slug-alternatives').style.display = 'none';
+    return;
+  }
+  slugCheckTimer = setTimeout(async () => {
+    try {
+      const resp = await fetch('/admin/api/catalog/check-slug?slug=' + encodeURIComponent(slug), {credentials:'same-origin'});
+      const data = await resp.json();
+      const statusEl = document.getElementById('slug-status');
+      const altEl = document.getElementById('slug-alternatives');
+      if (data.available) {
+        statusEl.innerHTML = '<span style="color:#18753C;">&#10003; Disponible</span>';
+        altEl.style.display = 'none';
+      } else {
+        statusEl.innerHTML = '<span style="color:#CE0500;">&#10007; Deja pris</span>';
+        if (data.alternatives && data.alternatives.length) {
+          altEl.style.display = 'block';
+          altEl.innerHTML = 'Suggestions : ' + data.alternatives.map(a =>
+            '<a href="#" onclick="pickSlug(\'' + a + '\');return false;" style="margin-right:0.5rem;">' + a + '</a>'
+          ).join('');
+        }
+      }
+    } catch {}
+  }, 400);
+}
+
+function pickSlug(s) {
+  document.getElementById('f-slug').value = s;
+  slugManuallyEdited = true;
+  checkSlug();
+}
+
+// ═══════ Plugin upload → auto-analyze ═══════
+document.getElementById('plugin-file').addEventListener('change', function() {
+  const file = this.files[0];
+  const statusEl = document.getElementById('analysis-status');
+  if (!file) return;
+
+  // Copy file to the hidden binary input so it's submitted with the form
+  const binaryInput = document.getElementById('f-binary');
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  binaryInput.files = dt.files;
+
+  statusEl.innerHTML = '<div style="padding:0.75rem;background:#e8e8ff;border-radius:4px;">' +
+    '<div style="display:flex;align-items:center;gap:0.5rem;"><span class="dm-spinner"></span>' +
+    '<strong>' + file.name + '</strong> (' + (file.size/1024/1024).toFixed(1) + ' Mo)</div>' +
+    '<div class="dm-pulse" style="color:#666;font-size:0.85rem;margin-top:0.25rem;">Analyse en cours via IA...</div>' +
+    '<div class="dm-progress-indeterminate"></div></div>';
+
+  analyzePlugin(file, statusEl);
+});
+
+async function analyzePlugin(file, statusEl) {
+  function progress(msg) {
+    const el = document.createElement('div');
+    el.style.cssText = 'font-size:0.8rem;color:#666;margin-top:0.25rem;';
+    el.textContent = '\u2192 ' + msg;
+    statusEl.appendChild(el);
+  }
+
+  const fd = new FormData();
+  fd.append('plugin_file', file);
+
+  try {
+    progress('Envoi au serveur...');
+    const resp = await fetch('/admin/api/catalog/suggest', {method:'POST', body:fd, credentials:'same-origin'});
+    progress('Reponse : HTTP ' + resp.status);
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch {
+      statusEl.innerHTML += '<div class="dm-flash dm-flash--error" style="margin-top:0.5rem;">Reponse invalide : ' + text.substring(0,200).replace(/</g,'&lt;') + '</div>';
+      showFormSections(true); return;
+    }
+    if (!resp.ok || data.error) {
+      statusEl.innerHTML += '<div class="dm-flash dm-flash--error" style="margin-top:0.5rem;">' + (data.error || 'Erreur ' + resp.status) + '</div>';
+      showFormSections(true); return;
+    }
+
+    fillForm(data);
+
+    let checks = [];
+    if (data.device_type) checks.push('Type : ' + data.device_type);
+    if (data.name) checks.push('Nom : ' + data.name);
+    if (tags.length) checks.push(tags.length + ' tags detectes');
+    if (data.changelog) checks.push('Changelog extrait');
+    const hasReadme = data._has_readme;
+    const hasManifest = data._has_manifest;
+    const hasEnoughInfo = hasReadme || hasManifest;
+    if (hasReadme) checks.push('README trouve dans le package');
+    if (hasManifest) checks.push('dm-manifest.json extrait');
+
+    statusEl.innerHTML = '<div class="dm-flash dm-flash--success" style="margin-bottom:0;">' +
+      checks.map(c => '<div>&#10003; ' + c + '</div>').join('') +
+      (!hasEnoughInfo ? '<div style="color:#B34000;">&#9888; Pas de README ni de dm-manifest.json — completez ci-dessous</div>' : '') +
+      '</div>';
+
+    showFormSections(!hasEnoughInfo);
+  } catch (e) {
+    statusEl.innerHTML += '<div class="dm-flash dm-flash--error" style="margin-top:0.5rem;">Erreur : ' + e.message + '</div>';
+    showFormSections(true);
+  }
+}
+
+function showFormSections(showReadme) {
+  document.getElementById('readme-section').style.display = showReadme ? 'block' : 'none';
+  document.getElementById('form-section').style.display = 'block';
+}
+
+// ═══════ Enrich with README ═══════
+async function enrichWithReadme() {
+  const btn = document.getElementById('enrich-btn');
+  const status = document.getElementById('enrich-status');
+  const readmeFile = document.getElementById('readme-file').files[0];
+  const readmeUrl = document.getElementById('readme-url').value.trim();
+  if (!readmeFile && !readmeUrl) { status.innerHTML = '<span style="color:#CE0500;">Fournissez un fichier ou une URL.</span>'; return; }
+
+  btn.disabled = true;
+  status.textContent = 'Analyse du README (IA)...';
+  const fd = new FormData();
+  if (readmeFile) fd.append('readme_file', readmeFile);
+  if (readmeUrl) fd.append('readme_url', readmeUrl);
+  const pf = document.getElementById('plugin-file').files[0];
+  if (pf) fd.append('plugin_file', pf);
+
+  try {
+    const resp = await fetch('/admin/api/catalog/suggest', {method:'POST', body:fd, credentials:'same-origin'});
+    const data = await resp.json();
+    if (data.error) { status.innerHTML = '<span style="color:#CE0500;">' + data.error + '</span>'; }
+    else { fillForm(data); status.innerHTML = '<span style="color:#18753C;">Fiche enrichie.</span>'; }
+  } catch (e) { status.innerHTML = '<span style="color:#CE0500;">Erreur : ' + e.message + '</span>'; }
+  btn.disabled = false;
+}
+
+// ═══════ Fill form from AI data ═══════
+function fillForm(data) {
+  const fields = {name:'f-name', slug:'f-slug', intent:'f-intent', description:'f-description',
+    homepage_url:'f-homepage_url', doc_url:'f-doc_url', support_email:'f-support_email',
+    publisher:'f-publisher', license:'f-license', icon_url:'f-icon_url'};
+  for (const [key, id] of Object.entries(fields)) {
+    const el = document.getElementById(id);
+    if (data[key] && el) {
+      el.value = data[key];
+      el.style.borderColor = '#18753C';
+      setTimeout(() => el.style.borderColor = '', 3000);
+    }
+  }
+  // Tags
+  if (data.key_features && Array.isArray(data.key_features)) {
+    tags = [];
+    data.key_features.forEach(f => addTag(f));
+  }
+  // Selects
+  if (data.device_type) {
+    const sel = document.getElementById('f-device_type');
+    for (const opt of sel.options) { if (opt.value === data.device_type) { opt.selected = true; break; } }
+  }
+  if (data.category) {
+    const sel = document.getElementById('f-category');
+    for (const opt of sel.options) { if (opt.value === data.category) { opt.selected = true; break; } }
+  }
+  if (data.visibility) {
+    const sel = document.querySelector('select[name="visibility"]');
+    if (sel) { for (const opt of sel.options) { if (opt.value === data.visibility) { opt.selected = true; break; } } }
+  }
+  // Auto-fill alias from device_type
+  if (data.device_type && !document.getElementById('f-alias').value) {
+    document.getElementById('f-alias').value = data.device_type;
+  }
+  // Auto-generate slug from name if not already set
+  if (data.name && !document.getElementById('f-slug').value) {
+    slugManuallyEdited = false;
+    autoSlug();
+  }
+  // Check slug availability
+  if (document.getElementById('f-slug').value) checkSlug();
+  // Changelog (JSON array → markdown)
+  if (data.changelog && Array.isArray(data.changelog)) {
+    const md = data.changelog.map(entry => {
+      const header = '## v' + (entry.version || '?') + (entry.date ? ' (' + entry.date + ')' : '');
+      const items = (entry.changes || []).map(c => '- ' + c).join('\n');
+      return header + '\n' + items;
+    }).join('\n\n');
+    const el = document.getElementById('f-changelog');
+    if (el) {
+      el.value = md;
+      el.style.borderColor = '#18753C';
+      setTimeout(() => el.style.borderColor = '', 3000);
+    }
+  }
+  // Initial version (from oxt_version or first changelog entry)
+  const ver = data.oxt_version || (data.changelog && data.changelog[0] ? data.changelog[0].version : '');
+  if (ver) {
+    document.getElementById('f-initial_version').value = ver;
+    // Release notes for this version
+    if (data.changelog) {
+      const entry = data.changelog.find(e => e.version === ver);
+      if (entry && entry.changes) {
+        document.getElementById('f-initial_release_notes').value = entry.changes.map(c => '- ' + c).join('\n');
+      }
+    }
+  }
+  // Icon preview
+  if (data.icon_data_url) {
+    const img = document.getElementById('icon-preview-img');
+    const container = document.getElementById('icon-preview');
+    img.src = data.icon_data_url;
+    container.style.display = 'flex';
+  }
+  // Config template
+  if (data.config_template) {
+    document.getElementById('f-config_template').value = JSON.stringify(data.config_template);
+    const preview = document.getElementById('config-template-preview');
+    document.getElementById('config-template-json').textContent = JSON.stringify(data.config_template, null, 2);
+    preview.style.display = 'block';
+  }
+}
+
+// ═══════ Config preview with substitutions ═══════
+function previewSubstitutedConfig() {
+  const raw = document.getElementById('f-config_template').value;
+  if (!raw) { alert('Pas de template de configuration.'); return; }
+  try {
+    const tpl = JSON.parse(raw);
+    // Simulate substitutions with placeholder values
+    const substitutions = DM_SUBSTITUTIONS;
+    let json = JSON.stringify(tpl, null, 2);
+    // Replace both ${{VAR}} and ${VAR} syntaxes
+    for (const [varName, value] of Object.entries(substitutions)) {
+      json = json.split('${{' + varName + '}}').join(value);
+      json = json.split('${' + varName + '}').join(value);
+    }
+    const win = window.open('', '_blank');
+    win.document.write('<html><head><title>Config substituee — ' +
+      (document.getElementById('f-slug').value || 'preview') +
+      '</title><style>body{font-family:monospace;background:#1e1e2e;color:#cdd6f4;padding:2rem;margin:0;} ' +
+      'pre{white-space:pre-wrap;word-break:break-all;font-size:0.9rem;line-height:1.6;} ' +
+      '.key{color:#89b4fa;} .string{color:#a6e3a1;} .number{color:#fab387;} .bool{color:#f38ba8;} .null{color:#6c7086;} ' +
+      '.placeholder{color:#f9e2af;font-weight:bold;}</style></head><body>');
+    win.document.write('<h2 style="color:#cdd6f4;margin:0 0 1rem 0;">Config avec substitutions</h2>');
+    win.document.write('<pre>' + syntaxHighlight(json) + '</pre>');
+    win.document.write('</body></html>');
+    win.document.close();
+  } catch (e) { alert('Erreur : ' + e.message); }
+}
+
+function showConfigExample() {
+  const example = {
+    "configVersion": 1,
+    "config": {
+      "enabled": true,
+      "llm_base_urls": "${{LLM_BASE_URL}}",
+      "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
+      "llm_api_tokens": "${{LLM_API_TOKEN}}",
+      "llm_request_timeout_seconds": 45,
+      "authHeaderName": "Authorization",
+      "authHeaderPrefix": "Bearer ",
+      "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
+      "keycloakRealm": "${{KEYCLOAK_REALM}}",
+      "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
+      "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
+      "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
+      "bootstrap_url": "${{PUBLIC_BASE_URL}}/",
+      "config_path": "/config/<slug>/config.json",
+      "device_name": "<slug>",
+      "telemetryEnabled": true,
+      "telemetryEndpoint": "${{PUBLIC_BASE_URL}}/telemetry/v1/traces",
+      "telemetryAuthorizationType": "Bearer",
+      "telemetryKey": "",
+      "telemetrylogJson": true
+    }
+  };
+  const json = JSON.stringify(example, null, 2);
+  const win = window.open('', '_blank');
+  win.document.write('<html><head><title>Exemple config template</title>' +
+    '<style>body{font-family:monospace;background:#1e1e2e;color:#cdd6f4;padding:2rem;margin:0;} ' +
+    'pre{white-space:pre-wrap;word-break:break-all;font-size:0.9rem;line-height:1.6;} ' +
+    '.key{color:#89b4fa;} .string{color:#a6e3a1;} .number{color:#fab387;} .bool{color:#f38ba8;} .null{color:#6c7086;} ' +
+    '.placeholder{color:#f9e2af;font-weight:bold;}</style></head><body>');
+  win.document.write('<h2 style="color:#cdd6f4;margin:0 0 0.5rem 0;">Exemple de template de configuration</h2>');
+  win.document.write('<p style="color:#a6adc8;font-size:0.85rem;margin:0 0 1rem 0;">Les variables <code style="color:#f9e2af;">${{VAR}}</code> sont substituees automatiquement par le serveur au moment de la distribution.</p>');
+  win.document.write('<pre>' + syntaxHighlight(json) + '</pre>');
+  win.document.write('</body></html>');
+  win.document.close();
+}
+
+function syntaxHighlight(json) {
+  return json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?|\bnull\b)/g, function(match) {
+      let cls = 'number';
+      if (/^"/.test(match)) {
+        if (/:$/.test(match)) { cls = 'key'; }
+        else if (/\$\{\{/.test(match)) { cls = 'placeholder'; }
+        else { cls = 'string'; }
+      } else if (/true|false/.test(match)) { cls = 'bool'; }
+      else if (/null/.test(match)) { cls = 'null'; }
+      return '<span class="' + cls + '">' + match + '</span>';
+    });
+}
+
+// ═══════ Chunked upload + form submit (bypasses WAF body size limit) ═══════
+const CHUNK_SIZE = 512 * 1024; // 512 KB per chunk
+
+async function uploadFileChunked(file) {
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  let uploadId = '';
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const blob = file.slice(start, end);
+
+    const fd = new FormData();
+    fd.append('chunk', blob, file.name);
+    fd.append('chunk_index', i);
+    fd.append('total_chunks', totalChunks);
+    fd.append('filename', file.name);
+    if (uploadId) fd.append('upload_id', uploadId);
+
+    const resp = await fetch('/admin/api/upload-chunk', {
+      method: 'POST', body: fd, credentials: 'same-origin',
+    });
+    if (!resp.ok) throw new Error('Chunk upload failed: ' + resp.status);
+    const data = await resp.json();
+    uploadId = data.upload_id;
+
+    // Update progress
+    const pct = Math.round(((i + 1) / totalChunks) * 100);
+    document.getElementById('submit-btn').innerHTML =
+      '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
+      'Upload ' + pct + '%...';
+  }
+  return uploadId;
+}
+
+document.getElementById('catalog-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>Publication en cours...';
+
+  try {
+    // Collect form data as a plain object (NOT FormData — avoids multipart/form-data)
+    const formData = new FormData(this);
+    const payload = {};
+    for (const [key, value] of formData.entries()) {
+      if (key === 'binary') continue; // handled via chunked upload
+      payload[key] = value;
+    }
+
+    // If there's a file, upload it in chunks first
+    const binaryInput = document.getElementById('f-binary');
+    const file = binaryInput && binaryInput.files[0];
+    if (file && file.size > 0) {
+      btn.innerHTML = '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>Upload du fichier...';
+      payload.upload_id = await uploadFileChunked(file);
+    }
+
+    // If icon_url is a data URI, upload it separately
+    if (payload.icon_url && payload.icon_url.startsWith('data:')) {
+      const dataUri = payload.icon_url;
+      const byteString = atob(dataUri.split(',')[1]);
+      const mimeType = dataUri.split(';')[0].split(':')[1];
+      const ab = new ArrayBuffer(byteString.length);
+      const ia = new Uint8Array(ab);
+      for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+      const iconBlob = new Blob([ab], {type: mimeType});
+      const ext = mimeType.split('/')[1] || 'png';
+      const iconFd = new FormData();
+      iconFd.append('chunk', iconBlob, 'icon.' + ext);
+      iconFd.append('chunk_index', '0');
+      iconFd.append('total_chunks', '1');
+      iconFd.append('filename', 'icon.' + ext);
+      const iconResp = await fetch('/admin/api/upload-chunk', {
+        method: 'POST', body: iconFd, credentials: 'same-origin',
+      });
+      if (iconResp.ok) {
+        const iconData = await iconResp.json();
+        payload.icon_upload_id = iconData.upload_id;
+        delete payload.icon_url;
+      }
+    }
+
+    btn.innerHTML = '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>Creation du plugin...';
+
+    // Send as JSON (not multipart) — WAF blocks multipart POST
+    const resp = await fetch(this.action, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+      redirect: 'manual',
+    });
+
+    if (resp.type === 'opaqueredirect' || resp.status === 303 || resp.status === 302) {
+      const location = resp.headers.get('Location') || '/admin/catalog';
+      window.location.href = location;
+    } else if (resp.ok) {
+      window.location.href = '/admin/catalog';
+    } else {
+      const text = await resp.text();
+      let msg = 'Erreur ' + resp.status;
+      try { msg = JSON.parse(text).detail || msg; } catch {}
+      alert(msg);
+      btn.disabled = false;
+      btn.innerHTML = 'Creer le plugin';
+    }
+  } catch (err) {
+    alert('Erreur : ' + err.message);
+    btn.disabled = false;
+    btn.innerHTML = 'Creer le plugin';
+  }
+});
+</script>{% endraw %}
+{% endblock %}
