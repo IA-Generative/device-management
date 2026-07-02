@@ -89,7 +89,15 @@ from .services.db import (
 from .services.db import (
     wait_for_db as _svc_wait_for_db,
 )
+from . import runtime_config
+from .services import health as _health
 from .settings import settings
+
+# Apply persisted runtime-config overrides to os.environ + settings BEFORE the
+# module-level constants (CORS, MAX_BODY_BYTES) and the admin auth globals capture
+# them at import — so "restart-required" overrides actually take effect on boot.
+# Best-effort (DB down / schema absent → ENV baseline; the sync loop retries).
+runtime_config.bootstrap_env_overrides()
 
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
@@ -119,9 +127,18 @@ def _configure_logging() -> None:
     for name in ("device-management", "dm-admin", "dm-admin-router", "dm-admin-auth"):
         logging.getLogger(name).setLevel(level)
 
+    def _probe_env(name: str, default: str) -> float:
+        try:
+            return float(os.getenv(name, default))
+        except ValueError:
+            return float(default)
+
     access_logger = logging.getLogger("uvicorn.access")
     if not any(type(f).__name__ == "HealthProbeFilter" for f in access_logger.filters):
-        access_logger.addFilter(HealthProbeFilter())
+        access_logger.addFilter(HealthProbeFilter(
+            summary_interval=_probe_env("DM_PROBE_LOG_SUMMARY_SECONDS", "900"),
+            startup_grace=_probe_env("DM_PROBE_LOG_STARTUP_GRACE_SECONDS", "60"),
+        ))
 
 
 _configure_logging()
@@ -158,11 +175,33 @@ _CACHE_INVALIDATION_PATH_PREFIXES = (
     "/api/campaigns",       # REST API campaign lifecycle
     "/api/artifacts",       # artifact uploads
     "/api/keycloak",        # keycloak client changes
+    "/admin/api/config",    # runtime config overrides (feed bootstrapUrls etc.)
+)
+
+
+# Paths exempt from the runtime-config readiness gate (probes, internal, static).
+_CONFIG_GATE_EXEMPT_PREFIXES = (
+    "/healthz", "/livez", "/readyz", "/internal", "/admin/static", "/metrics",
 )
 
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    # Health metric: count every served request.
+    _health.incr_request()
+
+    # Readiness gate (Stage 9): a pod that never loaded its config must not serve
+    # business traffic — reply 503 + Retry-After so clients retry elsewhere.
+    path = request.url.path
+    if runtime_config.should_gate_requests() and not any(
+        path.startswith(p) for p in _CONFIG_GATE_EXEMPT_PREFIXES
+    ):
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "3"},
+            content={"status": "starting", "detail": "config not loaded", "retry": True},
+        )
+
     response = await call_next(request)
 
     # Auto-invalidate config cache on successful mutations
@@ -1517,6 +1556,11 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
     config_obj["telemetryEndpoint"] = _resolve_public_telemetry_endpoint()
     config_obj["telemetryAuthorizationType"] = settings.telemetry_authorization_type
 
+    # Ordered bootstrap URLs (priority order) — override-aware, hot-reloadable.
+    bootstrap_urls = runtime_config.cfg("DM_BOOTSTRAP_URLS", as_list=True)
+    if bootstrap_urls:
+        config_obj["bootstrapUrls"] = bootstrap_urls
+
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if public_base:
         config_obj["relayAssistantBaseUrl"] = f"{public_base}/relay-assistant"
@@ -1959,6 +2003,46 @@ def livez():
             "detail": "Process is alive.",
         },
     )
+
+
+@app.get("/readyz")
+def readyz():
+    """Readiness: 503 until the runtime config has been loaded at least once, so
+    a cold-started pod that cannot read its config is kept out of the Service."""
+    if runtime_config.should_gate_requests():
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "3"},
+            content={"status": "starting", "ready": False, "detail": "config not loaded"},
+        )
+    return JSONResponse(
+        status_code=200,
+        content={"status": "ok", "ready": True, "generation": runtime_config.applied_generation()},
+    )
+
+
+@app.get("/internal/config/state")
+def internal_config_state(request: Request):
+    """Cluster-internal: report this pod's config generation + live health.
+
+    Guarded by a service token (constant-time compare with DM_QUEUE_ADMIN_TOKEN).
+    Returns no config values — only propagation/health state. Used by the admin
+    'verify' button to actively probe each pod.
+    """
+    expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
+    provided = request.headers.get("X-Internal-Token", "")
+    if not expected or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    ident = runtime_config._pod_identity(str(settings.runtime_mode or "api"))
+    return JSONResponse({
+        "pod_name": ident["pod_name"],
+        "node_name": ident["node_name"],
+        "runtime_mode": ident["runtime_mode"],
+        "applied_generation": runtime_config.applied_generation(),
+        "app_version": ident["app_version"],
+        "ready": runtime_config.is_config_ready(),
+        "health": _health.read_health(),
+    })
 
 
 @app.get("/ops/queue/health")
@@ -4447,3 +4531,39 @@ def _shutdown_embedded_queue_worker() -> None:
         _embedded_worker_thread.join(timeout=5)
     _embedded_worker_thread = None
     _embedded_worker_stop = None
+
+
+# ---- Runtime config sync (all FastAPI roles: api / admin / all) -------------
+_config_sync_stop: threading.Event | None = None
+_config_sync_threads: list[threading.Thread] = []
+
+
+@app.on_event("startup")
+def _startup_config_sync() -> None:
+    """Start the per-pod config sync loop + NOTIFY listener, and arm the readiness
+    gate. Runs in every FastAPI role; skipped (gate stays inactive) without a DB."""
+    global _config_sync_stop, _config_sync_threads
+    runtime_config.snapshot_baseline()
+    if psycopg2 is None or not _db_url_bootstrap():
+        logger.info("Runtime config sync disabled (no DB); serving with ENV baseline only.")
+        return
+    if _config_sync_threads:
+        return
+    runtime_config.enable_request_gate()
+    _config_sync_stop = threading.Event()
+    _config_sync_threads = runtime_config.start_background(
+        _config_sync_stop, role=str(settings.runtime_mode or "api"))
+    logger.info("Runtime config sync started (readiness gate armed).")
+
+
+@app.on_event("shutdown")
+def _shutdown_config_sync() -> None:
+    global _config_sync_stop, _config_sync_threads
+    if _config_sync_stop:
+        _config_sync_stop.set()
+        runtime_config.request_wake()
+    for t in _config_sync_threads:
+        if t.is_alive():
+            t.join(timeout=3)
+    _config_sync_threads = []
+    _config_sync_stop = None

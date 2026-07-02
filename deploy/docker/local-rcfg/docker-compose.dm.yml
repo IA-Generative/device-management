@@ -1,0 +1,83 @@
+# Local persistent device-management (feature: runtime config overrides).
+# - dedicated Postgres (named volume) -> overrides + enrollment survive reboot
+# - mode "all" (api + admin + embedded worker + config sync) on :8089
+# - a second "worker" pod so the fleet/propagation table shows cross-pod
+# - secrets live in ./.env (gitignored: .env / .env.*)
+# - joins external owui-net to reach owuicore Keycloak + local Tempo
+# - restart: unless-stopped -> comes back after a host reboot (Docker auto-start)
+services:
+  dm-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: owui
+      POSTGRES_PASSWORD: owui
+      POSTGRES_DB: bootstrap
+    volumes:
+      - dm_pgdata:/var/lib/postgresql/data
+    networks: [owui-net]
+    restart: unless-stopped
+
+  device-management:
+    image: dm-local:rcfg
+    build:
+      context: ../../..
+      dockerfile: deploy/docker/Dockerfile
+    env_file: [.env]
+    volumes:
+      - ../../../app:/app/app:ro   # code live (restart suffit, pas de rebuild)
+    environment:
+      DM_RUNTIME_MODE: "all"
+      DM_DEV_AUTOLOGIN: "true"
+      POD_IP: "device-management"   # owui-net alias -> active /verify reaches this pod
+      NODE_NAME: "mac-local"
+      DM_APP_VERSION: "0.8.0"
+    ports:
+      - "8089:3001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on: [dm-postgres]
+    networks: [owui-net]
+    restart: unless-stopped
+
+  dm-worker:
+    image: dm-local:rcfg
+    command: ["python", "-m", "app.worker_main"]
+    env_file: [.env]
+    volumes:
+      - ../../../app:/app/app:ro
+    environment:
+      DM_RUNTIME_MODE: "worker"
+      POD_IP: "dm-worker"
+      NODE_NAME: "mac-worker"
+      DM_APP_VERSION: "0.8.0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on: [dm-postgres]
+    networks: [owui-net]
+    restart: unless-stopped
+
+  # nginx proxy SSO/relay du plugin : /keycloak/* -> Keycloak owuicore,
+  # /telemetry & /mcr-api -> DM (relay-gated). Corrige le check "Relay-assistant"
+  # de /admin/debug et donne au plugin son chemin OIDC (auth/token/refresh/userinfo).
+  relay-assistant:
+    image: nginx:1.29-alpine
+    ports:
+      - "8091:8080"
+    environment:
+      RELAY_PROXY_SHARED_TOKEN: ${DM_RELAY_PROXY_SHARED_TOKEN:-change-me}
+      RELAY_KEYCLOAK_UPSTREAM: http://host.docker.internal:8082/realms/openwebui
+      RELAY_MCR_API_UPSTREAM: http://host.docker.internal:9999
+    volumes:
+      - ../relay-assistant.conf.template:/etc/nginx/templates/default.conf.template:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on: [device-management]
+    networks: [owui-net]
+    restart: unless-stopped
+
+networks:
+  owui-net:
+    external: true
+
+volumes:
+  dm_pgdata:
