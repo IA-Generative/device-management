@@ -80,7 +80,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             - name: DM_APP_VERSION
-              value: "0.8.0"
+              value: "0.8.1"
             - name: DM_CONFIG_POLL_INTERVAL_SECONDS
               value: "3"
             - name: DM_RUNTIME_CONFIG_EDITABLE
