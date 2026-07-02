@@ -79,6 +79,9 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
     "KEYCLOAK_REDIRECT_URI": _spec("KEYCLOAK_REDIRECT_URI", "Keycloak redirect URI", "Keycloak", "str", False),
     "KEYCLOAK_ALLOWED_REDIRECT_URI": _spec(
         "KEYCLOAK_ALLOWED_REDIRECT_URI", "Keycloak allowed redirect URI", "Keycloak", "str", True),
+    "ADMIN_OIDC_CLIENT_SECRET": _spec(
+        "ADMIN_OIDC_CLIENT_SECRET", "Secret client admin OIDC (admin-dm-ui)", "Keycloak", "str", False,
+        sensitive=True),
     # ── LLM ──
     "LLM_BASE_URL": _spec("LLM_BASE_URL", "LLM base URL", "LLM", "str", True),
     "LLM_API_TOKEN": _spec("LLM_API_TOKEN", "LLM API token", "LLM", "str", True, sensitive=True),
@@ -102,6 +105,13 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
     "DM_TELEMETRY_REQUIRE_TOKEN": _spec(
         "DM_TELEMETRY_REQUIRE_TOKEN", "Token télémétrie requis", "Télémétrie", "bool", True,
         settings_field="telemetry_require_token"),
+    # ── Relais ──
+    "DM_RELAY_PROXY_SHARED_TOKEN": _spec(
+        "DM_RELAY_PROXY_SHARED_TOKEN", "Token partagé relais (⚠ synchroniser avec relay-assistant)",
+        "Relais", "str", True, sensitive=True, settings_field="relay_proxy_shared_token"),
+    "DM_RELAY_SECRET_PEPPER": _spec(
+        "DM_RELAY_SECRET_PEPPER", "Pepper des clés relais (⚠ changer invalide les clés distribuées)",
+        "Relais", "str", True, sensitive=True, settings_field="relay_secret_pepper"),
 }
 
 
@@ -112,6 +122,7 @@ _OVERRIDES_META: dict[str, dict] = {}    # key -> {value, is_secret, updated_by,
 _applied_generation: int = -1
 _config_ready: bool = False
 _baseline_ready: bool = False
+_bootstrapped: bool = False       # one-shot guard for bootstrap_env_overrides()
 
 
 # ── Type coercion ─────────────────────────────────────────────────────────
@@ -407,6 +418,53 @@ def force_local_reload() -> int | None:
             conn.close()
         except Exception:
             pass
+
+
+def bootstrap_env_overrides(connect_timeout: int = 3) -> None:
+    """Apply persisted overrides to os.environ + settings AT IMPORT, before the
+    modules that capture config at import time run (CORS/MAX_BODY constants, admin
+    auth globals like CLIENT_SECRET). This is what makes 'restart-required' keys
+    actually take effect on the next boot.
+
+    Called at the very top of app/main.py and app/worker_main.py. Order matters:
+    1) snapshot_baseline() captures the deploy-time ENV (before any apply) so the
+       admin diff stays correct; 2) overrides are then applied over it.
+
+    Best-effort: if the DB is unreachable or the schema is not yet applied (first
+    deploy), the import proceeds on the ENV baseline; the sync loop retries later
+    and the /readyz gate holds traffic until the first successful load.
+
+    One-shot: guarded so the worker's explicit call + the app.main import-side
+    call don't read the DB twice.
+    """
+    global _bootstrapped
+    if _bootstrapped:
+        return
+    _bootstrapped = True
+    try:
+        snapshot_baseline()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("bootstrap: snapshot_baseline failed: %s", exc)
+        return
+    if psycopg2 is None:
+        return
+    url = _bootstrap_url()
+    if not url:
+        return
+    conn = None
+    try:
+        conn = psycopg2.connect(url, connect_timeout=connect_timeout)
+        conn.autocommit = True
+        gen = reload_overrides(conn)
+        logger.info("bootstrap: runtime overrides applied at import (generation=%s)", gen)
+    except Exception as exc:
+        logger.info("bootstrap: no overrides applied at import (%s); using ENV baseline", exc)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ── Pod enrollment + heartbeat ────────────────────────────────────────────
