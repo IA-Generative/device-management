@@ -5,6 +5,12 @@ import signal
 import threading
 
 from . import runtime_config
+
+# Apply persisted overrides to os.environ + settings before importing .main /
+# .settings (one-shot; also invoked by app.main at import). Makes restart-required
+# overrides effective on boot for the worker too.
+runtime_config.bootstrap_env_overrides()
+
 from .main import _run_queue_worker_loop
 from .services.db import db_url_bootstrap
 from .settings import settings

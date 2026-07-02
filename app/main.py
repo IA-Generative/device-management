@@ -93,6 +93,12 @@ from . import runtime_config
 from .services import health as _health
 from .settings import settings
 
+# Apply persisted runtime-config overrides to os.environ + settings BEFORE the
+# module-level constants (CORS, MAX_BODY_BYTES) and the admin auth globals capture
+# them at import — so "restart-required" overrides actually take effect on boot.
+# Best-effort (DB down / schema absent → ENV baseline; the sync loop retries).
+runtime_config.bootstrap_env_overrides()
+
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
 
