@@ -127,9 +127,18 @@ def _configure_logging() -> None:
     for name in ("device-management", "dm-admin", "dm-admin-router", "dm-admin-auth"):
         logging.getLogger(name).setLevel(level)
 
+    def _probe_env(name: str, default: str) -> float:
+        try:
+            return float(os.getenv(name, default))
+        except ValueError:
+            return float(default)
+
     access_logger = logging.getLogger("uvicorn.access")
     if not any(type(f).__name__ == "HealthProbeFilter" for f in access_logger.filters):
-        access_logger.addFilter(HealthProbeFilter())
+        access_logger.addFilter(HealthProbeFilter(
+            summary_interval=_probe_env("DM_PROBE_LOG_SUMMARY_SECONDS", "900"),
+            startup_grace=_probe_env("DM_PROBE_LOG_STARTUP_GRACE_SECONDS", "60"),
+        ))
 
 
 _configure_logging()
