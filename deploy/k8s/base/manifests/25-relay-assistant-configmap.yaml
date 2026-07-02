@@ -16,6 +16,7 @@ data:
       proxy_http_version 1.1;
 
       location = /healthz {
+        access_log off;
         add_header Content-Type text/plain;
         return 200 'ok';
       }
