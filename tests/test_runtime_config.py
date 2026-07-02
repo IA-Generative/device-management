@@ -85,3 +85,25 @@ def test_not_ready_before_reload():
     # _config_ready is module-global; default False at import unless a reload ran.
     # We only assert the accessor exists and is boolean.
     assert isinstance(rc.is_config_ready(), bool)
+
+
+def test_new_credential_keys_registered():
+    m = rc.EDITABLE_KEYS
+    # admin client secret: sensitive, restart-required (captured at import → effective on boot)
+    assert m["ADMIN_OIDC_CLIENT_SECRET"].sensitive is True
+    assert m["ADMIN_OIDC_CLIENT_SECRET"].hot_reloadable is False
+    # relay tokens: sensitive, hot-reloadable (settings-backed → live via setattr)
+    for k, field in (("DM_RELAY_PROXY_SHARED_TOKEN", "relay_proxy_shared_token"),
+                     ("DM_RELAY_SECRET_PEPPER", "relay_secret_pepper")):
+        assert m[k].sensitive is True and m[k].hot_reloadable is True
+        assert m[k].settings_field == field
+
+
+def test_bootstrap_env_overrides_is_one_shot(monkeypatch):
+    # Sans DB → best-effort no-op, mais capture la baseline et arme le garde one-shot.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    from app.settings import settings
+    monkeypatch.setattr(settings, "database_url", "", raising=False)
+    rc._bootstrapped = False
+    rc.bootstrap_env_overrides()
+    assert rc._bootstrapped is True
