@@ -71,9 +71,9 @@
         {%- else -%}{{ v.effective }}{%- endif -%}
       </td>
       <td class="cfg-status">
-        {% if v.modified %}<span class="dm-badge dm-badge--warning">modifié</span>{% endif %}
-        {% if not v.hot_reloadable %}<span class="dm-badge dm-badge--neutral">redémarrage requis</span>{% endif %}
-        {% if v.sensitive %}<span class="dm-badge dm-badge--neutral">secret</span>{% endif %}
+        {% if v.modified %}<span class="dm-badge dm-badge--warning" title="La valeur effective diffère de la baseline ENV : une surcharge runtime est active sur cette clé.">modifié</span>{% endif %}
+        {% if not v.hot_reloadable %}<span class="dm-badge dm-badge--neutral" title="Valeur figée au démarrage : la surcharge est persistée mais ne prend effet qu'au prochain redémarrage du pod (pas à chaud).">redémarrage requis</span>{% endif %}
+        {% if v.sensitive %}<span class="dm-badge dm-badge--neutral" title="Credential sensible : masqué à l'écran (longueur + empreinte sha256), chiffré au repos (Fernet), édité via un champ « nouvelle valeur » ; nécessite DM_CONFIG_SECRET_KEY.">secret</span>{% endif %}
       </td>
       <td class="cfg-actions">
         {% if config_editing_enabled and (not v.sensitive or config_secrets_encryption) %}
@@ -89,6 +89,13 @@
     {% endfor %}
   </tbody>
 </table>
+<div class="dm-hint" style="margin-top:0.5rem;line-height:1.7;">
+  <strong>Légende des statuts :</strong>
+  <span class="dm-badge dm-badge--warning">modifié</span> la valeur effective diffère de la baseline ENV (une surcharge est active) ·
+  <span class="dm-badge dm-badge--neutral">redémarrage requis</span> valeur lue au démarrage : la surcharge est persistée et prise en compte <em>au prochain redémarrage</em> du pod (pas à chaud) ·
+  <span class="dm-badge dm-badge--neutral">secret</span> credential masqué (longueur + empreinte sha256), chiffré au repos, édité via un champ « nouvelle valeur » (nécessite <code>DM_CONFIG_SECRET_KEY</code>).
+  <br>Les clés <em>sans</em> badge « redémarrage requis » prennent effet en quelques secondes sur tous les pods.
+</div>
 
 <h3 style="font-size:1rem;margin-top:1.5rem;margin-bottom:0.75rem;">Telemetrie</h3>
 <table class="dm-table-compact">
