@@ -1,6 +1,7 @@
-"""Tests du filtre de logs des sondes de santé (app/logfilters.py).
+"""Tests du filtre de logs répétitifs (app/logfilters.py).
 
-Couvre le trou d'observabilité : les sondes /livez, /healthz, /readyz saturaient
+Couvre le trou d'observabilité : les sondes /livez, /healthz, /readyz — et le
+polling admin /admin/api/config/propagation (toutes les 5 s) — saturaient
 l'access-log, masquant l'activité réelle. Le filtre doit :
   - laisser passer les sondes pendant une fenêtre de grâce au démarrage (visibilité
     de l'init, dont la transition 503→200 de /readyz) ;
@@ -10,7 +11,7 @@ l'access-log, masquant l'activité réelle. Le filtre doit :
 
 import logging
 
-from app.logfilters import PROBE_PATHS, HealthProbeFilter
+from app.logfilters import FILTERED_PATHS, POLL_PATHS, PROBE_PATHS, HealthProbeFilter
 
 
 def _access_record(path: str) -> logging.LogRecord:
@@ -51,10 +52,34 @@ def test_keeps_probes_during_startup_grace():
     assert f._counts.get("/readyz") == 1
 
 
+def test_config_propagation_is_a_poll_path():
+    # L'endpoint pollé toutes les 5 s par /admin/debug est filtré comme les sondes.
+    assert "/admin/api/config/propagation" in POLL_PATHS
+    assert "/admin/api/config/propagation" in FILTERED_PATHS
+    # les sondes restent dans l'ensemble filtré
+    assert set(PROBE_PATHS) <= set(FILTERED_PATHS)
+
+
+def test_drops_config_propagation_after_grace():
+    f = HealthProbeFilter(startup_grace=0)
+    assert f.filter(_access_record("/admin/api/config/propagation")) is False
+    assert f._counts.get("/admin/api/config/propagation") == 1
+
+
+def test_keeps_config_propagation_during_grace():
+    clock = {"t": 100.0}
+    f = HealthProbeFilter(startup_grace=60, time_func=lambda: clock["t"])
+    clock["t"] = 120  # dans la grâce → gardé, non compté
+    assert f.filter(_access_record("/admin/api/config/propagation")) is True
+    assert f._counts == {}
+
+
 def test_keeps_real_traffic():
     f = HealthProbeFilter(startup_grace=0)
     assert f.filter(_access_record("/admin/api/catalog/suggest")) is True
     assert f.filter(_access_record("/admin/devices/abc")) is True
+    # /admin/api/config (à la demande) n'est PAS filtré — seul .../propagation l'est
+    assert f.filter(_access_record("/admin/api/config")) is True
 
 
 def test_extract_path_from_message_fallback():
@@ -78,7 +103,7 @@ def test_periodic_summary_emitted(caplog):
         f.filter(_access_record("/livez"))       # déclenche le récap
 
     summaries = [r.getMessage() for r in caplog.records
-                 if "health probes filtrés" in r.getMessage()]
+                 if "access-log filtré" in r.getMessage()]
     assert summaries, "le récap périodique doit être émis"
     msg = summaries[-1]
     assert "/livez=" in msg and "/healthz=" in msg and "/readyz=" in msg

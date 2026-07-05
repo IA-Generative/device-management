@@ -1,12 +1,15 @@
-"""Filtres de logging pour réduire le bruit des sondes de santé.
+"""Filtres de logging pour réduire le bruit répétitif de l'access-log.
 
-Les sondes Kubernetes (liveness/readiness/startup) et l'ingress tapent
-``/livez`` / ``/healthz`` plusieurs fois par seconde. Sans filtre, l'access-log
-uvicorn est saturé par ces lignes et l'activité réelle (ex. actions admin d'un
-auditeur) devient illisible — c'est exactement le trou d'observabilité relevé.
+Deux sources noient l'access-log uvicorn de lignes sans intérêt :
+  - les sondes Kubernetes (liveness/readiness/startup) et l'ingress tapent
+    ``/livez`` / ``/healthz`` / ``/readyz`` plusieurs fois par seconde ;
+  - l'UI admin poll en boucle certains endpoints (ex. la table « flotte /
+    propagation » de /admin/debug → ``/admin/api/config/propagation`` toutes les 5 s).
+Sans filtre, l'activité réelle (ex. actions admin d'un auditeur) devient illisible
+— c'est exactement le trou d'observabilité relevé.
 
-``HealthProbeFilter`` :
-  - SUPPRIME les lignes d'access-log dont le chemin est une sonde de santé ;
+``HealthProbeFilter`` (``PROBE_PATHS`` + ``POLL_PATHS`` = ``FILTERED_PATHS``) :
+  - SUPPRIME les lignes d'access-log dont le chemin est filtré (sonde ou polling) ;
   - les COMPTE par chemin et émet, au plus une fois par ``summary_interval``
     secondes, une ligne de synthèse sur un logger non filtré — pour prouver que
     le filtrage est actif (et garder un signal de vie), sans saturer.
@@ -23,6 +26,15 @@ from collections.abc import Callable
 
 # Chemins de sonde dont l'access-log est filtré.
 PROBE_PATHS = ("/livez", "/healthz", "/readyz")
+
+# Endpoints à fort polling par l'UI admin : même nuisance que les sondes
+# (plusieurs requêtes/minute en boucle), même traitement. Ex. la table
+# « flotte / propagation » de /admin/debug interroge /admin/api/config/propagation
+# toutes les 5 s → sans filtre, elle noie l'access-log des pods.
+POLL_PATHS = ("/admin/api/config/propagation",)
+
+# Ensemble complet des chemins dont l'access-log est filtré (sondes + polling).
+FILTERED_PATHS = PROBE_PATHS + POLL_PATHS
 
 
 class HealthProbeFilter(logging.Filter):
@@ -77,10 +89,10 @@ class HealthProbeFilter(logging.Filter):
         return None
 
     @staticmethod
-    def _match_probe(path: str | None) -> str | None:
+    def _match_filtered(path: str | None) -> str | None:
         if not path:
             return None
-        for p in PROBE_PATHS:
+        for p in FILTERED_PATHS:
             if path == p or path.startswith(p + "?"):
                 return p
         return None
@@ -95,21 +107,21 @@ class HealthProbeFilter(logging.Filter):
             elapsed = int(now - self._last_summary)
             # Logger distinct (non filtré) → la ligne passe toujours.
             self._summary_logger.info(
-                "health probes filtrés (%ds): %s", elapsed, summary
+                "access-log filtré (%ds): %s", elapsed, summary
             )
             self._counts = {}
             self._last_summary = now
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 (logging API)
-        probe = self._match_probe(self._extract_path(record))
+        hit = self._match_filtered(self._extract_path(record))
         now = self._time()
         with self._lock:
             in_grace = (now - self._created) < self._startup_grace
-            if probe is not None and not in_grace:
-                self._counts[probe] = self._counts.get(probe, 0) + 1
+            if hit is not None and not in_grace:
+                self._counts[hit] = self._counts.get(hit, 0) + 1
             self._maybe_emit_summary(now)
-        # Trafic réel → gardé. Sonde : gardée pendant la fenêtre de grâce (init),
-        # supprimée ensuite (comptée pour le récap périodique).
-        if probe is None:
+        # Trafic réel → gardé. Chemin filtré (sonde ou polling admin) : gardé
+        # pendant la fenêtre de grâce (init), supprimé ensuite (compté pour le récap).
+        if hit is None:
             return True
         return in_grace
