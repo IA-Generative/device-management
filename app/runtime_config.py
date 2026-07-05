@@ -316,7 +316,7 @@ def editing_enabled() -> bool:
         "0", "false", "no", "off")
 
 
-def to_stored_value(spec: "ConfigKeySpec", py: Any) -> str:
+def to_stored_value(spec: ConfigKeySpec, py: Any) -> str:
     """Canonical string stored in config_overrides.value (before encryption)."""
     if spec.type == "list":
         return json.dumps(_parse_list(py))
@@ -641,7 +641,7 @@ def run_config_sync_loop(stop_event: threading.Event, role: str | None = None) -
             logger.warning("config sync loop iteration failed: %s", exc)
             _reset_loop_conn()
             enrolled = False
-        _wake.wait(_poll_interval() + random.uniform(0, 0.5))  # noqa: S311 - jitter, not crypto
+        _wake.wait(_poll_interval() + random.uniform(0, 0.5))  # nosec B311: random non-crypto, jitter du poll (pas de la crypto)
         _wake.clear()
     _reset_loop_conn()
     logger.info("config sync loop stopped (role=%s)", role)

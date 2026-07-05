@@ -11,9 +11,9 @@ from . import runtime_config
 # overrides effective on boot for the worker too.
 runtime_config.bootstrap_env_overrides()
 
-from .main import _run_queue_worker_loop
-from .services.db import db_url_bootstrap
-from .settings import settings
+from .main import _run_queue_worker_loop  # noqa: E402 (intentionnel : après bootstrap pré-import)
+from .services.db import db_url_bootstrap  # noqa: E402
+from .settings import settings  # noqa: E402
 
 logger = logging.getLogger("device-management.worker")
 

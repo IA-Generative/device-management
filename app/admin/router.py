@@ -21,6 +21,8 @@ from fastapi.templating import Jinja2Templates
 
 from app.pathsafe import safe_path_join, safe_segment
 
+from .. import runtime_config as rcfg
+from ..services.crypto import encrypt_secret, secrets_encryption_available
 from ..settings import settings
 from .auth import (
     CLIENT_ID,
@@ -40,10 +42,7 @@ from .auth import (
     require_admin,
     require_admin_or_service_token,
 )
-from .. import runtime_config as rcfg
-from ..services.crypto import encrypt_secret, secrets_encryption_available
 from .helpers import audit_log, get_db_connection, span_label, timeago
-from .services import runtime_config as rcfg_svc
 from .services import (
     artifacts as artifacts_svc,
 )
@@ -71,6 +70,7 @@ from .services import (
 from .services import (
     keycloak as keycloak_svc,
 )
+from .services import runtime_config as rcfg_svc
 
 logger = logging.getLogger("dm-admin-router")
 

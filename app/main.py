@@ -45,8 +45,10 @@ except ModuleNotFoundError:  # pragma: no cover
 if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.environ:
     os.environ["DATABASE_URL"] = "postgresql://dev:dev@localhost:5432/bootstrap"
 
+from . import runtime_config
 from .postgres_queue import PostgresQueue, QueueJob
 from .s3 import s3_client
+from .services import health as _health
 from .services.crypto import (
     SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
 )
@@ -89,8 +91,6 @@ from .services.db import (
 from .services.db import (
     wait_for_db as _svc_wait_for_db,
 )
-from . import runtime_config
-from .services import health as _health
 from .settings import settings
 
 # Apply persisted runtime-config overrides to os.environ + settings BEFORE the
