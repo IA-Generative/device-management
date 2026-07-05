@@ -165,6 +165,21 @@ if _RUNTIME_MODE in ("admin", "all"):
     if os.path.isdir(_admin_static):
         app.mount("/admin/static", StaticFiles(directory=_admin_static), name="admin-static")
 
+
+# ---- Racine du site → catalogue (app principale) ----------------------------
+# Derrière le reverse-proxy, une Route `/` pointe vers l'app principale (réécrite
+# vers `/`) : elle reçoit donc `GET /`. On redirige (307, préserve la méthode)
+# vers le catalogue. Location en CHEMIN ABSOLU (sans scheme/host) → proxy-safe
+# (aucun http:// reconstruit) et root_path-aware. Ne s'applique QU'À exactement
+# `/` (pas aux sous-chemins) et seulement au rôle principal (api/all), jamais à
+# l'admin (qui sert /admin/*).
+if _RUNTIME_MODE in ("api", "all"):
+    @app.get("/", include_in_schema=False)
+    async def root_redirect(request: Request):
+        prefix = request.scope.get("root_path", "")
+        return RedirectResponse(f"{prefix}/catalog/", status_code=307)
+
+
 # ---- Security headers middleware (admin UI + API)
 # Paths whose mutation (POST/PUT/PATCH/DELETE) invalidates the config cache.
 _CACHE_INVALIDATION_PATH_PREFIXES = (
@@ -4456,6 +4471,10 @@ if __name__ == "__main__":
             log_level=os.getenv("LOG_LEVEL", "info"),
             access_log=bool(settings.uvicorn_access_log),
             timeout_keep_alive=max(1, int(settings.uvicorn_timeout_keep_alive)),
+            # Parité avec le CMD conteneur : derrière un reverse-proxy, faire
+            # confiance à X-Forwarded-Proto/Host (sinon scheme/host = http interne).
+            proxy_headers=True,
+            forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
         )
 
 

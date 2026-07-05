@@ -21,4 +21,9 @@ ENV DM_ENROLL_DIR=/data/enroll \
 
 EXPOSE 3001
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3001"]
+# --proxy-headers : l'app tourne derrière un reverse-proxy (OpenShift Routes /
+# nginx) qui termine le TLS ; sans ces flags uvicorn ignore X-Forwarded-Proto/Host
+# (forwarded-allow-ips défaut = 127.0.0.1 seulement) et voit du http:// interne,
+# ce qui casse les redirections absolues (ex. slash admin). `*` : le pod n'est
+# joignable que via le Service/proxy en cluster, on fait confiance aux en-têtes.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3001", "--proxy-headers", "--forwarded-allow-ips", "*"]

@@ -256,6 +256,23 @@ async def logout(request: Request):
     return resp
 
 
+# ─── Base admin sans slash ────────────────────────────────────────────────
+
+@router.get("", include_in_schema=False)
+async def admin_base_redirect(request: Request):
+    """`/admin` (sans slash final) → `/admin/`.
+
+    Derrière le reverse-proxy (TLS terminé à l'edge, le pod ne voit que du HTTP),
+    le ``redirect_slashes`` de Starlette reconstruirait une URL ABSOLUE
+    ``http://<interne>/admin/`` (mauvais scheme/host) → le navigateur échoue.
+    On renvoie donc explicitement un ``Location`` en CHEMIN ABSOLU (sans
+    scheme/host) : proxy-safe, et ``root_path``-aware si l'app est montée sous
+    un préfixe. Pas d'auth ici — l'auth s'applique sur `/admin/` (la cible).
+    """
+    prefix = request.scope.get("root_path", "")
+    return RedirectResponse(f"{prefix}{request.url.path}/", status_code=307)
+
+
 # ─── Dashboard ────────────────────────────────────────────────────────────
 
 @router.get("/", response_class=HTMLResponse)
