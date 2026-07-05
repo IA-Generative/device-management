@@ -60,15 +60,13 @@ NETTOYAGE
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 
-import pytest
 import httpx
+import pytest
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -790,7 +788,6 @@ class TestPhase8Observability:
 
 def deploy_from_scratch():
     """Deployer la stack complete from scratch et lancer les tests."""
-    import shutil
 
     compose_dir = os.path.abspath(COMPOSE_DIR)
     project_root = os.path.abspath(PROJECT_ROOT)
@@ -819,7 +816,7 @@ def deploy_from_scratch():
     print("\n[3/8] Demarrage PostgreSQL...")
     run("docker compose up -d postgres")
     print("  Attente readiness Postgres...")
-    for i in range(30):
+    for _ in range(30):
         result = run(
             "docker compose exec -T postgres pg_isready -U dev -d bootstrap",
             check=False,
@@ -891,10 +888,9 @@ def deploy_from_scratch():
                 cwd=project_root, check=False,
             )
             if result.returncode == 0:
-                client_uuid = result.stdout.strip().split("'")[-2] if "'" in result.stdout else ""
-                print(f"  ✓ Client admin-dm-ui cree")
+                print("  ✓ Client admin-dm-ui cree")
             else:
-                print(f"  ℹ Client admin-dm-ui existait deja")
+                print("  ℹ Client admin-dm-ui existait deja")
 
             # Create group
             run(f"{kcadm} create groups -r openwebui -s name=admin-dm",
@@ -902,11 +898,11 @@ def deploy_from_scratch():
             print("  ✓ Groupe admin-dm")
 
             # Assign user1
-            user1_result = run(
+            run(
                 f"{kcadm} get users -r openwebui -q username=user1 --fields id",
                 cwd=project_root, check=False,
             )
-            group_result = run(
+            run(
                 f"{kcadm} get groups -r openwebui --fields id,name",
                 cwd=project_root, check=False,
             )

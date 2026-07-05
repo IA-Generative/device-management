@@ -32,6 +32,27 @@ spec:
           env:
             - name: DM_RUNTIME_MODE
               value: "worker"
+            # Runtime config overrides (cross-pod) — pod identity + master key.
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: DM_APP_VERSION
+              value: "0.8.1"
+            - name: DM_CONFIG_POLL_INTERVAL_SECONDS
+              value: "3"
+            - name: DM_RUNTIME_CONFIG_EDITABLE
+              value: "true"
+            - name: DM_CONFIG_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_CONFIG_SECRET_KEY
+                  optional: true
             - name: DM_QUEUE_ENABLED
               value: "true"
             - name: DM_QUEUE_BATCH_SIZE

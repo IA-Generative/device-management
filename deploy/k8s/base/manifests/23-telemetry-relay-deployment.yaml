@@ -42,6 +42,28 @@ spec:
               value: "false"
             - name: DM_STORE_ENROLL_S3
               value: "false"
+            # Runtime config overrides (cross-pod) — pod identity + master key.
+            # Requis pour déchiffrer les surcharges secrètes télémétrie (upstream/signing).
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: DM_APP_VERSION
+              value: "0.8.1"
+            - name: DM_CONFIG_POLL_INTERVAL_SECONDS
+              value: "3"
+            - name: DM_RUNTIME_CONFIG_EDITABLE
+              value: "true"
+            - name: DM_CONFIG_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_CONFIG_SECRET_KEY
+                  optional: true
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -105,8 +127,9 @@ spec:
             failureThreshold: 8
             timeoutSeconds: 2
           readinessProbe:
+            # /readyz : hors Service tant que la config runtime n'est pas chargée.
             httpGet:
-              path: /livez
+              path: /readyz
               port: 3001
             periodSeconds: 5
             timeoutSeconds: 2

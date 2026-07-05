@@ -58,7 +58,7 @@ def list_devices(cur, *, owner: str = None, platform: str = None,
         LIMIT %s OFFSET %s
     """, params)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def health_summary(cur) -> dict:
@@ -113,7 +113,7 @@ def get_device_detail(cur, client_uuid: str) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def get_device_connections(cur, client_uuid: str, limit: int = 20) -> list[dict]:
@@ -127,7 +127,7 @@ def get_device_connections(cur, client_uuid: str, limit: int = 20) -> list[dict]
         LIMIT %s
     """, (client_uuid, limit))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_device_activity(cur, client_uuid: str, limit: int = 50) -> list[dict]:
@@ -140,7 +140,7 @@ def get_device_activity(cur, client_uuid: str, limit: int = 50) -> list[dict]:
         LIMIT %s
     """, (client_uuid, limit))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_device_campaign_statuses(cur, client_uuid: str) -> list[dict]:
@@ -155,7 +155,7 @@ def get_device_campaign_statuses(cur, client_uuid: str) -> list[dict]:
         ORDER BY cds.updated_at DESC
     """, (client_uuid,))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_device_flags(cur, client_uuid: str, email: str = None) -> list[dict]:
@@ -175,4 +175,4 @@ def get_device_flags(cur, client_uuid: str, email: str = None) -> list[dict]:
         ORDER BY ff.name
     """, (client_uuid, email or ""))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]

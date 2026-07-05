@@ -19,10 +19,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 # Chemins de sonde dont l'access-log est filtré.
-PROBE_PATHS = ("/livez", "/healthz")
+PROBE_PATHS = ("/livez", "/healthz", "/readyz")
 
 
 class HealthProbeFilter(logging.Filter):
@@ -30,20 +30,26 @@ class HealthProbeFilter(logging.Filter):
 
     def __init__(
         self,
-        summary_interval: float = 3600.0,
+        summary_interval: float = 900.0,
         summary_logger: str = "device-management",
         time_func: Callable[[], float] = time.time,
+        startup_grace: float = 60.0,
     ) -> None:
         super().__init__()
         self._counts: dict[str, int] = {}
         self._summary_interval = summary_interval
         self._summary_logger = logging.getLogger(summary_logger)
         self._time = time_func
-        self._last_summary: Optional[float] = None
+        self._last_summary: float | None = None
         self._lock = threading.Lock()
+        # Pendant les premières `startup_grace` secondes (≈ démarrage du process),
+        # les sondes PASSENT (loguées individuellement → visibilité de l'init, dont
+        # la transition 503→200 de /readyz) ; ensuite elles sont filtrées + comptées.
+        self._startup_grace = startup_grace
+        self._created = time_func()
 
     @staticmethod
-    def _extract_path(record: logging.LogRecord) -> Optional[str]:
+    def _extract_path(record: logging.LogRecord) -> str | None:
         """Best-effort extraction of the request path from an access-log record.
 
         uvicorn.access logs with ``record.args`` =
@@ -71,7 +77,7 @@ class HealthProbeFilter(logging.Filter):
         return None
 
     @staticmethod
-    def _match_probe(path: Optional[str]) -> Optional[str]:
+    def _match_probe(path: str | None) -> str | None:
         if not path:
             return None
         for p in PROBE_PATHS:
@@ -98,8 +104,12 @@ class HealthProbeFilter(logging.Filter):
         probe = self._match_probe(self._extract_path(record))
         now = self._time()
         with self._lock:
-            if probe is not None:
+            in_grace = (now - self._created) < self._startup_grace
+            if probe is not None and not in_grace:
                 self._counts[probe] = self._counts.get(probe, 0) + 1
             self._maybe_emit_summary(now)
-        # True = on garde la ligne ; False = on la supprime.
-        return probe is None
+        # Trafic réel → gardé. Sonde : gardée pendant la fenêtre de grâce (init),
+        # supprimée ensuite (comptée pour le récap périodique).
+        if probe is None:
+            return True
+        return in_grace

@@ -1,8 +1,8 @@
 """Catalog service — plugins, versions, bundles, installations."""
 
 from __future__ import annotations
-import json
 
+import json
 
 # ─── Plugins ──────────────────────────────────────────────────────────
 
@@ -10,11 +10,14 @@ def list_plugins(cur, *, status: str = None, device_type: str = None,
                  category: str = None, limit: int = 50, offset: int = 0) -> list[dict]:
     conditions, params = [], []
     if status:
-        conditions.append("p.status = %s"); params.append(status)
+        conditions.append("p.status = %s")
+        params.append(status)
     if device_type:
-        conditions.append("p.device_type = %s"); params.append(device_type)
+        conditions.append("p.device_type = %s")
+        params.append(device_type)
     if category:
-        conditions.append("p.category = %s"); params.append(category)
+        conditions.append("p.category = %s")
+        params.append(category)
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     params.extend([limit, offset])
     cur.execute(f"""
@@ -31,7 +34,7 @@ def list_plugins(cur, *, status: str = None, device_type: str = None,
         LIMIT %s OFFSET %s
     """, params)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_plugin(cur, plugin_id: int) -> dict | None:
@@ -40,7 +43,7 @@ def get_plugin(cur, plugin_id: int) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def get_plugin_by_slug(cur, slug: str) -> dict | None:
@@ -49,7 +52,7 @@ def get_plugin_by_slug(cur, slug: str) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def create_plugin(cur, *, slug: str, name: str, description: str = "",
@@ -131,7 +134,7 @@ def list_versions(cur, plugin_id: int) -> list[dict]:
         ORDER BY pv.created_at DESC
     """, (plugin_id,))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def get_version(cur, version_id: int) -> dict | None:
@@ -145,7 +148,7 @@ def get_version(cur, version_id: int) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
+    return dict(zip(cols, row, strict=False))
 
 
 def create_version(cur, *, plugin_id: int, version: str, artifact_id: int = None,
@@ -210,7 +213,7 @@ def get_version_artifacts(cur, plugin_version_id: int) -> list[dict]:
         ORDER BY pva.platform_variant
     """, (plugin_version_id,))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
 def update_version_status(cur, version_id: int, new_status: str) -> bool:
@@ -245,4 +248,4 @@ def list_installations(cur, plugin_id: int, limit: int = 50, offset: int = 0) ->
         LIMIT %s OFFSET %s
     """, (plugin_id, limit, offset))
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]

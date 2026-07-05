@@ -434,6 +434,52 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON admin_audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON admin_audit_log(actor_email);
 
 -- ═══════════════════════════════════════════════════════════════
+-- RUNTIME CONFIG OVERRIDES (admin-editable, propagated across pods)
+-- ═══════════════════════════════════════════════════════════════
+
+-- Single-row monotonically increasing generation counter for cross-pod change
+-- detection. Pods poll this row; a bump means "reload overrides".
+CREATE TABLE IF NOT EXISTS config_state (
+    id          BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),  -- enforces one row
+    generation  BIGINT NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  TEXT
+);
+INSERT INTO config_state (id, generation) VALUES (TRUE, 1) ON CONFLICT (id) DO NOTHING;
+
+-- Per-key overrides. Effective value = override ?? ENV baseline. DELETE = reset.
+CREATE TABLE IF NOT EXISTS config_overrides (
+    key         TEXT PRIMARY KEY,        -- canonical ENV name (e.g. LLM_BASE_URL)
+    value       TEXT NOT NULL,           -- value; Fernet-encrypted if is_secret; JSON if value_type='list'
+    value_type  TEXT NOT NULL CHECK (value_type IN ('bool','int','float','str','list')),
+    is_secret   BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_by  TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Enrollment + propagation + health, one row per running pod.
+CREATE TABLE IF NOT EXISTS config_pod_state (
+    pod_name           TEXT PRIMARY KEY,            -- socket.gethostname() (k8s pod name)
+    node_name          TEXT,                        -- k8s node (Downward API spec.nodeName)
+    runtime_mode       TEXT NOT NULL,               -- api | admin | worker | all
+    pid                INT,
+    pod_ip             TEXT,                        -- POD_IP (Downward API) for active verify
+    port               INT,
+    applied_generation BIGINT NOT NULL DEFAULT 0,
+    app_version        TEXT,
+    restart_count      INT NOT NULL DEFAULT 0,      -- restarts detected for this pod_name
+    rss_bytes          BIGINT,                      -- process resident memory
+    mem_limit_bytes    BIGINT,                      -- cgroup limit (if available)
+    load1              REAL,                        -- 1-min load average
+    cpu_count          INT,
+    requests_total     BIGINT,                      -- requests served since start (cumulative)
+    started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),  -- current process start → uptime
+    last_heartbeat_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cps_heartbeat ON config_pod_state(last_heartbeat_at DESC);
+
+-- ═══════════════════════════════════════════════════════════════
 -- ═══════════════════════════════════════════════════════════════
 -- GRANTS (dev role)
 -- ═══════════════════════════════════════════════════════════════

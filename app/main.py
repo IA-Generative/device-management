@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -10,23 +13,19 @@ import sys
 import threading
 import time
 import uuid
-import base64
-import hmac
-import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlparse
-from urllib import request as urllib_request
 from urllib import error as urllib_error
+from urllib import request as urllib_request
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-
+import boto3
 import httpx
 import uvicorn
-import boto3
 from botocore.client import Config
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 try:
     import psycopg2  # type: ignore
@@ -46,27 +45,59 @@ except ModuleNotFoundError:  # pragma: no cover
 if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.environ:
     os.environ["DATABASE_URL"] = "postgresql://dev:dev@localhost:5432/bootstrap"
 
-from .settings import settings
-from .s3 import s3_client
+from . import runtime_config
 from .postgres_queue import PostgresQueue, QueueJob
+from .s3 import s3_client
+from .services import health as _health
+from .services.crypto import (
+    SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
+)
+from .services.crypto import (
+    b64url_decode as _svc_b64url_decode,
+)
 from .services.crypto import (
     b64url_encode as _svc_b64url_encode,
-    b64url_decode as _svc_b64url_decode,
+)
+from .services.crypto import (
     hash_relay_secret as _svc_hash_relay_secret,
-    SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
+)
+from .services.db import (
+    _with_db,
+)
+from .services.db import (
+    admin_db_url as _svc_admin_db_url,
+)
+from .services.db import (
+    apply_schema as _svc_apply_schema,
 )
 from .services.db import (
     db_url as _svc_db_url,
-    db_url_bootstrap as _svc_db_url_bootstrap,
-    pooled_conn as _svc_pooled_conn,
-    admin_db_url as _svc_admin_db_url,
-    ensure_database_exists as _svc_ensure_database_exists,
-    ensure_dev_role as _svc_ensure_dev_role,
-    ensure_dev_privileges as _svc_ensure_dev_privileges,
-    apply_schema as _svc_apply_schema,
-    wait_for_db as _svc_wait_for_db,
-    _with_db,
 )
+from .services.db import (
+    db_url_bootstrap as _svc_db_url_bootstrap,
+)
+from .services.db import (
+    ensure_database_exists as _svc_ensure_database_exists,
+)
+from .services.db import (
+    ensure_dev_privileges as _svc_ensure_dev_privileges,
+)
+from .services.db import (
+    ensure_dev_role as _svc_ensure_dev_role,
+)
+from .services.db import (
+    pooled_conn as _svc_pooled_conn,
+)
+from .services.db import (
+    wait_for_db as _svc_wait_for_db,
+)
+from .settings import settings
+
+# Apply persisted runtime-config overrides to os.environ + settings BEFORE the
+# module-level constants (CORS, MAX_BODY_BYTES) and the admin auth globals capture
+# them at import — so "restart-required" overrides actually take effect on boot.
+# Best-effort (DB down / schema absent → ENV baseline; the sync loop retries).
+runtime_config.bootstrap_env_overrides()
 
 app = FastAPI(title="Device Management API", version="0.1.0")
 logger = logging.getLogger("device-management")
@@ -96,9 +127,18 @@ def _configure_logging() -> None:
     for name in ("device-management", "dm-admin", "dm-admin-router", "dm-admin-auth"):
         logging.getLogger(name).setLevel(level)
 
+    def _probe_env(name: str, default: str) -> float:
+        try:
+            return float(os.getenv(name, default))
+        except ValueError:
+            return float(default)
+
     access_logger = logging.getLogger("uvicorn.access")
     if not any(type(f).__name__ == "HealthProbeFilter" for f in access_logger.filters):
-        access_logger.addFilter(HealthProbeFilter())
+        access_logger.addFilter(HealthProbeFilter(
+            summary_interval=_probe_env("DM_PROBE_LOG_SUMMARY_SECONDS", "900"),
+            startup_grace=_probe_env("DM_PROBE_LOG_STARTUP_GRACE_SECONDS", "60"),
+        ))
 
 
 _configure_logging()
@@ -118,6 +158,7 @@ _RUNTIME_MODE = str(settings.runtime_mode or "api").strip().lower()
 # ---- Admin UI router (Jinja2 + HTMX, no external JS build)
 if _RUNTIME_MODE in ("admin", "all"):
     from fastapi.staticfiles import StaticFiles
+
     from .admin.router import router as admin_router
     app.include_router(admin_router, prefix="/admin")
     _admin_static = os.path.join(os.path.dirname(__file__), "admin", "static")
@@ -134,11 +175,33 @@ _CACHE_INVALIDATION_PATH_PREFIXES = (
     "/api/campaigns",       # REST API campaign lifecycle
     "/api/artifacts",       # artifact uploads
     "/api/keycloak",        # keycloak client changes
+    "/admin/api/config",    # runtime config overrides (feed bootstrapUrls etc.)
+)
+
+
+# Paths exempt from the runtime-config readiness gate (probes, internal, static).
+_CONFIG_GATE_EXEMPT_PREFIXES = (
+    "/healthz", "/livez", "/readyz", "/internal", "/admin/static", "/metrics",
 )
 
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    # Health metric: count every served request.
+    _health.incr_request()
+
+    # Readiness gate (Stage 9): a pod that never loaded its config must not serve
+    # business traffic — reply 503 + Retry-After so clients retry elsewhere.
+    path = request.url.path
+    if runtime_config.should_gate_requests() and not any(
+        path.startswith(p) for p in _CONFIG_GATE_EXEMPT_PREFIXES
+    ):
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "3"},
+            content={"status": "starting", "detail": "config not loaded", "retry": True},
+        )
+
     response = await call_next(request)
 
     # Auto-invalidate config cache on successful mutations
@@ -162,8 +225,8 @@ async def security_headers(request: Request, call_next):
 
 # ---- Security boot gate (IMM-1/IMM-6): refuse to start a prod-like deployment
 # that still carries insecure defaults.
-_DEFAULT_ADMIN_SESSION_SECRET = "changeme-dev-only"
-_DEFAULT_RELAY_SECRET_PEPPER = "change-me-relay-pepper"
+_DEFAULT_ADMIN_SESSION_SECRET = "changeme-dev-only"  # nosec B105: défaut volontaire, le code refuse/averti en prod
+_DEFAULT_RELAY_SECRET_PEPPER = "change-me-relay-pepper"  # nosec B105: défaut volontaire, le code refuse/averti en prod
 _PROD_LIKE_ENVS = {"prod", "production", "staging"}
 
 
@@ -638,7 +701,7 @@ def _load_config_template(profile: str, device: str | None = None,
         ])
         for p in candidates:
             if os.path.isfile(p):
-                with open(p, "r", encoding="utf-8") as f:
+                with open(p, encoding="utf-8") as f:
                     return json.load(f)
 
     # No DB template and no filesystem fallback — return a minimal empty config
@@ -650,7 +713,8 @@ def _load_config_template(profile: str, device: str | None = None,
 
 # Jointure de chemin sûre : helper unifié (cf. app/pathsafe.py). Alias conservés
 # pour les appelants historiques.
-from app.pathsafe import safe_path_join as _safe_path_join, safe_segment as _safe_segment
+from app.pathsafe import safe_path_join as _safe_path_join  # noqa: E402 (alias historique placé près des appelants)
+from app.pathsafe import safe_segment as _safe_segment  # noqa: E402 (alias historique placé près des appelants)
 
 
 def _substitute_env_in_str(value: str) -> str:
@@ -726,20 +790,20 @@ def _verify_telemetry_token(token: str) -> dict:
     try:
         payload_b64, sig_b64 = token.split(".", 1)
     except ValueError:
-        raise HTTPException(status_code=401, detail="Malformed telemetry token.")
+        raise HTTPException(status_code=401, detail="Malformed telemetry token.") from None
 
     expected_sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
     try:
         provided_sig = _b64url_decode(sig_b64)
     except Exception:
-        raise HTTPException(status_code=401, detail="Malformed telemetry token signature.")
+        raise HTTPException(status_code=401, detail="Malformed telemetry token signature.") from None
     if not hmac.compare_digest(expected_sig, provided_sig):
         raise HTTPException(status_code=401, detail="Invalid telemetry token signature.")
 
     try:
         payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
     except Exception:
-        raise HTTPException(status_code=401, detail="Malformed telemetry token payload.")
+        raise HTTPException(status_code=401, detail="Malformed telemetry token payload.") from None
     if not isinstance(payload, dict):
         raise HTTPException(status_code=401, detail="Malformed telemetry token payload.")
 
@@ -1068,7 +1132,7 @@ def _build_update_directive(
         if stages:
             current_percent = _get_current_rollout_percent(campaign, stages)
             if current_percent < 100:
-                device_hash = int(hashlib.md5(client_uuid.encode()).hexdigest()[:8], 16) % 100
+                device_hash = int(hashlib.md5(client_uuid.encode(), usedforsecurity=False).hexdigest()[:8], 16) % 100
                 if device_hash >= current_percent:
                     return None  # Not yet eligible for this rollout stage
 
@@ -1264,10 +1328,10 @@ def _verify_access_token(token: str) -> dict:
         )
     except PyJWTError as exc:
         logger.warning("JWT verification failed (PyJWTError): %s: %s", exc.__class__.__name__, exc)
-        raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
+        raise HTTPException(status_code=401, detail="Invalid PKCE access token.") from exc
     except Exception as exc:
         logger.warning("JWT verification failed with backend error: %s: %s", exc.__class__.__name__, exc)
-        raise HTTPException(status_code=503, detail="Access token verification service unavailable.")
+        raise HTTPException(status_code=503, detail="Access token verification service unavailable.") from exc
 
     if not isinstance(payload, dict):
         raise HTTPException(status_code=401, detail="Invalid PKCE access token.")
@@ -1492,6 +1556,11 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
     config_obj["telemetryEndpoint"] = _resolve_public_telemetry_endpoint()
     config_obj["telemetryAuthorizationType"] = settings.telemetry_authorization_type
 
+    # Ordered bootstrap URLs (priority order) — override-aware, hot-reloadable.
+    bootstrap_urls = runtime_config.cfg("DM_BOOTSTRAP_URLS", as_list=True)
+    if bootstrap_urls:
+        config_obj["bootstrapUrls"] = bootstrap_urls
+
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if public_base:
         config_obj["relayAssistantBaseUrl"] = f"{public_base}/relay-assistant"
@@ -1504,7 +1573,7 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
             config_obj["keycloakTokenEndpoint"] = f"{public_base}/auth/token"
             config_obj["keycloakUserinfoEndpoint"] = f"{relay_keycloak_base}/protocol/openid-connect/userinfo"
 
-    token = ""
+    token = ""  # nosec B105: valeur vide par défaut, pas un secret
     expires_at: int | None = None
     if settings.telemetry_enabled and settings.telemetry_authorization_type.lower() == "bearer":
         token, expires_at = _mint_telemetry_token(device=device, profile=profile)
@@ -1546,7 +1615,7 @@ def _forward_telemetry_to_upstream(body: bytes, *, content_type: str, user_agent
         response_ct = e.headers.get("Content-Type", "application/json")
         return Response(content=payload, status_code=e.code, headers={"Content-Type": response_ct})
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Telemetry upstream unreachable: {e!r}")
+        raise HTTPException(status_code=502, detail=f"Telemetry upstream unreachable: {e!r}") from e
 
 
 def _enqueue_telemetry_payload(
@@ -1700,7 +1769,7 @@ def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
                 email = span_attrs.get("user.email") or res_attrs.get("user.email") or ""
                 plugin_version = span_attrs.get("extension.version") or res_attrs.get("service.version") or ""
                 start_ns = int(span.get("startTimeUnixNano", 0))
-                span_ts = datetime.fromtimestamp(start_ns / 1e9, tz=timezone.utc) if start_ns else None
+                span_ts = datetime.fromtimestamp(start_ns / 1e9, tz=UTC) if start_ns else None
                 rows.append((client_uuid, email, name, span_ts, json.dumps(span_attrs), plugin_version))
     if not rows:
         return
@@ -1934,6 +2003,46 @@ def livez():
             "detail": "Process is alive.",
         },
     )
+
+
+@app.get("/readyz")
+def readyz():
+    """Readiness: 503 until the runtime config has been loaded at least once, so
+    a cold-started pod that cannot read its config is kept out of the Service."""
+    if runtime_config.should_gate_requests():
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "3"},
+            content={"status": "starting", "ready": False, "detail": "config not loaded"},
+        )
+    return JSONResponse(
+        status_code=200,
+        content={"status": "ok", "ready": True, "generation": runtime_config.applied_generation()},
+    )
+
+
+@app.get("/internal/config/state")
+def internal_config_state(request: Request):
+    """Cluster-internal: report this pod's config generation + live health.
+
+    Guarded by a service token (constant-time compare with DM_QUEUE_ADMIN_TOKEN).
+    Returns no config values — only propagation/health state. Used by the admin
+    'verify' button to actively probe each pod.
+    """
+    expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
+    provided = request.headers.get("X-Internal-Token", "")
+    if not expected or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    ident = runtime_config._pod_identity(str(settings.runtime_mode or "api"))
+    return JSONResponse({
+        "pod_name": ident["pod_name"],
+        "node_name": ident["node_name"],
+        "runtime_mode": ident["runtime_mode"],
+        "applied_generation": runtime_config.applied_generation(),
+        "app_version": ident["app_version"],
+        "ready": runtime_config.is_config_ready(),
+        "health": _health.read_health(),
+    })
 
 
 @app.get("/ops/queue/health")
@@ -2354,7 +2463,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     response_body = {
         "meta": {
             "schema_version": 2,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "device_type": device_type or "misc",
             "device_name": device_name or dev or "misc",
             "platform_variant": platform_variant,
@@ -2636,7 +2745,7 @@ async def enroll(request: Request):
                 user_agent=user_agent,
             )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Cannot persist enroll payload: {e!r}")
+            raise HTTPException(status_code=500, detail=f"Cannot persist enroll payload: {e!r}") from e
 
     return JSONResponse(
         status_code=201,
@@ -2762,8 +2871,8 @@ async def api_plugin_deploy(slug: str, request: Request):
     if not psycopg2 or not db_url:
         return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
 
-    import zipfile as _zf
     import io as _io
+    import zipfile as _zf
 
     # 1. Resolve plugin
     conn = psycopg2.connect(db_url)
@@ -3236,7 +3345,7 @@ def api_public_plugins():
                 GROUP BY p.id ORDER BY p.name
             """)
             cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
         maturity_labels = {"dev":"Dev","alpha":"Alpha","beta":"Beta","pre-release":"Pre-release","release":"Stable"}
         plugins = []
@@ -3272,7 +3381,7 @@ def api_public_plugins():
             })
         return JSONResponse(
             {"plugins": plugins, "total": len(plugins),
-             "generated_at": datetime.now(timezone.utc).isoformat()},
+             "generated_at": datetime.now(UTC).isoformat()},
             headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=300"},
         )
     finally:
@@ -3295,7 +3404,7 @@ def api_public_plugin_detail(slug: str):
             if not row:
                 raise HTTPException(404)
             cols = [d[0] for d in cur.description]
-            p = dict(zip(cols, row))
+            p = dict(zip(cols, row, strict=False))
             # Latest version
             cur.execute("""
                 SELECT version, release_notes FROM plugin_versions
@@ -3437,8 +3546,8 @@ def api_catalog_status():
 @app.get("/ops/health/full")
 def ops_health_full():
     """Detailed health for Grafana/alerting."""
-    import urllib.request as urlreq
     import time as _time
+    import urllib.request as urlreq
 
     checks = {}
     critical_svcs = {"postgres"}
@@ -3454,7 +3563,10 @@ def ops_health_full():
     db_url = _db_url_bootstrap() or _db_url()
     if psycopg2 and db_url:
         def _db():
-            c = psycopg2.connect(db_url); c.cursor().execute("SELECT 1"); c.close(); return "ok"
+            c = psycopg2.connect(db_url)
+            c.cursor().execute("SELECT 1")
+            c.close()
+            return "ok"
         _do("postgres", _db)
 
     # Keycloak: probe the endpoint the app ACTUALLY uses for token validation —
@@ -3488,7 +3600,7 @@ def ops_health_full():
 
     return JSONResponse({
         "status": global_status,
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_at": datetime.now(UTC).isoformat(),
         "services": checks,
     })
 
@@ -3502,7 +3614,10 @@ def ops_metrics():
     db_ok = 0
     if psycopg2 and db_url:
         try:
-            c = psycopg2.connect(db_url); c.cursor().execute("SELECT 1"); c.close(); db_ok = 1
+            c = psycopg2.connect(db_url)
+            c.cursor().execute("SELECT 1")
+            c.close()
+            db_ok = 1
         except Exception:
             pass
     lines += ["# HELP dm_service_up Service health (1=ok, 0=error)", "# TYPE dm_service_up gauge",
@@ -3511,7 +3626,9 @@ def ops_metrics():
     # Business metrics
     if psycopg2 and db_url:
         try:
-            conn = psycopg2.connect(db_url); conn.autocommit = True; cur = conn.cursor()
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            cur = conn.cursor()
             cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM provisioning WHERE status='ENROLLED'")
             enrolled = cur.fetchone()[0]
             cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM device_connections WHERE created_at > NOW() - INTERVAL '7 days'")
@@ -3553,7 +3670,7 @@ def catalog_api_cors():
 
 # ─── Public Catalog HTML Pages ──────────────────────────────────────────
 
-from fastapi.templating import Jinja2Templates as _Jinja2Templates
+from fastapi.templating import Jinja2Templates as _Jinja2Templates  # noqa: E402 (import local à la section HTML)
 
 _catalog_templates = _Jinja2Templates(
     directory=os.path.join(os.path.dirname(__file__), "catalog", "templates")
@@ -3595,7 +3712,7 @@ def catalog_index(request: Request, category: str | None = None):
                 GROUP BY p.id ORDER BY p.name
             """)
             cols = [d[0] for d in cur.description]
-            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
         # Build category list and filter
         all_categories = sorted({r.get("category") or "" for r in rows} - {""})
@@ -4028,7 +4145,7 @@ def catalog_detail(request: Request, slug: str):
             if not row:
                 raise HTTPException(404, "Plugin introuvable")
             cols = [d[0] for d in cur.description]
-            p = dict(zip(cols, row))
+            p = dict(zip(cols, row, strict=False))
 
             cur.execute("""
                 SELECT version, release_notes FROM plugin_versions
@@ -4167,7 +4284,7 @@ def get_binary(path: str):
             )
             return RedirectResponse(url=url, status_code=302)
         except Exception as e:
-            raise HTTPException(status_code=404, detail=f"Binary not found or cannot presign: {e!r}")
+            raise HTTPException(status_code=404, detail=f"Binary not found or cannot presign: {e!r}") from e
 
     if settings.binaries_mode == "proxy":
         try:
@@ -4176,12 +4293,11 @@ def get_binary(path: str):
             content_type = obj.get("ContentType") or "application/octet-stream"
 
             def iterfile():
-                for chunk in iter(lambda: body_stream.read(1024 * 1024), b""):
-                    yield chunk
+                yield from iter(lambda: body_stream.read(1024 * 1024), b"")
 
             return StreamingResponse(iterfile(), media_type=content_type)
         except Exception as e:
-            raise HTTPException(status_code=404, detail=f"Binary not found: {e!r}")
+            raise HTTPException(status_code=404, detail=f"Binary not found: {e!r}") from e
 
     raise HTTPException(status_code=500, detail="Invalid DM_BINARIES_MODE (must be presign or proxy or local).")
 
@@ -4248,7 +4364,7 @@ async def keycloak_token_proxy(request: Request):
     try:
         form_data = base64.b64decode(encoded_payload)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64 in 'p' field")
+        raise HTTPException(status_code=400, detail="Invalid base64 in 'p' field") from None
 
     token_url = f"{_KEYCLOAK_TOKEN_UPSTREAM}/protocol/openid-connect/token"
 
@@ -4333,7 +4449,7 @@ if __name__ == "__main__":
             workers = 1
         uvicorn.run(
             "app.main:app",
-            host=os.getenv("HOST", "0.0.0.0"),
+            host=os.getenv("HOST", "0.0.0.0"),  # nosec B104: bind 0.0.0.0 volontaire (service conteneurisé)
             port=_get_port(),
             reload=reload_enabled,
             workers=workers,
@@ -4415,3 +4531,39 @@ def _shutdown_embedded_queue_worker() -> None:
         _embedded_worker_thread.join(timeout=5)
     _embedded_worker_thread = None
     _embedded_worker_stop = None
+
+
+# ---- Runtime config sync (all FastAPI roles: api / admin / all) -------------
+_config_sync_stop: threading.Event | None = None
+_config_sync_threads: list[threading.Thread] = []
+
+
+@app.on_event("startup")
+def _startup_config_sync() -> None:
+    """Start the per-pod config sync loop + NOTIFY listener, and arm the readiness
+    gate. Runs in every FastAPI role; skipped (gate stays inactive) without a DB."""
+    global _config_sync_stop, _config_sync_threads
+    runtime_config.snapshot_baseline()
+    if psycopg2 is None or not _db_url_bootstrap():
+        logger.info("Runtime config sync disabled (no DB); serving with ENV baseline only.")
+        return
+    if _config_sync_threads:
+        return
+    runtime_config.enable_request_gate()
+    _config_sync_stop = threading.Event()
+    _config_sync_threads = runtime_config.start_background(
+        _config_sync_stop, role=str(settings.runtime_mode or "api"))
+    logger.info("Runtime config sync started (readiness gate armed).")
+
+
+@app.on_event("shutdown")
+def _shutdown_config_sync() -> None:
+    global _config_sync_stop, _config_sync_threads
+    if _config_sync_stop:
+        _config_sync_stop.set()
+        runtime_config.request_wake()
+    for t in _config_sync_threads:
+        if t.is_alive():
+            t.join(timeout=3)
+    _config_sync_threads = []
+    _config_sync_stop = None

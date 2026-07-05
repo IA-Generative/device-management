@@ -36,4 +36,4 @@ def list_audit_entries(cur, *, actor: str = None, action: str = None,
         LIMIT %s OFFSET %s
     """, params)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
