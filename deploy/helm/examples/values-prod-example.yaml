@@ -2,7 +2,7 @@
 # Placeholders only (example.invalid style) — copy this file, replace every
 # placeholder, and keep the result out of version control (or store it in
 # your private ops repo, gitignored, next to a *.example template like this
-# one — same convention as the raw k8s manifests under deploy/k8s/overlays).
+# one).
 #
 # Validate with:
 #   helm template device-management deploy/helm/device-management \

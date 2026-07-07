@@ -408,8 +408,8 @@ config/                # Gabarit de config générique (fallback ; les gabarits 
 db/schema.sql          # Schéma consolidé
 deploy/
   docker/              # Docker Compose (dev local)
-  k8s/{base,overlays}  # Manifests Kubernetes + overlays (local, scaleway, dgx)
-scripts/               # build-local.sh, build-k8s.sh, scripts/k8s/
+  helm/                # Chart Helm (mécanisme de déploiement unique)
+scripts/               # utilitaires dev (repack-oxt.sh, test-all.sh)
 ```
 
 ## Variables d'environnement (préfixe `DM_`)
@@ -432,10 +432,11 @@ Services : DM (8089), relay-assistant (8088), postgres (5432), adminer (8080).
 
 ## Build et déploiement
 
+L'image et le chart Helm sont construits et publiés par la CI (ghcr.io) à chaque tag.
+
 ```bash
-./scripts/build-local.sh                 # Local (arm64, rapide)
-./scripts/build-k8s.sh <version>         # Kubernetes (multi-arch amd64+arm64 + push)
-./scripts/k8s/deploy.sh scaleway         # Déploiement sur un overlay
+docker build -f deploy/docker/Dockerfile -t device-management:dev .   # build local
+helm upgrade --install dm deploy/helm/device-management -f <values>   # déploiement
 ```
 
 ## Flux relais sécurisé
@@ -484,7 +485,7 @@ premier téléchargement et le cachent localement. Les icônes sont stockées en
 
 ```bash
 ./scripts/test-all.sh
-./scripts/k8s/validate-all.sh
+helm lint deploy/helm/device-management
 curl -sS http://localhost:8089/healthz
 ```
 

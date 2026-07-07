@@ -1,8 +1,0 @@
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: device-management
-  namespace: bootstrap
-spec:
-  minReplicas: 1
-  maxReplicas: 1

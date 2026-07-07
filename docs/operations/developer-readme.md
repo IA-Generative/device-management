@@ -119,15 +119,15 @@ conn.close()
 ### Docker local (arm64, rapide)
 
 ```bash
-./scripts/build-local.sh [tag]
+`docker build -f deploy/docker/Dockerfile .` [tag]
 docker compose -f deploy/docker/docker-compose.yml up -d
 ```
 
 ### Kubernetes (multi-arch)
 
 ```bash
-./scripts/build-k8s.sh 0.1.1-catalog    # build amd64+arm64 + push
-./scripts/k8s/deploy.sh scaleway         # deploy
+la CI (tag `v*` → image ghcr.io)
+./deploy/helm/device-management scaleway         # deploy
 
 # Verifier (~12s)
 kubectl -n bootstrap rollout status deployment/device-management
@@ -197,6 +197,6 @@ print(r.status, r.read()[:100].decode())
 
 | Profil | URL | Commande |
 |--------|-----|----------|
-| local | `http://bootstrap.home` | `./scripts/k8s/deploy.sh local` |
-| scaleway | `https://<SCALEWAY_HOSTNAME>` | `./scripts/k8s/deploy.sh scaleway` |
-| dgx | `https://internal-domain/bootstrap` | `./scripts/k8s/deploy.sh dgx` |
+| local | `http://bootstrap.home` | `./deploy/helm/device-management local` |
+| scaleway | `https://<SCALEWAY_HOSTNAME>` | `./deploy/helm/device-management scaleway` |
+| dgx | `https://internal-domain/bootstrap` | `./deploy/helm/device-management dgx` |

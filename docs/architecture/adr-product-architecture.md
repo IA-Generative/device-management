@@ -482,11 +482,5 @@ Draft → Active → (Paused) → Completed | Rolled Back
 | Settings | `app/settings.py` (153 lignes, 155+ env vars) |
 | Queue | `app/postgres_queue.py` |
 | Dockerfile | `deploy/docker/Dockerfile` |
-| Kustomize base | `deploy/k8s/base/` |
-| Overlay DGX | `deploy/k8s/overlays/dgx/` |
+| Chart Helm | `deploy/helm/device-management/` |
 | ADR deploiement DGX | `architecture/adr-dgx-deployment.md` |
-| Test E2E WAF | `scripts/dgx-deploy/10-e2e-waf-test.sh` |
-| Deploiement DGX | `scripts/dgx-deploy/dumb-deploy.sh` |
-| Test connectivite | `scripts/dgx-deploy/09-connectivity-test.sh` |
-| Migration ArgoCD | `prompts/prompt-migration-argocd.md` |
-| MyVault (futur) | `prompts/prompt_myvault_v2.md` (externe) |
