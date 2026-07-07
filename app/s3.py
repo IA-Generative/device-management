@@ -19,5 +19,8 @@ def s3_client():
         config=Config(
             signature_version="s3v4",
             s3={"addressing_style": "virtual"},
+            # Retries bornées côté botocore (connect/timeout/5xx) — "adaptive"
+            # ajoute un rate-limiting client en cas de throttling (503 SlowDown).
+            retries={"max_attempts": 3, "mode": "adaptive"},
         ),
     )
