@@ -1,0 +1,138 @@
+{{- if .Values.telemetryRelay.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "telemetry-relay") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "telemetry-relay") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.telemetryRelay.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "telemetry-relay") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "telemetry-relay") | nindent 8 }}
+        {{- with .Values.telemetryRelay.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.telemetryRelay.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "device-management.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "device-management.podSecurityContext" . | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: telemetry-relay
+          image: {{ include "device-management.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "device-management.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uvicorn
+            - app.main:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - {{ .Values.telemetryRelay.service.targetPort | quote }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.telemetryRelay.service.targetPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "device-management.configMapName" . }}
+          env:
+            - name: DM_PORT
+              value: {{ .Values.telemetryRelay.service.targetPort | quote }}
+            - name: DM_CONFIG_ENABLED
+              value: "false"
+            - name: DM_STORE_ENROLL_LOCALLY
+              value: "false"
+            - name: DM_STORE_ENROLL_S3
+              value: "false"
+            # Runtime config overrides (cross-pod): required to decrypt the
+            # secret telemetry overrides (upstream/signing keys).
+            {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.telemetryRelay.runtimeConfig.pollIntervalSeconds "editable" .Values.telemetryRelay.runtimeConfig.editable) | nindent 12 }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DATABASE_URL
+            - name: DM_TELEMETRY_UPSTREAM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_TELEMETRY_UPSTREAM_KEY
+            - name: DM_TELEMETRY_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_TELEMETRY_TOKEN_SIGNING_KEY
+            {{- with .Values.telemetryRelay.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.telemetryRelay.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.telemetryRelay.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.telemetryRelay.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.telemetryRelay.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.telemetryRelay.probes.startup.failureThreshold }}
+            timeoutSeconds: {{ .Values.telemetryRelay.probes.startup.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.telemetryRelay.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.telemetryRelay.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.telemetryRelay.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.telemetryRelay.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.telemetryRelay.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.telemetryRelay.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.telemetryRelay.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.telemetryRelay.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.telemetryRelay.probes.liveness.failureThreshold }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.telemetryRelay.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.telemetryRelay.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.telemetryRelay.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.telemetryRelay.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

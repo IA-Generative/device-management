@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "device-management.configMapName" . }}
+  labels:
+    {{- include "device-management.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+# Non-secret config only (endpoints, flags, TTLs, allowlists...). Consumed by
+# every DM_* Deployment via `envFrom: configMapRef` — actual secrets keep an
+# individual env/secretKeyRef in each deployment template instead.
+data:
+  # -- config.app --
+  DM_APP_ENV: {{ .Values.config.app.env | quote }}
+  DM_CONFIG_PROFILE: {{ .Values.config.app.profile | quote }}
+  DM_CONFIG_ENABLED: {{ .Values.config.app.configEnabled | quote }}
+  DM_ENROLL_URL: {{ .Values.config.app.enrollUrl | quote }}
+  DM_ALLOW_ORIGINS: {{ .Values.config.app.allowOrigins | quote }}
+  DM_MAX_BODY_SIZE_MB: {{ .Values.config.app.maxBodySizeMb | quote }}
+  DM_PORT: {{ .Values.config.app.port | quote }}
+  DM_TLS_VERIFY: {{ .Values.config.app.tlsVerify | quote }}
+  DM_BOOTSTRAP_URLS: {{ .Values.config.app.bootstrapUrls | quote }}
+
+  # -- config.storage --
+  DM_STORE_ENROLL_LOCALLY: {{ .Values.config.storage.storeEnrollLocally | quote }}
+  DM_ENROLL_DIR: {{ .Values.config.storage.enrollDir | quote }}
+  DM_STORE_ENROLL_S3: {{ .Values.config.storage.storeEnrollS3 | quote }}
+  DM_S3_BUCKET: {{ .Values.config.storage.bucket | quote }}
+  DM_S3_PREFIX_ENROLL: {{ .Values.config.storage.prefixEnroll | quote }}
+  DM_S3_PREFIX_BINARIES: {{ .Values.config.storage.prefixBinaries | quote }}
+  DM_BINARIES_MODE: {{ .Values.config.storage.binariesMode | quote }}
+  DM_PRESIGN_TTL_SECONDS: {{ .Values.config.storage.presignTtlSeconds | quote }}
+  DM_S3_ENDPOINT_URL: {{ .Values.config.storage.s3EndpointUrl | quote }}
+
+  # -- config.aws --
+  AWS_REGION: {{ .Values.config.aws.region | quote }}
+  AWS_DEFAULT_ORGANIZATION_ID: {{ .Values.config.aws.defaultOrganizationId | quote }}
+  AWS_DEFAULT_PROJECT_ID: {{ .Values.config.aws.defaultProjectId | quote }}
+
+  # -- config.keycloak --
+  KEYCLOAK_ISSUER_URL: {{ .Values.config.keycloak.issuerUrl | quote }}
+  KEYCLOAK_REALM: {{ .Values.config.keycloak.realm | quote }}
+  KEYCLOAK_CLIENT_ID: {{ .Values.config.keycloak.clientId | quote }}
+  KEYCLOAK_REDIRECT_URI: {{ .Values.config.keycloak.redirectUri | quote }}
+  KEYCLOAK_ALLOWED_REDIRECT_URI: {{ .Values.config.keycloak.allowedRedirectUri | quote }}
+  ADMIN_REQUIRED_GROUP: {{ .Values.config.keycloak.adminRequiredGroup | quote }}
+  ADMIN_OIDC_ISSUER_URL: {{ .Values.config.keycloak.adminOidcIssuerUrl | quote }}
+  ADMIN_OIDC_PUBLIC_ISSUER_URL: {{ .Values.config.keycloak.adminOidcPublicIssuerUrl | quote }}
+
+  # -- config.auth --
+  DM_AUTH_VERIFY_ACCESS_TOKEN: {{ .Values.config.auth.verifyAccessToken | quote }}
+  DM_AUTH_JWKS_URL: {{ .Values.config.auth.jwksUrl | quote }}
+  DM_AUTH_AUDIENCE: {{ .Values.config.auth.audience | quote }}
+  DM_AUTH_ALLOWED_ALGORITHMS_CSV: {{ .Values.config.auth.allowedAlgorithmsCsv | quote }}
+  DM_AUTH_LEEWAY_SECONDS: {{ .Values.config.auth.leewaySeconds | quote }}
+  DM_AUTH_JWKS_CACHE_TTL_SECONDS: {{ .Values.config.auth.jwksCacheTtlSeconds | quote }}
+
+  # -- config.telemetry --
+  DM_TELEMETRY_ENABLED: {{ .Values.config.telemetry.enabled | quote }}
+  DM_TELEMETRY_PUBLIC_ENDPOINT: {{ .Values.config.telemetry.publicEndpoint | quote }}
+  DM_TELEMETRY_AUTHORIZATION_TYPE: {{ .Values.config.telemetry.authorizationType | quote }}
+  DM_TELEMETRY_UPSTREAM_ENDPOINT: {{ .Values.config.telemetry.upstreamEndpoint | quote }}
+  DM_TELEMETRY_UPSTREAM_AUTH_TYPE: {{ .Values.config.telemetry.upstreamAuthType | quote }}
+  DM_TELEMETRY_TOKEN_TTL_SECONDS: {{ .Values.config.telemetry.tokenTtlSeconds | quote }}
+  DM_TELEMETRY_REQUIRE_TOKEN: {{ .Values.config.telemetry.requireToken | quote }}
+  DM_TELEMETRY_MAX_BODY_SIZE_MB: {{ .Values.config.telemetry.maxBodySizeMb | quote }}
+  DM_TELEMETRY_GRAFANA_URL: {{ .Values.config.telemetry.grafanaUrl | quote }}
+
+  # -- config.postgres (non-secret identity only; password/DSNs are secrets) --
+  POSTGRES_DB: {{ .Values.config.postgres.db | quote }}
+  POSTGRES_USER: {{ .Values.config.postgres.user | quote }}
+
+  # -- config.relay --
+  DM_RELAY_ENABLED: {{ .Values.config.relay.enabled | quote }}
+  DM_RELAY_KEY_TTL_SECONDS: {{ .Values.config.relay.keyTtlSeconds | quote }}
+  DM_RELAY_ALLOWED_TARGETS_CSV: {{ .Values.config.relay.allowedTargetsCsv | quote }}
+  DM_RELAY_REQUIRE_KEY_FOR_SECRETS: {{ .Values.config.relay.requireKeyForSecrets | quote }}
+  DM_RELAY_ASSISTANT_URL: {{ .Values.config.relay.assistantUrl | quote }}
+
+  # -- contentTemplate: browser-extension/plugin substitution tokens, not
+  # server config (see values.yaml comment on this section) --
+  PUBLIC_BASE_URL: {{ .Values.contentTemplate.publicBaseUrl | quote }}
+  LLM_BASE_URL: {{ .Values.contentTemplate.llmBaseUrl | quote }}
+  DEFAULT_MODEL_NAME: {{ .Values.contentTemplate.defaultModelName | quote }}
+  API_BASE: {{ .Values.contentTemplate.apiBase | quote }}
+  RELAY_ASSISTANT_BASE_URL: {{ .Values.contentTemplate.relayAssistantBaseUrl | quote }}
+  COMPTE_RENDU_URL: {{ .Values.contentTemplate.compteRenduUrl | quote }}
+  COMU_URL: {{ .Values.contentTemplate.comuUrl | quote }}
+  TELEMETRY_ENDPOINT: {{ .Values.contentTemplate.telemetryEndpoint | quote }}

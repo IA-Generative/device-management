@@ -1,0 +1,23 @@
+apiVersion: v2
+name: device-management
+description: Serveur de gestion de flotte (distribution, configuration, télémétrie) pour extensions bureautiques
+type: application
+
+# Version du chart (SemVer indépendant de l'application). À incrémenter à chaque
+# changement de templates/values, même si appVersion ne bouge pas.
+version: 0.1.0
+
+# Version applicative packagée par défaut. Source unique de vérité : le fichier
+# VERSION à la racine du dépôt, à maintenir en phase (synchronisation par la CI).
+appVersion: "0.8.1"
+
+keywords:
+  - device-management
+  - fastapi
+  - fleet-management
+home: https://github.com/IA-Generative/device-management
+sources:
+  - https://github.com/IA-Generative/device-management
+
+maintainers:
+  - name: IA-Generative

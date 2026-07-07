@@ -1,0 +1,138 @@
+# Example production-shaped values for the device-management chart.
+# Placeholders only (example.invalid style) — copy this file, replace every
+# placeholder, and keep the result out of version control (or store it in
+# your private ops repo, gitignored, next to a *.example template like this
+# one — same convention as the raw k8s manifests under deploy/k8s/overlays).
+#
+# Validate with:
+#   helm template device-management deploy/helm/device-management \
+#     -f deploy/helm/examples/values-prod-example.yaml
+
+image:
+  registry: ghcr.io/example-org
+  repository: device-management
+  tag: "0.8.1"
+
+imagePullSecrets:
+  - name: regcred
+
+# Production: let the cluster's SCC/PSA assign a uid (set null on OpenShift)
+# or keep the pinned uid 10001 baked into the image on plain Kubernetes.
+podSecurityContext:
+  runAsUser: 10001
+
+api:
+  replicaCount: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 4
+    maxReplicas: 20
+
+admin:
+  replicaCount: 1
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: standard
+
+worker:
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 12
+
+telemetryRelay:
+  replicaCount: 1
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # The admin OIDC callback returns a large Set-Cookie (session + id_token):
+    # bump the response buffer or the ingress returns 502 on /admin/callback.
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+    nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+  hosts:
+    - host: device-management.example.invalid
+      paths:
+        - path: /admin
+          pathType: Prefix
+          service: admin
+        - path: /telemetry/v1
+          pathType: Prefix
+          service: telemetryRelay
+        - path: /
+          pathType: Prefix
+          service: api
+  tls:
+    - hosts:
+        - device-management.example.invalid
+      secretName: device-management-tls
+
+# Production: external Postgres, S3 and Keycloak. Never enable the internal
+# dev postgres subcomponent here.
+postgres:
+  internal:
+    enabled: false
+
+config:
+  app:
+    env: prod
+    profile: prod
+    enrollUrl: /enroll
+    bootstrapUrls: ""
+
+  storage:
+    storeEnrollS3: true
+    bucket: device-management-prod
+    binariesMode: presign
+
+  aws:
+    region: eu-west-3
+
+  keycloak:
+    issuerUrl: "https://sso.example.invalid"
+    realm: myorg
+    clientId: bootstrap-iassistant
+    redirectUri: "https://device-management.example.invalid/callback"
+    allowedRedirectUri: "https://device-management.example.invalid/callback"
+    adminRequiredGroup: "/g/device-management-admins"
+    adminOidcIssuerUrl: "https://sso.example.invalid/realms/myorg"
+    adminOidcPublicIssuerUrl: "https://sso.example.invalid/realms/myorg"
+
+  auth:
+    verifyAccessToken: true
+    jwksUrl: "https://sso.example.invalid/realms/myorg/protocol/openid-connect/certs"
+
+  telemetry:
+    enabled: true
+    upstreamEndpoint: "http://otel-collector.telemetry.svc.cluster.local:4318/v1/traces"
+    grafanaUrl: "https://grafana.example.invalid/d/plugin-usage-telemetry"
+
+  postgres:
+    db: device_management
+    user: device_management_app
+
+contentTemplate:
+  publicBaseUrl: "https://device-management.example.invalid"
+  llmBaseUrl: "https://llm.example.invalid/v1"
+  defaultModelName: "gpt-oss-120b"
+  apiBase: "https://device-management.example.invalid"
+  compteRenduUrl: "https://compte-rendu.example.invalid"
+  telemetryEndpoint: "https://device-management.example.invalid/telemetry/v1/traces"
+
+# Real values must NEVER be committed. Either:
+#   1) reference a Secret managed outside Helm:
+#        secrets:
+#          existingSecret: device-management-secrets
+#   2) or pass real values only via --set/--set-file at deploy time, e.g.:
+#        helm upgrade --install device-management deploy/helm/device-management \
+#          -f deploy/helm/examples/values-prod-example.yaml \
+#          --set secrets.values.DATABASE_URL="$DATABASE_URL" \
+#          --set secrets.values.ADMIN_SESSION_SECRET="$ADMIN_SESSION_SECRET" \
+#          ...
+secrets:
+  existingSecret: device-management-secrets

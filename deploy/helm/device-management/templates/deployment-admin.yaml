@@ -1,0 +1,178 @@
+{{- if .Values.admin.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "admin") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "admin") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.admin.replicaCount }}
+  strategy:
+    {{- toYaml .Values.admin.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 8 }}
+        {{- with .Values.admin.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.admin.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "device-management.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "device-management.podSecurityContext" . | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.admin.terminationGracePeriodSeconds }}
+      containers:
+        - name: admin
+          image: {{ include "device-management.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "device-management.containerSecurityContext" . | nindent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.admin.service.targetPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "device-management.configMapName" . }}
+          env:
+            - name: DM_RUNTIME_MODE
+              value: "admin"
+            {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.admin.runtimeConfig.pollIntervalSeconds "editable" .Values.admin.runtimeConfig.editable) | nindent 12 }}
+            {{- include "device-management.databaseEnv" . | nindent 12 }}
+            - name: ADMIN_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: ADMIN_OIDC_CLIENT_SECRET
+                  optional: true
+            - name: ADMIN_OIDC_CLIENT_ID
+              value: {{ .Values.config.keycloak.clientId | quote }}
+            # ADMIN_OIDC_REDIRECT_URI is intentionally not set: the callback
+            # is derived dynamically from PUBLIC_BASE_URL (origin +
+            # /admin/callback) in app/admin/auth.py.
+            - name: ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: ADMIN_SESSION_SECRET
+                  optional: true
+            # Required by the prod startup guard: the admin pod runs with
+            # DM_APP_ENV=prod too, so it needs a non-default pepper just like
+            # the api pod.
+            - name: DM_RELAY_SECRET_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_RELAY_SECRET_PEPPER
+                  optional: true
+            # LLM (debug page).
+            - name: LLM_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: LLM_API_TOKEN
+            # Files API token (shared with the api pods for binary distribution).
+            - name: DM_QUEUE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_QUEUE_ADMIN_TOKEN
+            - name: DM_INTERNAL_URL
+              value: {{ printf "http://%s" (include "device-management.componentName" (dict "root" . "component" "api")) | quote }}
+            # Functionally owned by the api pod; wired here as optional ONLY
+            # so the admin config UI (/admin) can display their real
+            # baseline instead of "(empty)" — the admin process itself does
+            # not consume them.
+            - name: DM_RELAY_PROXY_SHARED_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_RELAY_PROXY_SHARED_TOKEN
+                  optional: true
+            - name: DM_TELEMETRY_UPSTREAM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_TELEMETRY_UPSTREAM_KEY
+                  optional: true
+            - name: DM_TELEMETRY_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_TELEMETRY_TOKEN_SIGNING_KEY
+                  optional: true
+            {{- with .Values.admin.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: admin-data
+              mountPath: /data/content
+            {{- with .Values.admin.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.admin.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.admin.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.admin.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.admin.probes.startup.failureThreshold }}
+            timeoutSeconds: {{ .Values.admin.probes.startup.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.admin.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.admin.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.admin.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.admin.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.admin.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.admin.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.admin.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.admin.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.admin.probes.liveness.failureThreshold }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: admin-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.admin.persistence.existingClaim | default (include "device-management.componentName" (dict "root" . "component" "admin-content")) }}
+        {{- with .Values.admin.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.admin.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.admin.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.admin.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

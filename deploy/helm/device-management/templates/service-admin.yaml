@@ -1,0 +1,16 @@
+{{- if .Values.admin.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "admin") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "admin") | nindent 4 }}
+spec:
+  type: {{ .Values.admin.service.type }}
+  selector:
+    {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.admin.service.port }}
+      targetPort: http
+{{- end }}

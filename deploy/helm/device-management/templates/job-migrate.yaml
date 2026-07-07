@@ -1,0 +1,54 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Fixed name (no release revision suffix): Helm hook Jobs are immutable,
+  # so this chart deletes-then-recreates it on every install/upgrade via
+  # the before-hook-creation delete policy below, mirroring how the plain
+  # k8s manifests handle the same immutable-Job constraint.
+  name: {{ include "device-management.componentName" (dict "root" . "component" "migrate") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "migrate") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": {{ .Values.migration.hookWeight | quote }}
+    "helm.sh/hook-delete-policy": {{ .Values.migration.hookDeletePolicy }}
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "device-management.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "device-management.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: alembic-migrate
+          image: {{ include "device-management.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "device-management.containerSecurityContext" . | nindent 12 }}
+          command: ["alembic", "upgrade", "head"]
+          env:
+            # alembic/env.py prefers DATABASE_ADMIN_URL over DATABASE_URL when
+            # both are set. Migration 001 runs the full db/schema.sql inline
+            # (CREATE EXTENSION pgcrypto/citext, all tables) to bootstrap an
+            # empty database — CREATE EXTENSION has no privilege fallback, so
+            # this Job needs the admin-privileged DSN, not the app runtime DSN
+            # the other Deployments use for DATABASE_URL.
+            {{- include "device-management.databaseEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

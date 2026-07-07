@@ -1,0 +1,737 @@
+# Default values for the device-management chart.
+# This file is the primary reference for every configurable knob: every key
+# below is commented with its purpose, whether it is required, and its
+# default. See README.md for an install matrix (prod vs dev) and upgrade notes.
+
+# -----------------------------------------------------------------------------
+# Container image
+# -----------------------------------------------------------------------------
+image:
+  # Registry hostname (e.g. "ghcr.io" or "docker.io"). Optional: leave empty to
+  # use `repository` as a fully-qualified reference.
+  registry: ""
+  # Image repository. Required.
+  repository: device-management
+  # Image tag. Optional: defaults to .Chart.AppVersion when empty.
+  tag: ""
+  # Pull policy for all containers using this image. Optional.
+  pullPolicy: Always
+
+# List of imagePullSecrets (names of pre-existing Secrets of type
+# kubernetes.io/dockerconfigjson) attached to every pod's spec. Optional,
+# required in practice for any private registry.
+imagePullSecrets: []
+# - name: regcred
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -----------------------------------------------------------------------------
+# Service account
+# -----------------------------------------------------------------------------
+serviceAccount:
+  # Create a ServiceAccount. Optional, default true.
+  create: true
+  # Name of the ServiceAccount to use. Optional: defaults to the chart
+  # fullname when empty and `create: true`; must reference an existing
+  # ServiceAccount when `create: false`.
+  name: ""
+  annotations: {}
+
+# -----------------------------------------------------------------------------
+# Pod-level security context (applied to every Deployment)
+# -----------------------------------------------------------------------------
+podSecurityContext:
+  # Optional, default true. The app image already runs as a fixed non-root
+  # uid (10001) baked into the Dockerfile (`USER 10001`).
+  runAsNonRoot: true
+  # Optional, default 10001 (matches the image's built-in user). Set to
+  # `null` on OpenShift: the cluster's SCC (restricted-v2) assigns an
+  # arbitrary uid itself and rejects pods that pin one explicitly.
+  runAsUser: 10001
+  runAsGroup: null
+  fsGroup: null
+  # Optional, default RuntimeDefault. Set to "" to omit the field entirely
+  # (some older CRI/PSP combinations reject it).
+  seccompProfileType: RuntimeDefault
+
+# -----------------------------------------------------------------------------
+# Container-level security context (applied to every app container)
+# -----------------------------------------------------------------------------
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  # Optional, default true. The app writes nothing to its own image layer;
+  # /tmp is provided via emptyDir (see `extraVolumes` per component).
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Labels/annotations merged into every object's metadata. Optional.
+commonLabels: {}
+commonAnnotations: {}
+
+# -----------------------------------------------------------------------------
+# api — main FastAPI deployment (DM_RUNTIME_MODE=api). Serves enrollment,
+# binaries/config distribution, the browser-extension relay authorize
+# endpoint and the Postgres-backed job queue producer side.
+# -----------------------------------------------------------------------------
+api:
+  enabled: true
+  # Optional, default 4. Ignored when autoscaling.enabled=true.
+  replicaCount: 4
+
+  # Rolling update strategy. Safe because binaries/enroll storage is S3-backed
+  # by default (config.storage.storeEnrollS3=true) — pods are stateless, so a
+  # surge-then-drain rollout never touches shared state.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  # Optional, default 30. Must cover the preStop sleep (5s) plus uvicorn's
+  # --timeout-graceful-shutdown so in-flight requests finish before the pod
+  # is killed.
+  terminationGracePeriodSeconds: 30
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3001
+
+  # uvicorn tuning (DM_UVICORN_*). Optional.
+  uvicorn:
+    workers: 4
+    accessLog: false
+    timeoutKeepAliveSeconds: 15
+
+  # Postgres-backed job queue (producer side, consumed by the worker
+  # deployment). Optional; DM_QUEUE_ENABLED=false disables enqueueing.
+  queue:
+    enabled: true
+    batchSize: 50
+    pollIntervalSeconds: 0.5
+    lockTtlSeconds: 60
+    defaultMaxAttempts: 8
+    retryBaseSeconds: 2
+    retryMaxSeconds: 300
+    retryJitterSeconds: 1.0
+
+  # Runtime config hot-reload (in-cluster, DB-backed cross-pod broadcast of
+  # /admin/debug edits). Optional.
+  runtimeConfig:
+    pollIntervalSeconds: 3
+    editable: true
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 4
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 55
+    targetMemoryUtilizationPercentage: 70
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 30
+          - type: Pods
+            value: 6
+            periodSeconds: 30
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        policies:
+          - type: Percent
+            value: 20
+            periodSeconds: 60
+
+  probes:
+    startup:
+      path: /livez
+      periodSeconds: 2
+      failureThreshold: 15
+      timeoutSeconds: 3
+    # /readyz reports 503 until the runtime config has loaded once.
+    readiness:
+      path: /readyz
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    liveness:
+      path: /livez
+      initialDelaySeconds: 15
+      periodSeconds: 15
+      timeoutSeconds: 5
+      failureThreshold: 4
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Extra env entries appended verbatim (list of corev1.EnvVar). Optional.
+  extraEnv: []
+  # Extra volumes/volumeMounts appended verbatim. Optional.
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# -----------------------------------------------------------------------------
+# admin — back-office UI (DM_RUNTIME_MODE=admin). Single replica: it owns a
+# writable content volume (uploaded binaries/config) and its OIDC session
+# state is not designed to be sharded across replicas.
+# -----------------------------------------------------------------------------
+admin:
+  enabled: true
+  # Optional, default 1. Recreate strategy: keep at 1 unless the admin
+  # content volume becomes ReadWriteMany (see persistence.accessModes).
+  replicaCount: 1
+  strategy:
+    type: Recreate
+
+  terminationGracePeriodSeconds: 30
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3001
+
+  # Uploaded binaries/config content (distinct from api's S3-backed
+  # enroll/binaries cache). Optional; RWO by default (single replica).
+  persistence:
+    enabled: true
+    # Optional: reference a pre-existing PVC instead of creating one.
+    existingClaim: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+    storageClassName: ""
+
+  runtimeConfig:
+    pollIntervalSeconds: 3
+    editable: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  probes:
+    startup:
+      path: /livez
+      periodSeconds: 2
+      failureThreshold: 15
+      timeoutSeconds: 3
+    readiness:
+      path: /readyz
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    liveness:
+      path: /livez
+      initialDelaySeconds: 10
+      periodSeconds: 15
+      timeoutSeconds: 5
+      failureThreshold: 4
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# -----------------------------------------------------------------------------
+# worker — queue consumer (DM_RUNTIME_MODE=worker, entrypoint
+# `python -m app.worker_main`). Stateless besides the heartbeat file used by
+# its liveness probe.
+# -----------------------------------------------------------------------------
+worker:
+  enabled: true
+  replicaCount: 2
+  strategy:
+    type: RollingUpdate
+
+  terminationGracePeriodSeconds: 30
+
+  queue:
+    enabled: true
+    batchSize: 100
+    pollIntervalSeconds: 0.5
+    lockTtlSeconds: 60
+    defaultMaxAttempts: 8
+    retryBaseSeconds: 2
+    retryMaxSeconds: 300
+    retryJitterSeconds: 1.0
+
+  # Path to the heartbeat file the worker loop touches on every iteration.
+  # The livenessProbe below considers the pod dead if this file is missing
+  # or stale (no HTTP endpoint exists on this role). Optional.
+  heartbeatFile: /tmp/dm-worker-heartbeat
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+    # Freshness window (seconds) checked by the probe script.
+    maxAgeSeconds: 120
+
+  # Init container blocking startup until Postgres accepts connections.
+  # Optional; only meaningful when the DB is reachable from a plain
+  # `pg_isready` call (skip it for managed DBs that require e.g. IAM auth).
+  waitForPostgres:
+    enabled: true
+    image:
+      repository: docker.io/library/postgres
+      tag: 16-alpine
+    # Hostname:port passed to `pg_isready -h`. Defaults to the internal
+    # postgres service name when postgres.internal.enabled=true, otherwise
+    # must be set explicitly (external DB host).
+    host: ""
+
+  resources:
+    requests:
+      cpu: 300m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 12
+    targetCPUUtilizationPercentage: 60
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 30
+          - type: Pods
+            value: 4
+            periodSeconds: 30
+      scaleDown:
+        stabilizationWindowSeconds: 240
+        policies:
+          - type: Percent
+            value: 20
+            periodSeconds: 60
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# -----------------------------------------------------------------------------
+# telemetryRelay — second instance of the same image (DM_RUNTIME_MODE=api,
+# implicit default) dedicated to telemetry ingestion only. Isolated from the
+# main api deployment so telemetry traffic/config never shares its blast
+# radius (DM_CONFIG_ENABLED=false, no local/S3 enroll storage on this role).
+# -----------------------------------------------------------------------------
+telemetryRelay:
+  enabled: true
+  replicaCount: 1
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3001
+
+  runtimeConfig:
+    pollIntervalSeconds: 3
+    editable: true
+
+  resources: {}
+
+  probes:
+    startup:
+      path: /livez
+      periodSeconds: 2
+      # 60s budget: cold boot after a fresh image pull on a loaded node
+      # exceeded the previous 16s window and caused spurious restarts.
+      failureThreshold: 30
+      timeoutSeconds: 2
+    readiness:
+      path: /readyz
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 3
+    liveness:
+      path: /livez
+      initialDelaySeconds: 10
+      periodSeconds: 15
+      timeoutSeconds: 2
+      failureThreshold: 3
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# -----------------------------------------------------------------------------
+# migration — Alembic schema migration Job, run as a Helm hook
+# (pre-install,pre-upgrade) before any Deployment is rolled out.
+# -----------------------------------------------------------------------------
+migration:
+  enabled: true
+  backoffLimit: 2
+  # Hook weight: lower runs first. Optional.
+  hookWeight: "-5"
+  # Optional: keep succeeded/failed hook Jobs around for inspection instead
+  # of Helm deleting them before the next run.
+  hookDeletePolicy: before-hook-creation
+  resources: {}
+
+# -----------------------------------------------------------------------------
+# ingress — optional single Ingress fronting api (/), admin (/admin) and
+# telemetryRelay (/telemetry/v1). Disabled by default: production usually
+# terminates TLS via a platform-specific object (OpenShift Route, Gateway
+# API HTTPRoute, or a proxy in front of the cluster) not covered here.
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  # - host: device-management.example.invalid
+  hosts:
+    - host: device-management.example.invalid
+      paths:
+        - path: /admin
+          pathType: Prefix
+          service: admin
+        - path: /telemetry/v1
+          pathType: Prefix
+          service: telemetryRelay
+        - path: /
+          pathType: Prefix
+          service: api
+  tls: []
+  # - secretName: device-management-tls
+  #   hosts:
+  #     - device-management.example.invalid
+
+# -----------------------------------------------------------------------------
+# config — non-secret application settings, rendered into a ConfigMap and
+# consumed by every DM_* deployment via `envFrom`. Maps 1:1 to DM_* fields in
+# app/settings.py plus the small set of siblings it derives from
+# (KEYCLOAK_*, POSTGRES_DB/USER, AWS_REGION...). Nothing here is a secret —
+# see the `secrets` section below for credentials.
+# -----------------------------------------------------------------------------
+config:
+  app:
+    # DM_APP_ENV. Optional, default "dev". Set to "prod" to enable the
+    # startup guard that refuses default/placeholder secrets
+    # (validate_security_config in app/main.py).
+    env: prod
+    # DM_CONFIG_PROFILE. Optional, free-form label surfaced in /admin.
+    profile: prod
+    # DM_CONFIG_ENABLED. Optional, default true. Set false on roles that
+    # must not serve the runtime /config endpoint (e.g. telemetryRelay).
+    configEnabled: true
+    # DM_ENROLL_URL. Optional, default "/enroll". Path returned to clients
+    # for the enrollment callback.
+    enrollUrl: /bootstrap/enroll
+    # DM_ALLOW_ORIGINS. Optional, default "*". CSV or "*"; CORS allow-list.
+    allowOrigins: "*"
+    # DM_MAX_BODY_SIZE_MB. Optional, default 10.
+    maxBodySizeMb: 10
+    # DM_PORT. Optional, default 3001. Must match containerPort/probes if
+    # changed — the chart wires it through consistently.
+    port: 3001
+    # DM_TLS_VERIFY. Optional, default true. TLS certificate verification
+    # toward satellite services (Keycloak/LLM/relay targets). Never disable
+    # in production.
+    tlsVerify: true
+    # DM_BOOTSTRAP_URLS. Optional, default "". CSV of config-server bootstrap
+    # URLs returned to enrolling clients, in priority order.
+    bootstrapUrls: ""
+
+  # S3-backed storage for enrollment payloads and distributed binaries
+  # (default since horizontal scaling requires no RWO PVC on api/worker).
+  storage:
+    # DM_STORE_ENROLL_LOCALLY. Optional, default false (S3 mode). Set true
+    # only for the local/no-S3 fallback (mounts an emptyDir, see
+    # extraVolumes).
+    storeEnrollLocally: false
+    # DM_ENROLL_DIR. Optional, default "/data/enroll" (or "/tmp/enroll" on
+    # worker/api roles that only need ephemeral scratch space).
+    enrollDir: /tmp/enroll
+    # DM_STORE_ENROLL_S3. Optional, default true.
+    storeEnrollS3: true
+    # DM_S3_BUCKET. Required when storeEnrollS3 or binariesMode=presign.
+    bucket: ""
+    # DM_S3_PREFIX_ENROLL. Optional, default "enroll/".
+    prefixEnroll: "enroll/"
+    # DM_S3_PREFIX_BINARIES. Optional, default "binaries/".
+    prefixBinaries: "binaries/"
+    # DM_BINARIES_MODE. Optional, default "presign". One of
+    # presign|proxy|local.
+    binariesMode: presign
+    # DM_PRESIGN_TTL_SECONDS. Optional, default 300.
+    presignTtlSeconds: 300
+    # DM_S3_ENDPOINT_URL. Optional, default "". Set for S3-compatible
+    # providers (e.g. MinIO in dev); leave empty for AWS S3.
+    s3EndpointUrl: ""
+
+  # AWS region/tag metadata. Credentials (AWS_ACCESS_KEY_ID/
+  # AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN) live under `secrets`, not here.
+  aws:
+    # AWS_REGION. Optional, default "".
+    region: ""
+    # AWS_DEFAULT_ORGANIZATION_ID. Optional, default "". Non-sensitive
+    # tagging metadata used by the app's AWS calls.
+    defaultOrganizationId: ""
+    # AWS_DEFAULT_PROJECT_ID. Optional, default "".
+    defaultProjectId: ""
+
+  # Keycloak / OIDC. Required in production (DM_APP_ENV=prod).
+  keycloak:
+    # KEYCLOAK_ISSUER_URL. Required. Single source of truth for the SSO
+    # base URL — DM_AUTH_ISSUER_URL and ADMIN_OIDC_ISSUER_URL are derived
+    # from this + realm unless explicitly overridden below.
+    issuerUrl: "https://sso.example.invalid"
+    # KEYCLOAK_REALM. Required, default "openwebui".
+    realm: openwebui
+    # KEYCLOAK_CLIENT_ID. Required. Also reused verbatim as
+    # ADMIN_OIDC_CLIENT_ID (the admin UI and the enrollment flow share one
+    # OIDC client id).
+    clientId: bootstrap-iassistant
+    # KEYCLOAK_REDIRECT_URI. Required in prod — the dev default
+    # (localhost:28443) is a desktop-loopback callback that Keycloak will
+    # reject once a real client redirect_uri allow-list is enforced.
+    redirectUri: "http://localhost:28443/callback"
+    # KEYCLOAK_ALLOWED_REDIRECT_URI. Required in prod, see redirectUri.
+    allowedRedirectUri: "http://localhost:28443/callback"
+    # ADMIN_REQUIRED_GROUP. Optional, default "admin-dm". Keycloak group
+    # required to reach /admin.
+    adminRequiredGroup: admin-dm
+    # ADMIN_OIDC_ISSUER_URL. Optional, default "" (auto-derives from
+    # issuerUrl+realm). Override only for server-side calls routed through
+    # an internal proxy with a different issuer host.
+    adminOidcIssuerUrl: ""
+    # ADMIN_OIDC_PUBLIC_ISSUER_URL. Optional, default "".
+    adminOidcPublicIssuerUrl: ""
+
+  # PKCE/OIDC access-token verification (bearer tokens presented to the API).
+  auth:
+    # DM_AUTH_VERIFY_ACCESS_TOKEN. Optional, default true. Never disable in
+    # production.
+    verifyAccessToken: true
+    # DM_AUTH_JWKS_URL. Required when verifyAccessToken=true — JWKS endpoint
+    # used to validate bearer tokens (typically the relay-assistant or
+    # Keycloak certs endpoint).
+    jwksUrl: ""
+    # DM_AUTH_AUDIENCE. Optional, default "" (falls back to
+    # KEYCLOAK_CLIENT_ID in the app if unset).
+    audience: ""
+    # DM_AUTH_ALLOWED_ALGORITHMS_CSV. Optional, default "RS256".
+    allowedAlgorithmsCsv: RS256
+    # DM_AUTH_LEEWAY_SECONDS. Optional, default 30. Clock-skew tolerance.
+    leewaySeconds: 30
+    # DM_AUTH_JWKS_CACHE_TTL_SECONDS. Optional, default 600.
+    jwksCacheTtlSeconds: 600
+
+  # Telemetry ingestion/relay to an upstream OTel collector.
+  telemetry:
+    # DM_TELEMETRY_ENABLED. Optional, default true.
+    enabled: true
+    # DM_TELEMETRY_PUBLIC_ENDPOINT. Optional, default "/telemetry/v1/traces".
+    publicEndpoint: /telemetry/v1/traces
+    # DM_TELEMETRY_AUTHORIZATION_TYPE. Optional, default "Bearer".
+    authorizationType: Bearer
+    # DM_TELEMETRY_UPSTREAM_ENDPOINT. Required when enabled — the OTLP/HTTP
+    # traces endpoint traffic is forwarded to.
+    upstreamEndpoint: "http://otel-collector.telemetry.svc.cluster.local:4318/v1/traces"
+    # DM_TELEMETRY_UPSTREAM_AUTH_TYPE. Optional, default "Bearer".
+    upstreamAuthType: Bearer
+    # DM_TELEMETRY_TOKEN_TTL_SECONDS. Optional, default 300.
+    tokenTtlSeconds: 300
+    # DM_TELEMETRY_REQUIRE_TOKEN. Optional, default true.
+    requireToken: true
+    # DM_TELEMETRY_MAX_BODY_SIZE_MB. Optional, default 2.
+    maxBodySizeMb: 2
+    # DM_TELEMETRY_GRAFANA_URL. Optional, default "". Deep-link surfaced to
+    # operators (e.g. a usage dashboard); purely informational.
+    grafanaUrl: ""
+
+  # Postgres non-secret identity (database name / user). The password and
+  # full DSNs are secrets — see `secrets.values` below.
+  postgres:
+    # POSTGRES_DB. Optional, default "bootstrap".
+    db: bootstrap
+    # POSTGRES_USER. Optional, default "postgres".
+    user: postgres
+
+  # Relay-authorize gate (browser-extension plugin -> device-management
+  # /relay/authorize). Optional block; only relevant if a relay/reverse-proxy
+  # component (not deployed by this chart, see README "known quirks") is
+  # placed in front of Keycloak/other upstreams.
+  relay:
+    # DM_RELAY_ENABLED. Optional, default true.
+    enabled: true
+    # DM_RELAY_KEY_TTL_SECONDS. Optional, default 2592000 (30 days).
+    keyTtlSeconds: 2592000
+    # DM_RELAY_ALLOWED_TARGETS_CSV. Optional, default "keycloak".
+    allowedTargetsCsv: "keycloak,config,llm,mcr-api,telemetry"
+    # DM_RELAY_REQUIRE_KEY_FOR_SECRETS. Optional, default true.
+    requireKeyForSecrets: true
+    # DM_RELAY_ASSISTANT_URL. Optional, default "". Base URL of the relay
+    # reverse-proxy in front of Keycloak/other upstreams, if deployed
+    # alongside this chart.
+    assistantUrl: ""
+
+# -----------------------------------------------------------------------------
+# contentTemplate — NOT application config: these are plain string
+# substitution tokens baked into the browser-extension/plugin template that
+# device-management distributes to clients (DM-2). They ride on the same
+# ConfigMap for convenience but have nothing to do with server behavior.
+# All required in production; safe to leave empty in dev (renders an empty
+# token client-side).
+# -----------------------------------------------------------------------------
+contentTemplate:
+  # PUBLIC_BASE_URL. Public origin of this deployment, used both as a
+  # content-template token and to derive the admin OIDC callback
+  # (origin + /admin/callback).
+  publicBaseUrl: "https://device-management.example.invalid"
+  # LLM_BASE_URL. Base URL of the LLM API surfaced to clients.
+  llmBaseUrl: "https://llm.example.invalid/v1"
+  # DEFAULT_MODEL_NAME. Default model name surfaced to clients.
+  defaultModelName: ""
+  # API_BASE. Base URL the plugin uses for device-management API calls.
+  apiBase: ""
+  # RELAY_ASSISTANT_BASE_URL. Base URL of the relay reverse-proxy, if any.
+  relayAssistantBaseUrl: ""
+  # COMPTE_RENDU_URL. Base URL of the "compte rendu" companion service.
+  compteRenduUrl: ""
+  # COMU_URL. Base URL of the "comu" companion service.
+  comuUrl: ""
+  # TELEMETRY_ENDPOINT. Public telemetry ingestion endpoint surfaced to
+  # clients (distinct from config.telemetry.upstreamEndpoint, which is the
+  # server-side upstream).
+  telemetryEndpoint: ""
+
+# -----------------------------------------------------------------------------
+# secrets — sensitive values. NEVER set real values as chart defaults; use
+# --set-file/--set on the CLI, a gitignored values file, or (recommended in
+# production) `existingSecret` to reference a Secret managed outside Helm
+# (external-secrets, sealed-secrets, manual kubectl apply...).
+# -----------------------------------------------------------------------------
+secrets:
+  # Set to the name of a pre-existing Secret to use instead of the one this
+  # chart can create. When set, `create` and `values` below are ignored and
+  # the Secret must contain every key application pods reference (see
+  # values.schema.json / README for the full key list).
+  existingSecret: ""
+  # Create a Secret from `values` below. Optional, default true. Set to
+  # false alongside an empty `existingSecret` only if you wire secretRefs
+  # yourself via extraEnv on each component.
+  create: true
+  # Inline secret values (Secret stringData). Every key defaults to "" —
+  # left blank, the corresponding env var is empty at runtime (some, e.g.
+  # DATABASE_URL, will then fail application startup validation). Prefer
+  # `--set secrets.values.KEY=...` or a separate, gitignored values file
+  # over committing real values here.
+  values:
+    # ADMIN_SESSION_SECRET. Required in prod. Signs the admin UI session
+    # cookie.
+    ADMIN_SESSION_SECRET: ""
+    # DM_CONFIG_SECRET_KEY. Optional but recommended. Encrypts runtime
+    # config secret overrides (Fernet, derived via SHA-256) persisted from
+    # /admin/debug. Without it, secret overrides can't be saved at runtime.
+    DM_CONFIG_SECRET_KEY: ""
+    # DM_RELAY_SECRET_PEPPER. Required in prod. Pepper mixed into relay
+    # credential hashing.
+    DM_RELAY_SECRET_PEPPER: ""
+    # DM_RELAY_PROXY_SHARED_TOKEN. Required when a relay reverse-proxy is
+    # deployed in front of this app.
+    DM_RELAY_PROXY_SHARED_TOKEN: ""
+    # DM_QUEUE_ADMIN_TOKEN. Required when queue.enabled=true (api/worker).
+    # Bearer token protecting queue admin/introspection endpoints.
+    DM_QUEUE_ADMIN_TOKEN: ""
+    # DM_TELEMETRY_TOKEN_SIGNING_KEY. Required when config.telemetry.enabled.
+    # HMAC key signing short-lived client telemetry tokens.
+    DM_TELEMETRY_TOKEN_SIGNING_KEY: ""
+    # DM_TELEMETRY_UPSTREAM_KEY. Required when config.telemetry.enabled and
+    # the upstream collector requires a bearer credential.
+    DM_TELEMETRY_UPSTREAM_KEY: ""
+    # TELEMETRY_KEY. Content-template token (client-side telemetry key),
+    # not the same as DM_TELEMETRY_UPSTREAM_KEY.
+    TELEMETRY_KEY: ""
+    # TELEMETRY_SALT. Content-template token (client-side hashing salt).
+    TELEMETRY_SALT: ""
+    # ADMIN_OIDC_CLIENT_SECRET. Optional: only needed if the Keycloak client
+    # is confidential; leave empty for a public/PKCE client.
+    ADMIN_OIDC_CLIENT_SECRET: ""
+    # LLM_API_TOKEN. Required if the app calls an LLM API server-side (debug
+    # page, etc).
+    LLM_API_TOKEN: ""
+    # AWS_ACCESS_KEY_ID. Required when config.storage.storeEnrollS3 or
+    # binariesMode=presign (S3 credentials).
+    AWS_ACCESS_KEY_ID: ""
+    # AWS_SECRET_ACCESS_KEY. See AWS_ACCESS_KEY_ID.
+    AWS_SECRET_ACCESS_KEY: ""
+    # AWS_SESSION_TOKEN. Optional: only needed for temporary/STS credentials.
+    AWS_SESSION_TOKEN: ""
+    # POSTGRES_PASSWORD. Required by the internal dev postgres subchart
+    # (postgres.internal.enabled=true). Not consumed directly by the app
+    # when using an external database — DATABASE_URL already embeds it.
+    POSTGRES_PASSWORD: ""
+    # DATABASE_URL. Required. Application DSN, e.g.
+    # postgresql://user:pass@host:5432/dbname
+    DATABASE_URL: ""
+    # DATABASE_ADMIN_URL. Required. Used by the migration Job (alembic
+    # prefers it over DATABASE_URL) — migration 001 bootstraps an empty
+    # database from db/schema.sql inline, including `CREATE EXTENSION
+    # pgcrypto/citext`, which needs a privileged role (plain app credentials
+    # are not enough on a fresh database). On managed Postgres where even
+    # this role can't CREATE EXTENSION (e.g. AWS RDS), pre-create pgcrypto/
+    # citext out-of-band before the first install.
+    DATABASE_ADMIN_URL: ""
+    # DB_ADMIN_PASSWORD. Reserved: not consumed by the app today. Kept for
+    # parity with app/services/crypto.py SENSITIVE_ENV_VARS in case a
+    # separate DB admin role is introduced later.
+    DB_ADMIN_PASSWORD: ""
+
+# -----------------------------------------------------------------------------
+# postgres.internal — optional dev-only Postgres StatefulSet. Disabled by
+# default: production is expected to point `secrets.values.DATABASE_URL` /
+# `DATABASE_ADMIN_URL` at an externally managed database (see README install
+# matrix). Do not enable this in production.
+# -----------------------------------------------------------------------------
+postgres:
+  internal:
+    enabled: false
+    image:
+      repository: docker.io/library/postgres
+      tag: 16-alpine
+    resources: {}
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClassName: ""
+      accessModes:
+        - ReadWriteOnce

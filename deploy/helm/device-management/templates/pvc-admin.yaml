@@ -1,0 +1,17 @@
+{{- if and .Values.admin.enabled .Values.admin.persistence.enabled (not .Values.admin.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "admin-content") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "admin") | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.admin.persistence.accessModes | nindent 4 }}
+  {{- with .Values.admin.persistence.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.admin.persistence.size }}
+{{- end }}
