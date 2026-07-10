@@ -153,6 +153,9 @@ def test_quota_exceeded_returns_429_with_retry_after():
     _, client, _ = _setup()
     relay_headers = enroll(client)
     os.environ["LLM_QUOTA_REQUESTS_PER_MINUTE"] = "2"  # hot-reload : relu par requête
+    # Fenêtre large : évite qu'un changement de fenêtre entre deux requêtes
+    # (frontière des 60 s) remette le compteur à zéro en plein test (flaky CI).
+    os.environ["LLM_QUOTA_WINDOW_SECONDS"] = "3600"
     payload = {"messages": [{"role": "user", "content": "salut"}]}
     assert client.post("/llm/v1/chat/completions", json=payload, headers=relay_headers).status_code == 200
     assert client.post("/llm/v1/chat/completions", json=payload, headers=relay_headers).status_code == 200
