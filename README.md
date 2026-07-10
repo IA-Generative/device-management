@@ -375,6 +375,10 @@ catalogue → keycloak → scrub des secrets).
 **Enrollment & relais** — `POST|PUT /enroll` (PKCE Bearer), `GET /relay/authorize`,
 `/relay-assistant/{path}`.
 
+**Proxy LLM** (`/llm/v1/`, OpenAI-compatible) — `POST /llm/v1/chat/completions`
+(SSE passthrough si `stream: true`), `GET /llm/v1/models`. Auth : `X-Relay-Client`/
+`X-Relay-Key` OU `Authorization: Bearer <llmToken>`. Voir « Proxy LLM » ci-dessous.
+
 **Télémétrie** — `GET /telemetry/token` (Bearer court), `POST /telemetry/v1/traces`.
 
 **Binaires** — `GET /binaries/{path}` (S3 presign ou proxy).
@@ -420,7 +424,13 @@ scripts/               # build-local.sh, build-k8s.sh, scripts/k8s/
 | `DM_CONFIG_PROFILE` | Profil par défaut (dev/int/prod) |
 | `DM_TELEMETRY_ENABLED` / `DM_RELAY_ENABLED` | Activer télémétrie / relais |
 | `KEYCLOAK_ISSUER_URL` / `KEYCLOAK_REALM` / `KEYCLOAK_CLIENT_ID` | SSO Keycloak |
-| `LLM_BASE_URL` / `LLM_API_TOKEN` / `DEFAULT_MODEL_NAME` | Modèle IA (analyse catalogue) |
+| `LLM_BASE_URL` / `LLM_API_TOKEN` / `DEFAULT_MODEL_NAME` | Backend LLM réel (proxy /llm/v1 + analyse catalogue) — alias ticket : `LLM_BACKEND_URL`/`LLM_BACKEND_API_KEY` |
+| `FORCE_LLM_ENDPOINT_OVERRIDE` | **Défaut `true`** : le `/config` annonce le proxy DM comme `llmEndpoint` ; `false` = mode direct (debug). Éditable à chaud (onglet Config admin) |
+| `PUBLIC_LLM_PROXY_URL` | URL publique du proxy annoncée aux plugins (défaut : `PUBLIC_BASE_URL` + `/llm/v1`) |
+| `DM_LLM_TOKEN_SIGNING_KEY` / `DM_LLM_TOKEN_TTL_SECONDS` | Signature HMAC + TTL des `llmToken` par client |
+| `LLM_QUOTA_REQUESTS_PER_MINUTE` / `LLM_QUOTA_WINDOW_SECONDS` | Quota par utilisateur (0 = désactivé, défaut) |
+| `LLM_BACKENDS` / `LLM_GUARDRAILS` | Registry multi-backends (JSON) / guardrails actifs (CSV ordonné) |
+| `DM_LLM_READ_TIMEOUT_SECONDS` | Timeout lecture backend (inter-chunk en streaming) |
 
 ## Lancer en local
 
@@ -461,6 +471,53 @@ sequenceDiagram
   DM-->>R: 200/403
   R-->>P: réponse upstream
 ```
+
+## Proxy LLM (/llm/v1) — relais de compatibilité et point d'application des règles
+
+Les clients figés (ex. plugin Thunderbird 60 : TLS 1.3 draft-23, pas de gestion de
+certificats) ne peuvent plus joindre les backends LLM modernes. Le DM route donc
+tout leur trafic LLM : quand `FORCE_LLM_ENDPOINT_OVERRIDE=true` (**défaut**), la
+réponse `/config/{device}/config.json` annonce `llmEndpoint` (+ `llm_base_urls`,
+`relayAssistantBaseUrl`) = URL publique du proxy, et remplace la clé backend par un
+**`llmToken` signé par client** (HMAC, TTL court, lié au relayClientId validé) —
+la vraie clé `LLM_API_TOKEN` ne quitte jamais le serveur. Un plugin déjà enrôlé
+bascule au prochain poll `/config`, sans ré-enrôlement. `false` = mode direct
+historique (debug), bascule à chaud depuis l'onglet Config admin (propagation ~3 s).
+
+```
+Plugin ──X-Relay-Client/Key ou Bearer llmToken──▶ /llm/v1 (llm-proxy, ≥2 réplicas stateless)
+    auth duale → identité (client_uuid, email)
+    PRÉ  : throttle (quota Postgres partagé) → guardrails (entrée)
+    forward httpx (pool, SSE passthrough sans bufferisation, clé backend côté serveur)
+    POST : guardrails (sortie) → audit JSON (trace-id) + métriques Prometheus
+                                  ▼
+                     Backend LLM (LLM_BASE_URL + LLM_API_TOKEN)
+```
+
+**Points d'accroche** (`app/llm/`, chacun extensible par CONFIGURATION, sans toucher
+au cœur — voir les docstrings des modules) :
+
+- **Guardrails** (`guardrails.py`) : `Guardrail.check(payload, direction, ctx)` →
+  `allow|deny|transform`, appliqué au prompt entrant ET à la réponse. Brancher une
+  règle = enregistrer une classe dans `GUARDRAIL_REGISTRY` + la nommer dans
+  `LLM_GUARDRAILS` (hot-reload). Livrés : `noop` (défaut), `deny_all` (kill-switch).
+- **Throttling** (`throttle.py`) : quota par utilisateur (fenêtre fixe), compteurs
+  **PostgreSQL partagés entre réplicas** (UPSERT atomique) derrière l'abstraction
+  `QuotaStore` (Redis branchable sans refactor). Dépassement → `429 {"error",
+  "retry_after"}` + header `Retry-After`. Limites hot-reload, `0` = désactivé.
+- **Backend registry** (`backends.py`) : URL/clé/mapping modèle→backend viennent de
+  la config (`LLM_BASE_URL`/`LLM_API_TOKEN` + `LLM_BACKENDS` JSON, clés par
+  indirection `token_env`) — ajout/bascule/failover sans redéploiement.
+- **Traçabilité** (`audit.py`) : `X-Request-Id` propagé de bout en bout (client →
+  proxy → backend), une ligne d'audit JSON par requête (user, modèle, verdicts,
+  quota, statut, latence — jamais de secret ni de contenu), métriques `/metrics`
+  (`dm_llm_request_duration_seconds` → p50/p95/p99, RPS, erreurs, streams actifs).
+
+**Modèle de déploiement** : le proxy est STATELESS (tout état partagé — quotas,
+révocation, config — vit dans PostgreSQL) → deployment k8s dédié `llm-proxy`
+(`DM_RUNTIME_MODE=llm`, sans PVC, ≥2 réplicas + HPA) derrière le LB, sans affinité
+de session. Limite documentée : en sortie streamée, l'inspection guardrail est
+best-effort par chunk (une analyse sémantique complète imposerait de bufferiser).
 
 ## Déploiement progressif
 

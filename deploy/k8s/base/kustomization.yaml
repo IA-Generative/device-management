@@ -21,6 +21,9 @@ resources:
   - manifests/29-postgres-pvc.yaml
   - manifests/30-postgres-deployment.yaml
   - manifests/31-postgres-service.yaml
+  - manifests/32-llm-proxy-deployment.yaml
+  - manifests/33-llm-proxy-service.yaml
   - manifests/50-ingress.yaml
   - manifests/60-device-management-hpa.yaml
   - manifests/61-queue-worker-hpa.yaml
+  - manifests/62-llm-proxy-hpa.yaml

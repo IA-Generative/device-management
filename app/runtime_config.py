@@ -86,6 +86,39 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
     "LLM_BASE_URL": _spec("LLM_BASE_URL", "LLM base URL", "LLM", "str", True),
     "LLM_API_TOKEN": _spec("LLM_API_TOKEN", "LLM API token", "LLM", "str", True, sensitive=True),
     "DEFAULT_MODEL_NAME": _spec("DEFAULT_MODEL_NAME", "Modèle par défaut", "LLM", "str", True),
+    # ── Proxy LLM (/llm/v1) — toutes relues PAR REQUÊTE → hot-reload réel ──
+    "FORCE_LLM_ENDPOINT_OVERRIDE": _spec(
+        "FORCE_LLM_ENDPOINT_OVERRIDE",
+        "Forcer llmEndpoint vers le proxy DM /llm/v1 (défaut ON ; OFF = mode direct)",
+        "Proxy LLM", "bool", True),
+    "PUBLIC_LLM_PROXY_URL": _spec(
+        "PUBLIC_LLM_PROXY_URL",
+        "URL publique du proxy LLM (défaut : PUBLIC_BASE_URL + /llm/v1)",
+        "Proxy LLM", "str", True),
+    "DM_LLM_TOKEN_SIGNING_KEY": _spec(
+        "DM_LLM_TOKEN_SIGNING_KEY", "Clé de signature des llmToken par client",
+        "Proxy LLM", "str", True, sensitive=True),
+    "DM_LLM_TOKEN_TTL_SECONDS": _spec(
+        "DM_LLM_TOKEN_TTL_SECONDS", "TTL des llmToken (s)",
+        "Proxy LLM", "int", True, min=60, max=86400),
+    "LLM_QUOTA_REQUESTS_PER_MINUTE": _spec(
+        "LLM_QUOTA_REQUESTS_PER_MINUTE",
+        "Quota par utilisateur et par fenêtre (0 = désactivé)",
+        "Proxy LLM", "int", True, min=0),
+    "LLM_QUOTA_WINDOW_SECONDS": _spec(
+        "LLM_QUOTA_WINDOW_SECONDS", "Fenêtre de quota (s)",
+        "Proxy LLM", "int", True, min=10, max=3600),
+    "LLM_BACKENDS": _spec(
+        "LLM_BACKENDS",
+        "Registry backends LLM (JSON ; clés via token_env, jamais en clair)",
+        "Proxy LLM", "str", True),
+    "LLM_GUARDRAILS": _spec(
+        "LLM_GUARDRAILS", "Guardrails actifs, ordonnés (CSV — ex: noop, deny_all)",
+        "Proxy LLM", "str", True),
+    "DM_LLM_READ_TIMEOUT_SECONDS": _spec(
+        "DM_LLM_READ_TIMEOUT_SECONDS",
+        "Timeout lecture backend (s ; inter-chunk en streaming)",
+        "Proxy LLM", "int", True, min=10, max=600),
     # ── Télémétrie ──
     "DM_TELEMETRY_ENABLED": _spec(
         "DM_TELEMETRY_ENABLED", "Télémétrie active", "Télémétrie", "bool", True,
@@ -214,6 +247,18 @@ def _apply_one(spec: ConfigKeySpec, py: Any) -> None:
             logger.warning("setattr settings.%s failed: %s", spec.settings_field, exc)
 
 
+# Callbacks appelés après chaque application d'un nouvel état de config
+# (ex: invalidation du cache de réponses /config dans app.main — les réponses
+# mises en cache ont été bâties avec l'ancienne génération). Enregistrés par
+# les consommateurs pour éviter tout import circulaire.
+_RELOAD_HOOKS: list = []
+
+
+def register_reload_hook(fn) -> None:
+    if fn not in _RELOAD_HOOKS:
+        _RELOAD_HOOKS.append(fn)
+
+
 def apply_state(overrides_py: dict[str, Any]) -> None:
     """Apply effective = {**baseline, **overrides} to os.environ + settings.
 
@@ -223,6 +268,11 @@ def apply_state(overrides_py: dict[str, Any]) -> None:
         for env, spec in EDITABLE_KEYS.items():
             py = overrides_py[env] if env in overrides_py else _BASELINE_PY.get(env)
             _apply_one(spec, py)
+    for hook in list(_RELOAD_HOOKS):
+        try:
+            hook()
+        except Exception:  # pragma: no cover - un hook ne doit pas casser le reload
+            logger.exception("config reload hook failed")
 
 
 # ── Override-aware accessor (for new code / future dynamic values) ────────

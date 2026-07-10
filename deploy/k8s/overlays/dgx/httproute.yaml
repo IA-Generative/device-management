@@ -12,6 +12,28 @@ spec:
       name: api-gateway
       namespace: envoy-gateway-system
   rules:
+    # Proxy LLM (/llm/v1) : préfixe plus long que /bootstrap → gagne la
+    # précédence Gateway API. Rewrite /bootstrap/llm → /llm (le plugin reçoit
+    # llmEndpoint = https://<host>/bootstrap/llm/v1). Streams SSE longs :
+    # timeout large ; Envoy ne bufferise pas les réponses en streaming.
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: llm-proxy
+          port: 80
+          weight: 1
+      matches:
+        - path:
+            type: PathPrefix
+            value: /bootstrap/llm
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /llm
+      timeouts:
+        request: 300s
     - backendRefs:
         - group: ""
           kind: Service

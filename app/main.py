@@ -180,6 +180,37 @@ if _RUNTIME_MODE in ("api", "all"):
         return RedirectResponse(f"{prefix}/catalog/", status_code=307)
 
 
+# ---- Trace-id (corrélation de bout en bout) ---------------------------------
+# Chaque requête porte un X-Request-Id (repris du client s'il en fournit un,
+# généré sinon), exposé dans request.state.trace_id (audit LLM, logs) et rendu
+# au client — prêt pour OpenTelemetry.
+@app.middleware("http")
+async def trace_id_middleware(request: Request, call_next):
+    trace_id = (request.headers.get("x-request-id") or "").strip()[:64] or uuid.uuid4().hex
+    request.state.trace_id = trace_id
+    response = await call_next(request)
+    response.headers.setdefault("X-Request-Id", trace_id)
+    return response
+
+
+# ---- Mode runtime "llm" : deployment dédié au proxy LLM ----------------------
+# Les routes du monolithe sont déclarées au niveau module ; en mode llm on ne
+# sert QUE le proxy + sondes + métriques (pod stateless scalable, sans PVC).
+_LLM_MODE_ALLOWED_PREFIXES = (
+    "/llm/", "/livez", "/readyz", "/healthz", "/metrics", "/internal",
+)
+
+if _RUNTIME_MODE == "llm":
+    @app.middleware("http")
+    async def _llm_mode_allowlist(request: Request, call_next):
+        if not request.url.path.startswith(_LLM_MODE_ALLOWED_PREFIXES):
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "error": "Not available in llm runtime mode."},
+            )
+        return await call_next(request)
+
+
 # ---- Security headers middleware (admin UI + API)
 # Paths whose mutation (POST/PUT/PATCH/DELETE) invalidates the config cache.
 _CACHE_INVALIDATION_PATH_PREFIXES = (
@@ -390,6 +421,13 @@ def _config_cache_clear() -> None:
     """Flush the entire config cache (call after deploy)."""
     with _CONFIG_CACHE_LOCK:
         _CONFIG_CACHE.clear()
+
+
+# Hot-reload : quand une nouvelle génération de config runtime est appliquée
+# (toggle admin, ex: FORCE_LLM_ENDPOINT_OVERRIDE), les réponses /config en cache
+# ont été bâties avec l'ancienne valeur → invalidation immédiate sur chaque pod
+# (supprime la fenêtre de staleness du TTL 60s).
+runtime_config.register_reload_hook(_config_cache_clear)
 
 
 def _queue_db_url() -> str | None:
@@ -1373,6 +1411,8 @@ def _relay_allowed_targets() -> list[str]:
         targets.append("config")
     if "telemetry" not in targets:
         targets.append("telemetry")
+    if "llm" not in targets:
+        targets.append("llm")
     return sorted(set(targets))
 
 
@@ -1502,6 +1542,11 @@ def _verify_relay_credentials(relay_client_id: str, relay_key: str, target: str 
     if "config" in effective_targets and "telemetry" not in effective_targets:
         effective_targets.append("telemetry")
         effective_targets.sort()
+    # Rétrocompat proxy LLM : un plugin déjà enrôlé (target 'config') bascule sur
+    # /llm/v1 sans ré-enrôlement, juste via le llmEndpoint reçu au prochain /config.
+    if "config" in effective_targets and "llm" not in effective_targets:
+        effective_targets.append("llm")
+        effective_targets.sort()
 
     if target_norm and effective_targets and target_norm not in effective_targets:
         return False, f"target '{target_norm}' not allowed"
@@ -1602,6 +1647,76 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
     if expires_at is not None:
         config_obj["telemetryKeyExpiresAt"] = expires_at
         config_obj["telemetryKeyTtlSeconds"] = int(settings.telemetry_token_ttl_seconds)
+    return cfg
+
+
+def _force_llm_endpoint_override() -> bool:
+    """FORCE_LLM_ENDPOINT_OVERRIDE — bool, défaut TRUE, hot-reloadable (onglet Config).
+
+    Chaîne vide (clé jamais définie, y compris après un reset apply_state sans
+    baseline) = défaut ON.
+    """
+    raw = str(runtime_config.cfg("FORCE_LLM_ENDPOINT_OVERRIDE", "") or "").strip().lower()
+    if not raw:
+        return True
+    return raw in ("1", "true", "yes", "on")
+
+
+_llm_override_warning_emitted = False
+
+
+def _apply_llm_proxy_overrides(cfg: dict, *, relay_ok: bool, relay_meta: dict | None) -> dict:
+    """Override du llmEndpoint annoncé au plugin — cœur de la Tâche 2.
+
+    Appelé APRÈS _apply_catalog_overrides (priorité garantie sur les overrides
+    catalogue) et APRÈS le scrub (les tokens posés ici ne sont pas re-scrubés).
+
+    - FORCE_LLM_ENDPOINT_OVERRIDE=true (défaut) : llmEndpoint / llm_base_urls /
+      relayAssistantBaseUrl = URL publique du proxy DM ; la clé backend
+      (LLM_API_TOKEN) ne sort JAMAIS — remplacée par un llmToken signé par
+      client, minté ici (par requête, jamais mis en cache) si la paire
+      X-Relay-Client/Key vient d'être validée.
+    - false : mode direct (comportement historique), llmEndpoint = LLM_BASE_URL.
+    """
+    global _llm_override_warning_emitted
+    config_obj = cfg.get("config")
+    if not isinstance(config_obj, dict):
+        return cfg
+
+    from .llm.backends import public_llm_proxy_url  # import différé (pas de cycle)
+    from .llm.tokens import mint_llm_token
+
+    force = _force_llm_endpoint_override()
+    proxy_url = public_llm_proxy_url() if force else ""
+    if force and not proxy_url:
+        if not _llm_override_warning_emitted:
+            logger.warning(
+                "FORCE_LLM_ENDPOINT_OVERRIDE=true mais ni PUBLIC_LLM_PROXY_URL ni "
+                "PUBLIC_BASE_URL ne sont définis — fallback mode direct."
+            )
+            _llm_override_warning_emitted = True
+        force = False
+
+    if force:
+        config_obj["llmEndpoint"] = proxy_url
+        config_obj["llm_base_urls"] = proxy_url
+        config_obj["relayAssistantBaseUrl"] = proxy_url
+        # La clé backend réelle ne transite jamais par le client en mode proxy.
+        config_obj["llm_api_tokens"] = ""
+        config_obj["llmToken"] = ""
+        if relay_ok and relay_meta:
+            token, expires_at = mint_llm_token(
+                client_uuid=str(relay_meta.get("client_uuid") or ""),
+                email=str(relay_meta.get("email") or ""),
+            )
+            if token:
+                config_obj["llmToken"] = token
+                config_obj["llm_api_tokens"] = token
+                if expires_at is not None:
+                    config_obj["llmTokenExpiresAt"] = expires_at
+    else:
+        direct_url = str(runtime_config.cfg("LLM_BASE_URL", "") or "").strip()
+        config_obj["llmEndpoint"] = direct_url or str(config_obj.get("llm_base_urls") or "")
     return cfg
 
 
@@ -2172,6 +2287,17 @@ def metrics():
         f'dm_runtime_worker_active{{mode="{mode}"}} {worker_active}',
     ]
 
+    # Métriques du proxy LLM (registry prometheus_client dédié) : latence
+    # p50/p95/p99 via histogramme, RPS, erreurs, requêtes actives, quota.
+    try:
+        from .llm import metrics as _llm_metrics
+
+        llm_text = _llm_metrics.render().strip()
+        if llm_text:
+            lines.append(llm_text)
+    except Exception:
+        logger.debug("llm metrics render failed", exc_info=True)
+
     return Response(
         content="\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4; charset=utf-8",
@@ -2202,8 +2328,15 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         or request.headers.get("X-Client-UUID", "").strip()
         or request.headers.get("X-User-Email", "").strip()
     )
+    # Bypass aussi sur présence de credentials relay : la réponse contient alors
+    # des valeurs PAR CLIENT (llmToken signé, secrets révélés) qui ne doivent
+    # jamais alimenter ni sortir du cache partagé.
+    _has_relay_creds = bool(
+        (request.headers.get("X-Relay-Client") or request.headers.get("X-Client-Id") or "").strip()
+    )
+    _cacheable = not (_has_enrichment or _has_relay_creds)
     cache_key = f"{dev or '_'}:{prof}"
-    if not _has_enrichment:
+    if _cacheable:
         cached = _config_cache_get(cache_key)
         if cached is not None:
             return JSONResponse(cached, headers={"Cache-Control": "public, max-age=60", "X-Cache": "HIT"})
@@ -2356,6 +2489,15 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     if settings.relay_require_key_for_secrets and not relay_ok:
         cfg = _scrub_secret_values(cfg)
 
+    # ── Proxy LLM : override llmEndpoint (APRÈS catalog overrides + scrub :
+    # priorité garantie, et le llmToken par client posé ici n'est pas re-scrubé
+    # ni mis en cache — cf. bypass _has_relay_creds plus haut). ──
+    cfg = _apply_llm_proxy_overrides(
+        cfg,
+        relay_ok=bool(relay_ok),
+        relay_meta=relay_meta if relay_ok and isinstance(relay_meta, dict) else None,
+    )
+
     # 3) keep top-level enable switch from service settings if you still want a global kill-switch
     cfg["enabled"] = bool(settings.config_enabled)
 
@@ -2490,12 +2632,13 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         "features": flags,
     }
 
-    # P2: Cache the response only when no enrichment headers (generic response)
-    if not _has_enrichment:
+    # P2: Cache the response only for generic requests (no enrichment headers,
+    # no relay credentials — the latter carry per-client tokens/secrets).
+    if _cacheable:
         _config_cache_set(cache_key, response_body)
 
     return JSONResponse(response_body, headers={
-        "Cache-Control": "public, max-age=60" if not _has_enrichment else "no-store",
+        "Cache-Control": "public, max-age=60" if _cacheable else "no-store",
         "X-Cache": "MISS",
     })
 
@@ -4440,6 +4583,27 @@ async def relay_assistant_proxy(path: str, request: Request):
         status_code=upstream_resp.status_code,
         headers=resp_headers,
     )
+
+
+# ---- Proxy LLM OpenAI-compatible (/llm/v1) -----------------------------------
+# Monté en fin de module : build_router reçoit les helpers relay par injection
+# (_relay_auth_from_request, _RELAY_HOP_HEADERS définis plus haut) — pas d'import
+# circulaire. Modes api/all (pods API existants) et llm (deployment dédié
+# stateless, scalable horizontalement — cf. _llm_mode_allowlist).
+if _RUNTIME_MODE in ("api", "all", "llm"):
+    from .llm.router import build_router as _build_llm_router
+
+    app.include_router(_build_llm_router(
+        relay_auth=_relay_auth_from_request,
+        hop_headers=_RELAY_HOP_HEADERS,
+    ))
+
+
+@app.on_event("shutdown")
+async def _shutdown_llm_http_client() -> None:
+    from .llm.http_client import aclose_async_client
+
+    await aclose_async_client()
 
 
 # ---- Local entrypoint (VS Code friendly)

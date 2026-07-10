@@ -1,0 +1,147 @@
+# Proxy LLM OpenAI-compatible (/llm/v1) — deployment DÉDIÉ et STATELESS.
+# Même image que device-management, rôle DM_RUNTIME_MODE=llm (seules les routes
+# /llm/v1 + sondes + /metrics servent). AUCUN volume/PVC : le pod scale
+# horizontalement partout (y compris les overlays qui forcent l'API à 1 réplica
+# à cause du PVC RWO). État partagé (quotas, révocation relay, config runtime)
+# = PostgreSQL → pas d'affinité de session derrière le Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-proxy
+  namespace: bootstrap
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llm-proxy
+  template:
+    metadata:
+      labels:
+        app: llm-proxy
+    spec:
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: llm-proxy
+          image: <SCALEWAY_REGISTRY>/device-management:0.9.0
+          imagePullPolicy: Always
+          command:
+            - uvicorn
+            - app.main:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "3001"
+            - --proxy-headers
+            - --forwarded-allow-ips
+            - "*"
+          ports:
+            - containerPort: 3001
+          env:
+            - name: DM_RUNTIME_MODE
+              value: "llm"
+            - name: DM_PORT
+              value: "3001"
+            - name: DM_APP_VERSION
+              value: "0.9.0"
+            - name: DM_CONFIG_ENABLED
+              value: "false"
+            - name: DM_STORE_ENROLL_LOCALLY
+              value: "false"
+            - name: DM_STORE_ENROLL_S3
+              value: "false"
+            - name: DM_ALLOW_ORIGINS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_ALLOW_ORIGINS
+            # Auth relay entrante : vérification des clés X-Relay-* (hash poivré, DB).
+            - name: DM_RELAY_ENABLED
+              value: "true"
+            - name: DM_RELAY_SECRET_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_SECRET_PEPPER
+            # llmToken signé par client (auth duale) — même clé que le pod API
+            # qui les mint dans /config.
+            - name: DM_LLM_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_LLM_TOKEN_SIGNING_KEY
+                  optional: true
+            # Backend LLM réel — la clé ne quitte JAMAIS le serveur.
+            - name: LLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: LLM_BASE_URL
+            - name: LLM_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: LLM_API_TOKEN
+            - name: DEFAULT_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DEFAULT_MODEL_NAME
+            - name: PUBLIC_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: PUBLIC_BASE_URL
+                  optional: true
+            # Runtime config partagée (overrides admin hot-reload, quotas Postgres).
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DATABASE_URL
+            - name: DM_CONFIG_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_CONFIG_SECRET_KEY
+                  optional: true
+            - name: DM_CONFIG_POLL_INTERVAL_SECONDS
+              value: "3"
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: 3001
+            periodSeconds: 2
+            failureThreshold: 8
+            timeoutSeconds: 2
+          readinessProbe:
+            # /readyz : hors Service tant que la config runtime n'est pas chargée.
+            httpGet:
+              path: /readyz
+              port: 3001
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3

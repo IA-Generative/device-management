@@ -480,6 +480,22 @@ CREATE TABLE IF NOT EXISTS config_pod_state (
 CREATE INDEX IF NOT EXISTS idx_cps_heartbeat ON config_pod_state(last_heartbeat_at DESC);
 
 -- ═══════════════════════════════════════════════════════════════
+-- PROXY LLM : compteurs de quota par utilisateur (fenêtre fixe)
+-- ═══════════════════════════════════════════════════════════════
+
+-- Une ligne par (subject = client_uuid du relay client, fenêtre) ; créée lazy à
+-- la première requête via UPSERT atomique. Compteurs PARTAGÉS entre tous les
+-- réplicas llm-proxy (aucun état local) — cf. app/llm/throttle.py.
+CREATE TABLE IF NOT EXISTS llm_quota_counters (
+    subject       TEXT        NOT NULL,
+    window_start  TIMESTAMPTZ NOT NULL,
+    count         INT         NOT NULL DEFAULT 0,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (subject, window_start)
+);
+CREATE INDEX IF NOT EXISTS idx_llm_quota_window ON llm_quota_counters(window_start);
+
+-- ═══════════════════════════════════════════════════════════════
 -- ═══════════════════════════════════════════════════════════════
 -- GRANTS (dev role)
 -- ═══════════════════════════════════════════════════════════════
