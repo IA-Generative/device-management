@@ -42,6 +42,9 @@ services:
       DM_RELAY_ALLOWED_TARGETS_CSV: ${DM_RELAY_ALLOWED_TARGETS_CSV:-keycloak,config,llm,mcr-api,telemetry}
       DM_RELAY_REQUIRE_KEY_FOR_SECRETS: ${DM_RELAY_REQUIRE_KEY_FOR_SECRETS:-true}
 
+      # Proxy LLM : signature des llmToken mintés dans /config (0.9.0+)
+      DM_LLM_TOKEN_SIGNING_KEY: ${DM_LLM_TOKEN_SIGNING_KEY:-change-me-llm-signing-key}
+
       # Optional S3
       DM_STORE_ENROLL_S3: ${DM_STORE_ENROLL_S3:-false}
       DM_S3_BUCKET: ${DM_S3_BUCKET:-}
