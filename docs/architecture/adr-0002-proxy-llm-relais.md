@@ -54,6 +54,54 @@ exigences de cloisonnement) ou le cycle de vie des besoins l'exigent. Le pipelin
 d'intercepteurs (pré-requête / post-réponse) garantit que l'évolution des règles ne
 modifie jamais le cœur du relais.
 
+**Le choix technologique initial est réversible à faible coût.** Python/FastAPI est un
+choix d'*amorçage* (mutualisation avec le cœur DM : conventions, tests, image, équipe),
+pas un engagement : le composant est défini par ses **contrats**, tous technologiquement
+neutres. Deux trajectoires de remplacement restent ouvertes en permanence :
+
+- **réimplémentation dans une technologie compilée** (Go, Rust…) si la densité de flux
+  SSE par pod ou l'empreinte mémoire le justifient — HTTP, SSE, HMAC-SHA256 et SQL se
+  réimplémentent partout ;
+- **substitution par un composant dédié du marché** (passerelle LLM / API gateway
+  spécialisée), à condition qu'il honore les mêmes contrats : auth duale, quotas par
+  utilisateur, journal d'audit sans contenu.
+
+La bascule opérationnelle tient à une valeur de configuration : le plugin ne connaît que
+l'URL `llmEndpoint` annoncée par `/config` (`PUBLIC_LLM_PROXY_URL`) — pointer la nouvelle
+implémentation (ou permuter le backend du Service/route d'entrée) suffit, et le retour
+arrière est le chemin inverse. Les **critères d'acceptation testés** (auth, SSE, 429,
+guardrails, multi-réplicas) constituent la **spécification exécutable** qu'une
+réimplémentation doit satisfaire.
+
+**Points d'interface du composant** — quatre contrats, aucun spécifique à Python :
+
+| # | Interface | Contrat | Neutralité technologique |
+|---|---|---|---|
+| ① | Plugin → proxy (entrée) | API OpenAI-compatible : `POST /chat/completions` (SSE si `stream`), `GET /models` ; auth `X-Relay-Client`/`X-Relay-Key` **ou** `Authorization: Bearer <llmToken>` ; erreurs `{"error":…}` + `retry_after` | HTTP/SSE standard — c'est le contrat du client figé, il ne peut de toute façon pas changer |
+| ② | Proxy → DM (autorisation) | Vérification des credentials relais : contrat HTTP existant `GET /relay/authorize` (celui que nginx consomme déjà) — l'appel de fonction injecté actuel n'est qu'une optimisation intra-process du même contrat ; vérification du `llmToken` : HMAC-SHA256 sur payload JSON documenté, clé partagée par secret | Un appel HTTP + un HMAC : quelques lignes dans n'importe quel langage |
+| ③ | Proxy → backend LLM (sortie) | API OpenAI standard, clé backend injectée depuis la configuration (`LLM_BASE_URL`/`LLM_API_TOKEN`, registre `LLM_BACKENDS`) | HTTP sortant standard |
+| ④ | Proxy → PostgreSQL (état) | SQL borné : UPSERT sur `llm_quota_counters` (quotas), lecture de la configuration runtime | Remplaçable par tout store partagé honorant l'atomicité (l'abstraction `QuotaStore` matérialise déjà cette porte) |
+
+Le DM annonce par ailleurs `llmEndpoint` au plugin via `/config` — le proxy n'y participe
+pas (couplage nul : c'est une URL écrite par le cœur).
+
+```mermaid
+flowchart LR
+    P["Plugin<br/>(client figé)"]
+    subgraph PROXY["Proxy LLM — implémentation REMPLAÇABLE<br/>(Python aujourd'hui · compilé ou composant dédié demain)"]
+        F["/llm/v1<br/>auth duale · quotas · guardrails · audit"]
+    end
+    DM["DM cœur<br/>(/config · /relay/authorize)"]
+    IA["Backend LLM<br/>(OpenAI-compatible)"]
+    DB[("PostgreSQL<br/>quotas · config")]
+
+    DM -.->|"annonce llmEndpoint<br/>via /config"| P
+    P -->|"① API OpenAI (HTTP/SSE)<br/>X-Relay-* ou Bearer llmToken"| F
+    F -->|"② /relay/authorize (HTTP)<br/>+ vérif HMAC llmToken"| DM
+    F -->|"③ API OpenAI<br/>clé backend (config)"| IA
+    F -->|"④ SQL borné<br/>(QuotaStore)"| DB
+```
+
 ### 3. Hypothèse structurante de long terme — le porteur de responsabilité de chaque composant évoluera
 
 Les frontières n°1 et n°2 sont les cas particuliers d'un principe général, que la présente
