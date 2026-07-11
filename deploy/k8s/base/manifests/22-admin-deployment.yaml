@@ -15,6 +15,11 @@ spec:
       labels:
         app: device-management-admin
     spec:
+      # Non-root enforcement (voir 20-device-management-deployment.yaml pour le
+      # détail). Garde-fou face à une régression du USER 10001 côté image.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
       imagePullSecrets:
         - name: regcred
       containers:

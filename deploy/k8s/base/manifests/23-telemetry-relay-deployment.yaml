@@ -13,6 +13,10 @@ spec:
       labels:
         app: telemetry-relay
     spec:
+      # Non-root enforcement (voir 20-device-management-deployment.yaml).
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
       imagePullSecrets:
         - name: regcred
       containers:

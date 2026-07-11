@@ -18,6 +18,14 @@ spec:
       labels:
         app: device-management
     spec:
+      # Non-root enforcement : garde-fou complémentaire au USER 10001 du Dockerfile.
+      # Si un futur build régresse (image rebasculée root), kubelet refusera de
+      # créer le container plutôt que de laisser passer silencieusement. fsGroup
+      # 10001 rend les volumes montés (PVC, emptyDir) accessibles en écriture à
+      # l'utilisateur de l'image.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
       imagePullSecrets:
         - name: regcred
       containers:

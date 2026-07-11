@@ -15,6 +15,12 @@ spec:
       labels:
         app: queue-worker
     spec:
+      # Non-root enforcement (voir 20-device-management-deployment.yaml).
+      # S'applique aussi à l'initContainer wait-for-postgres : postgres:16-alpine
+      # tourne en uid 70 (postgres), donc pas de conflit.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
       imagePullSecrets:
         - name: regcred
       initContainers:
