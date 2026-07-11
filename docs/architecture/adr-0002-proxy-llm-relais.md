@@ -1,11 +1,13 @@
 # ADR-0002 : Proxy LLM dans le DM — découplage des domaines de responsabilité et sécabilité
 
-**Date** : 2026-07-10
+**Date** : 2026-07-10 — **mise à jour 2026-07-11** (§3 : généralisation de la sécabilité —
+hypothèse de long terme sur le portage des responsabilités, alignement homologation)
 **Statut** : En vigueur
 **Auteurs** : eric.tiquet + Claude Fable 5
 **Portée** : introduction du relais LLM OpenAI-compatible `/llm/v1` (package `app/llm/`,
 deployment `llm-proxy`) et de l'override `FORCE_LLM_ENDPOINT_OVERRIDE` du `llmEndpoint`
-annoncé aux plugins via `/config`.
+annoncé aux plugins via `/config` ; érige la séparation des préoccupations et la
+**sécabilité** en principe d'architecture opposable à l'ensemble des composants.
 
 ---
 
@@ -52,7 +54,86 @@ exigences de cloisonnement) ou le cycle de vie des besoins l'exigent. Le pipelin
 d'intercepteurs (pré-requête / post-réponse) garantit que l'évolution des règles ne
 modifie jamais le cœur du relais.
 
-### 3. Décisions techniques associées
+### 3. Hypothèse structurante de long terme — le porteur de responsabilité de chaque composant évoluera
+
+Les frontières n°1 et n°2 sont les cas particuliers d'un principe général, que la présente
+mise à jour érige en règle d'architecture.
+
+**L'hypothèse.** À terme, les composants du système ne seront pas portés — développés,
+exploités, homologués — par le même acteur. Le backend LLM est déjà un service tiers ;
+l'exploitation du relais, du cœur DM, de l'IHM d'administration ou du plugin pourra être
+transférée à des équipes ou entités distinctes, à des rythmes différents. L'architecture
+ne doit donc parier sur **aucune co-localisation durable des responsabilités** : ce qui
+est aujourd'hui une commodité d'équipe (même dépôt, même image, même base) ne doit jamais
+devenir un couplage qui interdirait demain la séparation.
+
+**Le corollaire homologation.** Cette hypothèse est aussi celle de l'homologation des
+systèmes : les périmètres d'homologation (DAT, AIPD, décision d'homologation) épousent
+les frontières de responsabilité. Chaque frontière de sécabilité est une **frontière
+possible de périmètre d'homologation** : un composant peut être homologué, ré-homologué,
+transféré ou remplacé **sans rouvrir le dossier des autres**. Inversement, un couplage
+technique entre deux composants soude leurs dossiers d'homologation — c'est précisément
+ce que cette ADR interdit.
+
+**Règles de découplage** (opposables à toute évolution du système) :
+
+1. **Contrats d'interface explicites et neutres** — les composants ne communiquent que
+   par des contrats nommés, versionnés, indépendants de la technologie d'implémentation
+   (API OpenAI pour l'inférence, `/config` JSON pour la configuration, OIDC pour
+   l'identité, OTLP pour la télémétrie, `auth_request`/`/relay/authorize` pour
+   l'autorisation de relais). Jamais d'API « interne » implicite entre composants
+   séparables.
+2. **Zéro couplage de code** — pas de bibliothèque partagée imposée entre composants
+   séparables ; au sein du monolithe, dépendances **unidirectionnelles** et injection à
+   l'initialisation (le cœur n'importe pas le module `app/llm/`, qui reçoit ses
+   dépendances — jamais l'inverse).
+3. **Câblage par configuration** — les composants se découvrent par configuration (URL,
+   clés, registres), jamais en dur : remplacer ou déplacer un composant est un changement
+   de configuration, pas de code.
+4. **État cloisonné** — chaque composant possède ses données ; l'accès à l'état d'un
+   autre composant passe par un contrat désigné, pas par la lecture directe de ses
+   structures internes.
+5. **Déployabilité indépendante** — chaque composant se déploie, se scale, se met à jour
+   et se redémarre séparément (runtime modes, deployments dédiés, HPA propres).
+6. **Observabilité et secrets par composant** — journaux et métriques imputables au
+   composant émetteur ; secrets **par domaine fonctionnel**, à rotation indépendante
+   (rayon d'explosion minimal : faire tourner la clé d'un composant n'invalide rien chez
+   les autres).
+
+**Cartographie des préoccupations** (état au 0.9.0) :
+
+| Composant | Préoccupation unique | Contrat d'interface | Sécabilité aujourd'hui |
+|---|---|---|---|
+| Plugin (IAssistant) | Expérience utilisateur dans l'hôte bureautique | `/config`, `/enroll`, `/llm/v1`, OTLP | Binaire distinct, posé par le gestionnaire de parc |
+| DM cœur (catalogue, config, campagnes) | Cycle de vie post-installation | HTTP public + SQL | Mode `api`, deployment propre |
+| Proxy LLM | Relais d'inférence + application des règles | API OpenAI (entrée), backend registry (sortie) | Module `app/llm/` sans dépendance inverse + mode `llm` + deployment dédié → **extractible en service/repo séparé** |
+| Relais (relay-assistant) | Médiation deny-all vers services tiers | `auth_request` → `/relay/authorize` | Conteneur nginx séparé |
+| Relais de télémétrie | Ingestion/réémission OTLP | OTLP/HTTP | Deployment séparé |
+| IHM d'administration | Pilotage du parc | HTTP + SQL | Mode `admin`, deployment séparé |
+| PostgreSQL | État partagé désigné | SQL | Service dédié (cible CNPG répliqué) |
+| Backend LLM | Inférence (banalisée) | API OpenAI | Tiers, interchangeable par configuration |
+| Keycloak | Identité | OIDC | Socle, hors périmètre |
+
+**Couplages résiduels assumés — et leur voie de sortie.** La sécabilité n'exige pas de
+tout séparer aujourd'hui ; elle exige que rien n'interdise de séparer demain. Les
+couplages restants sont connus, bornés, et chacun a une sortie qui ne demande pas de
+refonte :
+
+- *une seule image pour quatre modes* : commodité de build — l'extraction du proxy LLM
+  dans son propre artefact est possible à tout moment (aucune dépendance du cœur vers
+  `app/llm/`, injection à l'init) ;
+- *base PostgreSQL partagée* : le proxy ne touche qu'à ses tables (`llm_quota_counters`)
+  plus deux lectures bornées (credentials relais, configuration runtime) ; voie de
+  sortie : l'API d'introspection existante (`/relay/authorize`, même contrat que celui
+  déjà consommé par nginx) et une base dédiée ;
+- *secret Kubernetes partagé* : les clés sont déjà **séparées par domaine** (signature
+  llmToken ≠ signature télémétrie ≠ pepper relais — rotation indépendante) ; voie de
+  sortie : un `Secret` par deployment ;
+- *auth relais injectée depuis le cœur* (`build_router(relay_auth=…)`) : contrat
+  fonctionnel étroit, substituable par l'appel HTTP `/relay/authorize` sans changer le
+  module.
+
+### 4. Décisions techniques associées
 
 | Décision | Choix | Justification |
 |---|---|---|
@@ -65,10 +146,13 @@ modifie jamais le cœur du relais.
 
 ## Conséquences
 
-- **Positives** : backend swappable à chaud ; périmètre d'homologation découpable ;
-  montée en charge du relais indépendante du reste du DM (stateless, HPA 2→10, y compris
-  sur les overlays où le PVC RWO force l'API à 1 réplica) ; toutes les règles futures
-  s'ajoutent par configuration.
+- **Positives** : backend swappable à chaud ; périmètre d'homologation découpable —
+  chaque composant peut faire l'objet d'un dossier propre et être ré-homologué ou
+  transféré sans rouvrir celui des autres ; **le transfert de responsabilité d'un
+  composant devient un événement d'exploitation** (configuration, secrets, kubeconfig),
+  pas un chantier de refonte ; montée en charge du relais indépendante du reste du DM
+  (stateless, HPA 2→10, y compris sur les overlays où le PVC RWO force l'API à 1
+  réplica) ; toutes les règles futures s'ajoutent par configuration.
 - **Coûts assumés** : un hop réseau et 1-2 allers-retours Postgres par requête
   (~1-5 ms, négligeable devant les secondes d'inférence LLM) ; une dépendance DB pour le
   quota (fail-open documenté) ; le nginx `relay-assistant` historique reste en place pour
