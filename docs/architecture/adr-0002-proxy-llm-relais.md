@@ -102,6 +102,31 @@ flowchart LR
     F -->|"④ SQL borné<br/>(QuotaStore)"| DB
 ```
 
+**Stratégie multifournisseur de LLM — trajectoire ouverte par l'interface ③.** L'interface
+sortante n'est pas limitée à *un* backend : le registre de backends (`LLM_BACKENDS`,
+mapping modèle→backend, clés par indirection `token_env`) fait du DM le **point de
+politique de fourniture d'inférence** de la flotte. Trois motivations, cumulables,
+justifient d'aller vers plusieurs fournisseurs :
+
+- **équilibrage de charge** — répartir le trafic entre plusieurs backends équivalents
+  quand la capacité d'un fournisseur unique devient le facteur limitant ;
+- **résilience** — bascule (*failover*) vers un fournisseur secondaire en cas
+  d'indisponibilité du primaire, ou double-fourniture assumée (souveraineté,
+  réversibilité contractuelle : aucun fournisseur d'inférence n'est un point de
+  dépendance) ;
+- **accès à des fonctions spécifiques** — router certains modèles vers le fournisseur
+  qui les porte (vision, *embeddings*, contexte long, génération de code, modèle
+  spécialisé métier) : le plugin demande un modèle, le DM sait où il vit.
+
+État au 0.9.0 : la **mécanique de sélection est livrée** (multi-backends + routage par
+modèle, rechargeable à chaud, sans redéploiement) ; l'équilibrage et le *failover* sont
+des **stratégies de sélection à ajouter dans ce même registre** — une évolution locale
+du point d'accroche, pas un refactor. Ce qui ne varie pas, quel que soit le nombre de
+fournisseurs : les clés restent côté serveur, et **quotas, guardrails et audit
+s'appliquent uniformément en amont du routage** — c'est précisément l'intérêt d'un point
+d'application unique, cohérent avec la frontière n°1 (le fournisseur d'inférence reste
+banalisé ; la politique vit dans le DM).
+
 ### 3. Hypothèse structurante de long terme — le porteur de responsabilité de chaque composant évoluera
 
 Les frontières n°1 et n°2 sont les cas particuliers d'un principe général, que la présente
