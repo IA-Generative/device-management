@@ -104,6 +104,12 @@ vit dans PostgreSQL → N réplicas derrière le LB **sans affinité de session*
 - **Audit** : une ligne JSON par requête sur stdout (logger `dm-llm-audit`) — trace_id
   (`X-Request-Id`, propagé client→proxy→backend), identité, modèle, backend, verdicts,
   quota, statut, latence, usage tokens. Jamais de secret ni de contenu de prompt.
+- **Vue parc côté client** : les plugins actifs journalisent fonctionnellement les
+  erreurs du relais (événement télémétrie `LlmRelayError` : 429/401/403/5xx, avec
+  `llm.request_id` = `X-Request-Id` pour la corrélation avec l'audit serveur) — contrat
+  spécifié dans [../plugin-developer/plugin-dm-protocol-update-features.md § 8 bis](../plugin-developer/plugin-dm-protocol-update-features.md).
+  Le plugin figé (TB 60) n'émet pas ces événements : sa vue parc = audit + métriques
+  serveur, qui couvrent tous les clients.
 
 ## Dépannage
 
