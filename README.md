@@ -474,6 +474,10 @@ sequenceDiagram
 
 ## Proxy LLM (/llm/v1) — relais de compatibilité et point d'application des règles
 
+> 📘 Guide complet (rôle de chaque clé, opérations courantes — quota, kill-switch,
+> rollback, multi-backends —, dépannage) : [docs/operations/llm-proxy.md](docs/operations/llm-proxy.md).
+> Décisions d'architecture : [ADR-0002](docs/architecture/adr-0002-proxy-llm-relais.md).
+
 Les clients figés (ex. plugin Thunderbird 60 : TLS 1.3 draft-23, pas de gestion de
 certificats) ne peuvent plus joindre les backends LLM modernes. Le DM route donc
 tout leur trafic LLM : quand `FORCE_LLM_ENDPOINT_OVERRIDE=true` (**défaut**), la
