@@ -89,18 +89,31 @@ pas (couplage nul : c'est une URL écrite par le cœur).
 flowchart LR
     P["Plugin<br/>(client figé)"]
     subgraph PROXY["Proxy LLM — implémentation REMPLAÇABLE<br/>(Python aujourd'hui · compilé ou composant dédié demain)"]
-        F["/llm/v1<br/>auth duale · quotas · guardrails · audit"]
+        F["/llm/v1<br/>auth duale · quotas · guardrails · audit<br/>registre de backends (routage par modèle)"]
     end
     DM["DM cœur<br/>(/config · /relay/authorize)"]
-    IA["Backend LLM<br/>(OpenAI-compatible)"]
+    subgraph PROV["Fournisseurs LLM (OpenAI-compatibles)"]
+        direction TB
+        IA1["Fournisseur A<br/>(backend par défaut)"]
+        IA2["Fournisseur B<br/>équilibrage · failover"]
+        IA3["Fournisseur C<br/>fonctions spécifiques<br/>(vision · embeddings · contexte long)"]
+    end
     DB[("PostgreSQL<br/>quotas · config")]
 
-    DM -.->|"annonce llmEndpoint<br/>via /config"| P
+    DM -->|"annonce llmEndpoint via /config<br/>(hors proxy — couplage nul)"| P
     P -->|"① API OpenAI (HTTP/SSE)<br/>X-Relay-* ou Bearer llmToken"| F
     F -->|"② /relay/authorize (HTTP)<br/>+ vérif HMAC llmToken"| DM
-    F -->|"③ API OpenAI<br/>clé backend (config)"| IA
-    F -->|"④ SQL borné<br/>(QuotaStore)"| DB
+    F -->|"③ API OpenAI · clé par config"| IA1
+    F -.->|"③bis routage par modèle"| IA2
+    F -.->|"③bis routage par modèle"| IA3
+    F -->|"④ SQL borné (QuotaStore)"| DB
 ```
+
+*Légende — traits pleins : livré en 0.9.0 ; traits pointillés (fournisseurs B et C) :
+**options futures** de la stratégie multifournisseur — équilibrage de charge, failover,
+accès à des fonctions spécifiques — activables par le registre `LLM_BACKENDS`
+(configuration seule, sans modification du code). Quotas, guardrails et audit
+s'appliquent dans le proxy, en amont du routage, quel que soit le fournisseur.*
 
 **Stratégie multifournisseur de LLM — trajectoire ouverte par l'interface ③.** L'interface
 sortante n'est pas limitée à *un* backend : le registre de backends (`LLM_BACKENDS`,
