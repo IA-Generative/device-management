@@ -1,7 +1,8 @@
 # ADR-0002 : Proxy LLM dans le DM — découplage des domaines de responsabilité et sécabilité
 
 **Date** : 2026-07-10 — **mise à jour 2026-07-11** (§3 : généralisation de la sécabilité —
-hypothèse de long terme sur le portage des responsabilités, alignement homologation)
+hypothèse de long terme sur le portage des responsabilités, alignement homologation ;
+contexte : sécabilité organisationnelle et découplage d'obsolescence des composants)
 **Statut** : En vigueur
 **Auteurs** : eric.tiquet + Claude Fable 5
 **Portée** : introduction du relais LLM OpenAI-compatible `/llm/v1` (package `app/llm/`,
@@ -19,10 +20,32 @@ certificat auto-signé. On ne peut pas le corriger côté client. Les backends L
 évoluent en permanence (terminaison TLS, URL, clés, modèles). Sans intermédiaire, chaque
 évolution du backend casse la flotte.
 
+**Découplage d'obsolescence — le problème général dont matisse est l'archétype.** Les
+composants du système vieillissent à des rythmes radicalement différents : le client,
+adhérent au poste et à son hôte bureautique, peut rester figé des années (parc non
+ré-empaqueté, hôte en fin de vie) ; le backend LLM évolue en semaines (modèles,
+terminaisons, contrats de fourniture) ; les règles d'usage (quotas, filtrage, routage)
+évoluent au rythme des besoins métier. **Absorber ces courbes d'obsolescence divergentes
+est le domaine de responsabilité du DM** : c'est lui — et lui seul — qui garantit qu'un
+composant qui ne peut plus bouger continue de fonctionner face à des composants qui ne
+cessent de bouger, sans que l'un impose jamais son rythme à l'autre. Aucun autre
+composant ne peut porter cette responsabilité : le client figé par définition, le
+backend banalisé par principe (frontière n°1).
+
+**Sécabilité organisationnelle.** Ces composants ne sont pas — et ne resteront pas —
+portés par les mêmes acteurs : équipes de développement, exploitants, autorités
+d'homologation évoluent au gré des transferts, réorganisations et contractualisations.
+Le système doit donc pouvoir être **découpé selon des lignes organisationnelles**, pas
+seulement techniques : chaque frontière de composant est une ligne de partage possible
+entre deux porteurs de responsabilité (et deux périmètres d'homologation). Cette
+exigence, introduite ici comme donnée de contexte, est développée en §3 (hypothèse
+structurante) avec les règles de découplage qui en découlent.
+
 La décision : router tout le trafic LLM du plugin à travers le DM, qui devient la
 **passerelle de compatibilité** (le plugin ne parle qu'à la terminaison TLS du DM, déjà
 compatible puisqu'il atteint `/config` et `/enroll`) et le **point d'application des
-règles** (quotas, guardrails, routage de backend, audit).
+règles** (quotas, guardrails, routage de backend, audit) — l'instrument concret par
+lequel le DM exerce sa responsabilité de découplage d'obsolescence.
 
 ## Décision
 
