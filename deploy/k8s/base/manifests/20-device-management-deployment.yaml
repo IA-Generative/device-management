@@ -219,6 +219,15 @@ spec:
                   name: device-management-secrets
                   key: RELAY_KEYCLOAK_UPSTREAM
                   optional: true
+            # true (envs prod-like/WAF) : la config servie aux plugins pointe
+            # keycloakTokenEndpoint sur {PUBLIC_BASE_URL}/auth/token et userinfo
+            # sur /relay-assistant/keycloak/… `optional`: absent du secret = false.
+            - name: DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS
+                  optional: true
             - name: DM_AUTH_VERIFY_ACCESS_TOKEN
               valueFrom:
                 secretKeyRef:
