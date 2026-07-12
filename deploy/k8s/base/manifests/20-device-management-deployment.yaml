@@ -208,6 +208,17 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: KEYCLOAK_ALLOWED_REDIRECT_URI
+            # Upstream Keycloak du relais token WAF-safe (POST /auth/token) et de
+            # /relay-assistant/keycloak/* servis par l'API — sans cette clé le
+            # renouvellement de refresh token via /auth/token répond 503.
+            # `optional`: tolère un Secret antérieur (le relais est alors indisponible,
+            # pas le pod).
+            - name: RELAY_KEYCLOAK_UPSTREAM
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: RELAY_KEYCLOAK_UPSTREAM
+                  optional: true
             - name: DM_AUTH_VERIFY_ACCESS_TOKEN
               valueFrom:
                 secretKeyRef:
