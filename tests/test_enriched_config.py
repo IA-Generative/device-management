@@ -163,10 +163,12 @@ def test_schema_version_2_present():
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Feature flag with default_value=True appears in features dict
+# Test 3: Catalog default_value is INDICATIVE only — it must NOT populate
+# `features` (the authoritative defaults come from the config template,
+# resolved per profile; cohort overrides win on top). Refonte flags v2.
 # ---------------------------------------------------------------------------
 
-def test_feature_flag_default_value():
+def test_feature_flag_default_value_is_indicative_only():
     mod = _load_module()
     db_rows = {
         "cohorts": [],
@@ -182,7 +184,9 @@ def test_feature_flag_default_value():
         assert res.status_code == 200
         body = res.json()
         assert "features" in body
-        assert body["features"].get("my_feature") is True
+        # Pas de device → pas de template featureToggles ; pas de cohorte →
+        # pas d'override. Le default_value du catalogue ne doit PAS fuiter.
+        assert "my_feature" not in body["features"]
     finally:
         patcher.stop()
 
