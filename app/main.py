@@ -805,12 +805,17 @@ def _resolve_public_telemetry_endpoint() -> str:
     if not endpoint.startswith("/"):
         endpoint = "/" + endpoint
 
-    public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip()
+    # Préserver le CHEMIN de PUBLIC_BASE_URL : derrière un ingress à préfixe
+    # (ex. https://host/bootstrap), le service n'existe QUE sous ce préfixe —
+    # reconstruire scheme://netloc jetait le chemin et cassait le POST des
+    # traces (502). Même convention que le reste de _apply_overrides
+    # (f"{public_base}/…", chemin conservé).
+    public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if public_base:
         parsed = urlparse(public_base)
         if parsed.scheme and parsed.netloc:
             # Telemetry uses its own Bearer token auth — no need for the relay proxy.
-            return f"{parsed.scheme}://{parsed.netloc}{endpoint}"
+            return f"{public_base}{endpoint}"
     return endpoint
 
 
