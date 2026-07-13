@@ -194,6 +194,110 @@ def test_config_cohort_override_gated_by_min_plugin_version():
         patcher.stop()
 
 
+# ---------------------------------------------------------------------------
+# Unit: catalogue scopé — réconciliation à l'import + delete_flag (Phase 3)
+# ---------------------------------------------------------------------------
+
+class _ScriptedCur:
+    """Cursor scripté : fetchall/fetchone selon un fragment SQL, executes enregistrés."""
+
+    def __init__(self, rows_by_fragment: dict):
+        self._rows = rows_by_fragment
+        self.executed: list[tuple[str, object]] = []
+        self._last_sql = ""
+
+    def execute(self, sql, params=None):
+        self._last_sql = sql
+        self.executed.append((" ".join(sql.split()), params))
+
+    def fetchall(self):
+        for fragment, rows in self._rows.items():
+            if fragment in self._last_sql:
+                return list(rows)
+        return []
+
+    def fetchone(self):
+        rows = self.fetchall()
+        return rows[0] if rows else None
+
+
+def _flags_svc():
+    from app.admin.services import flags
+    return flags
+
+
+def test_reconcile_import_adds_union_of_profiles():
+    """+flag au bump : union des clés featureToggles (default + tous profils) → UPSERT scopé."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"SELECT name, deprecated": []})
+    tpl = {
+        "configVersion": 3,
+        "default": {"featureToggles": {"a": True, "b": False}},
+        "int": {"featureToggles": {"c": True}},
+        "prod": {},
+    }
+    diff = svc.reconcile_catalog_from_template(cur, plugin_slug="matisse", template=tpl)
+    assert diff["added"] == ["a", "b", "c"]
+    assert diff["kept"] == [] and diff["orphaned"] == []
+    inserts = [(sql, p) for sql, p in cur.executed if "INSERT INTO feature_flags" in sql]
+    assert [(p[0], p[1], p[3]) for _, p in inserts] == [
+        ("a", "matisse", True),   # default_value indicatif = template.default
+        ("b", "matisse", False),
+        ("c", "matisse", True),   # déclaré seulement par le profil int
+    ]
+    assert all("ON CONFLICT (plugin_slug, name)" in sql for sql, _ in inserts)
+
+
+def test_reconcile_import_marks_orphans_no_delete():
+    """−flag au bump : flag absent du template → deprecated (marqué), jamais DELETE."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"SELECT name, deprecated": [("a", False), ("ghost", False), ("dead", True)]})
+    tpl = {"default": {"featureToggles": {"a": True}}}
+    diff = svc.reconcile_catalog_from_template(cur, plugin_slug="matisse", template=tpl)
+    assert diff["kept"] == ["a"]
+    assert diff["orphaned"] == ["ghost"]
+    assert diff["already_deprecated"] == ["dead"]
+    updates = [sql for sql, _ in cur.executed if "SET deprecated = true" in sql]
+    assert len(updates) == 1
+    assert not any(sql.startswith("DELETE") for sql, _ in cur.executed), "pas d'auto-delete"
+
+
+def test_reconcile_import_reactivates_returning_flag():
+    """Un flag revenu dans le template après avoir été orphelin est réactivé."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"SELECT name, deprecated": [("a", True)]})
+    tpl = {"default": {"featureToggles": {"a": True}}}
+    diff = svc.reconcile_catalog_from_template(cur, plugin_slug="matisse", template=tpl)
+    assert diff["reactivated"] == ["a"]
+    assert diff["orphaned"] == []
+
+
+def test_delete_flag_removes_overrides_then_flag():
+    svc = _flags_svc()
+    cur = _ScriptedCur({"DELETE FROM feature_flags": [(42,)]})
+    assert svc.delete_flag(cur, 42) is True
+    sqls = [sql for sql, _ in cur.executed]
+    assert "DELETE FROM feature_flag_overrides WHERE feature_id = %s" in sqls[0]
+    assert "DELETE FROM feature_flags WHERE id = %s RETURNING id" in sqls[1]
+
+
+def test_delete_flag_missing_returns_false():
+    svc = _flags_svc()
+    cur = _ScriptedCur({})
+    assert svc.delete_flag(cur, 999) is False
+
+
+def test_resolve_flags_scoped_by_plugin_and_excludes_deprecated():
+    """La requête des overrides est scopée (plugin_slug IN ('', slug)) et exclut les deprecated."""
+    mod = _load_module()
+    cur = _FakeCur([("search", True, None)])
+    mod._resolve_feature_flags(cur, device_cohort_ids=[1], plugin_version="1.0.0",
+                               plugin_slug="matisse")
+    sql = cur.executed[0]
+    assert "ff.deprecated = false" in sql
+    assert "ff.plugin_slug IN ('', %s)" in sql
+
+
 def test_config_flag_removed_from_template_disappears():
     """−flag au bump : un flag retiré du template ne doit plus apparaître dans features."""
     mod = _load_module()
