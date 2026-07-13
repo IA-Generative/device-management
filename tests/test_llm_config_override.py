@@ -139,3 +139,60 @@ def test_override_wins_over_catalog_overrides():
     assert out["config"]["llm_base_urls"] == PROXY_PUBLIC_URL
     assert out["config"]["llmEndpoint"] == PROXY_PUBLIC_URL
     assert out["config"]["llm_api_tokens"] == ""
+
+
+# ── Embedder : embdModel/embdUrl/embdToken en miroir du LLM (réutilise /llm/v1) ──
+# L'embedder ne crée NI endpoint NI variable d'URL/token : embdUrl suit llmEndpoint,
+# embdToken suit llmToken ; seul EMBD_MODEL_NAME est une nouvelle variable d'env.
+
+def test_embedder_mirrors_llm_proxy_with_relay_auth():
+    mod = load_module({"EMBD_MODEL_NAME": "bge-multilingual-gemma2"})
+    client = TestClient(mod.app)
+    relay_headers = enroll(client)
+    cfg = _get_config(client, {**relay_headers, **_ENRICHED})
+    assert cfg["embdModel"] == "bge-multilingual-gemma2"
+    # embdUrl = proxy DM (= llmEndpoint), embdToken = token minté par client (= llmToken)
+    assert cfg["embdUrl"] == cfg["llmEndpoint"] == PROXY_PUBLIC_URL
+    assert cfg["embdToken"] == cfg["llmToken"]
+    assert cfg["embdToken"] and cfg["embdToken"] != BACKEND_TOKEN  # jamais la clé backend
+
+
+def test_embedder_anonymous_has_model_and_url_but_no_token():
+    mod = load_module({"EMBD_MODEL_NAME": "bge-multilingual-gemma2"})
+    client = TestClient(mod.app)
+    cfg = _get_config(client)  # anonyme : pas d'identité relay
+    assert cfg["embdModel"] == "bge-multilingual-gemma2"
+    assert cfg["embdUrl"] == PROXY_PUBLIC_URL
+    assert cfg["embdToken"] == ""  # comme llmToken : pas d'identité → pas de token
+
+
+def test_embedder_direct_mode_when_override_off():
+    mod = load_module({"FORCE_LLM_ENDPOINT_OVERRIDE": "false",
+                       "EMBD_MODEL_NAME": "embedding"})  # alias dgx/prod-sdid
+    client = TestClient(mod.app)
+    cfg = _get_config(client)
+    assert cfg["embdModel"] == "embedding"
+    assert cfg["embdUrl"] == BACKEND_URL == cfg["llmEndpoint"]  # direct, hérite du LLM
+
+
+def test_embedder_model_empty_when_unset():
+    mod = load_module()  # pas d'EMBD_MODEL_NAME → embedder désactivé (modèle vide)
+    client = TestClient(mod.app)
+    cfg = _get_config(client)
+    assert cfg.get("embdModel", "") == ""
+    assert cfg["embdUrl"] == cfg["llmEndpoint"]  # URL cohérente même sans modèle
+
+
+def test_embedder_inherits_base_path_prefix():
+    """Non-régression DGX : embdUrl hérite du préfixe /bootstrap via llmEndpoint."""
+    mod = load_module({"EMBD_MODEL_NAME": "embedding"})
+    os.environ.pop("PUBLIC_LLM_PROXY_URL", None)  # dériver de PUBLIC_BASE_URL (préfixé)
+    client = TestClient(mod.app)
+    cfg = _get_config(client)
+    assert cfg["embdUrl"] == "https://example.test/bootstrap/llm/v1"
+
+
+def test_embd_model_name_is_editable_key():
+    from app import runtime_config
+    spec = runtime_config.EDITABLE_KEYS.get("EMBD_MODEL_NAME")
+    assert spec is not None and spec.type == "str" and spec.hot_reloadable

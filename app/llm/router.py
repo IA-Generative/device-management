@@ -27,7 +27,12 @@ from .backends import Backend, BackendRegistry, public_llm_proxy_url
 from .errors import LlmProxyError, openai_error
 from .guardrails import GuardrailInterceptor
 from .pipeline import InterceptorPipeline, LlmRequestContext
-from .proxy import build_outbound_headers, forward_chat_completions, forward_models
+from .proxy import (
+    build_outbound_headers,
+    forward_chat_completions,
+    forward_embeddings,
+    forward_models,
+)
 from .throttle import ThrottleInterceptor
 
 logger = logging.getLogger("device-management.llm")
@@ -176,6 +181,60 @@ def build_router(
             )
         except Exception:
             logger.exception("llm proxy /chat/completions failed (trace_id=%s)", ctx.trace_id)
+            finalize(500, "internal_error")
+            return openai_error(500, "Internal proxy error.", err_type="api_error",
+                                code="internal_error")
+
+    @router.post("/embeddings")
+    async def llm_embeddings(request: Request) -> Response:
+        # Embeddings (RAG) : même auth/quota/backend que /chat/completions, mais
+        # jamais streamé. Le plugin appende /embeddings à son embdUrl (= llmEndpoint).
+        ctx = LlmRequestContext(
+            identity=LlmIdentity("", "", "none"),
+            trace_id=_trace_id(request),
+            route="embeddings",
+        )
+        finalize = _make_finalize(ctx)
+        try:
+            try:
+                ctx.identity = await authenticator.resolve(request)
+            except LlmProxyError as exc:
+                finalize(exc.status_code, "auth_failed")
+                return exc.to_response()
+
+            raw = await request.body()
+            if len(raw) > settings.max_body_size_mb * 1024 * 1024:
+                finalize(413, "body_too_large")
+                return openai_error(413, "Request body too large.", code="body_too_large")
+            try:
+                payload = json.loads(raw or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("payload must be a JSON object")
+            except ValueError:
+                finalize(400, "invalid_json")
+                return openai_error(400, "Request body must be a JSON object.",
+                                    code="invalid_json")
+
+            ctx.model = str(payload.get("model") or os.getenv("EMBD_MODEL_NAME", "") or "")
+            if ctx.model and not payload.get("model"):
+                payload["model"] = ctx.model
+            ctx.payload = payload
+
+            # Throttling par utilisateur + kill-switch (deny_all) s'appliquent aussi
+            # aux embeddings ; pas de run_after (pas de contenu chat à post-traiter).
+            pipeline = _build_pipeline()
+            denied = await pipeline.run_before(ctx)
+            if denied is not None:
+                finalize(denied.status_code, "denied")
+                return denied
+
+            backend = _resolve_backend(ctx, finalize)
+            if isinstance(backend, Response):
+                return backend
+
+            return await forward_embeddings(request, ctx, backend, hop_headers, finalize)
+        except Exception:
+            logger.exception("llm proxy /embeddings failed (trace_id=%s)", ctx.trace_id)
             finalize(500, "internal_error")
             return openai_error(500, "Internal proxy error.", err_type="api_error",
                                 code="internal_error")

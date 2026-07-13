@@ -1722,6 +1722,15 @@ def _apply_llm_proxy_overrides(cfg: dict, *, relay_ok: bool, relay_meta: dict | 
     else:
         direct_url = str(runtime_config.cfg("LLM_BASE_URL", "") or "").strip()
         config_obj["llmEndpoint"] = direct_url or str(config_obj.get("llm_base_urls") or "")
+
+    # Embedder (RAG) : réutilise le MÊME endpoint LLM (le provider sert chat ET
+    # embeddings sur /v1) et le MÊME auth. On dérive embdUrl/embdToken des valeurs
+    # LLM déjà résolues ci-dessus → marche pour les deux modes (proxy et direct),
+    # hérite du préfixe de base-path, et n'expose aucune nouvelle frontière.
+    # Seule EMBD_MODEL_NAME est une variable propre (vide = embedder désactivé).
+    config_obj["embdModel"] = str(runtime_config.cfg("EMBD_MODEL_NAME", "") or "")
+    config_obj["embdUrl"] = str(config_obj.get("llmEndpoint") or "")
+    config_obj["embdToken"] = str(config_obj.get("llmToken") or "")
     return cfg
 
 

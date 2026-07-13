@@ -86,6 +86,8 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
     "LLM_BASE_URL": _spec("LLM_BASE_URL", "LLM base URL", "LLM", "str", True),
     "LLM_API_TOKEN": _spec("LLM_API_TOKEN", "LLM API token", "LLM", "str", True, sensitive=True),
     "DEFAULT_MODEL_NAME": _spec("DEFAULT_MODEL_NAME", "Modèle par défaut", "LLM", "str", True),
+    "EMBD_MODEL_NAME": _spec(
+        "EMBD_MODEL_NAME", "Modèle d'embeddings (RAG ; vide = désactivé)", "LLM", "str", True),
     # ── Proxy LLM (/llm/v1) — toutes relues PAR REQUÊTE → hot-reload réel ──
     "FORCE_LLM_ENDPOINT_OVERRIDE": _spec(
         "FORCE_LLM_ENDPOINT_OVERRIDE",

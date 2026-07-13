@@ -92,6 +92,46 @@ async def forward_models(
     return _passthrough_response(resp)
 
 
+async def forward_embeddings(
+    request: Request,
+    ctx: LlmRequestContext,
+    backend: Backend,
+    hop_headers: Iterable[str],
+    finalize: FinalizeFn,
+) -> Response:
+    """Embeddings (RAG) : POST non-streamé, passthrough du vecteur tel quel.
+
+    Même endpoint/backend/auth que /chat/completions (la clé backend est injectée
+    côté serveur, jamais exposée). On capture 'usage' au vol pour les métriques
+    sans réécrire le corps de la réponse.
+    """
+    client = get_async_client()
+    headers = build_outbound_headers(request, ctx, backend, hop_headers)
+    url = f"{backend.base_url}/embeddings"
+    try:
+        resp = await client.post(
+            url, json=ctx.payload, headers=headers, timeout=request_timeout()
+        )
+    except httpx.HTTPError as exc:
+        err = _map_transport_error(exc)
+        finalize(err.status_code, err.code)
+        return err.to_response()
+
+    if resp.status_code >= 400:
+        finalize(resp.status_code, "backend_error")
+        return _passthrough_response(resp)
+
+    # Best-effort : capture 'usage' pour les métriques ; le corps reste inchangé.
+    try:
+        body = resp.json()
+        if isinstance(body, dict) and isinstance(body.get("usage"), dict):
+            ctx.meta["usage"] = body["usage"]
+    except ValueError:
+        pass
+    finalize(resp.status_code, None)
+    return _passthrough_response(resp)
+
+
 async def forward_chat_completions(
     request: Request,
     ctx: LlmRequestContext,

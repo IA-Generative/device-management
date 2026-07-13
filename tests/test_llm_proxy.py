@@ -121,6 +121,43 @@ def test_chat_completions_non_stream():
     assert BACKEND_TOKEN not in str(res.headers)
 
 
+def test_embeddings_requires_credentials():
+    _, client, recorder = _setup()
+    res = client.post("/llm/v1/embeddings", json={"model": "m", "input": "salut"})
+    assert res.status_code == 401
+    assert recorder.requests == []  # jamais forwardé sans auth
+
+
+def test_embeddings_passthrough_with_relay_auth():
+    _, client, recorder = _setup()
+    relay_headers = enroll(client)
+    res = client.post(
+        "/llm/v1/embeddings",
+        json={"model": "bge-multilingual-gemma2", "input": "salut"},
+        headers=relay_headers,
+    )
+    assert res.status_code == 200
+    # Le vecteur d'embeddings traverse tel quel.
+    assert res.json()["data"][0]["embedding"] == [0.1, 0.2, 0.3]
+    # Le backend a bien reçu la requête SUR /embeddings, clé backend injectée côté serveur.
+    outbound = recorder.requests[-1]
+    assert outbound.url.path.endswith("/embeddings")
+    assert outbound.headers["authorization"] == f"Bearer {BACKEND_TOKEN}"
+    # Les credentials relay ne fuient pas au backend, ni la clé côté client.
+    assert "x-relay-key" not in outbound.headers
+    assert BACKEND_TOKEN not in res.text
+
+
+def test_embeddings_counts_toward_quota():
+    _, client, _ = _setup({"LLM_QUOTA_REQUESTS_PER_MINUTE": "2", "LLM_QUOTA_WINDOW_SECONDS": "60"})
+    relay_headers = enroll(client)
+    payload = {"model": "m", "input": "x"}
+    assert client.post("/llm/v1/embeddings", json=payload, headers=relay_headers).status_code == 200
+    assert client.post("/llm/v1/embeddings", json=payload, headers=relay_headers).status_code == 200
+    res = client.post("/llm/v1/embeddings", json=payload, headers=relay_headers)
+    assert res.status_code == 429  # throttling par utilisateur s'applique aussi aux embeddings
+
+
 def test_chat_completions_stream_passthrough():
     _, client, _ = _setup()
     relay_headers = enroll(client)
