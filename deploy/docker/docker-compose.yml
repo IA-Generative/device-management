@@ -140,6 +140,7 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_TOKEN: ${LLM_API_TOKEN:-}
       DEFAULT_MODEL_NAME: ${DEFAULT_MODEL_NAME:-}
+      EMBD_MODEL_NAME: ${EMBD_MODEL_NAME:-}
     volumes:
       - ../../app:/app/app
     networks:

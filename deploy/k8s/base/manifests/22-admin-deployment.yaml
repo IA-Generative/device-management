@@ -139,6 +139,12 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DEFAULT_MODEL_NAME
+            - name: EMBD_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: EMBD_MODEL_NAME
+                  optional: true
             # Telemetry (for debug page)
             - name: DM_TELEMETRY_ENABLED
               valueFrom:

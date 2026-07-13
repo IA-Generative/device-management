@@ -168,6 +168,14 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DEFAULT_MODEL_NAME
+            # Modèle d'embeddings (RAG) — optional: embedder facultatif, une clé
+            # absente/vide ne doit pas empêcher le pod de démarrer.
+            - name: EMBD_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: EMBD_MODEL_NAME
+                  optional: true
             - name: ADMIN_REQUIRED_GROUP
               valueFrom:
                 secretKeyRef:

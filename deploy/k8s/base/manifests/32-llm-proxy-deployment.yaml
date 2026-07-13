@@ -87,6 +87,14 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DEFAULT_MODEL_NAME
+            # Modèle d'embeddings par défaut pour /llm/v1/embeddings (fallback si le
+            # client n'envoie pas 'model'). Optional : embedder facultatif.
+            - name: EMBD_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: EMBD_MODEL_NAME
+                  optional: true
             - name: PUBLIC_BASE_URL
               valueFrom:
                 secretKeyRef:
