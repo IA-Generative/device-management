@@ -158,12 +158,20 @@ EnrichedConfigResponse
     "keycloakRealm": "mirai",
     "keycloakClientId": "mirai-lo",
     "systemPrompt": "Tu es un assistant...",
+    "embdModel": "bge-multilingual-gemma2",
+    "embdUrl": "https://host/bootstrap/llm/v1",
+    "embdToken": "<= llmToken minté (ou vide si pas de relay auth)>",
     "telemetryEnabled": true,
     "telemetryEndpoint": "https://traces.example.com/v1/traces",
     "telemetryKey": "<token>"
   }
 }
 ```
+
+**Embedder (RAG)** — `embdModel` / `embdUrl` / `embdToken` sont émis par le DM en **miroir du LLM** :
+`embdUrl = llmEndpoint` (le plugin appende `/embeddings`), `embdToken = llmToken`. Seul `embdModel`
+(= `EMBD_MODEL_NAME` côté DM, vide = embedder désactivé) est propre à l'embedder. Côté plugin, `embdModel`
+va en pref ; l'URL/token sont réutilisés in-memory depuis le LLM (pas de token périssable en `about:config`).
 
 ### 4.3 Objet `update` — directive de mise à jour
 

@@ -63,6 +63,22 @@ complète imposerait de bufferiser).
 
 ---
 
+## Embeddings (RAG) — `POST /llm/v1/embeddings`
+
+Le proxy relaie aussi les **embeddings** (le fournisseur sert chat ET embeddings sur le même `/v1`).
+Même auth, même quota (throttling par utilisateur), même kill-switch `deny_all`, clé backend injectée
+côté serveur ; non streamé, passthrough du vecteur. **Le RAG du plugin réutilise le proxy** : il reçoit
+dans `/config` les champs `embdModel` / `embdUrl` (= `llmEndpoint`, il appende `/embeddings`) /
+`embdToken` (= `llmToken` minté). Aucun endpoint ni auth dédiés.
+
+**Seule variable à poser** : `EMBD_MODEL_NAME` (registre Config, hot-reloadable ; **vide = embedder désactivé**).
+`embdUrl`/`embdToken` sont **dérivés** du LLM — rien à configurer. Le nom du modèle dépend du provider :
+Scaleway expose le nom littéral (`bge-multilingual-gemma2`) ; DGX / prod-sdid l'alias de service `embedding`.
+Comportement selon `FORCE_LLM_ENDPOINT_OVERRIDE` : `true` → `embdUrl = {PUBLIC_BASE_URL}/llm/v1` + token minté ;
+`false` → `embdUrl = LLM_BASE_URL` (direct).
+
+---
+
 ## Opérations courantes (onglet Config admin — tout est hot-reload)
 
 | Besoin | Action | Effet |
