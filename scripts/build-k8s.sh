@@ -42,7 +42,10 @@ fi
 # shellcheck disable=SC1090
 source "$ENV_REGISTRY"
 
-REGISTRY="${REGISTRY_SERVER:?REGISTRY_SERVER not set in .env.registry}"
+# DM_REGISTRY_OVERRIDE : cible ponctuelle différente du REGISTRY_SERVER de
+# .env.registry (ex. int Scaleway tire de docker.io/etiquet alors que
+# .env.registry pointe le registre Scaleway) — sans éditer le fichier de creds.
+REGISTRY="${DM_REGISTRY_OVERRIDE:-${REGISTRY_SERVER:?REGISTRY_SERVER not set in .env.registry}}"
 IMAGE="$REGISTRY/device-management"
 
 # ---- Ensure buildx builder exists
