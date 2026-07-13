@@ -16,8 +16,6 @@ spec:
         app: queue-worker
     spec:
       # Non-root enforcement (voir 20-device-management-deployment.yaml).
-      # S'applique aussi à l'initContainer wait-for-postgres : postgres:16-alpine
-      # tourne en uid 70 (postgres), donc pas de conflit.
       securityContext:
         runAsNonRoot: true
         fsGroup: 10001
@@ -26,6 +24,13 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: docker.io/library/postgres:16-alpine
+          # runAsNonRoot (pod) vérifie le champ User de l'IMAGE — vide sur les
+          # images postgres officielles (= root pour kubelet), même si l'entrypoint
+          # droppe vers postgres à l'exécution → uid 70 (postgres) explicite requis,
+          # sinon CreateContainerConfigError.
+          securityContext:
+            runAsUser: 70
+            runAsGroup: 70
           command: ['sh', '-c', 'until pg_isready -h postgres -U postgres; do echo "waiting for postgres..."; sleep 2; done']
       containers:
         - name: queue-worker
