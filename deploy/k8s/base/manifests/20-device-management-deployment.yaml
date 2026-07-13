@@ -88,7 +88,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             - name: DM_APP_VERSION
-              value: "0.8.1"
+              value: "0.9.0"
             - name: DM_CONFIG_POLL_INTERVAL_SECONDS
               value: "3"
             - name: DM_RUNTIME_CONFIG_EDITABLE
@@ -176,6 +176,14 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DEFAULT_MODEL_NAME
+            # Modèle d'embeddings (RAG) — optional: embedder facultatif, une clé
+            # absente/vide ne doit pas empêcher le pod de démarrer.
+            - name: EMBD_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: EMBD_MODEL_NAME
+                  optional: true
             - name: ADMIN_REQUIRED_GROUP
               valueFrom:
                 secretKeyRef:
@@ -216,6 +224,26 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: KEYCLOAK_ALLOWED_REDIRECT_URI
+            # Upstream Keycloak du relais token WAF-safe (POST /auth/token) et de
+            # /relay-assistant/keycloak/* servis par l'API — sans cette clé le
+            # renouvellement de refresh token via /auth/token répond 503.
+            # `optional`: tolère un Secret antérieur (le relais est alors indisponible,
+            # pas le pod).
+            - name: RELAY_KEYCLOAK_UPSTREAM
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: RELAY_KEYCLOAK_UPSTREAM
+                  optional: true
+            # true (envs prod-like/WAF) : la config servie aux plugins pointe
+            # keycloakTokenEndpoint sur {PUBLIC_BASE_URL}/auth/token et userinfo
+            # sur /relay-assistant/keycloak/… `optional`: absent du secret = false.
+            - name: DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS
+                  optional: true
             - name: DM_AUTH_VERIFY_ACCESS_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -328,6 +356,13 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DM_TELEMETRY_TOKEN_SIGNING_KEY
+            # Proxy LLM : signature des llmToken mintés dans /config (0.9.0+).
+            - name: DM_LLM_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: DM_LLM_TOKEN_SIGNING_KEY
+                  optional: true
             - name: DM_TELEMETRY_REQUIRE_TOKEN
               valueFrom:
                 secretKeyRef:

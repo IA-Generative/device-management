@@ -199,6 +199,13 @@ def ensure_dev_privileges(admin_bootstrap_url: str) -> None:
         conn.close()
 
 
+# Verrou consultatif : sérialise l'application du schéma quand N pods démarrent
+# en même temps (sinon course Postgres « tuple concurrently updated » sur les
+# GRANT concurrents → le batch entier est annulé sur TOUS les pods et les tables
+# config_state/… manquent, laissant le readiness gate à 503).
+_SCHEMA_APPLY_LOCK_ID = 727270910
+
+
 def apply_schema(db_url_str: str, schema_path: str) -> None:
     """Apply schema.sql with pre-migration fixups."""
     if psycopg2 is None:
@@ -211,6 +218,7 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_APPLY_LOCK_ID,))
             cur.execute("""
                 DO $$ BEGIN
                   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'campaigns') THEN

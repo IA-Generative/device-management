@@ -1,0 +1,26 @@
+# Sortie DGX vers le backend LLM via le forward proxy corporate (pas de
+# WireGuard ici — il n'existe que sur l'overlay scaleway). httpx du proxy LLM
+# est trust_env=True : il honore HTTPS_PROXY/NO_PROXY.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-proxy
+  namespace: bootstrap
+spec:
+  template:
+    spec:
+      containers:
+        - name: llm-proxy
+          env:
+            - name: https_proxy
+              value: "http://<PROXY_IP>:3128"
+            - name: http_proxy
+              value: "http://<PROXY_IP>:3128"
+            - name: no_proxy
+              value: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.<INTERNAL_DOMAIN>,.svc,.svc.cluster.local,device-management,device-management-admin,postgres,relay-assistant,telemetry-relay,llm-proxy"
+            - name: HTTPS_PROXY
+              value: "http://<PROXY_IP>:3128"
+            - name: HTTP_PROXY
+              value: "http://<PROXY_IP>:3128"
+            - name: NO_PROXY
+              value: "localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,.<INTERNAL_DOMAIN>,.svc,.svc.cluster.local,device-management,device-management-admin,postgres,relay-assistant,telemetry-relay,llm-proxy"

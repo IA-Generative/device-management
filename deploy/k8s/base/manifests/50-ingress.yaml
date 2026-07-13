@@ -10,6 +10,10 @@ metadata:
     # augmenter le buffer de réponse nginx sinon l'ingress renvoie 502 (cf. /admin/callback).
     nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
     nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+    # SSE du proxy LLM (/llm/v1/chat/completions stream) : ne pas bufferiser la
+    # réponse et laisser vivre les streams longs (défaut nginx 60s → coupures).
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
 spec:
   ingressClassName: nginx
   tls:
@@ -32,6 +36,13 @@ spec:
             backend:
               service:
                 name: telemetry-relay
+                port:
+                  number: 80
+          - path: /llm
+            pathType: Prefix
+            backend:
+              service:
+                name: llm-proxy
                 port:
                   number: 80
           - path: /

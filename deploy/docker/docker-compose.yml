@@ -42,6 +42,9 @@ services:
       DM_RELAY_ALLOWED_TARGETS_CSV: ${DM_RELAY_ALLOWED_TARGETS_CSV:-keycloak,config,llm,mcr-api,telemetry}
       DM_RELAY_REQUIRE_KEY_FOR_SECRETS: ${DM_RELAY_REQUIRE_KEY_FOR_SECRETS:-true}
 
+      # Proxy LLM : signature des llmToken mintés dans /config (0.9.0+)
+      DM_LLM_TOKEN_SIGNING_KEY: ${DM_LLM_TOKEN_SIGNING_KEY:-change-me-llm-signing-key}
+
       # Optional S3
       DM_STORE_ENROLL_S3: ${DM_STORE_ENROLL_S3:-false}
       DM_S3_BUCKET: ${DM_S3_BUCKET:-}
@@ -101,6 +104,44 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://owui:owui@postgres:5432/bootstrap}
     volumes:
       - ./data:/data
+      - ../../app:/app/app
+    networks:
+      - default
+      - owui-net
+    depends_on:
+      postgres-local:
+        condition: service_started
+        required: false
+
+  # Proxy LLM OpenAI-compatible (/llm/v1) — rôle dédié stateless (cf. k8s
+  # 32-llm-proxy-deployment). Le plugin reçoit llmEndpoint = ce service quand
+  # FORCE_LLM_ENDPOINT_OVERRIDE=true (défaut).
+  llm-proxy:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    ports:
+      - "${LLM_PROXY_PORT:-8090}:3001"
+    env_file:
+      - path: .env
+        required: true
+      - path: .env.secrets
+        required: false
+    environment:
+      DM_RUNTIME_MODE: llm
+      DM_APP_ENV: ${DM_APP_ENV:-dev}
+      DM_ALLOW_ORIGINS: ${DM_ALLOW_ORIGINS:-*}
+      DM_RELAY_ENABLED: "true"
+      DM_RELAY_SECRET_PEPPER: ${DM_RELAY_SECRET_PEPPER:-change-me-relay-secret-pepper}
+      DM_LLM_TOKEN_SIGNING_KEY: ${DM_LLM_TOKEN_SIGNING_KEY:-change-me-llm-signing-key}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://server.com}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://owui:owui@postgres:5432/bootstrap}
+      # Backend LLM réel (clé côté serveur uniquement — .env.secrets)
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_TOKEN: ${LLM_API_TOKEN:-}
+      DEFAULT_MODEL_NAME: ${DEFAULT_MODEL_NAME:-}
+      EMBD_MODEL_NAME: ${EMBD_MODEL_NAME:-}
+    volumes:
       - ../../app:/app/app
     networks:
       - default

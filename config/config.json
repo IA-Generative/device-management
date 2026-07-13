@@ -6,6 +6,8 @@
     "llm_base_urls": "",
     "llm_default_models": "",
     "llm_api_tokens": "",
+    "llmEndpoint": "",
+    "llmToken": "",
     "llm_request_timeout_seconds": 45,
 
     "authHeaderName": "Authorization",

@@ -158,12 +158,20 @@ EnrichedConfigResponse
     "keycloakRealm": "mirai",
     "keycloakClientId": "mirai-lo",
     "systemPrompt": "Tu es un assistant...",
+    "embdModel": "bge-multilingual-gemma2",
+    "embdUrl": "https://host/bootstrap/llm/v1",
+    "embdToken": "<= llmToken minté (ou vide si pas de relay auth)>",
     "telemetryEnabled": true,
     "telemetryEndpoint": "https://traces.example.com/v1/traces",
     "telemetryKey": "<token>"
   }
 }
 ```
+
+**Embedder (RAG)** — `embdModel` / `embdUrl` / `embdToken` sont émis par le DM en **miroir du LLM** :
+`embdUrl = llmEndpoint` (le plugin appende `/embeddings`), `embdToken = llmToken`. Seul `embdModel`
+(= `EMBD_MODEL_NAME` côté DM, vide = embedder désactivé) est propre à l'embedder. Côté plugin, `embdModel`
+va en pref ; l'URL/token sont réutilisés in-memory depuis le LLM (pas de token périssable en `about:config`).
 
 ### 4.3 Objet `update` — directive de mise à jour
 
@@ -416,6 +424,58 @@ stateDiagram-v2
 
 Ces événements permettent au DM de mettre à jour `campaign_device_status.status`
 (`updated` | `failed`) et `version_after` via le pipeline telemetry existant.
+
+## 8 bis. Journalisation fonctionnelle des erreurs du relais LLM (`/llm/v1`)
+
+Depuis la 0.9.0, le trafic LLM des plugins transite par le proxy du DM, qui répond avec
+des erreurs **exploitables** : statut HTTP réel + corps JSON
+`{"error": {"message", "type", "code"}}`, complété pour le quota (`429`) par
+`"retry_after"` (secondes) et le header `Retry-After`, et pour toutes les réponses par
+l'en-tête de corrélation `X-Request-Id`.
+
+**Exigence plugin** : tout plugin actif DOIT journaliser fonctionnellement ces erreurs
+via le pipeline télémétrie existant — c'est ce qui donne la vue *parc côté client*
+(vécu utilisateur : combien d'agents butent sur le quota, réessaient, abandonnent),
+complémentaire de la vue serveur (le DM compte déjà chaque 429 émis : métrique
+`dm_llm_quota_denied_total` + journal d'audit par requête).
+
+```json
+{
+  "name": "LlmRelayError",
+  "attributes": {
+    "llm.status_code":    429,
+    "llm.error_code":     "rate_limit_exceeded",
+    "llm.retry_after_s":  30,
+    "llm.request_id":     "<valeur de l'en-tête X-Request-Id>",
+    "llm.model":          "modele-demande",
+    "llm.endpoint":       "chat/completions",
+    "llm.will_retry":     true,
+    "plugin.platform_type": "libreoffice"
+  }
+}
+```
+
+Règles :
+
+- **statuts à couvrir** : `429` (quota — avec `retry_after_s`), `401` (credentials
+  invalides/expirés → déclencher un rafraîchissement `/config`, voire un ré-enrôlement),
+  `403` (guardrail), `5xx`/timeout (backend indisponible) ;
+- **`llm.request_id` obligatoire** (recopie de `X-Request-Id`) : c'est la clé de
+  corrélation avec le journal d'audit serveur du proxy — un incident se suit de bout en
+  bout avec cet identifiant ;
+- **jamais de contenu** : ni prompt ni réponse dans les attributs (même règle que le
+  journal d'audit serveur) ;
+- **anti-tempête** : dédupliquer côté client (au plus un événement par
+  (`error_code`, fenêtre de ~1 min)) — un utilisateur au quota qui insiste ne doit pas
+  générer une rafale d'événements ; le champ `llm.will_retry` distingue le réessai
+  automatique de l'abandon ;
+- **comportement UX attendu sur 429** : respecter `retry_after` (pas de réessai
+  immédiat) et l'afficher à l'utilisateur (« réessayez dans N s »).
+
+> **Cas du plugin figé (Thunderbird 60)** : il ne peut pas émettre ces événements. Le
+> suivi de son parc repose sur la vue serveur (audit + métriques du proxy), qui couvre
+> tous les clients sans exception — l'événement client est un enrichissement, pas la
+> source de vérité.
 
 ---
 
