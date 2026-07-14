@@ -323,6 +323,10 @@ CREATE TABLE IF NOT EXISTS feature_flags (
     description TEXT,
     default_value BOOLEAN DEFAULT true,
     deprecated BOOLEAN NOT NULL DEFAULT false,
+    -- Version plugin minimale à partir de laquelle le flag s'applique
+    -- (NULL = toutes les versions). Gate fail-safe : version inconnue = pas
+    -- d'application des overrides de ce flag.
+    min_plugin_version VARCHAR(50),
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -334,6 +338,9 @@ CREATE TABLE IF NOT EXISTS feature_flag_overrides (
     cohort_id INT NOT NULL REFERENCES cohorts(id) ON DELETE CASCADE,
     value BOOLEAN NOT NULL,
     min_plugin_version VARCHAR(50),
+    -- Référencée par get_flag_overrides et l'ON CONFLICT de create_override :
+    -- son absence historique cassait /admin/flags/{id} (UndefinedColumn).
+    updated_at TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (feature_id, cohort_id)
 );
 
