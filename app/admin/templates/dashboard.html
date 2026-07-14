@@ -50,22 +50,57 @@ function setAdoptionMode(mode, btn) {
   if(btn) btn.className='dm-btn dm-btn--primary dm-btn--sm';
   loadAdoption();
 }
+// Palette catégorielle (une couleur STABLE par plugin, ordre alphabétique des
+// slugs côté serveur — jamais réattribuée quand une série apparaît/disparaît).
+// Validée sur fond #F5F5FE : bande de luminance, chroma, séparation CVD ≥ 16,
+// contraste ≥ 3:1 (dataviz/validate_palette.js). #000091 est RÉSERVÉ au Total.
+const PLUGIN_PALETTE = ['#0063CB','#18753C','#B34000','#8B12C4','#C9191E','#008F8F','#A87E00','#C51A85'];
 function loadAdoption() {
   const labels = ADOPTION_LABELS[adoptionMode] || ADOPTION_LABELS.device;
   fetch('/admin/api/adoption?period=' + adoptionPeriod + '&mode=' + adoptionMode, {credentials:'same-origin'})
     .then(r => r.json()).then(data => {
       const ctx = document.getElementById('adoption-chart').getContext('2d');
       if(adoptionChart) adoptionChart.destroy();
+      // Total en gras + une courbe fine par plugin (au-delà de 8 plugins, le
+      // surplus alphabétique est agrégé en « autres » — palette jamais cyclée).
+      const datasets = [{
+        label: labels.serie + ' — total',
+        data: data.timeseries.map(d => ({x: d.date, y: d.enrolled})),
+        borderColor: '#000091', borderWidth: 3, fill: true,
+        backgroundColor: 'rgba(0,0,145,0.08)', tension: 0.3, pointRadius: 0,
+      }];
+      const series = data.series || [];
+      const shown = series.slice(0, PLUGIN_PALETTE.length);
+      const rest = series.slice(PLUGIN_PALETTE.length);
+      shown.forEach((s, i) => {
+        datasets.push({
+          label: s.slug,
+          data: s.points.map(p => ({x: p.date, y: p.enrolled})),
+          borderColor: PLUGIN_PALETTE[i], borderWidth: 2, fill: false,
+          tension: 0.3, pointRadius: 0,
+        });
+      });
+      if (rest.length) {
+        const agg = {};
+        rest.forEach(s => s.points.forEach(p => { agg[p.date] = (agg[p.date] || 0) + p.enrolled; }));
+        datasets.push({
+          label: 'autres (' + rest.length + ')',
+          data: Object.keys(agg).sort().map(d => ({x: d, y: agg[d]})),
+          borderColor: '#929292', borderWidth: 2, borderDash: [4, 3], fill: false,
+          tension: 0.3, pointRadius: 0,
+        });
+      }
       adoptionChart = new Chart(ctx, {
-        type:'line',
-        data:{labels:data.timeseries.map(d=>d.date), datasets:[{
-          label:labels.serie, data:data.timeseries.map(d=>d.enrolled),
-          borderColor:'#000091', borderWidth:2, fill:true,
-          backgroundColor:'rgba(0,0,145,0.08)', tension:0.3, pointRadius:0,
-        }]},
-        options:{responsive:true, maintainAspectRatio:false,
-          scales:{x:{type:'time',time:{unit:adoptionPeriod==='1J'?'hour':'day'}},y:{beginAtZero:true}},
-          plugins:{legend:{display:false}}
+        type: 'line',
+        data: {datasets: datasets},
+        options: {responsive: true, maintainAspectRatio: false,
+          interaction: {mode: 'index', intersect: false},
+          scales: {x: {type: 'time', time: {unit: adoptionPeriod === '1J' ? 'hour' : 'day'}}, y: {beginAtZero: true}},
+          plugins: {legend: {
+            display: datasets.length > 1,
+            position: 'bottom',
+            labels: {boxWidth: 12, boxHeight: 12, usePointStyle: false, font: {size: 11}},
+          }}
         }
       });
       const s = data.summary;
@@ -84,7 +119,7 @@ loadAdoption();
   <div class="dm-grid-4">
     <div class="dm-metric-tile">
       <div style="font-size: 1.5rem; font-weight: bold;">{{ metrics.active_devices }}</div>
-      <div style="font-size: 0.875rem; color: #666;">Appareils actifs (7j)</div>
+      <div style="font-size: 0.875rem; color: #666;">Appareils actifs (7j) &middot; {{ metrics.interactions_7d }} interactions</div>
     </div>
     <div class="dm-metric-tile dm-metric-tile--success">
       <div style="font-size: 1.5rem; font-weight: bold;">{{ metrics.enrollment_rate }}%</div>

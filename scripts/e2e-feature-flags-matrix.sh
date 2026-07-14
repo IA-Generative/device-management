@@ -206,12 +206,13 @@ check "C12 version vue au dernier contact" \
   "$(psql_q "SELECT installed_version FROM plugin_installations WHERE client_uuid='00000000-0000-4000-8000-00000000e2e0' ORDER BY last_seen_at DESC LIMIT 1")" "0.13.7"
 
 echo "── C13. dashboard adoption : toggle Appareils/Utilisateurs ──"
-# Seed : 2 postes du MÊME agent + 1 poste d'un autre → device=3, user=2.
+# Seed : 2 postes du MÊME agent sur $SLUG + 1 poste d'un autre agent sur un
+# 2e plugin → device=3, user=2, séries par plugin = {$SLUG: 2, e2e-autre-plugin: 1}.
 psql_q "DELETE FROM provisioning WHERE email LIKE 'e2e-adopt%';" >/dev/null
 psql_q "INSERT INTO provisioning (email, device_name, client_uuid, status, encryption_key) VALUES
-        ('e2e-adopt-a@test.gouv.fr', 'poste-a1', '11111111-1111-4111-8111-111111111101', 'ENROLLED', 'k'),
-        ('e2e-adopt-a@test.gouv.fr', 'poste-a2', '11111111-1111-4111-8111-111111111102', 'ENROLLED', 'k'),
-        ('e2e-adopt-b@test.gouv.fr', 'poste-b1', '11111111-1111-4111-8111-111111111103', 'ENROLLED', 'k');" >/dev/null
+        ('e2e-adopt-a@test.gouv.fr', '$SLUG', '11111111-1111-4111-8111-111111111101', 'ENROLLED', 'k'),
+        ('e2e-adopt-a@test.gouv.fr', '$SLUG', '11111111-1111-4111-8111-111111111102', 'ENROLLED', 'k'),
+        ('e2e-adopt-b@test.gouv.fr', 'e2e-autre-plugin', '11111111-1111-4111-8111-111111111103', 'ENROLLED', 'k');" >/dev/null
 adoption() { curl -sf "$BASE_URL/admin/api/adoption?period=1M&mode=$1" \
   | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["mode"], d["summary"]["total"])'; }
 read -r DEV_MODE DEV_N <<<"$(adoption device)"
@@ -222,6 +223,35 @@ check "C13 device=3 (2 postes agent A + 1 agent B)" "$DEV_N" "3"
 check "C13 user=2 (agrégation par email)"           "$USR_N" "2"
 check "C13 mode invalide → repli device (allow-list)" \
   "$(curl -sf "$BASE_URL/admin/api/adoption?mode=zzz" | python3 -c 'import json,sys;print(json.load(sys.stdin)["mode"])')" "device"
+
+echo "── C14. courbes par plugin + métriques cohérentes ──"
+# Séries par plugin : dernier point de chaque slug + cohérence somme = total.
+check "C14 séries par plugin (dernier point par slug)" \
+  "$(curl -sf "$BASE_URL/admin/api/adoption?period=1M&mode=device" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+last = {s["slug"]: s["points"][-1]["enrolled"] for s in d["series"]}
+total_last = d["timeseries"][-1]["enrolled"]
+print(json.dumps(last, sort_keys=True), "sum_ok" if sum(last.values()) == total_last else "sum_ko")')" \
+  "{\"e2e-autre-plugin\": 1, \"$SLUG\": 2} sum_ok"
+# actifs (7j) ≤ 100 % : numérateur = heartbeat plugin_installations (même
+# population que le dénominateur), plus jamais device_connections pollué.
+check "C14 active_pct ≤ 100" \
+  "$(curl -sf "$BASE_URL/admin/api/adoption?period=1M&mode=device" | python3 -c 'import json,sys;print(json.load(sys.stdin)["summary"]["active_pct"] <= 100)')" "True"
+# Tuile métriques : 2 valeurs (appareils + interactions).
+check "C14 fragment métriques expose les interactions" \
+  "$(curl -sf "$BASE_URL/admin/api/metrics" | grep -c 'interactions')" "1"
+# Token télémétrie : claim cuid = identité stable du client. Vérifié via
+# /telemetry/token (même code de mint que /config, mais la telemetryKey du
+# /config est scrubée sans credentials relay).
+check "C14 token télémétrie embarque cuid (identité stable)" \
+  "$(curl -sf "$BASE_URL/telemetry/token?profile=int&device=$SLUG" "${UUID_H[@]}" | python3 -c '
+import base64, json, sys
+tok = json.load(sys.stdin).get("telemetryKey") or ""
+if not tok: print("no-token"); raise SystemExit
+p64 = tok.split(".", 1)[0]; p64 += "=" * (-len(p64) % 4)
+print(json.loads(base64.urlsafe_b64decode(p64)).get("cuid", "absent"))')" \
+  "00000000-0000-4000-8000-00000000e2e0"
 
 echo "── C7. delete_flag (route admin, autologin dev) ──"
 HTTP_DEL=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE_URL/admin/flags/$FLAG_ID")
