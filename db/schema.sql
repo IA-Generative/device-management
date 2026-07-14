@@ -237,7 +237,10 @@ CREATE INDEX IF NOT EXISTS idx_pva_version ON plugin_version_artifacts(plugin_ve
 
 CREATE TABLE IF NOT EXISTS plugin_installations (
     id SERIAL PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id),
+    -- CASCADE comme les FK sœurs (plugin_versions/aliases/…) : sans lui, la
+    -- purge d'un plugin 'removed' ayant des installations est bloquée (FK
+    -- NO ACTION — constaté DGX). Bases existantes : fixup dans apply_schema.
+    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
     client_uuid VARCHAR(255) NOT NULL,
     email VARCHAR(255),
     installed_version VARCHAR(50),

@@ -305,6 +305,26 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                       ALTER TABLE feature_flag_overrides ADD COLUMN updated_at TIMESTAMPTZ DEFAULT now();
                     END IF;
                   END IF;
+                  -- plugin_installations.plugin_id → ON DELETE CASCADE (aligne
+                  -- sur les FK sœurs). La contrainte d'origine (NO ACTION)
+                  -- bloquait la purge d'un plugin 'removed' ayant des
+                  -- installations (constaté DGX). CREATE TABLE IF NOT EXISTS ne
+                  -- rejoue pas la contrainte sur une base existante → DROP/ADD
+                  -- explicite, UNIQUEMENT si la règle n'est pas déjà CASCADE
+                  -- (idempotent, rejouable).
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'plugin_installations') THEN
+                    IF EXISTS (
+                      SELECT 1 FROM pg_constraint
+                      WHERE conname = 'plugin_installations_plugin_id_fkey'
+                        AND conrelid = 'plugin_installations'::regclass
+                        AND confdeltype <> 'c'
+                    ) THEN
+                      ALTER TABLE plugin_installations DROP CONSTRAINT plugin_installations_plugin_id_fkey;
+                      ALTER TABLE plugin_installations
+                        ADD CONSTRAINT plugin_installations_plugin_id_fkey
+                        FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE;
+                    END IF;
+                  END IF;
                   -- Journal d'audit : plugin_slug PERSISTÉ (rempli à l'écriture
                   -- par le helper audit_log). Backfill ONE-SHOT de l'historique à
                   -- la création de la colonne — même dérivation que la lecture

@@ -1985,6 +1985,13 @@ async def catalog_create(request: Request):
                 config_template=parsed_template,
             )
             actor = getattr(request.state, "admin_session", {})
+            # Le template arrive ici en champ de formulaire (extrait du
+            # dm-config.json côté front à la création du plugin) : même contrat
+            # que tous les autres chemins d'import — peupler l'onglet Flags.
+            if parsed_template:
+                flags_svc.safe_reconcile_catalog(
+                    cur, plugin_slug=slug or device_type, template=parsed_template,
+                    actor=actor, source="admin:catalog-create")
             # Create alias if provided
             if alias and alias.strip():
                 try:
@@ -2569,6 +2576,19 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                     catalog_svc.update_plugin(cur, plugin_id, config_template=deploy_config_template)
                 except Exception as ct_err:
                     logger.warning("version upload: config_template store failed: %s", ct_err)
+                # Chemin d'import du template comme les autres → même contrat :
+                # peupler l'onglet Flags (c'est LE chemin « ajouter une version
+                # depuis le Catalogue », utilisé sur les sites air-gap).
+                try:
+                    _plugin = catalog_svc.get_plugin(cur, plugin_id)
+                    _slug = (_plugin or {}).get("slug") or (_plugin or {}).get("device_type")
+                except Exception:
+                    _slug = None
+                if _slug:
+                    flags_svc.safe_reconcile_catalog(
+                        cur, plugin_slug=_slug, template=deploy_config_template,
+                        actor=getattr(request.state, "admin_session", {}),
+                        source="admin:catalog-version-upload")
 
             # 6b. Extract release_notes + update plugin changelog from dm-manifest.json
             if dm_manifest:
