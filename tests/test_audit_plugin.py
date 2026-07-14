@@ -40,6 +40,23 @@ def test_audit_log_derives_from_plugin_resource():
     assert _inserted_plugin(cur) == "mirai-matisse"
 
 
+def test_audit_log_plugin_resource_numeric_id_resolved_via_catalog():
+    """plugin:<id numérique> (actions historiques type plugin.update) → slug."""
+    cur = _ScriptedCur({"FROM plugins WHERE id": ("mirai-matisse",)})
+    helpers.audit_log(cur, actor={}, action="plugin.update",
+                      resource_type="plugin", resource_id="9")
+    assert _inserted_plugin(cur) == "mirai-matisse"
+
+
+def test_audit_log_plugin_resource_star_is_no_plugin():
+    """plugin:* (purge globale) → aucun plugin unique → NULL."""
+    cur = _ScriptedCur()
+    helpers.audit_log(cur, actor={}, action="plugin.purge_removed",
+                      resource_type="plugin", resource_id="*",
+                      payload={"deleted_count": 1})
+    assert _inserted_plugin(cur) is None
+
+
 def test_audit_log_derives_from_payload_slug():
     cur = _ScriptedCur()
     helpers.audit_log(cur, actor={}, action="flag.create", resource_type="flag",
