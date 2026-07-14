@@ -3421,22 +3421,35 @@ async def api_debug_status(request: Request):
 
 @router.get("/api/adoption")
 @require_admin
-async def api_adoption(request: Request, period: str = "1M"):
-    """Adoption metrics for dashboard chart."""
+async def api_adoption(request: Request, period: str = "1M", mode: str = "device"):
+    """Adoption metrics for dashboard chart.
+
+    `mode` : axe de comptage de TOUT le widget (tuiles + courbe) —
+    `device` = par poste (COUNT DISTINCT client_uuid, comportement historique),
+    `user` = par utilisateur (COUNT DISTINCT email — CITEXT NOT NULL + index
+    sur provisioning ET device_connections). Un 3e mode « total » serait
+    redondant : uq_prov_active garantit 1 enrôlement actif max par device.
+    """
     intervals = {"1J": "1 day", "1S": "7 days", "1M": "30 days", "3M": "90 days", "6M": "180 days"}
     interval = intervals.get(period, "30 days")
+    # Allow-list stricte (comme `intervals`) : la valeur interpolée dans les
+    # f-strings SQL vient de CE dict, jamais de l'entrée utilisateur.
+    mode_cols = {"device": "client_uuid", "user": "email"}
+    if mode not in mode_cols:
+        mode = "device"
+    col = mode_cols[mode]
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM provisioning WHERE status = 'ENROLLED'")
+            cur.execute(f"SELECT COUNT(DISTINCT {col}) FROM provisioning WHERE status = 'ENROLLED'")
             total = cur.fetchone()[0]
             cur.execute(f"""
-                SELECT COUNT(DISTINCT client_uuid) FROM provisioning
+                SELECT COUNT(DISTINCT {col}) FROM provisioning
                 WHERE status = 'ENROLLED' AND created_at > NOW() - INTERVAL '{interval}'
             """)
             new_period = cur.fetchone()[0]
-            cur.execute("""
-                SELECT COUNT(DISTINCT client_uuid) FROM device_connections
+            cur.execute(f"""
+                SELECT COUNT(DISTINCT {col}) FROM device_connections
                 WHERE created_at > NOW() - INTERVAL '7 days'
             """)
             active_7d = cur.fetchone()[0]
@@ -3444,7 +3457,7 @@ async def api_adoption(request: Request, period: str = "1M"):
             plugins_count = cur.fetchone()[0]
             # Timeseries
             cur.execute(f"""
-                SELECT d::date AS date, COUNT(DISTINCT p.client_uuid) AS enrolled
+                SELECT d::date AS date, COUNT(DISTINCT p.{col}) AS enrolled
                 FROM generate_series(NOW() - INTERVAL '{interval}', NOW(), '1 day') d
                 LEFT JOIN provisioning p ON p.status = 'ENROLLED' AND p.created_at <= d
                 GROUP BY d::date ORDER BY d::date
@@ -3452,6 +3465,7 @@ async def api_adoption(request: Request, period: str = "1M"):
             timeseries = [{"date": str(r[0]), "enrolled": r[1]} for r in cur.fetchall()]
         return JSONResponse({
             "period": period,
+            "mode": mode,
             "summary": {
                 "total": total, "new_period": new_period,
                 "active_pct": round(active_7d / total * 100) if total else 0,

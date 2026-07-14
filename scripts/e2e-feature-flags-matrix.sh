@@ -205,6 +205,24 @@ check "C12 installation enregistrée (client e2e)" \
 check "C12 version vue au dernier contact" \
   "$(psql_q "SELECT installed_version FROM plugin_installations WHERE client_uuid='00000000-0000-4000-8000-00000000e2e0' ORDER BY last_seen_at DESC LIMIT 1")" "0.13.7"
 
+echo "── C13. dashboard adoption : toggle Appareils/Utilisateurs ──"
+# Seed : 2 postes du MÊME agent + 1 poste d'un autre → device=3, user=2.
+psql_q "DELETE FROM provisioning WHERE email LIKE 'e2e-adopt%';" >/dev/null
+psql_q "INSERT INTO provisioning (email, device_name, client_uuid, status, encryption_key) VALUES
+        ('e2e-adopt-a@test.gouv.fr', 'poste-a1', '11111111-1111-4111-8111-111111111101', 'ENROLLED', 'k'),
+        ('e2e-adopt-a@test.gouv.fr', 'poste-a2', '11111111-1111-4111-8111-111111111102', 'ENROLLED', 'k'),
+        ('e2e-adopt-b@test.gouv.fr', 'poste-b1', '11111111-1111-4111-8111-111111111103', 'ENROLLED', 'k');" >/dev/null
+adoption() { curl -sf "$BASE_URL/admin/api/adoption?period=1M&mode=$1" \
+  | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["mode"], d["summary"]["total"])'; }
+read -r DEV_MODE DEV_N <<<"$(adoption device)"
+read -r USR_MODE USR_N <<<"$(adoption user)"
+check "C13 mode=device écho dans la réponse" "$DEV_MODE" "device"
+check "C13 mode=user écho dans la réponse"   "$USR_MODE" "user"
+check "C13 device=3 (2 postes agent A + 1 agent B)" "$DEV_N" "3"
+check "C13 user=2 (agrégation par email)"           "$USR_N" "2"
+check "C13 mode invalide → repli device (allow-list)" \
+  "$(curl -sf "$BASE_URL/admin/api/adoption?mode=zzz" | python3 -c 'import json,sys;print(json.load(sys.stdin)["mode"])')" "device"
+
 echo "── C7. delete_flag (route admin, autologin dev) ──"
 HTTP_DEL=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE_URL/admin/flags/$FLAG_ID")
 check "C7 DELETE /admin/flags/{id} → 303" "$HTTP_DEL" "303"
