@@ -25,7 +25,15 @@ def _derive_audit_plugin(cur, *, resource_type: str, resource_id,
     Sources, dans l'ordre : ressource plugin:<slug> ; payload.plugin_slug ;
     payload.plugin_id résolu via le catalogue ; flag:N → feature_flags."""
     if resource_type == "plugin" and resource_id:
-        return str(resource_id)
+        rid = str(resource_id)
+        if rid.isdigit():
+            # Certaines actions historiques référencent plugin:<id> numérique
+            cur.execute("SELECT slug FROM plugins WHERE id = %s", (int(rid),))
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0]
+        elif rid != "*":  # '*' = purge globale, pas de plugin unique
+            return rid
     if isinstance(payload, dict):
         slug = str(payload.get("plugin_slug") or "").strip()
         if slug:

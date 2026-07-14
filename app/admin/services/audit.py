@@ -10,7 +10,10 @@ from __future__ import annotations
 # est interpolé.
 _PLUGIN_EXPR = """COALESCE(
     plugin_slug,
-    CASE WHEN resource_type = 'plugin' THEN resource_id END,
+    CASE WHEN resource_type = 'plugin' AND resource_id !~ '^[0-9]+$' AND resource_id <> '*'
+         THEN resource_id END,
+    CASE WHEN resource_type = 'plugin' AND resource_id ~ '^[0-9]+$' THEN
+      (SELECT p.slug FROM plugins p WHERE p.id = resource_id::int) END,
     payload->>'plugin_slug',
     (SELECT p.slug FROM plugins p
       WHERE (payload->>'plugin_id') ~ '^[0-9]+$' AND p.id = (payload->>'plugin_id')::int),

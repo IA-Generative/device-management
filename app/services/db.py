@@ -317,7 +317,10 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                     ) THEN
                       ALTER TABLE admin_audit_log ADD COLUMN plugin_slug VARCHAR(100);
                       UPDATE admin_audit_log a SET plugin_slug = COALESCE(
-                        CASE WHEN a.resource_type = 'plugin' THEN a.resource_id END,
+                        CASE WHEN a.resource_type = 'plugin' AND a.resource_id !~ '^[0-9]+$'
+                              AND a.resource_id <> '*' THEN a.resource_id END,
+                        CASE WHEN a.resource_type = 'plugin' AND a.resource_id ~ '^[0-9]+$' THEN
+                          (SELECT p.slug FROM plugins p WHERE p.id = a.resource_id::int) END,
                         a.payload->>'plugin_slug',
                         (SELECT p.slug FROM plugins p
                           WHERE (a.payload->>'plugin_id') ~ '^[0-9]+$'
