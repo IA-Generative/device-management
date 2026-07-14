@@ -275,6 +275,12 @@ check "C15 partial=rows (sentinel scroll infini) → 200" \
 # Export CSV filtré par période
 check "C15 export CSV avec période → 200 + en-tête" \
   "$(curl -sf "$BASE_URL/admin/audit/export?period=24h" | head -1 | grep -c horodatage)" "1"
+# Colonne Plugin dérivée : flag.reconcile (ressource plugin:$SLUG) doit
+# afficher le slug ; le filtre plugin= restreint aux entrées du plugin.
+check "C15 colonne Plugin remplie (flag.reconcile → $SLUG)" \
+  "$(curl -sf "$BASE_URL/admin/audit?action=flag.reconcile" -H 'HX-Request: true' | grep -c "<td class=\"audit-res\">$SLUG</td>" | awk '{print ($1>0)?"oui":"non"}')" "oui"
+check "C15 filtre plugin=$SLUG → lignes ; plugin=inexistant → aucune" \
+  "$(curl -sf "$BASE_URL/admin/audit?plugin=$SLUG" -H 'HX-Request: true' | grep -c 'flag.reconcile' | awk '{print ($1>0)?"oui":"non"}'):$(curl -sf "$BASE_URL/admin/audit?plugin=zzz-inexistant" -H 'HX-Request: true' | grep -c 'Aucune entrée')" "oui:1"
 
 echo "── C7. delete_flag (route admin, autologin dev) ──"
 HTTP_DEL=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE_URL/admin/flags/$FLAG_ID")

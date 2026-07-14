@@ -46,6 +46,8 @@
          value="{{ filters.actor or '' }}" style="flex:1;min-width:10rem;">
   <input class="dm-input" name="action" list="dl-audit-actions" placeholder="Action"
          value="{{ filters.action or '' }}" style="flex:1;min-width:10rem;">
+  <input class="dm-input" name="plugin" list="dl-audit-plugins" placeholder="Plugin"
+         value="{{ filters.plugin or '' }}" style="flex:1;min-width:9rem;">
   <select class="dm-select" name="resource_type">
     <option value="">Toutes les ressources</option>
     {% for rt in facets.resource_types %}
@@ -59,6 +61,9 @@
   </datalist>
   <datalist id="dl-audit-actions">
     {% for v in facets.actions %}<option value="{{ v }}">{% endfor %}
+  </datalist>
+  <datalist id="dl-audit-plugins">
+    {% for v in facets.plugins %}<option value="{{ v }}">{% endfor %}
   </datalist>
   <!-- Export : mêmes filtres que la vue courante (Entrée dans un champ ne
        doit PAS déclencher l'export — soumission native neutralisée) -->

@@ -3883,7 +3883,7 @@ def _audit_date_bounds(period: str, date_from: str, date_to: str) -> tuple[str |
 @require_admin
 async def audit_list(request: Request, actor: str = "", action: str = "",
                      resource_type: str = "", q: str = "", period: str = "",
-                     date_from: str = "", date_to: str = "",
+                     date_from: str = "", date_to: str = "", plugin: str = "",
                      page: int = 0, partial: str = ""):
     d_from, d_to = _audit_date_bounds(period, date_from, date_to)
     conn = get_db_connection()
@@ -3892,6 +3892,7 @@ async def audit_list(request: Request, actor: str = "", action: str = "",
             entries = audit_svc.list_audit_entries(
                 cur, actor=actor or None, action=action or None,
                 resource_type=resource_type or None, q=q or None,
+                plugin=plugin or None,
                 date_from=d_from, date_to=d_to,
                 limit=_AUDIT_PAGE_SIZE, offset=page * _AUDIT_PAGE_SIZE,
             )
@@ -3902,7 +3903,8 @@ async def audit_list(request: Request, actor: str = "", action: str = "",
                 facets = audit_svc.get_audit_facets(cur)
 
         filters = {"actor": actor, "action": action, "resource_type": resource_type,
-                   "q": q, "period": period, "date_from": date_from, "date_to": date_to}
+                   "q": q, "period": period, "date_from": date_from, "date_to": date_to,
+                   "plugin": plugin}
         # Query string des filtres courants — réutilisée par le sentinel du
         # scroll infini et le lien d'export (sans `page`).
         filters_qs = urlencode({k: v for k, v in filters.items() if v})
@@ -3927,7 +3929,7 @@ async def audit_list(request: Request, actor: str = "", action: str = "",
 @require_admin
 async def audit_export(request: Request, actor: str = "", action: str = "",
                        resource_type: str = "", q: str = "", period: str = "",
-                       date_from: str = "", date_to: str = ""):
+                       date_from: str = "", date_to: str = "", plugin: str = ""):
     d_from, d_to = _audit_date_bounds(period, date_from, date_to)
     conn = get_db_connection()
     try:
@@ -3935,6 +3937,7 @@ async def audit_export(request: Request, actor: str = "", action: str = "",
             entries = audit_svc.list_audit_entries(
                 cur, actor=actor or None, action=action or None,
                 resource_type=resource_type or None, q=q or None,
+                plugin=plugin or None,
                 date_from=d_from, date_to=d_to, limit=10000,
             )
             # Audit the export itself
@@ -3946,10 +3949,11 @@ async def audit_export(request: Request, actor: str = "", action: str = "",
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["horodatage", "acteur", "action", "type_ressource", "id_ressource", "details"])
+        writer.writerow(["horodatage", "acteur", "action", "plugin", "type_ressource", "id_ressource", "details"])
         for e in entries:
             writer.writerow([
                 e["created_at"], e["actor_email"], e["action"],
+                e.get("plugin_slug") or "",
                 e["resource_type"], e.get("resource_id", ""),
                 json.dumps(e.get("payload")) if e.get("payload") else "",
             ])
