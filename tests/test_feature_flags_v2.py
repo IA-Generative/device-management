@@ -372,3 +372,40 @@ def test_config_flag_removed_from_template_disappears():
         assert "search" not in feats, "zéro fantôme côté serveur"
     finally:
         patcher.stop()
+
+
+# ── safe_reconcile_catalog : wrapper partagé par TOUS les chemins d'import ────
+# (API plugin-deploy, formulaire admin deploy/create, éditeur config-template,
+# migration). Bug historique : seule la route API réconciliait — un upload via
+# le formulaire admin (sites air-gap) laissait l'onglet Flags vide.
+
+def test_safe_reconcile_returns_diff_and_audits():
+    """Chemin nominal : diff retourné + entrée d'audit flag.reconcile écrite."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"SELECT name, deprecated": []})
+    tpl = {"default": {"featureToggles": {"search": False, "dailySummary": True}}}
+
+    diff = svc.safe_reconcile_catalog(
+        cur, plugin_slug="matisse", template=tpl,
+        actor={"email": "admin@test", "sub": "x"}, source="admin:deploy/create")
+
+    assert diff is not None
+    assert diff["added"] == ["dailySummary", "search"]
+    audit_inserts = [sql for sql, _ in cur.executed if "admin_audit_log" in sql]
+    assert audit_inserts, "l'audit flag.reconcile doit être journalisé"
+
+
+def test_safe_reconcile_is_never_fatal():
+    """Un échec de réconciliation ne doit JAMAIS faire échouer l'import du template."""
+    svc = _flags_svc()
+
+    class _BrokenCur:
+        def execute(self, sql, params=None):
+            raise RuntimeError("db down")
+
+    diff = svc.safe_reconcile_catalog(
+        _BrokenCur(), plugin_slug="matisse",
+        template={"default": {"featureToggles": {"search": True}}},
+        source="admin:config-template")
+
+    assert diff is None

@@ -9,6 +9,10 @@ valeurs autoritaires viennent du config template, résolues par profil dans
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def list_flags(cur) -> list[dict]:
     cur.execute("""
@@ -154,3 +158,37 @@ def reconcile_catalog_from_template(cur, *, plugin_slug: str, template: dict) ->
 
     return {"added": added, "kept": kept, "reactivated": reactivated,
             "orphaned": orphaned, "already_deprecated": already_deprecated}
+
+
+def safe_reconcile_catalog(cur, *, plugin_slug: str, template: dict,
+                           actor: dict | None = None, source: str = "") -> dict | None:
+    """Réconciliation « best effort » : wrapper UNIQUE pour tous les chemins
+    qui écrivent `plugins.config_template` (déploiement API, formulaire admin
+    deploy/create, éditeur/refresh de template, migration).
+
+    Garantit le MÊME contrat partout — réconciliation + log + entrée d'audit
+    `flag.reconcile` — et n'est JAMAIS fatal : l'import du template ne doit pas
+    échouer parce que la réconciliation a échoué. (Bug historique : seule la
+    route API réconciliait ; un upload via le formulaire admin — le cas des
+    sites air-gap — laissait l'onglet Flags vide.)
+
+    Returns:
+        Le diff de `reconcile_catalog_from_template`, ou None en cas d'échec.
+    """
+    try:
+        diff = reconcile_catalog_from_template(cur, plugin_slug=plugin_slug, template=template)
+        logger.info(
+            "flags reconciliation [%s] %s: added=%s kept=%s reactivated=%s orphaned=%s",
+            source or "?", plugin_slug, diff["added"], len(diff["kept"]),
+            diff["reactivated"], diff["orphaned"])
+        try:
+            from app.admin.helpers import audit_log
+            audit_log(cur, actor=actor or {"email": "system", "sub": source or "reconcile"},
+                      action="flag.reconcile", resource_type="plugin",
+                      resource_id=plugin_slug, payload=diff)
+        except Exception:
+            logger.debug("flags reconciliation [%s] %s: audit_log skipped", source, plugin_slug)
+        return diff
+    except Exception:
+        logger.exception("flags reconciliation failed [%s] %s (non-fatal)", source, plugin_slug)
+        return None

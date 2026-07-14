@@ -814,17 +814,19 @@ def _resolve_public_telemetry_endpoint() -> str:
     if not endpoint.startswith("/"):
         endpoint = "/" + endpoint
 
-    # Préserver le CHEMIN de PUBLIC_BASE_URL : derrière un ingress à préfixe
-    # (ex. https://host/bootstrap), le service n'existe QUE sous ce préfixe —
-    # reconstruire scheme://netloc jetait le chemin et cassait le POST des
-    # traces (502). Même convention que le reste de _apply_overrides
-    # (f"{public_base}/…", chemin conservé).
+    # Endpoint relatif : servir la RACINE de l'origine (scheme://netloc), SANS
+    # le chemin de PUBLIC_BASE_URL. C'est le PLUGIN (telemetry.js
+    # _resolveEndpoint) qui re-base le path reçu sur bootstrapUrl — préfixe
+    # d'ingress compris : préfixer AUSSI le BASE_PATH ici doublait /bootstrap
+    # (POST .../bootstrap/bootstrap/telemetry/v1/traces → 404, constaté DGX).
+    # L'ancienne préservation du chemin (« 502 ») datait d'un plugin qui ne
+    # re-basait pas. Un endpoint configuré en ABSOLU reste servi verbatim.
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if public_base:
         parsed = urlparse(public_base)
         if parsed.scheme and parsed.netloc:
             # Telemetry uses its own Bearer token auth — no need for the relay proxy.
-            return f"{public_base}{endpoint}"
+            return f"{parsed.scheme}://{parsed.netloc}{endpoint}"
     return endpoint
 
 
@@ -3291,22 +3293,15 @@ async def api_plugin_deploy(slug: str, request: Request):
                     pass
                 # Réconciliation du catalogue de flags (scopé plugin) : union
                 # des clés featureToggles sur tous les profils → UPSERT ;
-                # orphelins MARQUÉS deprecated (pas de delete). Non-fatal.
+                # orphelins MARQUÉS deprecated (pas de delete). Wrapper partagé
+                # avec les chemins admin (deploy/create, config-template,
+                # migration) — une seule implémentation, non-fatale.
                 try:
-                    from app.admin.helpers import audit_log as _audit_log
                     from app.admin.services import flags as _flags_svc
-                    flags_diff = _flags_svc.reconcile_catalog_from_template(
-                        cur, plugin_slug=slug, template=deploy_config_template)
-                    logger.info(
-                        "api_plugin_deploy: flags reconciliation %s v%s: added=%s kept=%s reactivated=%s orphaned=%s",
-                        slug, version, flags_diff["added"], len(flags_diff["kept"]),
-                        flags_diff["reactivated"], flags_diff["orphaned"])
-                    try:
-                        _audit_log(cur, actor={"email": "api", "sub": "plugin-deploy"},
-                                   action="flag.reconcile", resource_type="plugin",
-                                   resource_id=slug, payload=flags_diff)
-                    except Exception:
-                        logger.debug("api_plugin_deploy: flag audit_log skipped")
+                    flags_diff = _flags_svc.safe_reconcile_catalog(
+                        cur, plugin_slug=slug, template=deploy_config_template,
+                        actor={"email": "api", "sub": "plugin-deploy"},
+                        source="api:plugin-deploy")
                 except Exception:
                     logger.exception("api_plugin_deploy: flags reconciliation failed (non-fatal)")
             if dm_manifest and dm_manifest.get("changelog"):

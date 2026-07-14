@@ -1355,6 +1355,21 @@ async def deploy_create(request: Request,
                     )
                 except Exception as ct_err:
                     logger.warning("deploy: config_template store failed: %s", ct_err)
+                # Sans cette réconciliation, un upload via ce formulaire admin
+                # (le cas des sites air-gap : DGX/prod-sdid) mettait le template
+                # à jour mais laissait l'onglet Flags vide.
+                try:
+                    cur.execute(
+                        "SELECT slug FROM plugins WHERE device_type = %s AND status <> 'removed' LIMIT 1",
+                        (device_type,),
+                    )
+                    _row = cur.fetchone()
+                    _slug = _row[0] if _row and _row[0] else device_type
+                except Exception:
+                    _slug = device_type
+                flags_svc.safe_reconcile_catalog(
+                    cur, plugin_slug=_slug, template=deploy_config_template,
+                    actor=actor, source="admin:deploy/create")
 
             # Store changelog from dm-manifest.json if present
             if deploy_dm_manifest:
@@ -2936,6 +2951,9 @@ async def catalog_migrate_config_templates(request: Request):
                     template = _apply_platform_defaults(template)
                     cur.execute("UPDATE plugins SET config_template = %s WHERE id = %s",
                                 (json.dumps(template), p["id"]))
+                    flags_svc.safe_reconcile_catalog(
+                        cur, plugin_slug=p["slug"] or p["device_type"], template=template,
+                        source="admin:migrate-config-templates")
                     migrated.append({"slug": p["slug"], "status": "migrated"})
                 except Exception as e:
                     errors.append({"slug": p["slug"], "error": str(e)})
@@ -2972,6 +2990,17 @@ async def catalog_save_config_template(request: Request, plugin_id: int):
             audit_log(cur, actor=actor, action="plugin.config_template.update",
                       resource_type="plugin", resource_id=str(plugin_id),
                       ip=request.client.host if request.client else None)
+            # L'édition du template (admin UI ou CI via deploy-release.sh) doit
+            # refléter ses featureToggles dans l'onglet Flags.
+            try:
+                _plugin = catalog_svc.get_plugin(cur, plugin_id)
+                _slug = (_plugin or {}).get("slug") or (_plugin or {}).get("device_type")
+            except Exception:
+                _slug = None
+            if _slug:
+                flags_svc.safe_reconcile_catalog(
+                    cur, plugin_slug=_slug, template=template,
+                    actor=actor, source="admin:config-template")
             conn.commit()
         return JSONResponse({"ok": True})
     except Exception as e:

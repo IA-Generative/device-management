@@ -1,10 +1,11 @@
 """PUBLIC_BASE_URL avec préfixe de chemin (ingress non-racine, ex. /bootstrap).
 
-Régression DGX : le service n'existe QUE sous https://host/bootstrap ; tout
-endpoint diffusé par /config sans ce préfixe (telemetryEndpoint reconstruit en
-scheme://netloc) part à la racine → 502. TOUS les endpoints diffusés doivent
-conserver le chemin de PUBLIC_BASE_URL — et un déploiement À LA RACINE doit
-produire exactement les URLs historiques (non-régression).
+Régression DGX : le service n'existe QUE sous https://host/bootstrap ; les
+endpoints diffusés par /config doivent conserver le chemin de PUBLIC_BASE_URL —
+SAUF telemetryEndpoint, servi à la RACINE de l'origine car le plugin re-base
+lui-même le path sur bootstrapUrl (préfixe compris) : le préfixer côté DM
+doublait /bootstrap (404). Un déploiement À LA RACINE doit produire exactement
+les URLs historiques (non-régression).
 """
 import importlib
 import json
@@ -86,16 +87,26 @@ def _get_config(mod):
 
 
 def test_all_advertised_endpoints_keep_ingress_path_prefix():
-    """PUBLIC_BASE_URL=https://host/bootstrap → aucun endpoint diffusé à la racine."""
+    """PUBLIC_BASE_URL=https://host/bootstrap → endpoints re-basés par le DM
+    avec le préfixe d'ingress — SAUF telemetryEndpoint (cf. test dédié)."""
     cfg = _get_config(_load_module("https://host/bootstrap"))
 
-    for key in ("keycloakTokenEndpoint", "relayAssistantBaseUrl",
-                "llmEndpoint", "telemetryEndpoint"):
+    for key in ("keycloakTokenEndpoint", "relayAssistantBaseUrl", "llmEndpoint"):
         value = cfg.get(key, "")
         assert value.startswith("https://host/bootstrap"), f"{key} = {value!r}"
 
-    # Le cas qui cassait sur DGX : la télémétrie doit porter le préfixe.
-    assert cfg["telemetryEndpoint"] == "https://host/bootstrap/telemetry/v1/traces"
+
+def test_telemetry_endpoint_served_at_origin_root_behind_prefixed_ingress():
+    """telemetryEndpoint relatif = RACINE de l'origine, SANS le BASE_PATH.
+
+    C'est le plugin (telemetry.js _resolveEndpoint) qui re-base le path sur
+    bootstrapUrl (préfixe d'ingress compris) : si le DM préfixe AUSSI, le
+    /bootstrap est compté deux fois → POST .../bootstrap/bootstrap/telemetry/
+    v1/traces → 404 (constaté DGX). Le plugin re-baseur reconstruit ensuite
+    https://host/bootstrap/telemetry/v1/traces — une seule fois."""
+    cfg = _get_config(_load_module("https://host/bootstrap"))
+
+    assert cfg["telemetryEndpoint"] == "https://host/telemetry/v1/traces"
 
 
 def test_root_deployment_urls_unchanged():

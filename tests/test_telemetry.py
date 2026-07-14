@@ -77,9 +77,10 @@ def test_config_exposes_public_telemetry_settings_and_uses_token_endpoint_for_ke
     assert cfg.get("telemetryEnabled") is True
     assert cfg.get("telemetryAuthorizationType") == "Bearer"
     # PUBLIC_BASE_URL porte un préfixe d'ingress (/bootstrap) : l'endpoint
-    # télémétrie doit le CONSERVER (le service n'existe pas à la racine —
-    # l'ancienne reconstruction scheme://netloc produisait un 502 sur DGX).
-    assert cfg.get("telemetryEndpoint") == "https://example.test/bootstrap/telemetry/v1/traces"
+    # télémétrie relatif est servi à la RACINE de l'origine, SANS le préfixe —
+    # c'est le plugin qui re-base le path sur bootstrapUrl (préfixe compris) ;
+    # le préfixer aussi côté DM doublait /bootstrap → 404 (constaté DGX).
+    assert cfg.get("telemetryEndpoint") == "https://example.test/telemetry/v1/traces"
     # telemetryKey is treated as a secret and is scrubbed unless relay auth is provided.
     assert cfg.get("telemetryKey", "") == ""
     assert int(cfg.get("telemetryKeyTtlSeconds")) > 0
