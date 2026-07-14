@@ -1033,14 +1033,20 @@ def _resolve_device_cohorts(cur, *, email: str, client_uuid: str) -> list[int]:
 
 def _upsert_plugin_installation(cur, *, plugin_id, client_uuid: str,
                                 email: str = "", version: str = "") -> None:
-    """Heartbeat d'installation : chaque /config enrichi (client_uuid présent)
-    marque l'installation active du plugin pour ce client.
+    """Heartbeat d'installation : chaque /config enrichi marque l'installation
+    active du plugin pour ce client.
 
     C'est la SEULE écriture de `plugin_installations` — la table était lue par
     le catalogue admin (onglet Installations, stats actifs/en retard) mais
     jamais alimentée : l'onglet restait vide même après enrôlement. Non-fatal.
+
+    La VERSION est requise : un vrai plugin envoie toujours X-Plugin-Version
+    (repli '0.0.0' côté client). Sans ce gate, toute sonde curl/monitoring avec
+    un simple X-Client-UUID créait une « installation » sans version — comptée
+    dans la tuile « actives » mais rattachée à aucune ligne du tableau des
+    versions (incohérence 2 actives / 1 install constatée sur int).
     """
-    if not plugin_id or not client_uuid:
+    if not plugin_id or not client_uuid or not version:
         return
     try:
         cur.execute("""

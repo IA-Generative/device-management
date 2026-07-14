@@ -344,10 +344,13 @@ def test_upsert_plugin_installation_heartbeat():
     assert "INSERT INTO plugin_installations" in sql
     assert "ON CONFLICT (plugin_id, client_uuid)" in sql
     assert params == (9, "uuid-1", "e@x.fr", "0.13.8")
-    # sans client_uuid ou plugin_id → no-op
+    # sans client_uuid, plugin_id OU version → no-op (une sonde curl sans
+    # X-Plugin-Version ne doit pas créer d'installation fantôme sans version,
+    # comptée dans « actives » mais rattachée à aucune version)
     cur2 = _ScriptedCur({})
-    mod._upsert_plugin_installation(cur2, plugin_id=None, client_uuid="u")
-    mod._upsert_plugin_installation(cur2, plugin_id=9, client_uuid="")
+    mod._upsert_plugin_installation(cur2, plugin_id=None, client_uuid="u", version="1.0")
+    mod._upsert_plugin_installation(cur2, plugin_id=9, client_uuid="", version="1.0")
+    mod._upsert_plugin_installation(cur2, plugin_id=9, client_uuid="u", version="")
     assert cur2.executed == []
 
 
