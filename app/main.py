@@ -828,7 +828,8 @@ def _resolve_public_telemetry_endpoint() -> str:
     return endpoint
 
 
-def _mint_telemetry_token(*, device: str | None, profile: str) -> tuple[str, int | None]:
+def _mint_telemetry_token(*, device: str | None, profile: str,
+                          client_uuid: str = "") -> tuple[str, int | None]:
     secret = (settings.telemetry_token_signing_key or "").strip()
     if not secret:
         return "", None
@@ -842,6 +843,12 @@ def _mint_telemetry_token(*, device: str | None, profile: str) -> tuple[str, int
         "profile": profile,
         "device": device or "unknown",
     }
+    # `cuid` = identité STABLE du client (X-Client-UUID au mint). Le relais
+    # loggue device_connections avec elle — jamais avec le jti, régénéré à
+    # chaque token, qui fabriquait un « appareil » distinct par token et
+    # gonflait tous les compteurs d'actifs.
+    if client_uuid:
+        payload["cuid"] = client_uuid
     payload_raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     payload_b64 = _b64url_encode(payload_raw)
     sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
@@ -1664,7 +1671,8 @@ def _scrub_secret_values(cfg: dict) -> dict:
     cfg_obj["config"] = config_obj
     return cfg_obj
 
-def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> dict:
+def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None,
+                     client_uuid: str = "") -> dict:
     """Apply targeted overrides from env."""
     global _telemetry_signing_warning_emitted
 
@@ -1696,7 +1704,8 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
     token = ""  # nosec B105: valeur vide par défaut, pas un secret
     expires_at: int | None = None
     if settings.telemetry_enabled and settings.telemetry_authorization_type.lower() == "bearer":
-        token, expires_at = _mint_telemetry_token(device=device, profile=profile)
+        token, expires_at = _mint_telemetry_token(device=device, profile=profile,
+                                                  client_uuid=client_uuid)
         if settings.telemetry_require_token and not token and not _telemetry_signing_warning_emitted:
             logger.warning(
                 "Telemetry token rotation requested but DM_TELEMETRY_TOKEN_SIGNING_KEY is empty."
@@ -2488,7 +2497,8 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
 
     # ── STEP 3: Substitution + DM overrides ──
     cfg = _substitute_env(cfg)
-    cfg = _apply_overrides(cfg, profile=prof, device=device_type or None)
+    cfg = _apply_overrides(cfg, profile=prof, device=device_type or None,
+                           client_uuid=request.headers.get("X-Client-UUID", "").strip())
 
     # ── STEPS 4+5: Catalog overrides + access control (pooled connection) ──
     if plugin_id and psycopg2 is not None:
@@ -2747,9 +2757,10 @@ def clear_config_cache(request: Request):
 
 
 @app.get("/telemetry/token")
-def get_telemetry_token(profile: str | None = None, device: str | None = None):
+def get_telemetry_token(request: Request, profile: str | None = None, device: str | None = None):
     prof = (profile or os.getenv("DM_CONFIG_PROFILE", "prod")).strip().lower()
     dev = (device or "").strip().lower()
+    req_client_uuid = request.headers.get("X-Client-UUID", "").strip()
 
     if not settings.telemetry_enabled:
         return JSONResponse(
@@ -2760,7 +2771,8 @@ def get_telemetry_token(profile: str | None = None, device: str | None = None):
                 "telemetryKey": "",
             },
         )
-    token, exp = _mint_telemetry_token(device=dev or None, profile=prof)
+    token, exp = _mint_telemetry_token(device=dev or None, profile=prof,
+                                       client_uuid=req_client_uuid)
     if settings.telemetry_require_token and not token:
         raise HTTPException(status_code=503, detail="Telemetry signing key is not configured.")
     return JSONResponse(
@@ -2830,27 +2842,40 @@ async def telemetry_traces(request: Request):
     if settings.telemetry_require_token:
         token = _extract_bearer_token(request)
         client_uuid = None
+        token_valid = False
         if token:
             try:
                 payload = _verify_telemetry_token(token)
-                client_uuid = str(payload.get("jti") or "telemetry")
+                token_valid = True
+                # `cuid` = identité STABLE embarquée au mint (0.9.4+). Le jti
+                # ne sert JAMAIS d'identité : uuid4 régénéré à chaque token, il
+                # créait un client_uuid distinct par token dans device_connections
+                # et gonflait tous les compteurs d'« appareils actifs ».
+                cuid = str(payload.get("cuid") or "").strip()
+                if cuid:
+                    client_uuid = _normalize_client_uuid(cuid)
             except HTTPException:
                 # Token invalid/expired – fall through to X-Client-UUID fallback
                 pass
         if not client_uuid:
-            # Fallback: accept X-Client-UUID header for pre-enrollment devices
-            # or when the Bearer token has expired.
+            # Fallback: accept X-Client-UUID header for pre-enrollment devices,
+            # expired tokens, or tokens mintés sans identité (cache partagé).
             header_uuid = (
                 request.headers.get("x-client-uuid")
                 or request.headers.get("x-plugin-uuid")
                 or ""
             ).strip()
-            if not header_uuid:
+            if header_uuid:
+                client_uuid = _normalize_client_uuid(header_uuid)
+        if not client_uuid:
+            if not token_valid:
                 raise HTTPException(
                     status_code=401,
                     detail="Missing telemetry Bearer token or X-Client-UUID header.",
                 )
-            client_uuid = _normalize_client_uuid(header_uuid)
+            # Token valide mais aucune identité → uuid zéro (agrégé en UN seul
+            # distinct, comme CONFIG_GET) plutôt qu'un pseudo-appareil par token.
+            client_uuid = "00000000-0000-0000-0000-000000000000"
     else:
         client_uuid = "telemetry-open"
 
