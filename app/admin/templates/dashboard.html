@@ -1,7 +1,30 @@
 {% extends "base.html" %}
 {% block title %}Tableau de bord{% endblock %}
 {% block content %}
-<h1 class="dm-page-title">Tableau de bord</h1>
+<div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
+  <h1 class="dm-page-title" style="margin:0;">Tableau de bord</h1>
+  {# Version(s) du DM — source : config_pod_state (heartbeat des pods, comme
+     la page debug/runtime). Plusieurs versions fraîches = rollout en cours
+     ou pod en retard → badge d'alerte. #}
+  {% if dm_versions|length > 1 %}
+    <span class="dm-badge dm-badge--warning"
+          title="Les pods ne tournent pas tous la même version du DM (rollout en cours ou pod en retard) — détail sur la page Debug.">
+      &#9888; versions mixtes&nbsp;:
+      {% for v in dm_versions %}{{ v.version }} ({{ v.pods }} pod{{ 's' if v.pods > 1 else '' }}){{ ' · ' if not loop.last else '' }}{% endfor %}
+    </span>
+    <a href="/admin/debug" style="font-size:0.8rem;">Détails</a>
+  {% elif dm_versions %}
+    <span class="dm-badge dm-badge--info"
+          title="Version du DM — {{ dm_versions[0].pods }} pod(s) vu(s) au heartbeat depuis moins de 15 min.">
+      DM v{{ dm_versions[0].version }}
+    </span>
+  {% else %}
+    <span class="dm-badge dm-badge--neutral"
+          title="Aucun pod enregistré dans config_pod_state — version du pod courant (env DM_APP_VERSION).">
+      DM v{{ dm_version_local }}
+    </span>
+  {% endif %}
+</div>
 
 <!-- Service availability banner -->
 <div id="service-status" hx-get="/admin/api/debug/status" hx-trigger="load, every 30s" hx-swap="innerHTML" style="margin-bottom:1rem;"></div>

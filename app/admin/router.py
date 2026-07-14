@@ -312,6 +312,26 @@ def _compute_dashboard_metrics(cur) -> dict:
     }
 
 
+def _dashboard_versions(cur) -> list[dict]:
+    """Versions du DM vues PAR POD — même mécanisme que la page debug/runtime :
+    chaque pod upsert son `app_version` (env DM_APP_VERSION, posée par les
+    déploiements) dans `config_pod_state` à l'enrôlement et au heartbeat.
+
+    Seuls les pods « frais » (< 15 min) comptent : les lignes mortes en attente
+    du reaper (TTL 1 h) ne doivent pas crier au faux mélange de versions.
+    Plus d'une version distincte = rollout en cours ou pod en retard — le
+    dashboard doit attirer l'attention.
+    """
+    cur.execute("""
+        SELECT app_version, COUNT(*) AS pods
+        FROM config_pod_state
+        WHERE last_heartbeat_at > now() - interval '15 minutes'
+        GROUP BY app_version
+        ORDER BY pods DESC, app_version
+    """)
+    return [{"version": row[0] or "dev", "pods": row[1]} for row in cur.fetchall()]
+
+
 @router.get("/", response_class=HTMLResponse)
 @require_admin
 async def dashboard(request: Request):
@@ -319,6 +339,13 @@ async def dashboard(request: Request):
     try:
         with conn.cursor() as cur:
             metrics = _compute_dashboard_metrics(cur)
+
+            # Version(s) du DM — non-fatal : table éventuellement absente sur
+            # une base pas encore migrée, le dashboard doit s'afficher.
+            try:
+                dm_versions = _dashboard_versions(cur)
+            except Exception:
+                dm_versions = []
 
             # Active campaigns with stats
             active_campaigns = campaigns_svc.list_campaigns(cur, status="active")
@@ -333,6 +360,8 @@ async def dashboard(request: Request):
         return templates.TemplateResponse(request, "dashboard.html", {
             "request": request,
             "metrics": metrics,
+            "dm_versions": dm_versions,
+            "dm_version_local": os.getenv("DM_APP_VERSION") or os.getenv("APP_VERSION") or "dev",
             "active_campaigns": active_campaigns,
             "recent_audit": recent_audit,
         })
@@ -3561,6 +3590,22 @@ async def api_adoption(request: Request, period: str = "1M", mode: str = "device
 
 # ─── Debug Page ──────────────────────────────────────────────────────────
 
+def _llm_models_detail() -> str:
+    """Détail de la ligne LLM du debug : modèle de chat + modèle d'embedding.
+
+    L'embedding vient du registre runtime_config (valeur EFFECTIVE, surcharges
+    comprises — la même que celle diffusée aux plugins dans `embdModel`), avec
+    repli sur l'env si le registre est indisponible. Vide = embedder désactivé.
+    """
+    model = os.getenv("DEFAULT_MODEL_NAME", "?")
+    try:
+        from app import runtime_config as _rc
+        embd = str(_rc.cfg("EMBD_MODEL_NAME", "") or "")
+    except Exception:
+        embd = str(os.getenv("EMBD_MODEL_NAME", "") or "")
+    return f"{model} · embed: {embd or '(désactivé)'}"
+
+
 @router.get("/debug", response_class=HTMLResponse)
 @require_admin
 async def debug_page(request: Request):
@@ -3610,19 +3655,19 @@ async def debug_page(request: Request):
         if not llm_url:
             return "non configure"
         token = os.getenv("LLM_API_TOKEN", "")
-        model = os.getenv("DEFAULT_MODEL_NAME", "?")
+        models = _llm_models_detail()
         req = urlreq.Request(f"{llm_url.rstrip('/')}/models",
                              headers={"Authorization": f"Bearer {token}"})
         try:
             with urlreq.urlopen(req, timeout=5):
                 pass
-            return f"{model}"
+            return models
         except urllib_error.HTTPError as e:
             if e.code in (401, 403):
-                return f"{model} (accessible, auth relay requise)"
+                return f"{models} (accessible, auth relay requise)"
             raise
         except OSError:
-            return f"{model} (upstream injoignable)"
+            return f"{models} (upstream injoignable)"
 
     def check_relay():
         relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant")
