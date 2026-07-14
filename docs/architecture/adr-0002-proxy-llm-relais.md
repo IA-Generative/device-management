@@ -2,7 +2,9 @@
 
 **Date** : 2026-07-10 — **mise à jour 2026-07-11** (sécabilité généralisée en principe
 d'architecture ; contexte enrichi — sécabilité organisationnelle, découplage
-d'obsolescence ; document réordonné : principe avant applications)
+d'obsolescence ; document réordonné : principe avant applications) — **mise à jour
+2026-07-14** (§5 : validations de la frontière par l'usage — embeddings mutualisés sur
+`/llm/v1`, identité stable `cuid` dans les tokens mintés)
 **Statut** : En vigueur
 **Auteurs** : eric.tiquet + Claude Fable 5
 **Portée** : introduction du relais LLM OpenAI-compatible `/llm/v1` (package `app/llm/`,
@@ -261,6 +263,27 @@ qui ne demande pas de refonte :
 | Métriques | `prometheus_client`, registry dédié concaténé au `/metrics` existant | Percentiles de latence (histogrammes) infaisables proprement à la main |
 | Format d'erreur | Objet OpenAI `{"error": {...}}` + `retry_after` top-level (429) + header `Retry-After` | Exploitable à la fois par le plugin figé et par tout client OpenAI standard |
 | Streaming | Passthrough SSE `aiter_raw` → `StreamingResponse`, zéro bufferisation, `read` timeout inter-chunk | Backpressure naturelle, mémoire constante par stream ; limite assumée : guardrail de sortie best-effort par chunk |
+
+### 5. Validations de la frontière par l'usage (mise à jour 2026-07-14)
+
+Deux évolutions livrées depuis confirment que la frontière posée ici absorbe les
+besoins nouveaux **sans élargir la surface côté client ni exposer de secret** :
+
+- **Embeddings mutualisés sur `/llm/v1`** (DM 0.9.1+, plugin 0.13.5+). La recherche
+  RAG du plugin a besoin de vecteurs d'embedding : plutôt qu'un second endpoint, un
+  second secret et une seconde homologation, la route `/embeddings` est servie **par
+  le même relais**, en passthrough vers le backend, avec la même auth par client
+  (`llmToken` minté) et le même masquage de clé. Une seule variable serveur
+  (`EMBD_MODEL_NAME`) désigne le modèle ; côté client `embdUrl = llmEndpoint` — zéro
+  pref sensible supplémentaire. Le choix du modèle d'embedding fait l'objet de
+  l'**ADR-0003**.
+- **Identité stable dans les tokens mintés** (DM 0.9.4). Le token de télémétrie
+  embarque désormais un claim `cuid` (l'identité STABLE du client au moment du mint) ;
+  le `jti` — régénéré à chaque token — reste strictement anti-rejeu. Avant cela, le
+  relais journalisait le `jti` comme identité : chaque token créait un pseudo-appareil
+  dans `device_connections` et tous les compteurs d'« actifs » étaient gonflés
+  (145 « appareils » pour 23 enrôlés constatés sur int). Règle générale retenue :
+  **un identifiant de token n'est jamais une identité de client**.
 
 ## Conséquences
 

@@ -227,20 +227,36 @@ va en pref ; l'URL/token sont réutilisés in-memory depuis le LLM (pas de token
 { "update": null }
 ```
 
-### 4.4 Objet `features` — flags calculés pour ce device
+### 4.4 Objet `features` — l'objet RÉSOLU par le serveur (v2, DM 0.9.2+)
 
-Calcul : `défaut global` + `surcharge de cohorte` + `contrainte de version plugin`.
+> **Refonte 2026-07-14 (« feature flags v2 »).** L'ancienne résolution (défauts du
+> catalogue `feature_flags` + overrides) créait une double source de vérité et des
+> flags fantômes côté client. Depuis la v2 :
+
+```
+features = deepMerge(template.default, template.<profil>).featureToggles
+           ⊕ overrides_cohorte
+```
+
+- **L'autorité des défauts est le config template** (dm-config.json du plugin,
+  ingéré à l'upload), résolu PAR PROFIL avec un **deep-merge** : un profil qui
+  surcharge un flag n'efface pas les autres.
+- Le **catalogue** `feature_flags` est **scopé par plugin** (`plugin_slug`) et
+  synchronisé automatiquement à chaque import (union des clés `featureToggles` de
+  tous les profils) ; son `default_value` est **indicatif**. Un flag disparu du
+  template est marqué **orphelin** (`deprecated`) — plus jamais diffusé, jamais
+  auto-supprimé (suppression explicite via l'admin).
+- Seuls les **overrides de cohorte** participent à la résolution serveur, par-dessus
+  le template.
 
 ```json
 {
   "features": {
-    "writer_assistant":        true,
-    "calc_assistant":          false,
-    "edit_whole_document":     true,
-    "show_thinking_widget":    true,
-    "auto_update":             true,
-    "telemetry":               true,
-    "experimental_streaming":  false
+    "composePromptPanel": true,
+    "dailySummary":       true,
+    "calendarDetector":   true,
+    "threadSummary":      true,
+    "search":             true
   }
 }
 ```
@@ -248,34 +264,36 @@ Calcul : `défaut global` + `surcharge de cohorte` + `contrainte de version plug
 **Règle de résolution (priorité décroissante) :**
 
 ```
-1. override cohorte  (false > true si plusieurs cohortes contradictoires)
-2. défaut global du flag
-3. true si flag absent côté DM (non-cassant pour les vieux clients)
+1. override cohorte   (false gagne si plusieurs cohortes contradictoires)
+2. valeur du PROFIL du template   (deep-merge default ⊕ profil)
+3. côté client : défaut local (prefs.js) si le flag est absent de `features`
 ```
 
-**Contrainte de version sur un flag** — DB uniquement, transparent pour le plugin :
+**Côté plugin (contrat de consommation)** : `features` est stocké tel quel dans un
+pref d'override (`featureTogglesOverride`) **remplacé EN BLOC** à chaque `/config`
+(jamais fusionné) ; l'état effectif est recalculé à chaque lecture :
+`effectif = défauts prefs.js ⊕ override`. Un flag retiré côté DM disparaît donc du
+poste à la réponse suivante — zéro fantôme, y compris via le cache disque.
+
+**Contraintes de version** — deux gates, tous deux **fail-safe** (version inconnue
+= gate fermé), transparents pour le plugin :
 
 ```
-feature: edit_whole_document
-  default: false
-  override cohort=all: true  MAIS min_plugin_version = "1.5.0"
+flag.min_plugin_version       (posé à la création admin ; NULL = toutes versions)
+override.min_plugin_version   (posé sur l'override de cohorte)
 
-→ plugin v1.2.0 : features.edit_whole_document = false  (version trop ancienne)
-→ plugin v1.5.0 : features.edit_whole_document = true
+→ l'override ne s'applique que si les DEUX gates passent pour X-Plugin-Version
 ```
 
 ```mermaid
 flowchart TD
-    A[Compute feature flag F pour device D] --> B[Lire default_value de F]
-    B --> C{Cohortes de D ont\nun override pour F ?}
-    C -- non --> D[valeur = default_value]
-    C -- oui --> E[valeur = override\nfalse gagne si conflit]
-    E --> F{min_plugin_version\ndéfini ?}
-    D --> F
-    F -- non --> G[retourner valeur]
-    F -- oui --> H{X-Plugin-Version\n>= min_plugin_version ?}
-    H -- oui --> G
-    H -- non --> I[retourner false\nfeature indisponible\npour cette version]
+    A[Résoudre features pour device D, profil P] --> B[featureToggles du template :\ndeepMerge default ⊕ P]
+    B --> C{Cohortes de D ont\ndes overrides ?}
+    C -- non --> G[features = valeurs du template]
+    C -- oui --> E{gates min_plugin_version\nflag ET override passent ?\nfail-safe si version inconnue}
+    E -- non --> G
+    E -- oui --> F[appliquer override\nfalse gagne si conflit]
+    F --> G[retourner l'objet résolu\nremplacé EN BLOC côté client]
 ```
 
 ---
