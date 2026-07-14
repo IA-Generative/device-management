@@ -309,14 +309,25 @@ CREATE TABLE IF NOT EXISTS campaign_device_status (
 );
 CREATE INDEX IF NOT EXISTS idx_cds ON campaign_device_status(campaign_id, status);
 
+-- Catalogue des feature flags, SCOPÉ par plugin (plugin_slug, ''=global/legacy).
+-- default_value est INDICATIF (recopié du template.default à l'import) : les
+-- valeurs autoritaires viennent du config template, résolues par profil dans
+-- /config ; seuls les overrides cohorte (table ci-dessous) participent à la
+-- résolution. deprecated = orphelin (flag disparu du template au dernier
+-- import) — marqué, jamais auto-supprimé. Migration des tables existantes :
+-- ALTERs idempotents dans app/services/db.py (apply_schema).
 CREATE TABLE IF NOT EXISTS feature_flags (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(100) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    plugin_slug VARCHAR(100) NOT NULL DEFAULT '',
     description TEXT,
     default_value BOOLEAN DEFAULT true,
+    deprecated BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS ux_feature_flags_slug_name ON feature_flags (plugin_slug, name);
+CREATE INDEX IF NOT EXISTS ix_feature_flags_plugin_slug ON feature_flags (plugin_slug);
 
 CREATE TABLE IF NOT EXISTS feature_flag_overrides (
     feature_id INT NOT NULL REFERENCES feature_flags(id) ON DELETE CASCADE,

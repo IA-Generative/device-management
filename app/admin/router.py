@@ -774,6 +774,27 @@ async def flag_delete_override(request: Request, flag_id: int, cohort_id: int):
         conn.close()
 
 
+@router.delete("/flags/{flag_id}")
+@require_admin
+async def flag_delete(request: Request, flag_id: int):
+    """Supprime un flag et ses overrides (miroir de cohort_delete)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="flag.delete",
+                      resource_type="flag", resource_id=str(flag_id),
+                      ip=request.client.host if request.client else None)
+            flags_svc.delete_flag(cur, flag_id)
+            conn.commit()
+        return RedirectResponse("/admin/flags", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e)) from e
+    finally:
+        conn.close()
+
+
 # ─── Artifacts ────────────────────────────────────────────────────────────
 
 @router.get("/artifacts", response_class=HTMLResponse)

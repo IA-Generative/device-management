@@ -263,6 +263,30 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                       ALTER TABLE plugins ADD COLUMN gecko_id VARCHAR(128);
                     END IF;
                   END IF;
+                  -- Flags v2 : catalogue scopé par plugin + marquage orphelins
+                  -- (CREATE TABLE IF NOT EXISTS n'ajoute pas de colonne à une
+                  -- table existante → ALTER explicite ; l'unicité globale sur
+                  -- name laisse place à (plugin_slug, name), cf. schema.sql).
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'feature_flags') THEN
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'feature_flags' AND column_name = 'plugin_slug'
+                    ) THEN
+                      ALTER TABLE feature_flags ADD COLUMN plugin_slug VARCHAR(100) NOT NULL DEFAULT '';
+                    END IF;
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'feature_flags' AND column_name = 'deprecated'
+                    ) THEN
+                      ALTER TABLE feature_flags ADD COLUMN deprecated BOOLEAN NOT NULL DEFAULT false;
+                    END IF;
+                    IF EXISTS (
+                      SELECT 1 FROM pg_constraint
+                      WHERE conname = 'feature_flags_name_key' AND conrelid = 'feature_flags'::regclass
+                    ) THEN
+                      ALTER TABLE feature_flags DROP CONSTRAINT feature_flags_name_key;
+                    END IF;
+                  END IF;
                 END $$;
             """)
             cur.execute(sql)

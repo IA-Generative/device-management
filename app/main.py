@@ -689,11 +689,20 @@ def _check_plugin_access(plugin_row: dict | None, request: Request, cur) -> bool
 
 
 def _build_config_from_template(template: dict, profile: str) -> dict:
-    """Merge default + profile section from a dm-config.json template."""
+    """Merge default + profile section from a dm-config.json template.
+
+    `featureToggles` is deep-merged (default ⊕ profile) instead of the shallow
+    top-level merge: a profile section that overrides one flag must not wipe
+    the other flags declared in `default`.
+    """
     default = dict(template.get("default", {}))
     env_section = template.get(profile, {})
     if isinstance(env_section, dict):
         merged = {**default, **env_section}
+        default_toggles = default.get("featureToggles")
+        profile_toggles = env_section.get("featureToggles")
+        if isinstance(default_toggles, dict) and isinstance(profile_toggles, dict):
+            merged["featureToggles"] = {**default_toggles, **profile_toggles}
     else:
         merged = default
     # Remove inline documentation fields
@@ -1022,41 +1031,53 @@ def _resolve_device_cohorts(cur, *, email: str, client_uuid: str) -> list[int]:
     return matched
 
 
-def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version: str) -> dict:
-    """Compute the effective feature flags dict for the device."""
+def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version: str,
+                           plugin_slug: str = "") -> dict:
+    """Return ONLY the cohort-driven feature-flag overrides for this device.
+
+    The catalog `default_value` is INDICATIVE (mirrors the template default at
+    import time) and is deliberately NOT returned: the authoritative defaults
+    come from the config template, resolved per profile in /config. Hierarchy:
+    template default → template profile → cohort override (this function).
+
+    - Catalogue SCOPÉ par plugin : seuls les flags du slug demandé (ou les
+      flags globaux/legacy, plugin_slug='') sont considérés.
+    - Les flags `deprecated` (orphelins d'un import) sont exclus : un flag
+      retiré du template ne peut pas ressusciter via un vieil override.
+    - `min_plugin_version` gating is fail-safe: an override gated by a minimum
+      version is skipped when the plugin version is unknown (no header) or
+      older than the gate.
+    - When several cohorts override the same flag, false wins.
+    """
+    if not device_cohort_ids:
+        return {}
     try:
-        cur.execute("SELECT name, default_value FROM feature_flags")
-        flags: dict[str, bool] = {row[0]: bool(row[1]) for row in cur.fetchall()}
+        placeholders = ",".join(["%s"] * len(device_cohort_ids))
+        cur.execute(
+            f"""
+            SELECT ff.name, ffo.value, ffo.min_plugin_version
+            FROM feature_flag_overrides ffo
+            JOIN feature_flags ff ON ff.id = ffo.feature_id
+            WHERE ffo.cohort_id IN ({placeholders})
+              AND ff.deprecated = false
+              AND ff.plugin_slug IN ('', %s)
+            """,
+            [*device_cohort_ids, plugin_slug or ""],
+        )
+        overrides = cur.fetchall()
     except Exception:
         return {}
 
-    if not flags:
-        return {}
-
-    if device_cohort_ids:
-        try:
-            placeholders = ",".join(["%s"] * len(device_cohort_ids))
-            cur.execute(
-                f"""
-                SELECT ff.name, ffo.value, ffo.min_plugin_version
-                FROM feature_flag_overrides ffo
-                JOIN feature_flags ff ON ff.id = ffo.feature_id
-                WHERE ffo.cohort_id IN ({placeholders})
-                """,
-                device_cohort_ids,
-            )
-            overrides = cur.fetchall()
-        except Exception:
-            overrides = []
-
-        for row in overrides:
-            flag_name, override_val, min_pv = row[0], bool(row[1]), row[2]
-            if min_pv and plugin_version:
-                if _parse_version_tuple(plugin_version) < _parse_version_tuple(min_pv):
-                    continue  # plugin too old, skip this override
-            # false wins: once false, stays false
-            if flag_name in flags:
-                flags[flag_name] = flags[flag_name] and override_val
+    flags: dict[str, bool] = {}
+    for row in overrides:
+        flag_name, override_val, min_pv = row[0], bool(row[1]), row[2]
+        if min_pv:
+            if not plugin_version:
+                continue  # version inconnue : fail-safe, pas d'override gated
+            if _parse_version_tuple(plugin_version) < _parse_version_tuple(min_pv):
+                continue  # plugin too old, skip this override
+        # false wins entre cohortes: once false, stays false
+        flags[flag_name] = flags.get(flag_name, True) and override_val
 
     return flags
 
@@ -2555,6 +2576,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                         cur,
                         device_cohort_ids=device_cohort_ids,
                         plugin_version=plugin_version,
+                        plugin_slug=device_name or "",
                     )
                     campaign = _resolve_active_campaign(
                         cur,
@@ -2598,6 +2620,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                             cur,
                             device_cohort_ids=device_cohort_ids,
                             plugin_version=plugin_version,
+                            plugin_slug=device_name or "",
                         )
                         campaign = _resolve_active_campaign(
                             cur,
@@ -2631,6 +2654,14 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     # ---- Step 10: Build final EnrichedConfigResponse
     inner_config = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
 
+    # `features` = objet RÉSOLU côté serveur : défauts du template (deep-mergés
+    # par profil) ⊕ overrides cohorte (gated min_plugin_version). Le plugin le
+    # REMPLACE EN BLOC (pref featureTogglesOverride) — un flag retiré ici
+    # disparaît chez le client à la réponse suivante.
+    template_toggles = inner_config.get("featureToggles") if isinstance(inner_config, dict) else None
+    features_resolved: dict = dict(template_toggles) if isinstance(template_toggles, dict) else {}
+    features_resolved.update(flags)
+
     response_body = {
         "meta": {
             "schema_version": 2,
@@ -2643,7 +2674,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         },
         "config": inner_config,
         "update": update_directive,
-        "features": flags,
+        "features": features_resolved,
     }
 
     # P2: Cache the response only for generic requests (no enrichment headers,
@@ -3178,12 +3209,33 @@ async def api_plugin_deploy(slug: str, request: Request):
             version_id = cur.fetchone()[0]
 
             # 7. Update config_template + changelog from manifest
+            flags_diff = None
             if deploy_config_template:
                 try:
                     cur.execute("UPDATE plugins SET config_template = %s WHERE id = %s",
                                 (json.dumps(deploy_config_template), plugin_id))
                 except Exception:
                     pass
+                # Réconciliation du catalogue de flags (scopé plugin) : union
+                # des clés featureToggles sur tous les profils → UPSERT ;
+                # orphelins MARQUÉS deprecated (pas de delete). Non-fatal.
+                try:
+                    from app.admin.helpers import audit_log as _audit_log
+                    from app.admin.services import flags as _flags_svc
+                    flags_diff = _flags_svc.reconcile_catalog_from_template(
+                        cur, plugin_slug=slug, template=deploy_config_template)
+                    logger.info(
+                        "api_plugin_deploy: flags reconciliation %s v%s: added=%s kept=%s reactivated=%s orphaned=%s",
+                        slug, version, flags_diff["added"], len(flags_diff["kept"]),
+                        flags_diff["reactivated"], flags_diff["orphaned"])
+                    try:
+                        _audit_log(cur, actor={"email": "api", "sub": "plugin-deploy"},
+                                   action="flag.reconcile", resource_type="plugin",
+                                   resource_id=slug, payload=flags_diff)
+                    except Exception:
+                        logger.debug("api_plugin_deploy: flag audit_log skipped")
+                except Exception:
+                    logger.exception("api_plugin_deploy: flags reconciliation failed (non-fatal)")
             if dm_manifest and dm_manifest.get("changelog"):
                 try:
                     cur.execute("UPDATE plugins SET changelog = %s WHERE id = %s",
@@ -3231,6 +3283,7 @@ async def api_plugin_deploy(slug: str, request: Request):
             "campaign_id": campaign_id,
             "checksum": checksum,
             "strategy": strategy,
+            "feature_flags": flags_diff,
         }, status_code=201)
     except Exception as e:
         logger.exception("api_plugin_deploy failed")

@@ -1,0 +1,31 @@
+# Override E2E — matrice feature-flags v2 (lancé par scripts/e2e-feature-flags-matrix.sh).
+#
+# - Postgres LOCAL dédié (profil postgres-local) : aucune dépendance à
+#   l'instance partagée owuicore.
+# - Admin UI montée dans le même pod que l'API (DM_RUNTIME_MODE=all) avec
+#   autologin dev (DM_DEV_AUTOLOGIN, OIDC forcé vide) pour tester delete_flag.
+# - DM_QUEUE_ADMIN_TOKEN : jeton de TEST local uniquement (X-Admin-Token du
+#   endpoint /api/plugins/{slug}/deploy).
+#
+# AUCUN secret réel ici — ne jamais y mettre de valeur de prod.
+services:
+  device-management:
+    environment:
+      DM_RUNTIME_MODE: all
+      DM_DEV_AUTOLOGIN: "true"
+      ADMIN_OIDC_ISSUER_URL: ""
+      KEYCLOAK_ISSUER_URL: ""
+      DM_QUEUE_ADMIN_TOKEN: e2e-admin-token
+      DATABASE_URL: postgresql://dev:dev@postgres-local:5432/bootstrap
+      # Le .env peut pointer DATABASE_ADMIN_URL sur l'instance partagée owui —
+      # apply_schema (startup) doit viser le postgres local du harness.
+      DATABASE_ADMIN_URL: postgresql://dev:dev@postgres-local:5432/bootstrap
+      DM_APP_ENV: dev
+
+  queue-worker:
+    environment:
+      DATABASE_URL: postgresql://dev:dev@postgres-local:5432/bootstrap
+
+  llm-proxy:
+    environment:
+      DATABASE_URL: postgresql://dev:dev@postgres-local:5432/bootstrap
