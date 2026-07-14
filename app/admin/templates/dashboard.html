@@ -8,13 +8,21 @@
 
 <!-- Adoption chart -->
 <div style="background:#F5F5FE;border-radius:8px;padding:1.25rem;margin-bottom:1.5rem;">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
     <h2 style="font-size:1rem;margin:0;">Adoption des plugins</h2>
-    <div style="display:flex;gap:0.25rem;" id="period-btns">
-      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="loadAdoption('1J',this)">1J</button>
-      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="loadAdoption('1S',this)">1S</button>
-      <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="loadAdoption('1M',this)">1M</button>
-      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="loadAdoption('3M',this)">3M</button>
+    <div style="display:flex;gap:0.75rem;align-items:center;">
+      <!-- Axe de comptage : par poste (client_uuid) ou par utilisateur (email).
+           Tout le widget (tuiles + courbe) suit ce mode. -->
+      <div style="display:flex;gap:0.25rem;" id="mode-btns" title="Axe de comptage : postes (uuid) ou utilisateurs (email)">
+        <button class="dm-btn dm-btn--primary dm-btn--sm" data-mode="device" onclick="setAdoptionMode('device',this)">Appareils</button>
+        <button class="dm-btn dm-btn--ghost dm-btn--sm" data-mode="user" onclick="setAdoptionMode('user',this)">Utilisateurs</button>
+      </div>
+      <div style="display:flex;gap:0.25rem;" id="period-btns">
+        <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setAdoptionPeriod('1J',this)">1J</button>
+        <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setAdoptionPeriod('1S',this)">1S</button>
+        <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="setAdoptionPeriod('1M',this)">1M</button>
+        <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setAdoptionPeriod('3M',this)">3M</button>
+      </div>
     </div>
   </div>
   <div style="position:relative;height:250px;width:100%;"><canvas id="adoption-chart"></canvas></div>
@@ -24,34 +32,86 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 let adoptionChart = null;
-function loadAdoption(period, btn) {
+let adoptionPeriod = '1M';
+let adoptionMode = 'device';
+const ADOPTION_LABELS = {
+  device: {serie: 'Postes enrolles',       total: 'postes enrolles'},
+  user:   {serie: 'Utilisateurs enrolles', total: 'utilisateurs enrolles'},
+};
+function setAdoptionPeriod(period, btn) {
+  adoptionPeriod = period;
   document.querySelectorAll('#period-btns button').forEach(b => {b.className='dm-btn dm-btn--ghost dm-btn--sm';});
   if(btn) btn.className='dm-btn dm-btn--primary dm-btn--sm';
-  fetch('/admin/api/adoption?period=' + period, {credentials:'same-origin'})
+  loadAdoption();
+}
+function setAdoptionMode(mode, btn) {
+  adoptionMode = mode;
+  document.querySelectorAll('#mode-btns button').forEach(b => {b.className='dm-btn dm-btn--ghost dm-btn--sm';});
+  if(btn) btn.className='dm-btn dm-btn--primary dm-btn--sm';
+  loadAdoption();
+}
+// Palette catégorielle (une couleur STABLE par plugin, ordre alphabétique des
+// slugs côté serveur — jamais réattribuée quand une série apparaît/disparaît).
+// Validée sur fond #F5F5FE : bande de luminance, chroma, séparation CVD ≥ 16,
+// contraste ≥ 3:1 (dataviz/validate_palette.js). #000091 est RÉSERVÉ au Total.
+const PLUGIN_PALETTE = ['#0063CB','#18753C','#B34000','#8B12C4','#C9191E','#008F8F','#A87E00','#C51A85'];
+function loadAdoption() {
+  const labels = ADOPTION_LABELS[adoptionMode] || ADOPTION_LABELS.device;
+  fetch('/admin/api/adoption?period=' + adoptionPeriod + '&mode=' + adoptionMode, {credentials:'same-origin'})
     .then(r => r.json()).then(data => {
       const ctx = document.getElementById('adoption-chart').getContext('2d');
       if(adoptionChart) adoptionChart.destroy();
+      // Total en gras + une courbe fine par plugin (au-delà de 8 plugins, le
+      // surplus alphabétique est agrégé en « autres » — palette jamais cyclée).
+      const datasets = [{
+        label: labels.serie + ' — total',
+        data: data.timeseries.map(d => ({x: d.date, y: d.enrolled})),
+        borderColor: '#000091', borderWidth: 3, fill: true,
+        backgroundColor: 'rgba(0,0,145,0.08)', tension: 0.3, pointRadius: 0,
+      }];
+      const series = data.series || [];
+      const shown = series.slice(0, PLUGIN_PALETTE.length);
+      const rest = series.slice(PLUGIN_PALETTE.length);
+      shown.forEach((s, i) => {
+        datasets.push({
+          label: s.slug,
+          data: s.points.map(p => ({x: p.date, y: p.enrolled})),
+          borderColor: PLUGIN_PALETTE[i], borderWidth: 2, fill: false,
+          tension: 0.3, pointRadius: 0,
+        });
+      });
+      if (rest.length) {
+        const agg = {};
+        rest.forEach(s => s.points.forEach(p => { agg[p.date] = (agg[p.date] || 0) + p.enrolled; }));
+        datasets.push({
+          label: 'autres (' + rest.length + ')',
+          data: Object.keys(agg).sort().map(d => ({x: d, y: agg[d]})),
+          borderColor: '#929292', borderWidth: 2, borderDash: [4, 3], fill: false,
+          tension: 0.3, pointRadius: 0,
+        });
+      }
       adoptionChart = new Chart(ctx, {
-        type:'line',
-        data:{labels:data.timeseries.map(d=>d.date), datasets:[{
-          label:'Devices enrolles', data:data.timeseries.map(d=>d.enrolled),
-          borderColor:'#000091', borderWidth:2, fill:true,
-          backgroundColor:'rgba(0,0,145,0.08)', tension:0.3, pointRadius:0,
-        }]},
-        options:{responsive:true, maintainAspectRatio:false,
-          scales:{x:{type:'time',time:{unit:period==='1J'?'hour':'day'}},y:{beginAtZero:true}},
-          plugins:{legend:{display:false}}
+        type: 'line',
+        data: {datasets: datasets},
+        options: {responsive: true, maintainAspectRatio: false,
+          interaction: {mode: 'index', intersect: false},
+          scales: {x: {type: 'time', time: {unit: adoptionPeriod === '1J' ? 'hour' : 'day'}}, y: {beginAtZero: true}},
+          plugins: {legend: {
+            display: datasets.length > 1,
+            position: 'bottom',
+            labels: {boxWidth: 12, boxHeight: 12, usePointStyle: false, font: {size: 11}},
+          }}
         }
       });
       const s = data.summary;
       document.getElementById('adoption-tiles').innerHTML =
-        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.total+'</div><div style="font-size:0.8rem;color:#666;">enrolles</div></div>' +
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.total+'</div><div style="font-size:0.8rem;color:#666;">'+labels.total+'</div></div>' +
         '<div class="dm-metric-tile dm-metric-tile--success"><div style="font-size:1.25rem;font-weight:bold;">+'+s.new_period+'</div><div style="font-size:0.8rem;color:#666;">nouveaux</div></div>' +
         '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.active_pct+'%</div><div style="font-size:0.8rem;color:#666;">actifs (7j)</div></div>' +
         '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.plugins+'</div><div style="font-size:0.8rem;color:#666;">plugins</div></div>';
     }).catch(()=>{});
 }
-loadAdoption('1M', document.querySelector('#period-btns button:nth-child(3)'));
+loadAdoption();
 </script>
 
 <!-- Metric tiles — auto-refresh every 30s -->
@@ -59,7 +119,7 @@ loadAdoption('1M', document.querySelector('#period-btns button:nth-child(3)'));
   <div class="dm-grid-4">
     <div class="dm-metric-tile">
       <div style="font-size: 1.5rem; font-weight: bold;">{{ metrics.active_devices }}</div>
-      <div style="font-size: 0.875rem; color: #666;">Appareils actifs (7j)</div>
+      <div style="font-size: 0.875rem; color: #666;">Appareils actifs (7j) &middot; {{ metrics.interactions_7d }} interactions</div>
     </div>
     <div class="dm-metric-tile dm-metric-tile--success">
       <div style="font-size: 1.5rem; font-weight: bold;">{{ metrics.enrollment_rate }}%</div>

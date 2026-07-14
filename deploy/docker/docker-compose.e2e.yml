@@ -16,6 +16,9 @@ services:
       ADMIN_OIDC_ISSUER_URL: ""
       KEYCLOAK_ISSUER_URL: ""
       DM_QUEUE_ADMIN_TOKEN: e2e-admin-token
+      # Clé de TEST locale : permet de vérifier le mint des tokens télémétrie
+      # (claim cuid) dans la matrice — jamais une valeur de prod.
+      DM_TELEMETRY_TOKEN_SIGNING_KEY: e2e-telemetry-signing-key
       DATABASE_URL: postgresql://dev:dev@postgres-local:5432/bootstrap
       # Le .env peut pointer DATABASE_ADMIN_URL sur l'instance partagée owui —
       # apply_schema (startup) doit viser le postgres local du harness.

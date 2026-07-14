@@ -275,37 +275,48 @@ async def admin_base_redirect(request: Request):
 
 # ─── Dashboard ────────────────────────────────────────────────────────────
 
+def _compute_dashboard_metrics(cur) -> dict:
+    """Tuiles métriques du dashboard — calcul UNIQUE (route + fragment HTMX).
+
+    « Appareils actifs (7j) » = clients réellement vus par le heartbeat
+    /config (plugin_installations.last_seen_at, vrais client_uuid) — PAS
+    device_connections, dont les client_uuid étaient pollués par les jti
+    aléatoires des tokens télémétrie (145 « appareils » pour 23 enrôlés).
+    Les interactions (volume brut de connexions : config + télémétrie +
+    enroll) sont exposées séparément.
+    """
+    cur.execute("""
+        SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations
+        WHERE last_seen_at > NOW() - INTERVAL '7 days'
+    """)
+    active_devices = cur.fetchone()[0]
+    cur.execute("""
+        SELECT COUNT(*) FROM device_connections
+        WHERE created_at > NOW() - INTERVAL '7 days'
+    """)
+    interactions_7d = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM provisioning WHERE status = 'ENROLLED'")
+    enrolled = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM provisioning")
+    total_prov = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM campaigns WHERE status = 'active'")
+    active_campaigns_count = cur.fetchone()[0]
+    return {
+        "active_devices": active_devices,
+        "interactions_7d": interactions_7d,
+        "enrollment_rate": round(enrolled / total_prov * 100, 1) if total_prov else 0,
+        "error_rate": 0,
+        "active_campaigns": active_campaigns_count,
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 @require_admin
 async def dashboard(request: Request):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            # Metrics
-            cur.execute("""
-                SELECT COUNT(DISTINCT client_uuid) FROM device_connections
-                WHERE created_at > NOW() - INTERVAL '7 days'
-            """)
-            active_devices = cur.fetchone()[0]
-
-            cur.execute("""
-                SELECT COUNT(*) FROM provisioning WHERE status = 'ENROLLED'
-            """)
-            enrolled = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM provisioning")
-            total_prov = cur.fetchone()[0]
-
-            cur.execute("""
-                SELECT COUNT(*) FROM campaigns WHERE status = 'active'
-            """)
-            active_campaigns_count = cur.fetchone()[0]
-
-            metrics = {
-                "active_devices": active_devices,
-                "enrollment_rate": round(enrolled / total_prov * 100, 1) if total_prov else 0,
-                "error_rate": 0,
-                "active_campaigns": active_campaigns_count,
-            }
+            metrics = _compute_dashboard_metrics(cur)
 
             # Active campaigns with stats
             active_campaigns = campaigns_svc.list_campaigns(cur, status="active")
@@ -334,30 +345,13 @@ async def api_metrics(request: Request):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(DISTINCT client_uuid) FROM device_connections
-                WHERE created_at > NOW() - INTERVAL '7 days'
-            """)
-            active_devices = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM provisioning WHERE status = 'ENROLLED'")
-            enrolled = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM provisioning")
-            total_prov = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM campaigns WHERE status = 'active'")
-            active_campaigns_count = cur.fetchone()[0]
-
-        metrics = {
-            "active_devices": active_devices,
-            "enrollment_rate": round(enrolled / total_prov * 100, 1) if total_prov else 0,
-            "error_rate": 0,
-            "active_campaigns": active_campaigns_count,
-        }
+            metrics = _compute_dashboard_metrics(cur)
 
         html = f"""
         <div class="dm-grid-4">
             <div class="dm-metric-tile">
                 <div style="font-size:1.5rem;font-weight:bold;">{metrics['active_devices']}</div>
-                <div style="font-size:0.875rem;color:#666;">Appareils actifs (7j)</div>
+                <div style="font-size:0.875rem;color:#666;">Appareils actifs (7j) &middot; {metrics['interactions_7d']} interactions</div>
             </div>
             <div class="dm-metric-tile dm-metric-tile--success">
                 <div style="font-size:1.5rem;font-weight:bold;">{metrics['enrollment_rate']}%</div>
@@ -3421,43 +3415,91 @@ async def api_debug_status(request: Request):
 
 @router.get("/api/adoption")
 @require_admin
-async def api_adoption(request: Request, period: str = "1M"):
-    """Adoption metrics for dashboard chart."""
+async def api_adoption(request: Request, period: str = "1M", mode: str = "device"):
+    """Adoption metrics for dashboard chart.
+
+    `mode` : axe de comptage de TOUT le widget (tuiles + courbe) —
+    `device` = par poste (COUNT DISTINCT client_uuid, comportement historique),
+    `user` = par utilisateur (COUNT DISTINCT email — CITEXT NOT NULL + index
+    sur provisioning ET device_connections). Un 3e mode « total » serait
+    redondant : uq_prov_active garantit 1 enrôlement actif max par device.
+    """
     intervals = {"1J": "1 day", "1S": "7 days", "1M": "30 days", "3M": "90 days", "6M": "180 days"}
     interval = intervals.get(period, "30 days")
+    # Allow-list stricte (comme `intervals`) : la valeur interpolée dans les
+    # f-strings SQL vient de CE dict, jamais de l'entrée utilisateur.
+    mode_cols = {"device": "client_uuid", "user": "email"}
+    if mode not in mode_cols:
+        mode = "device"
+    col = mode_cols[mode]
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM provisioning WHERE status = 'ENROLLED'")
+            cur.execute(f"SELECT COUNT(DISTINCT {col}) FROM provisioning WHERE status = 'ENROLLED'")
             total = cur.fetchone()[0]
             cur.execute(f"""
-                SELECT COUNT(DISTINCT client_uuid) FROM provisioning
+                SELECT COUNT(DISTINCT {col}) FROM provisioning
                 WHERE status = 'ENROLLED' AND created_at > NOW() - INTERVAL '{interval}'
             """)
             new_period = cur.fetchone()[0]
-            cur.execute("""
-                SELECT COUNT(DISTINCT client_uuid) FROM device_connections
-                WHERE created_at > NOW() - INTERVAL '7 days'
-            """)
+            # « actifs 7j » : clients vus par le heartbeat /config
+            # (plugin_installations, vrais client_uuid) — même population que
+            # le dénominateur (enrôlés). device_connections était pollué par
+            # les jti aléatoires des tokens télémétrie → ratios > 100 % (630 %
+            # constaté sur int).
+            if mode == "user":
+                cur.execute("""
+                    SELECT COUNT(DISTINCT email) FROM plugin_installations
+                    WHERE last_seen_at > NOW() - INTERVAL '7 days' AND email <> ''
+                """)
+            else:
+                cur.execute("""
+                    SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations
+                    WHERE last_seen_at > NOW() - INTERVAL '7 days'
+                """)
             active_7d = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM plugins WHERE status = 'active'")
             plugins_count = cur.fetchone()[0]
-            # Timeseries
+            # Timeseries — total (rétro-compat)
             cur.execute(f"""
-                SELECT d::date AS date, COUNT(DISTINCT p.client_uuid) AS enrolled
+                SELECT d::date AS date, COUNT(DISTINCT p.{col}) AS enrolled
                 FROM generate_series(NOW() - INTERVAL '{interval}', NOW(), '1 day') d
                 LEFT JOIN provisioning p ON p.status = 'ENROLLED' AND p.created_at <= d
                 GROUP BY d::date ORDER BY d::date
             """)
             timeseries = [{"date": str(r[0]), "enrolled": r[1]} for r in cur.fetchall()]
+            # Timeseries PAR PLUGIN — provisioning.device_name = slug du plugin
+            # (le client enrôle avec l'identifiant du plugin ; client_uuid =
+            # plugin_uuid → 1 ligne par poste×plugin). Slug canonique résolu
+            # via plugins.slug puis plugin_aliases, sinon device_name brut.
+            cur.execute(f"""
+                SELECT d::date AS date,
+                       COALESCE(pl.slug, pl2.slug, p.device_name) AS slug,
+                       COUNT(DISTINCT p.{col}) AS enrolled
+                FROM generate_series(NOW() - INTERVAL '{interval}', NOW(), '1 day') d
+                LEFT JOIN provisioning p ON p.status = 'ENROLLED' AND p.created_at <= d
+                LEFT JOIN plugins pl        ON pl.slug  = p.device_name
+                LEFT JOIN plugin_aliases pa ON pa.alias = p.device_name
+                LEFT JOIN plugins pl2       ON pl2.id   = pa.plugin_id
+                GROUP BY 1, 2 ORDER BY 1
+            """)
+            per_plugin: dict[str, list] = {}
+            for r in cur.fetchall():
+                if r[1] is None:
+                    continue  # jours sans aucun enrôlement (LEFT JOIN à vide)
+                per_plugin.setdefault(r[1], []).append({"date": str(r[0]), "enrolled": r[2]})
         return JSONResponse({
             "period": period,
+            "mode": mode,
             "summary": {
                 "total": total, "new_period": new_period,
                 "active_pct": round(active_7d / total * 100) if total else 0,
                 "plugins": plugins_count,
             },
             "timeseries": timeseries,
+            # Une série par plugin, ordre alphabétique STABLE (les couleurs
+            # suivent l'entité, pas le rang d'arrivée)
+            "series": [{"slug": slug, "points": pts} for slug, pts in sorted(per_plugin.items())],
         })
     finally:
         conn.close()
