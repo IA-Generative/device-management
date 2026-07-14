@@ -281,6 +281,16 @@ check "C15 colonne Plugin remplie (flag.reconcile → $SLUG)" \
   "$(curl -sf "$BASE_URL/admin/audit?action=flag.reconcile" -H 'HX-Request: true' | grep -c "<td class=\"audit-res\">$SLUG</td>" | awk '{print ($1>0)?"oui":"non"}')" "oui"
 check "C15 filtre plugin=$SLUG → lignes ; plugin=inexistant → aucune" \
   "$(curl -sf "$BASE_URL/admin/audit?plugin=$SLUG" -H 'HX-Request: true' | grep -c 'flag.reconcile' | awk '{print ($1>0)?"oui":"non"}'):$(curl -sf "$BASE_URL/admin/audit?plugin=zzz-inexistant" -H 'HX-Request: true' | grep -c 'Aucune entrée')" "oui:1"
+# Fix long terme : plugin_slug PERSISTÉ dans la table à l'écriture (pas
+# seulement dérivé à la lecture) — l'historique survivra aux suppressions.
+check "C15 plugin_slug écrit EN COLONNE (flag.create le plus récent)" \
+  "$(psql_q "SELECT plugin_slug FROM admin_audit_log WHERE action='flag.create' ORDER BY created_at DESC LIMIT 1")" "$SLUG"
+# Repli lecture : une ligne legacy (colonne NULL, ressource plugin:*) reste
+# trouvée par le filtre (COALESCE colonne → dérivation).
+psql_q "INSERT INTO admin_audit_log (actor_email, actor_sub, action, resource_type, resource_id)
+        VALUES ('legacy@test', 'legacy', 'legacy.action', 'plugin', '$SLUG');" >/dev/null
+check "C15 ligne legacy (colonne NULL) trouvée via le repli" \
+  "$(curl -sf "$BASE_URL/admin/audit?plugin=$SLUG&action=legacy.action" -H 'HX-Request: true' | grep -c 'legacy.action' | awk '{print ($1>0)?"oui":"non"}')" "oui"
 
 echo "── C7. delete_flag (route admin, autologin dev) ──"
 HTTP_DEL=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE_URL/admin/flags/$FLAG_ID")

@@ -305,6 +305,29 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                       ALTER TABLE feature_flag_overrides ADD COLUMN updated_at TIMESTAMPTZ DEFAULT now();
                     END IF;
                   END IF;
+                  -- Journal d'audit : plugin_slug PERSISTÉ (rempli à l'écriture
+                  -- par le helper audit_log). Backfill ONE-SHOT de l'historique à
+                  -- la création de la colonne — même dérivation que la lecture
+                  -- (ressource plugin:*, payload plugin_slug/plugin_id, flag:N) ;
+                  -- fige la valeur avant toute suppression future de plugin/flag.
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'admin_audit_log') THEN
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'admin_audit_log' AND column_name = 'plugin_slug'
+                    ) THEN
+                      ALTER TABLE admin_audit_log ADD COLUMN plugin_slug VARCHAR(100);
+                      UPDATE admin_audit_log a SET plugin_slug = COALESCE(
+                        CASE WHEN a.resource_type = 'plugin' THEN a.resource_id END,
+                        a.payload->>'plugin_slug',
+                        (SELECT p.slug FROM plugins p
+                          WHERE (a.payload->>'plugin_id') ~ '^[0-9]+$'
+                            AND p.id = (a.payload->>'plugin_id')::int),
+                        CASE WHEN a.resource_type = 'flag' AND a.resource_id ~ '^[0-9]+$' THEN
+                          (SELECT NULLIF(ff.plugin_slug, '') FROM feature_flags ff
+                            WHERE ff.id = a.resource_id::int) END
+                      );
+                    END IF;
+                  END IF;
                 END $$;
             """)
             cur.execute(sql)

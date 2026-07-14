@@ -446,10 +446,15 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
     resource_id TEXT,
     payload JSONB,
     ip_address INET,
-    user_agent TEXT
+    user_agent TEXT,
+    -- Plugin concerné, rempli À L'ÉCRITURE par le helper audit_log (dérivation
+    -- ressource/payload/catalogue). Migration + backfill one-shot de
+    -- l'historique : app/services/db.py (apply_schema).
+    plugin_slug VARCHAR(100)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at ON admin_audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON admin_audit_log(actor_email);
+CREATE INDEX IF NOT EXISTS idx_audit_plugin ON admin_audit_log(plugin_slug);
 
 -- ═══════════════════════════════════════════════════════════════
 -- RUNTIME CONFIG OVERRIDES (admin-editable, propagated across pods)
