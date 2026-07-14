@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-# Plugin concerné par une entrée d'audit — DÉRIVÉ à la lecture (aucune colonne
-# dédiée dans admin_audit_log, zéro migration, rétroactif sur l'historique).
-# Sources, dans l'ordre : ressource plugin:<slug> ; payload.plugin_slug
-# (flag.create récents) ; payload.plugin_id résolu via le catalogue
-# (campaign.*, deploy.create, version.*) ; flag:N → feature_flags.plugin_slug
-# (tant que le flag existe). Expression constante côté code — rien de
-# l'entrée utilisateur n'y est interpolé.
+# Plugin concerné par une entrée d'audit. Depuis le fix long terme, la colonne
+# admin_audit_log.plugin_slug est PERSISTÉE à l'écriture (helper audit_log) et
+# l'historique a été backfillé à la migration. La dérivation ci-dessous ne
+# sert plus que de REPLI (lignes écrites par un pod ancien pendant un rolling
+# deploy). Expression constante côté code — rien de l'entrée utilisateur n'y
+# est interpolé.
 _PLUGIN_EXPR = """COALESCE(
+    plugin_slug,
     CASE WHEN resource_type = 'plugin' THEN resource_id END,
     payload->>'plugin_slug',
     (SELECT p.slug FROM plugins p
