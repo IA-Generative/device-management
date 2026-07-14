@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterable
 from fastapi import APIRouter, Request, Response
 
 from ..settings import settings
-from . import audit, metrics
+from . import audit, metrics, traffic
 from .auth import LlmAuthenticator, LlmIdentity
 from .backends import Backend, BackendRegistry, public_llm_proxy_url
 from .errors import LlmProxyError, openai_error
@@ -74,6 +74,10 @@ def _make_finalize(ctx: LlmRequestContext) -> Callable[[int, str | None], None]:
         )
         if error_kind:
             metrics.error_inc(error_kind)
+        # Compteurs bucketés en base (multi-pods, persistants) — la source de
+        # l'histogramme chat/embeddings du dashboard admin. Best-effort.
+        traffic.record(route=ctx.route, model=ctx.model, status=status,
+                       duration_seconds=duration, usage=ctx.meta.get("usage"))
         audit.log_request(ctx, status=status, duration_seconds=duration,
                           error_kind=error_kind, usage=ctx.meta.get("usage"))
 

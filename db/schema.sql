@@ -522,6 +522,22 @@ CREATE TABLE IF NOT EXISTS llm_quota_counters (
 );
 CREATE INDEX IF NOT EXISTS idx_llm_quota_window ON llm_quota_counters(window_start);
 
+-- Trafic LLM agrégé par bucket de 5 min (app/llm/traffic.py, flush périodique
+-- UPSERT) — alimente l'histogramme chat/embeddings du dashboard admin. Table
+-- volontairement AGRÉGÉE (jamais une ligne par appel : rafales d'embeddings).
+CREATE TABLE IF NOT EXISTS llm_traffic (
+    bucket_ts TIMESTAMPTZ NOT NULL,
+    route VARCHAR(30) NOT NULL,            -- 'chat' | 'embeddings' | 'models'
+    model VARCHAR(200) NOT NULL DEFAULT '',
+    status_class VARCHAR(5) NOT NULL,      -- '2xx' | '4xx' | '5xx' | '0xx'
+    count INT NOT NULL DEFAULT 0,
+    duration_ms_sum BIGINT NOT NULL DEFAULT 0,
+    duration_ms_max INT NOT NULL DEFAULT 0,
+    tokens_sum BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (bucket_ts, route, model, status_class)
+);
+CREATE INDEX IF NOT EXISTS idx_llm_traffic_bucket ON llm_traffic(bucket_ts DESC);
+
 -- ═══════════════════════════════════════════════════════════════
 -- ═══════════════════════════════════════════════════════════════
 -- GRANTS (dev role)

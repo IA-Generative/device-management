@@ -72,6 +72,9 @@ from .services import (
 from .services import (
     keycloak as keycloak_svc,
 )
+from .services import (
+    llm_traffic as llm_traffic_svc,
+)
 from .services import runtime_config as rcfg_svc
 
 logger = logging.getLogger("dm-admin-router")
@@ -303,11 +306,20 @@ def _compute_dashboard_metrics(cur) -> dict:
     total_prov = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM campaigns WHERE status = 'active'")
     active_campaigns_count = cur.fetchone()[0]
+    # Taux d'erreur RÉEL (proxy LLM, 24 h, table llm_traffic) — remplace le 0
+    # codé en dur historique. SAVEPOINT : une table absente (base pas migrée)
+    # ne doit pas empoisonner la transaction du reste du dashboard.
+    cur.execute("SAVEPOINT dm_llm_traffic")
+    try:
+        error_rate = llm_traffic_svc.error_rate_24h(cur)
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT dm_llm_traffic")
+        error_rate = 0
     return {
         "active_devices": active_devices,
         "interactions_7d": interactions_7d,
         "enrollment_rate": round(enrolled / total_prov * 100, 1) if total_prov else 0,
-        "error_rate": 0,
+        "error_rate": error_rate,
         "active_campaigns": active_campaigns_count,
     }
 
@@ -342,9 +354,12 @@ async def dashboard(request: Request):
 
             # Version(s) du DM — non-fatal : table éventuellement absente sur
             # une base pas encore migrée, le dashboard doit s'afficher.
+            # SAVEPOINT : ne pas empoisonner la transaction pour la suite.
+            cur.execute("SAVEPOINT dm_versions")
             try:
                 dm_versions = _dashboard_versions(cur)
             except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT dm_versions")
                 dm_versions = []
 
             # Active campaigns with stats
@@ -3494,6 +3509,29 @@ async def api_debug_status(request: Request):
         banner += '</div>'
 
     return HTMLResponse(banner)
+
+
+@router.get("/api/llm-traffic")
+@require_admin
+async def api_llm_traffic(request: Request, period: str = "1J"):
+    """Trafic LLM pour l'histogramme du dashboard (chat vs embeddings).
+
+    Source : table llm_traffic (buckets 5 min agrégés par le proxy —
+    app/llm/traffic.py). Non-fatal : table absente → séries vides.
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            try:
+                data = {
+                    "series": llm_traffic_svc.series(cur, period),
+                    "tiles": llm_traffic_svc.tiles(cur),
+                }
+            except Exception:
+                data = {"series": [], "tiles": {}}
+        return JSONResponse(data)
+    finally:
+        conn.close()
 
 
 @router.get("/api/adoption")

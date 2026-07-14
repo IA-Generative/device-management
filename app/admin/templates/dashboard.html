@@ -137,6 +137,69 @@ function loadAdoption() {
 loadAdoption();
 </script>
 
+<!-- Trafic LLM — histogramme chat vs embeddings (table llm_traffic, buckets
+     5 min agrégés par le proxy ; multi-pods et persistant, contrairement aux
+     métriques Prometheus par pod). -->
+<div style="background:#F5F5FE;border-radius:8px;padding:1.25rem;margin-bottom:1.5rem;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
+    <h2 style="font-size:1rem;margin:0;">Trafic LLM</h2>
+    <div style="display:flex;gap:0.25rem;" id="llm-period-btns">
+      <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="setLlmPeriod('1J',this)">1J</button>
+      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setLlmPeriod('1S',this)">1S</button>
+      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setLlmPeriod('1M',this)">1M</button>
+      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setLlmPeriod('3M',this)">3M</button>
+    </div>
+  </div>
+  <div style="position:relative;height:220px;width:100%;"><canvas id="llm-chart"></canvas></div>
+  <div class="dm-grid-4" id="llm-tiles" style="margin-top:0.75rem;"></div>
+</div>
+<script>
+let llmChart = null;
+let llmPeriod = '1J';
+function setLlmPeriod(period, btn) {
+  llmPeriod = period;
+  document.querySelectorAll('#llm-period-btns button').forEach(b => {b.className='dm-btn dm-btn--ghost dm-btn--sm';});
+  if(btn) btn.className='dm-btn dm-btn--primary dm-btn--sm';
+  loadLlmTraffic();
+}
+function loadLlmTraffic() {
+  fetch('/admin/api/llm-traffic?period=' + llmPeriod, {credentials:'same-origin'})
+    .then(r => r.json()).then(data => {
+      const ctx = document.getElementById('llm-chart').getContext('2d');
+      if(llmChart) llmChart.destroy();
+      const rows = data.series || [];
+      // Barres EMPILÉES chat + embeddings (volumes très asymétriques pendant
+      // une indexation RAG) + erreurs en rouge par-dessus, même axe temps que
+      // le widget adoption. Palette : couleurs catégorielles déjà validées.
+      llmChart = new Chart(ctx, {
+        type: 'bar',
+        data: {datasets: [
+          {label: 'Chat',       data: rows.map(d => ({x: d.date, y: d.chat})),       backgroundColor: '#0063CB', stack: 'calls'},
+          {label: 'Embeddings', data: rows.map(d => ({x: d.date, y: d.embeddings})), backgroundColor: '#008F8F', stack: 'calls'},
+          {label: 'Erreurs',    data: rows.map(d => ({x: d.date, y: d.errors})),     backgroundColor: '#C9191E', stack: 'errors'},
+        ]},
+        options: {responsive: true, maintainAspectRatio: false,
+          interaction: {mode: 'index', intersect: false},
+          scales: {
+            x: {type: 'time', stacked: true, time: {unit: llmPeriod === '1J' ? 'hour' : 'day'}},
+            y: {stacked: true, beginAtZero: true},
+          },
+          plugins: {legend: {position: 'bottom', labels: {boxWidth: 12, boxHeight: 12, font: {size: 11}}}}
+        }
+      });
+      const t = data.tiles || {};
+      const err = t.error_rate || 0;
+      const errClass = err > 5 ? ' dm-metric-tile--error' : (err > 0 ? ' dm-metric-tile--warning' : '');
+      document.getElementById('llm-tiles').innerHTML =
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+(t.calls_24h ?? 0)+'</div><div style="font-size:0.8rem;color:#666;">appels (24h)</div></div>' +
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+(t.avg_ms ?? 0)+' ms</div><div style="font-size:0.8rem;color:#666;">latence moyenne</div></div>' +
+        '<div class="dm-metric-tile'+errClass+'"><div style="font-size:1.25rem;font-weight:bold;">'+err+'%</div><div style="font-size:0.8rem;color:#666;">taux d\'erreur (24h)</div></div>' +
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+(t.embed_share ?? 0)+'%</div><div style="font-size:0.8rem;color:#666;">part embeddings</div></div>';
+    }).catch(()=>{});
+}
+loadLlmTraffic();
+</script>
+
 <!-- Metric tiles — auto-refresh every 30s -->
 <div id="metrics-tiles" hx-get="/admin/api/metrics" hx-trigger="every 30s" hx-swap="innerHTML">
   <div class="dm-grid-4">
