@@ -1,0 +1,17 @@
+{# Tableau complet — cible des filtres live (hx-target="#audit-table"). #}
+<div id="audit-table">
+  <table class="audit-dense">
+    <thead>
+      <tr>
+        <th style="width:9rem;">Horodatage</th>
+        <th>Acteur</th>
+        <th>Action</th>
+        <th>Ressource</th>
+        <th>Détails</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% include "_audit_rows.html" %}
+    </tbody>
+  </table>
+</div>

@@ -5,7 +5,8 @@ from __future__ import annotations
 
 def list_audit_entries(cur, *, actor: str = None, action: str = None,
                        resource_type: str = None, date_from: str = None,
-                       date_to: str = None, limit: int = 100, offset: int = 0) -> list[dict]:
+                       date_to: str = None, q: str = None,
+                       limit: int = 100, offset: int = 0) -> list[dict]:
     conditions = []
     params = []
     if actor:
@@ -23,6 +24,10 @@ def list_audit_entries(cur, *, actor: str = None, action: str = None,
     if date_to:
         conditions.append("created_at <= %s::timestamptz")
         params.append(date_to)
+    if q:
+        # Recherche plein-texte : détails (payload JSON) + id de ressource
+        conditions.append("(payload::text ILIKE %s OR resource_id ILIKE %s)")
+        params.extend([f"%{q}%", f"%{q}%"])
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     params.extend([limit, offset])
@@ -37,3 +42,19 @@ def list_audit_entries(cur, *, actor: str = None, action: str = None,
     """, params)
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
+
+
+def get_audit_facets(cur) -> dict:
+    """Valeurs distinctes RÉELLES pour les filtres (datalists d'autocomplétion
+    et select des ressources) — dynamiques, jamais codées en dur."""
+    facets: dict[str, list[str]] = {}
+    for key, column in (("actors", "actor_email"),
+                        ("actions", "action"),
+                        ("resource_types", "resource_type")):
+        cur.execute(f"""
+            SELECT DISTINCT {column} FROM admin_audit_log
+            WHERE {column} IS NOT NULL AND {column} <> ''
+            ORDER BY 1 LIMIT 200
+        """)
+        facets[key] = [r[0] for r in cur.fetchall()]
+    return facets

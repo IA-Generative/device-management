@@ -253,6 +253,29 @@ p64 = tok.split(".", 1)[0]; p64 += "=" * (-len(p64) % 4)
 print(json.loads(base64.urlsafe_b64decode(p64)).get("cuid", "absent"))')" \
   "00000000-0000-4000-8000-00000000e2e0"
 
+echo "── C15. journal d'audit : filtres live, autocomplétion, scroll infini ──"
+# Le harness a déjà généré des entrées d'audit (flag.create/reconcile/delete…).
+AUDIT_PAGE=$(curl -sf "$BASE_URL/admin/audit")
+check "C15 page 200 + datalists d'autocomplétion dynamiques" \
+  "$(echo "$AUDIT_PAGE" | grep -c 'dl-audit-actions')" "2"
+check "C15 select ressources peuplé depuis les données (flag)" \
+  "$(echo "$AUDIT_PAGE" | grep -cE '<option value="flag"')" "1"
+# Fragment HTMX (filtres live) : tableau seul, sans <html>
+FRAG=$(curl -sf "$BASE_URL/admin/audit?action=flag.reconcile" -H "HX-Request: true")
+check "C15 fragment HTMX = tableau seul" \
+  "$(echo "$FRAG" | grep -c 'id="audit-table"'):$(echo "$FRAG" | grep -c '<html')" "1:0"
+check "C15 filtre action appliqué (flag.reconcile présents)" \
+  "$(echo "$FRAG" | grep -c 'flag.reconcile' | awk '{print ($1>0)?"oui":"non"}')" "oui"
+# Recherche dans les détails (q) : le diff d'import contient "orphaned"
+check "C15 filtre q dans les détails (payload)" \
+  "$(curl -sf "$BASE_URL/admin/audit?q=newFeature" -H 'HX-Request: true' | grep -c 'flag.reconcile' | awk '{print ($1>0)?"oui":"non"}')" "oui"
+# Scroll infini : partial=rows accepté (sentinel) — page hors bornes = vide sans erreur
+check "C15 partial=rows (sentinel scroll infini) → 200" \
+  "$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/admin/audit?partial=rows&page=99")" "200"
+# Export CSV filtré par période
+check "C15 export CSV avec période → 200 + en-tête" \
+  "$(curl -sf "$BASE_URL/admin/audit/export?period=24h" | head -1 | grep -c horodatage)" "1"
+
 echo "── C7. delete_flag (route admin, autologin dev) ──"
 HTTP_DEL=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE_URL/admin/flags/$FLAG_ID")
 check "C7 DELETE /admin/flags/{id} → 303" "$HTTP_DEL" "303"

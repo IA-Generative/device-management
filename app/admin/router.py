@@ -12,7 +12,9 @@ import os
 import time
 import urllib.parse
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -3859,22 +3861,64 @@ async def config_verify(request: Request):
 
 # ─── Audit Log ────────────────────────────────────────────────────────────
 
+_AUDIT_PAGE_SIZE = 50
+
+
+def _audit_date_bounds(period: str, date_from: str, date_to: str) -> tuple[str | None, str | None]:
+    """Bornes temporelles : presets (24h/7j/30j) ou dates custom (inclusives)."""
+    presets = {"24h": 1, "7d": 7, "30d": 30}
+    if period in presets:
+        start = datetime.now(UTC) - timedelta(days=presets[period])
+        return start.isoformat(), None
+    if period == "custom":
+        d_from = (date_from or "").strip() or None
+        d_to = (date_to or "").strip() or None
+        if d_to and len(d_to) == 10:
+            d_to = f"{d_to}T23:59:59"  # borne haute inclusive (fin de journée)
+        return d_from, d_to
+    return None, None
+
+
 @router.get("/audit", response_class=HTMLResponse)
 @require_admin
 async def audit_list(request: Request, actor: str = "", action: str = "",
-                     resource_type: str = "", page: int = 0):
+                     resource_type: str = "", q: str = "", period: str = "",
+                     date_from: str = "", date_to: str = "",
+                     page: int = 0, partial: str = ""):
+    d_from, d_to = _audit_date_bounds(period, date_from, date_to)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             entries = audit_svc.list_audit_entries(
                 cur, actor=actor or None, action=action or None,
-                resource_type=resource_type or None,
-                limit=100, offset=page * 100,
+                resource_type=resource_type or None, q=q or None,
+                date_from=d_from, date_to=d_to,
+                limit=_AUDIT_PAGE_SIZE, offset=page * _AUDIT_PAGE_SIZE,
             )
-        return templates.TemplateResponse(request, "audit_log.html", {
+            # Facettes (datalists d'autocomplétion) : uniquement au rendu
+            # complet — les swaps HTMX (filtres live, scroll) n'en ont pas besoin.
+            facets = None
+            if not partial and not request.headers.get("HX-Request"):
+                facets = audit_svc.get_audit_facets(cur)
+
+        filters = {"actor": actor, "action": action, "resource_type": resource_type,
+                   "q": q, "period": period, "date_from": date_from, "date_to": date_to}
+        # Query string des filtres courants — réutilisée par le sentinel du
+        # scroll infini et le lien d'export (sans `page`).
+        filters_qs = urlencode({k: v for k, v in filters.items() if v})
+        ctx = {
             "request": request, "entries": entries, "page": page,
-            "filters": {"actor": actor, "action": action, "resource_type": resource_type},
-        })
+            "has_more": len(entries) >= _AUDIT_PAGE_SIZE,
+            "filters": filters, "filters_qs": filters_qs,
+        }
+        if partial == "rows":
+            # Scroll infini : le sentinel se remplace par la page suivante
+            return templates.TemplateResponse(request, "_audit_rows.html", ctx)
+        if request.headers.get("HX-Request"):
+            # Filtres live : re-rendu du tableau complet
+            return templates.TemplateResponse(request, "_audit_table.html", ctx)
+        ctx["facets"] = facets
+        return templates.TemplateResponse(request, "audit_log.html", ctx)
     finally:
         conn.close()
 
@@ -3882,13 +3926,16 @@ async def audit_list(request: Request, actor: str = "", action: str = "",
 @router.get("/audit/export")
 @require_admin
 async def audit_export(request: Request, actor: str = "", action: str = "",
-                       resource_type: str = ""):
+                       resource_type: str = "", q: str = "", period: str = "",
+                       date_from: str = "", date_to: str = ""):
+    d_from, d_to = _audit_date_bounds(period, date_from, date_to)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             entries = audit_svc.list_audit_entries(
                 cur, actor=actor or None, action=action or None,
-                resource_type=resource_type or None, limit=10000,
+                resource_type=resource_type or None, q=q or None,
+                date_from=d_from, date_to=d_to, limit=10000,
             )
             # Audit the export itself
             admin_actor = getattr(request.state, "admin_session", {})
