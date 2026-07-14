@@ -660,7 +660,7 @@ async def flags_list(request: Request):
 @require_admin
 async def flags_create(request: Request, name: str = Form(...),
                        description: str = Form(""),
-                       default_value: str = Form("true"),
+                       default_value: str = Form("transparent"),
                        plugin_slug: str = Form(""),
                        min_plugin_version: str = Form("")):
     conn = get_db_connection()
@@ -668,7 +668,8 @@ async def flags_create(request: Request, name: str = Form(...),
         with conn.cursor() as cur:
             flag_id = flags_svc.create_flag(
                 cur, name=name, description=description,
-                default_value=default_value == "true",
+                # Tri-état : 'true'=forcé ON, 'false'=forcé OFF, autre='transparent' (None).
+                default_value={"true": True, "false": False}.get(default_value),
                 plugin_slug=plugin_slug.strip(),
                 min_plugin_version=min_plugin_version.strip() or None,
             )
@@ -715,11 +716,13 @@ async def flag_update_default(request: Request, flag_id: int,
     try:
         with conn.cursor() as cur:
             old_flag = flags_svc.get_flag(cur, flag_id)
-            flags_svc.update_flag_default(cur, flag_id, value == "true")
+            # Tri-état : 'true'=forcé ON, 'false'=forcé OFF, autre='transparent' (None).
+            forced = {"true": True, "false": False}.get(value)
+            flags_svc.update_flag_default(cur, flag_id, forced)
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="flag.update",
                       resource_type="flag", resource_id=str(flag_id),
-                      payload={"before": old_flag.get("default_value"), "after": value == "true"},
+                      payload={"before": old_flag.get("default_value"), "after": forced},
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/flags/{flag_id}", status_code=303)

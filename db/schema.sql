@@ -313,18 +313,19 @@ CREATE TABLE IF NOT EXISTS campaign_device_status (
 CREATE INDEX IF NOT EXISTS idx_cds ON campaign_device_status(campaign_id, status);
 
 -- Catalogue des feature flags, SCOPÉ par plugin (plugin_slug, ''=global/legacy).
--- default_value est INDICATIF (recopié du template.default à l'import) : les
--- valeurs autoritaires viennent du config template, résolues par profil dans
--- /config ; seuls les overrides cohorte (table ci-dessous) participent à la
--- résolution. deprecated = orphelin (flag disparu du template au dernier
--- import) — marqué, jamais auto-supprimé. Migration des tables existantes :
--- ALTERs idempotents dans app/services/db.py (apply_schema).
+-- default_value est TRI-ÉTAT (surcharge admin appliquée dans /config) :
+--   NULL  = transparent (le template par profil ⊕ overrides cohorte décident),
+--   true  = forcé ON, false = forcé OFF.
+-- Un flag est enregistré transparent (NULL) au premier import ; le reconcile ne
+-- réécrit jamais un état admin déjà posé. deprecated = orphelin (flag disparu du
+-- template au dernier import) — marqué, jamais auto-supprimé. Migration des
+-- tables existantes : ALTERs idempotents dans app/services/db.py (apply_schema).
 CREATE TABLE IF NOT EXISTS feature_flags (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     plugin_slug VARCHAR(100) NOT NULL DEFAULT '',
     description TEXT,
-    default_value BOOLEAN DEFAULT true,
+    default_value BOOLEAN,  -- NULL=transparent | true=forcé ON | false=forcé OFF
     deprecated BOOLEAN NOT NULL DEFAULT false,
     -- Version plugin minimale à partir de laquelle le flag s'applique
     -- (NULL = toutes les versions). Gate fail-safe : version inconnue = pas

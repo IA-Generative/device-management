@@ -24,10 +24,11 @@
         </select>
       </div>
       <div class="dm-form-row">
-        <label class="dm-label" for="default_value">Valeur par defaut</label>
+        <label class="dm-label" for="default_value">État</label>
         <select class="dm-select" id="default_value" name="default_value" style="width: 100%;">
-          <option value="true">Active (true)</option>
-          <option value="false">Desactive (false)</option>
+          <option value="transparent">Transparent (le template décide)</option>
+          <option value="true">Forcé ON (surcharge)</option>
+          <option value="false">Forcé OFF (surcharge)</option>
         </select>
       </div>
     </div>
@@ -51,10 +52,11 @@
 <!-- Flag list -->
 <p style="color: #666; font-size: 0.85rem; margin-bottom: 0.5rem;">
   Le catalogue est synchronisé à chaque import de plugin (dm-config.json) et
-  scopé par plugin. La « valeur défaut » est <strong>indicative</strong> (recopiée du
-  <code>default</code> du template) : les valeurs réelles sont <strong>par profil</strong>
-  (config template) ⊕ overrides cohorte. Un flag <em>orphelin</em> a disparu du
-  template au dernier import — il n'est plus diffusé, supprimez-le après vérification.
+  scopé par plugin. L'<strong>état</strong> est <strong>tri-état</strong> :
+  <em>Transparent</em> = pas de surcharge (le template par profil ⊕ overrides
+  cohorte décident) ; <em>Forcé ON</em> / <em>Forcé OFF</em> = surcharge le
+  template pour tous. Un flag <em>orphelin</em> a disparu du template au dernier
+  import — il n'est plus diffusé, supprimez-le après vérification.
 </p>
 <div id="flag-list">
   <table>
@@ -63,7 +65,7 @@
         <th>Nom</th>
         <th>Plugin</th>
         <th>Version min</th>
-        <th>Valeur defaut (indicative)</th>
+        <th>État</th>
         <th>Overrides</th>
         <th>Derniere modif</th>
         <th>Actions</th>
@@ -81,10 +83,12 @@
         <td>{{ f.plugin_slug or 'global' }}</td>
         <td>{{ f.min_plugin_version or 'toutes' }}</td>
         <td>
-          {% if f.default_value %}
-          <span class="dm-badge dm-badge--success">ON</span>
+          {% if f.state == 'forced_on' %}
+          <span class="dm-badge dm-badge--success" title="Surcharge le template : servi ON pour tous">Forcé ON</span>
+          {% elif f.state == 'forced_off' %}
+          <span class="dm-badge dm-badge--error" title="Surcharge le template : servi OFF pour tous">Forcé OFF</span>
           {% else %}
-          <span class="dm-badge dm-badge--error">OFF</span>
+          <span class="dm-badge" title="Pas de surcharge : le template par profil décide">Transparent</span>
           {% endif %}
         </td>
         <td>{{ f.override_count }}</td>

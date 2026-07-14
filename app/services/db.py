@@ -305,6 +305,14 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                       ALTER TABLE feature_flag_overrides ADD COLUMN updated_at TIMESTAMPTZ DEFAULT now();
                     END IF;
                   END IF;
+                  -- feature_flags.default_value TRI-ÉTAT : le défaut colonne passe
+                  -- de `true` à NULL (transparent). Les lignes EXISTANTES gardent
+                  -- leur valeur (true=forcé ON / false=forcé OFF) ; seuls les
+                  -- NOUVEAUX flags naissent transparents (le reconcile insère NULL).
+                  -- ALTER ... DROP DEFAULT est un no-op si déjà absent (idempotent).
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'feature_flags') THEN
+                    ALTER TABLE feature_flags ALTER COLUMN default_value DROP DEFAULT;
+                  END IF;
                   -- plugin_installations.plugin_id → ON DELETE CASCADE (aligne
                   -- sur les FK sœurs). La contrainte d'origine (NO ACTION)
                   -- bloquait la purge d'un plugin 'removed' ayant des

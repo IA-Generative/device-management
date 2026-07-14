@@ -1,10 +1,15 @@
 """Feature flags service — CRUD + réconciliation catalogue à l'import.
 
-Le catalogue est SCOPÉ par plugin (`plugin_slug`, ''=global/legacy) et son
-`default_value` est INDICATIF (recopié du template.default à l'import) : les
-valeurs autoritaires viennent du config template, résolues par profil dans
-/config. Un flag disparu du template au bump est marqué `deprecated`
-(orphelin), jamais supprimé automatiquement.
+Le catalogue est SCOPÉ par plugin (`plugin_slug`, ''=global/legacy). Le
+`default_value` est TRI-ÉTAT (surcharge admin appliquée dans /config) :
+  - NULL  → transparent : pas de surcharge (le template/profil, puis les
+    cohortes, décident) ;
+  - true  → forcé ON  : la feature est servie ON même si le template la livre OFF ;
+  - false → forcé OFF : la feature est servie OFF même si le template la livre ON.
+Un flag est ENREGISTRÉ transparent (NULL) au premier import ; l'admin le force
+ensuite ON/OFF. Le reconcile ne réécrit JAMAIS un état admin déjà posé. Un flag
+disparu du template au bump est marqué `deprecated` (orphelin), jamais supprimé
+automatiquement.
 """
 
 from __future__ import annotations
@@ -12,6 +17,14 @@ from __future__ import annotations
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def flag_state(default_value) -> str:
+    """Libellé tri-état de `default_value` pour l'affichage : 'transparent',
+    'forced_on' ou 'forced_off'."""
+    if default_value is None:
+        return "transparent"
+    return "forced_on" if default_value else "forced_off"
 
 
 def list_flags(cur) -> list[dict]:
@@ -25,7 +38,10 @@ def list_flags(cur) -> list[dict]:
         ORDER BY ff.plugin_slug, ff.name
     """)
     cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
+    out = [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
+    for f in out:
+        f["state"] = flag_state(f.get("default_value"))
+    return out
 
 
 def get_flag(cur, flag_id: int) -> dict | None:
@@ -38,7 +54,9 @@ def get_flag(cur, flag_id: int) -> dict | None:
     if not row:
         return None
     cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row, strict=False))
+    flag = dict(zip(cols, row, strict=False))
+    flag["state"] = flag_state(flag.get("default_value"))
+    return flag
 
 
 def get_flag_overrides(cur, flag_id: int) -> list[dict]:
@@ -55,10 +73,11 @@ def get_flag_overrides(cur, flag_id: int) -> list[dict]:
     return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
-def create_flag(cur, *, name: str, description: str, default_value: bool,
+def create_flag(cur, *, name: str, description: str, default_value: bool | None,
                 plugin_slug: str = "", min_plugin_version: str | None = None) -> int:
     """Crée un flag scopé `plugin_slug` (''=global), applicable à partir de
-    `min_plugin_version` (NULL = toutes les versions)."""
+    `min_plugin_version` (NULL = toutes les versions). `default_value` tri-état :
+    None=transparent, True=forcé ON, False=forcé OFF."""
     cur.execute("""
         INSERT INTO feature_flags (name, description, default_value, plugin_slug, min_plugin_version)
         VALUES (%s, %s, %s, %s, %s)
@@ -67,7 +86,9 @@ def create_flag(cur, *, name: str, description: str, default_value: bool,
     return cur.fetchone()[0]
 
 
-def update_flag_default(cur, flag_id: int, value: bool) -> bool:
+def update_flag_default(cur, flag_id: int, value: bool | None) -> bool:
+    """Positionne l'état tri-état du flag : None=transparent, True=forcé ON,
+    False=forcé OFF."""
     cur.execute("""
         UPDATE feature_flags SET default_value = %s, updated_at = NOW()
         WHERE id = %s RETURNING id
@@ -107,11 +128,12 @@ def reconcile_catalog_from_template(cur, *, plugin_slug: str, template: dict) ->
     """Réconcilie le catalogue scopé `plugin_slug` avec un dm-config.json importé.
 
     Noms de flags = UNION des clés `featureToggles` sur default + tous les
-    profils. UPSERT de chaque flag (default_value indicatif = valeur du
-    template.default quand présente, sinon celle du premier profil qui le
-    déclare) ; un flag revenu d'orphelin est réactivé ; les flags du catalogue
-    absents du template sont MARQUÉS deprecated (pas de delete — un admin les
-    supprime explicitement via delete_flag).
+    profils. Chaque flag est enregistré TRANSPARENT (default_value = NULL) au
+    premier import ; sur un flag déjà connu, l'état admin (forcé ON/OFF/transparent)
+    est PRÉSERVÉ — le reconcile ne le réécrit jamais. Un flag revenu d'orphelin
+    est réactivé (deprecated=false) ; les flags du catalogue absents du template
+    sont MARQUÉS deprecated (pas de delete — un admin les supprime explicitement
+    via delete_flag).
 
     Returns:
         {"added": [...], "kept": [...], "reactivated": [...],
@@ -139,14 +161,15 @@ def reconcile_catalog_from_template(cur, *, plugin_slug: str, template: dict) ->
             reactivated.append(name)
         else:
             kept.append(name)
+        # default_value = NULL (transparent) à la création ; PRÉSERVÉ si le flag
+        # existe déjà (on ne réécrit jamais l'état admin forcé ON/OFF/transparent).
         cur.execute("""
             INSERT INTO feature_flags (name, plugin_slug, description, default_value, deprecated)
-            VALUES (%s, %s, %s, %s, false)
+            VALUES (%s, %s, %s, NULL, false)
             ON CONFLICT (plugin_slug, name)
-            DO UPDATE SET default_value = EXCLUDED.default_value,
-                          deprecated = false,
+            DO UPDATE SET deprecated = false,
                           updated_at = NOW()
-        """, (name, plugin_slug, f"Importé du template {plugin_slug}", names[name]))
+        """, (name, plugin_slug, f"Importé du template {plugin_slug}"))
 
     orphaned = sorted(n for n, dep in existing.items() if n not in names and not dep)
     already_deprecated = sorted(n for n, dep in existing.items() if n not in names and dep)

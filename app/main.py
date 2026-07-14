@@ -1131,6 +1131,49 @@ def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version:
     return flags
 
 
+def _resolve_forced_flags(cur, *, plugin_version: str, plugin_slug: str = "") -> dict:
+    """Flags FORCÉS par le catalogue (tri-état `default_value`) → surchargent le template.
+
+    `feature_flags.default_value` est TRI-ÉTAT :
+      - NULL  → transparent : aucune surcharge (template/profil, puis cohortes, décident) ;
+      - true  → forcé ON  : la feature est servie ON même si le template la livre OFF ;
+      - false → forcé OFF : la feature est servie OFF même si le template la livre ON.
+    Seuls les flags NON NULL sont renvoyés (les transparents n'apparaissent pas).
+    Scopé plugin (`plugin_slug` demandé ou global ''), non `deprecated`, gate
+    `min_plugin_version` fail-safe (version inconnue ou trop vieille → ignoré).
+
+    Précédence globale (croissante) : template → CE forçage → override cohorte
+    (plus spécifique, cf. `_resolve_feature_flags`).
+    """
+    try:
+        cur.execute(
+            """
+            SELECT name, default_value, min_plugin_version
+            FROM feature_flags
+            WHERE default_value IS NOT NULL
+              AND deprecated = false
+              AND plugin_slug IN ('', %s)
+            """,
+            [plugin_slug or ""],
+        )
+        rows = cur.fetchall()
+    except Exception:
+        return {}
+
+    out: dict[str, bool] = {}
+    for row in rows:
+        name = row[0]
+        forced_val = bool(row[1])
+        flag_min_pv = row[2] if len(row) > 2 else None
+        if flag_min_pv:
+            if not plugin_version:
+                continue
+            if _parse_version_tuple(plugin_version) < _parse_version_tuple(flag_min_pv):
+                continue
+        out[str(name)] = forced_val
+    return out
+
+
 def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: str, platform_version: str) -> dict | None:
     """Find the best active plugin_update campaign for the device, or None."""
     try:
@@ -2615,6 +2658,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     # ---- Steps 3-9: DB-backed enrichment (pooled connection, degrade gracefully)
     update_directive: dict | None = None
     flags: dict = {}
+    forced_flags: dict = {}
 
     enrich_ctx = _pooled_conn()
     if enrich_ctx is not None:
@@ -2631,6 +2675,11 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                     flags = _resolve_feature_flags(
                         cur,
                         device_cohort_ids=device_cohort_ids,
+                        plugin_version=plugin_version,
+                        plugin_slug=device_name or "",
+                    )
+                    forced_flags = _resolve_forced_flags(
+                        cur,
                         plugin_version=plugin_version,
                         plugin_slug=device_name or "",
                     )
@@ -2682,6 +2731,11 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                             plugin_version=plugin_version,
                             plugin_slug=device_name or "",
                         )
+                        forced_flags = _resolve_forced_flags(
+                            cur,
+                            plugin_version=plugin_version,
+                            plugin_slug=device_name or "",
+                        )
                         campaign = _resolve_active_campaign(
                             cur,
                             device_cohort_ids=device_cohort_ids,
@@ -2710,16 +2764,23 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
             except Exception:
                 update_directive = None
                 flags = {}
+                forced_flags = {}
 
     # ---- Step 10: Build final EnrichedConfigResponse
     inner_config = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
 
-    # `features` = objet RÉSOLU côté serveur : défauts du template (deep-mergés
-    # par profil) ⊕ overrides cohorte (gated min_plugin_version). Le plugin le
-    # REMPLACE EN BLOC (pref featureTogglesOverride) — un flag retiré ici
-    # disparaît chez le client à la réponse suivante.
+    # `features` = objet RÉSOLU côté serveur, par précédence croissante :
+    #   1. défauts du template (deep-mergés par profil)
+    #   2. ⊕ flags FORCÉS par le catalogue (feature_flags.default_value tri-état :
+    #      true=forcé ON, false=forcé OFF ; NULL=transparent → absent). L'admin
+    #      active/désactive une feature sans éditer le template.
+    #   3. ⊕ overrides cohorte (gated min_plugin_version, false gagne) — le plus
+    #      spécifique l'emporte.
+    # Le plugin REMPLACE EN BLOC (pref featureTogglesOverride) — un flag retiré
+    # ici disparaît chez le client à la réponse suivante.
     template_toggles = inner_config.get("featureToggles") if isinstance(inner_config, dict) else None
     features_resolved: dict = dict(template_toggles) if isinstance(template_toggles, dict) else {}
+    features_resolved.update(forced_flags)
     features_resolved.update(flags)
 
     response_body = {

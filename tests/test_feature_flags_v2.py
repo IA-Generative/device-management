@@ -2,9 +2,9 @@
 Tests de la refonte feature-flags v2 (résolution côté serveur).
 
 Hiérarchie : défaut (template.default) → profil (template.<profil>, deep-merge)
-→ cohorte (feature_flag_overrides, gating min_plugin_version). Le /config
-transporte l'objet RÉSOLU dans `features` ; le catalogue `feature_flags.default_value`
-est indicatif et ne participe PAS à la résolution.
+→ flag FORCÉ (feature_flags.default_value tri-état : true=ON, false=OFF,
+NULL=transparent) → cohorte (feature_flag_overrides, gating min_plugin_version,
+plus spécifique). Le /config transporte l'objet RÉSOLU dans `features`.
 
 Toutes les interactions DB sont mockées — pas de PostgreSQL requis
 (réutilise les helpers de test_enriched_config.py).
@@ -104,6 +104,38 @@ def test_resolve_flags_min_plugin_version_gating():
 
 
 # ---------------------------------------------------------------------------
+# Unit: _resolve_forced_flags — surcharge tri-état (default_value NULL/true/false)
+# ---------------------------------------------------------------------------
+
+def test_resolve_forced_flags_on_and_off():
+    mod = _load_module()
+    # La requête filtre `default_value IS NOT NULL` : seuls les flags forcés
+    # remontent. true=forcé ON, false=forcé OFF sont tous deux renvoyés.
+    cur = _FakeCur([("search", True, None), ("dailySummary", False, None)])
+    forced = mod._resolve_forced_flags(cur, plugin_version="1.0.0", plugin_slug="matisse")
+    assert forced == {"search": True, "dailySummary": False}
+    assert any("IS NOT NULL" in s for s in cur.executed), "les transparents sont filtrés en SQL"
+
+
+def test_resolve_forced_flags_empty_when_all_transparent():
+    mod = _load_module()
+    # Aucun flag forcé (tous transparents) → le curseur ne renvoie rien.
+    got = mod._resolve_forced_flags(_FakeCur([]), plugin_version="1.0.0", plugin_slug="matisse")
+    assert got == {}
+
+
+def test_resolve_forced_flags_min_plugin_version_gating():
+    mod = _load_module()
+    rows = [("search", True, "0.13.7")]
+    off = mod._resolve_forced_flags(_FakeCur(rows), plugin_version="0.13.6", plugin_slug="matisse")
+    assert off == {}, "plugin trop vieux → forçage ignoré"
+    ok = mod._resolve_forced_flags(_FakeCur(rows), plugin_version="0.13.7", plugin_slug="matisse")
+    assert ok == {"search": True}
+    unknown = mod._resolve_forced_flags(_FakeCur(rows), plugin_version="", plugin_slug="matisse")
+    assert unknown == {}, "version inconnue → fail-safe"
+
+
+# ---------------------------------------------------------------------------
 # E2E (/config, DB mockée) : per-profil, override cohorte, gating
 # ---------------------------------------------------------------------------
 
@@ -194,6 +226,58 @@ def test_config_cohort_override_gated_by_min_plugin_version():
         patcher.stop()
 
 
+def test_config_forced_flag_on_overrides_template():
+    """Flag forcé ON (default_value=true) → surcharge le template prod (search=false)."""
+    mod = _load_module()
+    rows = _db_rows_for_device({"default_value IS NOT NULL": [("search", True, None)]})
+    patcher = _install_db_mock(mod, rows)
+    try:
+        client = TestClient(mod.app)
+        res = client.get("/config/config.json?profile=prod&device=matisse",
+                         headers={"X-User-Email": "user@example.gouv.fr"})
+        assert res.status_code == 200
+        feats = res.json()["features"]
+        assert feats["search"] is True, "forcé ON surcharge le template prod (false)"
+        assert feats["composePromptPanel"] is True, "flags non forcés inchangés"
+    finally:
+        patcher.stop()
+
+
+def test_config_forced_flag_off_overrides_template():
+    """Flag forcé OFF (default_value=false) → surcharge le template int (search=true)."""
+    mod = _load_module()
+    rows = _db_rows_for_device({"default_value IS NOT NULL": [("search", False, None)]})
+    patcher = _install_db_mock(mod, rows)
+    try:
+        client = TestClient(mod.app)
+        res = client.get("/config/config.json?profile=int&device=matisse",
+                         headers={"X-User-Email": "user@example.gouv.fr"})
+        assert res.status_code == 200
+        assert res.json()["features"]["search"] is False, "forcé OFF surcharge le template int (true)"
+    finally:
+        patcher.stop()
+
+
+def test_config_cohort_override_beats_forced_flag():
+    """Précédence : l'override cohorte (plus spécifique) gagne sur le forçage global."""
+    mod = _load_module()
+    rows = _db_rows_for_device({
+        "default_value IS NOT NULL": [("search", True, None)],   # forcé ON global
+        "FROM cohorts": [(7, "manual", {})],
+        "cohort_members": [(7,)],
+        "feature_flag_overrides": [("search", False, None)],     # cohorte force OFF
+    })
+    patcher = _install_db_mock(mod, rows)
+    try:
+        client = TestClient(mod.app)
+        res = client.get("/config/config.json?profile=prod&device=matisse",
+                         headers={"X-User-Email": "user@example.gouv.fr"})
+        assert res.status_code == 200
+        assert res.json()["features"]["search"] is False, "la cohorte l'emporte sur le forçage global"
+    finally:
+        patcher.stop()
+
+
 # ---------------------------------------------------------------------------
 # Unit: catalogue scopé — réconciliation à l'import + delete_flag (Phase 3)
 # ---------------------------------------------------------------------------
@@ -240,12 +324,14 @@ def test_reconcile_import_adds_union_of_profiles():
     assert diff["added"] == ["a", "b", "c"]
     assert diff["kept"] == [] and diff["orphaned"] == []
     inserts = [(sql, p) for sql, p in cur.executed if "INSERT INTO feature_flags" in sql]
-    assert [(p[0], p[1], p[3]) for _, p in inserts] == [
-        ("a", "matisse", True),   # default_value indicatif = template.default
-        ("b", "matisse", False),
-        ("c", "matisse", True),   # déclaré seulement par le profil int
+    # Import = TRANSPARENT : default_value NULL (littéral SQL, non passé en param).
+    assert [(p[0], p[1]) for _, p in inserts] == [
+        ("a", "matisse"), ("b", "matisse"), ("c", "matisse"),
     ]
+    assert all("VALUES (%s, %s, %s, NULL, false)" in sql for sql, _ in inserts)
     assert all("ON CONFLICT (plugin_slug, name)" in sql for sql, _ in inserts)
+    # L'état admin (forcé ON/OFF/transparent) n'est JAMAIS réécrit au reconcile.
+    assert all("default_value = EXCLUDED" not in sql for sql, _ in inserts)
 
 
 def test_reconcile_import_marks_orphans_no_delete():
