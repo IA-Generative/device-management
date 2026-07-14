@@ -650,8 +650,11 @@ async def flags_list(request: Request):
     try:
         with conn.cursor() as cur:
             flag_list = flags_svc.list_flags(cur)
+            # Slugs pour le sélecteur « plugin » du formulaire de création
+            cur.execute("SELECT slug FROM plugins WHERE status <> 'removed' ORDER BY slug")
+            plugin_slugs = [row[0] for row in cur.fetchall()]
         return templates.TemplateResponse(request, "feature_flags.html", {
-            "request": request, "flags": flag_list,
+            "request": request, "flags": flag_list, "plugin_slugs": plugin_slugs,
         })
     finally:
         conn.close()
@@ -661,18 +664,24 @@ async def flags_list(request: Request):
 @require_admin
 async def flags_create(request: Request, name: str = Form(...),
                        description: str = Form(""),
-                       default_value: str = Form("true")):
+                       default_value: str = Form("true"),
+                       plugin_slug: str = Form(""),
+                       min_plugin_version: str = Form("")):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             flag_id = flags_svc.create_flag(
                 cur, name=name, description=description,
                 default_value=default_value == "true",
+                plugin_slug=plugin_slug.strip(),
+                min_plugin_version=min_plugin_version.strip() or None,
             )
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="flag.create",
                       resource_type="flag", resource_id=str(flag_id),
-                      payload={"name": name, "default_value": default_value},
+                      payload={"name": name, "default_value": default_value,
+                               "plugin_slug": plugin_slug.strip(),
+                               "min_plugin_version": min_plugin_version.strip() or None},
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse("/admin/flags", status_code=303)

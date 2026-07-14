@@ -13,7 +13,7 @@ from __future__ import annotations
 def list_flags(cur) -> list[dict]:
     cur.execute("""
         SELECT ff.id, ff.name, ff.plugin_slug, ff.description, ff.default_value,
-               ff.deprecated, ff.created_at, ff.updated_at,
+               ff.deprecated, ff.min_plugin_version, ff.created_at, ff.updated_at,
                COUNT(ffo.cohort_id) AS override_count
         FROM feature_flags ff
         LEFT JOIN feature_flag_overrides ffo ON ffo.feature_id = ff.id
@@ -27,7 +27,7 @@ def list_flags(cur) -> list[dict]:
 def get_flag(cur, flag_id: int) -> dict | None:
     cur.execute("""
         SELECT id, name, plugin_slug, description, default_value, deprecated,
-               created_at, updated_at
+               min_plugin_version, created_at, updated_at
         FROM feature_flags WHERE id = %s
     """, (flag_id,))
     row = cur.fetchone()
@@ -51,12 +51,15 @@ def get_flag_overrides(cur, flag_id: int) -> list[dict]:
     return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
-def create_flag(cur, *, name: str, description: str, default_value: bool) -> int:
+def create_flag(cur, *, name: str, description: str, default_value: bool,
+                plugin_slug: str = "", min_plugin_version: str | None = None) -> int:
+    """Crée un flag scopé `plugin_slug` (''=global), applicable à partir de
+    `min_plugin_version` (NULL = toutes les versions)."""
     cur.execute("""
-        INSERT INTO feature_flags (name, description, default_value)
-        VALUES (%s, %s, %s)
+        INSERT INTO feature_flags (name, description, default_value, plugin_slug, min_plugin_version)
+        VALUES (%s, %s, %s, %s, %s)
         RETURNING id
-    """, (name, description, default_value))
+    """, (name, description, default_value, plugin_slug or "", min_plugin_version or None))
     return cur.fetchone()[0]
 
 

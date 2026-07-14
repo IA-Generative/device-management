@@ -172,6 +172,39 @@ psql_q "UPDATE feature_flag_overrides SET min_plugin_version='0.1.0' WHERE featu
 check "C4 plugin 0.13.7 ≥ gate 0.1.0 → override appliqué" \
   "$(get_feature int search "${EMAIL_H[@]}" -H 'X-Plugin-Version: 0.13.7')" "false"
 
+echo "── C9. détail flag admin (régression ffo.updated_at) ──"
+# Avant le fix, /admin/flags/{id} explosait en UndefinedColumn (colonne
+# updated_at absente de feature_flag_overrides mais SELECTée + ON CONFLICTée).
+HTTP_DETAIL=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/admin/flags/$FLAG_ID")
+check "C9 GET /admin/flags/{id} → 200" "$HTTP_DETAIL" "200"
+
+echo "── C10. upsert override via route admin (ON CONFLICT … updated_at) ──"
+HTTP_OV1=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/admin/flags/$FLAG_ID/overrides" \
+  --data-urlencode "cohort_id=$COHORT_ID" --data-urlencode "value=false" --data-urlencode "min_plugin_version=0.1.0")
+HTTP_OV2=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/admin/flags/$FLAG_ID/overrides" \
+  --data-urlencode "cohort_id=$COHORT_ID" --data-urlencode "value=false" --data-urlencode "min_plugin_version=0.1.0")
+check "C10 create override → 303" "$HTTP_OV1" "303"
+check "C10 re-create (chemin ON CONFLICT updated_at) → 303" "$HTTP_OV2" "303"
+
+echo "── C11. création de flag admin : plugin + version min ──"
+psql_q "DELETE FROM feature_flags WHERE name='e2e_gated_flag';" >/dev/null
+HTTP_CREATE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/admin/flags" \
+  --data-urlencode "name=e2e_gated_flag" --data-urlencode "default_value=false" \
+  --data-urlencode "plugin_slug=$SLUG" --data-urlencode "min_plugin_version=0.14.0")
+check "C11 POST /admin/flags (plugin+version) → 303" "$HTTP_CREATE" "303"
+check "C11 flag scopé + version min persistés" \
+  "$(psql_q "SELECT plugin_slug || '|' || min_plugin_version FROM feature_flags WHERE name='e2e_gated_flag'")" \
+  "$SLUG|0.14.0"
+
+echo "── C12. heartbeat plugin_installations (/config enrichi) ──"
+# La table n'était JAMAIS écrite avant le fix : onglet Installations toujours vide.
+curl -sf "$BASE_URL/config/config.json?profile=int&device=$SLUG" "${UUID_H[@]}" \
+  -H 'X-Plugin-Version: 0.13.7' >/dev/null
+check "C12 installation enregistrée (client e2e)" \
+  "$(psql_q "SELECT count(*) FROM plugin_installations pi JOIN plugins p ON p.id=pi.plugin_id WHERE p.slug='$SLUG' AND pi.client_uuid='00000000-0000-4000-8000-00000000e2e0'")" "1"
+check "C12 version vue au dernier contact" \
+  "$(psql_q "SELECT installed_version FROM plugin_installations WHERE client_uuid='00000000-0000-4000-8000-00000000e2e0' ORDER BY last_seen_at DESC LIMIT 1")" "0.13.7"
+
 echo "── C7. delete_flag (route admin, autologin dev) ──"
 HTTP_DEL=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE_URL/admin/flags/$FLAG_ID")
 check "C7 DELETE /admin/flags/{id} → 303" "$HTTP_DEL" "303"

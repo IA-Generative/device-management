@@ -1031,6 +1031,32 @@ def _resolve_device_cohorts(cur, *, email: str, client_uuid: str) -> list[int]:
     return matched
 
 
+def _upsert_plugin_installation(cur, *, plugin_id, client_uuid: str,
+                                email: str = "", version: str = "") -> None:
+    """Heartbeat d'installation : chaque /config enrichi (client_uuid présent)
+    marque l'installation active du plugin pour ce client.
+
+    C'est la SEULE écriture de `plugin_installations` — la table était lue par
+    le catalogue admin (onglet Installations, stats actifs/en retard) mais
+    jamais alimentée : l'onglet restait vide même après enrôlement. Non-fatal.
+    """
+    if not plugin_id or not client_uuid:
+        return
+    try:
+        cur.execute("""
+            INSERT INTO plugin_installations (plugin_id, client_uuid, email, installed_version, status)
+            VALUES (%s, %s, %s, %s, 'active')
+            ON CONFLICT (plugin_id, client_uuid) DO UPDATE SET
+                installed_version = COALESCE(NULLIF(EXCLUDED.installed_version, ''),
+                                             plugin_installations.installed_version),
+                email = COALESCE(NULLIF(EXCLUDED.email, ''), plugin_installations.email),
+                last_seen_at = NOW(),
+                status = 'active'
+        """, (plugin_id, client_uuid, email or "", version or ""))
+    except Exception:
+        logger.debug("plugin_installations upsert skipped (non-fatal)")
+
+
 def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version: str,
                            plugin_slug: str = "") -> dict:
     """Return ONLY the cohort-driven feature-flag overrides for this device.
@@ -1045,8 +1071,9 @@ def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version:
     - Les flags `deprecated` (orphelins d'un import) sont exclus : un flag
       retiré du template ne peut pas ressusciter via un vieil override.
     - `min_plugin_version` gating is fail-safe: an override gated by a minimum
-      version is skipped when the plugin version is unknown (no header) or
-      older than the gate.
+      version — au niveau du FLAG (création admin, NULL = toutes les versions)
+      ou de l'override — is skipped when the plugin version is unknown (no
+      header) or older than the gate.
     - When several cohorts override the same flag, false wins.
     """
     if not device_cohort_ids:
@@ -1055,7 +1082,7 @@ def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version:
         placeholders = ",".join(["%s"] * len(device_cohort_ids))
         cur.execute(
             f"""
-            SELECT ff.name, ffo.value, ffo.min_plugin_version
+            SELECT ff.name, ffo.value, ffo.min_plugin_version, ff.min_plugin_version
             FROM feature_flag_overrides ffo
             JOIN feature_flags ff ON ff.id = ffo.feature_id
             WHERE ffo.cohort_id IN ({placeholders})
@@ -1068,14 +1095,21 @@ def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version:
     except Exception:
         return {}
 
+    def _gated(min_pv) -> bool:
+        """True si le gate bloque : version inconnue (fail-safe) ou trop vieille."""
+        if not min_pv:
+            return False
+        if not plugin_version:
+            return True
+        return _parse_version_tuple(plugin_version) < _parse_version_tuple(min_pv)
+
     flags: dict[str, bool] = {}
     for row in overrides:
-        flag_name, override_val, min_pv = row[0], bool(row[1]), row[2]
-        if min_pv:
-            if not plugin_version:
-                continue  # version inconnue : fail-safe, pas d'override gated
-            if _parse_version_tuple(plugin_version) < _parse_version_tuple(min_pv):
-                continue  # plugin too old, skip this override
+        flag_name, override_val = row[0], bool(row[1])
+        override_min_pv = row[2]
+        flag_min_pv = row[3] if len(row) > 3 else None
+        if _gated(flag_min_pv) or _gated(override_min_pv):
+            continue
         # false wins entre cohortes: once false, stays false
         flags[flag_name] = flags.get(flag_name, True) and override_val
 
@@ -2569,6 +2603,10 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         try:
             with enrich_ctx as econn:
                 with econn.cursor() as cur:
+                    _upsert_plugin_installation(
+                        cur, plugin_id=plugin_id, client_uuid=client_uuid,
+                        email=email, version=plugin_version,
+                    )
                     device_cohort_ids = _resolve_device_cohorts(
                         cur, email=email, client_uuid=client_uuid
                     )
@@ -2613,6 +2651,10 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                 conn.autocommit = True
                 try:
                     with conn.cursor() as cur:
+                        _upsert_plugin_installation(
+                            cur, plugin_id=plugin_id, client_uuid=client_uuid,
+                            email=email, version=plugin_version,
+                        )
                         device_cohort_ids = _resolve_device_cohorts(
                             cur, email=email, client_uuid=client_uuid
                         )

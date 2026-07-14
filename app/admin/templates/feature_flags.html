@@ -15,11 +15,27 @@
                placeholder="ex: writer_assistant">
       </div>
       <div class="dm-form-row">
+        <label class="dm-label" for="plugin_slug">Plugin</label>
+        <select class="dm-select" id="plugin_slug" name="plugin_slug" style="width: 100%;">
+          <option value="">Global (tous les plugins)</option>
+          {% for slug in plugin_slugs %}
+          <option value="{{ slug }}">{{ slug }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="dm-form-row">
         <label class="dm-label" for="default_value">Valeur par defaut</label>
         <select class="dm-select" id="default_value" name="default_value" style="width: 100%;">
           <option value="true">Active (true)</option>
           <option value="false">Desactive (false)</option>
         </select>
+      </div>
+    </div>
+    <div class="dm-grid-3">
+      <div class="dm-form-row">
+        <label class="dm-label" for="min_plugin_version">Version plugin minimale (optionnelle)</label>
+        <input class="dm-input" id="min_plugin_version" name="min_plugin_version"
+               pattern="[0-9]+(\.[0-9]+)*" placeholder="vide = toutes les versions">
       </div>
     </div>
     <div class="dm-form-row">
@@ -46,6 +62,7 @@
       <tr>
         <th>Nom</th>
         <th>Plugin</th>
+        <th>Version min</th>
         <th>Valeur defaut (indicative)</th>
         <th>Overrides</th>
         <th>Derniere modif</th>
@@ -62,6 +79,7 @@
           {% endif %}
         </td>
         <td>{{ f.plugin_slug or 'global' }}</td>
+        <td>{{ f.min_plugin_version or 'toutes' }}</td>
         <td>
           {% if f.default_value %}
           <span class="dm-badge dm-badge--success">ON</span>
@@ -82,7 +100,7 @@
       </tr>
       {% endfor %}
       {% if not flags %}
-      <tr><td colspan="6" style="text-align: center; color: #666;">Aucun feature flag.</td></tr>
+      <tr><td colspan="7" style="text-align: center; color: #666;">Aucun feature flag.</td></tr>
       {% endif %}
     </tbody>
   </table>

@@ -298,6 +298,59 @@ def test_resolve_flags_scoped_by_plugin_and_excludes_deprecated():
     assert "ff.plugin_slug IN ('', %s)" in sql
 
 
+def test_resolve_flags_gated_by_flag_level_min_version():
+    """min_plugin_version posé sur le FLAG (création admin) gate tous ses overrides."""
+    mod = _load_module()
+    # rows: (name, value, override_min_pv, flag_min_pv)
+    rows = [("search", True, None, "0.13.8")]
+    # plugin trop vieux → gate flag bloque
+    assert mod._resolve_feature_flags(_FakeCur(rows), device_cohort_ids=[1],
+                                      plugin_version="0.13.7") == {}
+    # version inconnue → fail-safe
+    assert mod._resolve_feature_flags(_FakeCur(rows), device_cohort_ids=[1],
+                                      plugin_version="") == {}
+    # au niveau → appliqué
+    assert mod._resolve_feature_flags(_FakeCur(rows), device_cohort_ids=[1],
+                                      plugin_version="0.13.8") == {"search": True}
+    # les deux gates doivent passer (flag OK mais override plus exigeant → bloqué)
+    rows2 = [("search", True, "9.9.9", "0.13.8")]
+    assert mod._resolve_feature_flags(_FakeCur(rows2), device_cohort_ids=[1],
+                                      plugin_version="0.13.8") == {}
+
+
+def test_create_flag_with_plugin_and_min_version():
+    """create_flag persiste plugin_slug + min_plugin_version (2a)."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"RETURNING id": [(11,)]})
+    fid = svc.create_flag(cur, name="beta_panel", description="", default_value=True,
+                          plugin_slug="mirai-matisse", min_plugin_version="0.14.0")
+    assert fid == 11
+    sql, params = cur.executed[0]
+    assert "plugin_slug, min_plugin_version" in sql
+    assert params == ("beta_panel", "", True, "mirai-matisse", "0.14.0")
+    # défauts : global, toutes versions
+    cur2 = _ScriptedCur({"RETURNING id": [(12,)]})
+    svc.create_flag(cur2, name="x", description="", default_value=False)
+    assert cur2.executed[0][1] == ("x", "", False, "", None)
+
+
+def test_upsert_plugin_installation_heartbeat():
+    """/config enrichi alimente plugin_installations (la table n'était JAMAIS écrite)."""
+    mod = _load_module()
+    cur = _ScriptedCur({})
+    mod._upsert_plugin_installation(cur, plugin_id=9, client_uuid="uuid-1",
+                                    email="e@x.fr", version="0.13.8")
+    sql, params = cur.executed[0]
+    assert "INSERT INTO plugin_installations" in sql
+    assert "ON CONFLICT (plugin_id, client_uuid)" in sql
+    assert params == (9, "uuid-1", "e@x.fr", "0.13.8")
+    # sans client_uuid ou plugin_id → no-op
+    cur2 = _ScriptedCur({})
+    mod._upsert_plugin_installation(cur2, plugin_id=None, client_uuid="u")
+    mod._upsert_plugin_installation(cur2, plugin_id=9, client_uuid="")
+    assert cur2.executed == []
+
+
 def test_config_flag_removed_from_template_disappears():
     """−flag au bump : un flag retiré du template ne doit plus apparaître dans features."""
     mod = _load_module()

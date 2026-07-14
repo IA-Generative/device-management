@@ -280,11 +280,29 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                     ) THEN
                       ALTER TABLE feature_flags ADD COLUMN deprecated BOOLEAN NOT NULL DEFAULT false;
                     END IF;
+                    -- Version min PAR FLAG (création manuelle admin ; NULL = toutes)
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'feature_flags' AND column_name = 'min_plugin_version'
+                    ) THEN
+                      ALTER TABLE feature_flags ADD COLUMN min_plugin_version VARCHAR(50);
+                    END IF;
                     IF EXISTS (
                       SELECT 1 FROM pg_constraint
                       WHERE conname = 'feature_flags_name_key' AND conrelid = 'feature_flags'::regclass
                     ) THEN
                       ALTER TABLE feature_flags DROP CONSTRAINT feature_flags_name_key;
+                    END IF;
+                  END IF;
+                  -- feature_flag_overrides.updated_at : référencée depuis toujours
+                  -- par get_flag_overrides + l'ON CONFLICT de create_override, mais
+                  -- jamais créée → /admin/flags/{id} cassait (UndefinedColumn).
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'feature_flag_overrides') THEN
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'feature_flag_overrides' AND column_name = 'updated_at'
+                    ) THEN
+                      ALTER TABLE feature_flag_overrides ADD COLUMN updated_at TIMESTAMPTZ DEFAULT now();
                     END IF;
                   END IF;
                 END $$;
