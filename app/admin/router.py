@@ -1383,7 +1383,7 @@ async def deploy_create(request: Request,
             campaign_name = name.strip() or f"MaJ {device_type} {version}"
             # Resolve plugin_id from device_type for auto-completion of older campaigns
             _deploy_plugin_id = None
-            cur.execute("SELECT id FROM plugins WHERE device_type = %s AND status = 'active' LIMIT 1", (device_type,))
+            cur.execute("SELECT id FROM plugins WHERE device_type = %s AND status = 'active' ORDER BY id DESC LIMIT 1", (device_type,))
             _prow = cur.fetchone()
             if _prow:
                 _deploy_plugin_id = _prow[0]
@@ -1402,7 +1402,7 @@ async def deploy_create(request: Request,
             if deploy_config_template:
                 try:
                     cur.execute(
-                        "UPDATE plugins SET config_template = %s WHERE device_type = %s",
+                        "UPDATE plugins SET config_template = %s WHERE device_type = %s AND status <> 'removed'",
                         (json.dumps(deploy_config_template), device_type),
                     )
                 except Exception as ct_err:
@@ -1412,7 +1412,7 @@ async def deploy_create(request: Request,
                 # à jour mais laissait l'onglet Flags vide.
                 try:
                     cur.execute(
-                        "SELECT slug FROM plugins WHERE device_type = %s AND status <> 'removed' LIMIT 1",
+                        "SELECT slug FROM plugins WHERE device_type = %s AND status <> 'removed' ORDER BY id DESC LIMIT 1",
                         (device_type,),
                     )
                     _row = cur.fetchone()

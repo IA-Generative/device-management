@@ -726,9 +726,19 @@ def _load_config_template(profile: str, device: str | None = None,
         try:
             slug = device_name or device
             if slug:
+                # Doublons possibles sur device_type : ignorer les templates vides et
+                # préférer le match exact par slug puis le plus récent, sinon une ligne
+                # arbitraire sans template masque le vrai template (issue #3).
                 cur.execute(
-                    "SELECT config_template FROM plugins WHERE (slug = %s OR device_type = %s) AND status <> 'removed' LIMIT 1",
-                    (slug, device or slug),
+                    """
+                    SELECT config_template FROM plugins
+                    WHERE (slug = %s OR device_type = %s) AND status <> 'removed'
+                      AND config_template IS NOT NULL
+                      AND config_template NOT IN ('null'::jsonb, '{}'::jsonb)
+                    ORDER BY (slug = %s) DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (slug, device or slug, slug),
                 )
                 row = cur.fetchone()
                 if row and row[0]:
