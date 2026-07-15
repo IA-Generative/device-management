@@ -213,7 +213,12 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         raise HTTPException(401, "ID token verification failed") from exc
 
     if not _has_admin_group(claims):
-        raise HTTPException(403, f"Acces refuse : groupe {REQUIRED_GROUP!r} requis")
+        # Ne pas révéler le nom du groupe requis au client (issue #1) — détail en log serveur.
+        _logging.getLogger("dm-admin-auth").warning(
+            "acces admin refuse pour %s : groupe %r manquant",
+            claims.get("email") or claims.get("sub"), REQUIRED_GROUP,
+        )
+        raise HTTPException(403, "Acces refuse")
 
     session = {
         "sub": claims.get("sub"),
