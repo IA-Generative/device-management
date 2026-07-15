@@ -126,6 +126,14 @@ vit dans PostgreSQL → N réplicas derrière le LB **sans affinité de session*
   spécifié dans [../plugin-developer/plugin-dm-protocol-update-features.md § 8 bis](../plugin-developer/plugin-dm-protocol-update-features.md).
   Le plugin figé (TB 60) n'émet pas ces événements : sa vue parc = audit + métriques
   serveur, qui couvrent tous les clients.
+- **Histogramme du dashboard admin** (DM 0.9.12+) : le tableau de bord `/admin/`
+  affiche le trafic LLM (chat vs embeddings) avec le taux d'erreur réel. Source :
+  table `llm_traffic` — compteurs bucketés **5 min × (route, modèle, classe de
+  statut)**, accumulés en mémoire par chaque réplique et flushés en UPSERT toutes
+  les 15 s (même famille de patterns que `llm_quota_counters` : atomique,
+  multi-réplicas ; jamais une ligne par appel). Sans Prometheus/Grafana branché,
+  c'est la vue d'exploitation la plus rapide ; les deux sources doivent raconter
+  la même histoire.
 
 ## Dépannage
 

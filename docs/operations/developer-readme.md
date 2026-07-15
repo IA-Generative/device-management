@@ -55,10 +55,6 @@ Quand un plugin appelle `/config/{x}/config.json?profile=dev` :
  8. ACCESS CTRL open | waitlist | keycloak_group
  9. SCRUB       secrets masques si pas de relay credentials
 10. ENRICHMENT  campaigns, features, communications
-
-9. SCRUB : secrets masques si pas de relay credentials
-
-10. ENRICHMENT : campaigns, features, communications
 ```
 
 Templates config :
@@ -71,6 +67,14 @@ Format dm-config.json (default + sections par env) :
 { "default": {...}, "local": {...}, "dev": {"llm_base_urls": "${{LLM_BASE_URL}}"}, "prod": {...} }
 ```
 Les sections serveur sont auto-completees avec les placeholders `${{VAR}}` si manquants.
+
+> **Regle mainteneur — ecriture de `plugins.config_template`.** Six chemins ecrivent
+> cette colonne (api deploy, admin deploy/create, edition config-template, migration,
+> creation catalogue, upload de version), dont des INSERT invisibles a un grep
+> `UPDATE plugins`. Toute logique « a l'import » (reconciliation des feature flags,
+> etc.) DOIT passer par le wrapper unique `flags.safe_reconcile_catalog` — un chemin
+> qui le contourne diverge silencieusement (constate en reel : flags non importes
+> sur les 2 chemins Catalogue, DM 0.9.10).
 
 Fichiers sur disque (fallback, retrocompat) :
 ```
@@ -133,6 +137,23 @@ docker compose -f deploy/docker/docker-compose.yml up -d
 kubectl -n bootstrap rollout status deployment/device-management
 ```
 
+### Helm (chart officiel, en transition depuis kustomize)
+
+Un chart autonome et documente vit dans `deploy/helm/device-management/`
+(README complet : provisioning des secrets, premiere installation, upgrade,
+rollback, airgap). Points cles :
+
+- Job de migration Alembic en hook `pre-install`/`pre-upgrade` (necessite
+  `DATABASE_ADMIN_URL` pour `CREATE EXTENSION`) ; base vide auto-bootstrappee.
+- `existingSecret` pour brancher un secret provisionne ; securityContext
+  non-root par defaut (`runAsUser: 10001`, profil OpenShift via flag) ;
+  postgres interne optionnel pour le dev ; `values.schema.json`.
+- Validation : `helm lint deploy/helm/device-management`.
+
+Kustomize (`deploy/k8s/`) et le chart coexistent pendant la transition ;
+la bascule definitive (retrait de kustomize et des scripts) est portee par
+la branche `feat/drop-kustomize`.
+
 ### Probes optimisees
 
 | Service | Ready en | Strategie |
@@ -166,6 +187,36 @@ Rollout complet 6 services : ~12s.
 | `LLM_BASE_URL` | Endpoint OpenAI-compatible |
 | `LLM_API_TOKEN` | Token API |
 | `DEFAULT_MODEL_NAME` | Modele par defaut |
+| `EMBD_MODEL_NAME` | Modele d'embeddings (vide = embedder off) — cf. [llm-proxy.md](llm-proxy.md) |
+
+### Observabilite & cloud-native (apres 0.9.12)
+
+| Variable | Description |
+|----------|-------------|
+| `DM_LOG_FORMAT` | `json` = logs JSON structures ; sinon format texte (enrichi du `request_id`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Active le tracing OpenTelemetry (absent = no-op, safe en airgap) |
+| `DM_BINARIES_MODE` | `presign` (defaut) ou `proxy` : binaires servis via S3 sans PVC ; `local` = disque |
+| `DM_S3_BUCKET` | Bucket S3 des binaires (requis hors mode `local`) |
+| `DM_WORKER_HEARTBEAT_FILE` | Fichier heartbeat du queue-worker (sonde de liveness), defaut `/tmp/dm-worker-heartbeat` |
+
+- **Correlation** : chaque requete porte un `X-Request-ID` (honore si fourni, sinon
+  genere), propage dans les logs et l'audit LLM.
+- **Resilience** : les appels reseau transitoires (JWKS/OIDC, LLM, S3) sont retentes
+  3 fois avec backoff exponentiel + jitter (`app/resilience.py`, tenacity) —
+  uniquement sur erreurs transitoires.
+- **Arret gracieux** : uvicorn `--timeout-graceful-shutdown 20` (Dockerfile) ; le
+  worker verifie le stop entre chaque job et ecrit son heartbeat.
+
+### Dashboard admin (reperes d'exploitation, 0.9.12+)
+
+- **Badge version DM** a cote du titre — source : heartbeat `config_pod_state`
+  (chaque pod upsert son `app_version` ; pods frais < 15 min seulement). Plusieurs
+  versions distinctes = rollout en cours ou pod en retard → badge warning
+  « versions mixtes » avec le compte de pods par version + lien Debug.
+- ⚠️ Piege connu : un rollout par `kubectl set image` seul ne met pas a jour l'env
+  `DM_APP_VERSION` du pod — le badge (heartbeat) reste la source fiable, pas l'env.
+- **Histogramme trafic LLM** (chat vs embeddings, taux d'erreur reel) : voir
+  [llm-proxy.md](llm-proxy.md) § Observabilite (table `llm_traffic`).
 
 ## Health check
 
