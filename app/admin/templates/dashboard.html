@@ -1,20 +1,51 @@
 {% extends "base.html" %}
 {% block title %}Tableau de bord{% endblock %}
 {% block content %}
-<h1 class="dm-page-title">Tableau de bord</h1>
+<div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;">
+  <h1 class="dm-page-title" style="margin:0;">Tableau de bord</h1>
+  {# Version(s) du DM — source : config_pod_state (heartbeat des pods, comme
+     la page debug/runtime). Plusieurs versions fraîches = rollout en cours
+     ou pod en retard → badge d'alerte. #}
+  {% if dm_versions|length > 1 %}
+    <span class="dm-badge dm-badge--warning"
+          title="Les pods ne tournent pas tous la même version du DM (rollout en cours ou pod en retard) — détail sur la page Debug.">
+      &#9888; versions mixtes&nbsp;:
+      {% for v in dm_versions %}{{ v.version }} ({{ v.pods }} pod{{ 's' if v.pods > 1 else '' }}){{ ' · ' if not loop.last else '' }}{% endfor %}
+    </span>
+    <a href="/admin/debug" style="font-size:0.8rem;">Détails</a>
+  {% elif dm_versions %}
+    <span class="dm-badge dm-badge--info"
+          title="Version du DM — {{ dm_versions[0].pods }} pod(s) vu(s) au heartbeat depuis moins de 15 min.">
+      DM v{{ dm_versions[0].version }}
+    </span>
+  {% else %}
+    <span class="dm-badge dm-badge--neutral"
+          title="Aucun pod enregistré dans config_pod_state — version du pod courant (env DM_APP_VERSION).">
+      DM v{{ dm_version_local }}
+    </span>
+  {% endif %}
+</div>
 
 <!-- Service availability banner -->
 <div id="service-status" hx-get="/admin/api/debug/status" hx-trigger="load, every 30s" hx-swap="innerHTML" style="margin-bottom:1rem;"></div>
 
 <!-- Adoption chart -->
 <div style="background:#F5F5FE;border-radius:8px;padding:1.25rem;margin-bottom:1.5rem;">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
     <h2 style="font-size:1rem;margin:0;">Adoption des plugins</h2>
-    <div style="display:flex;gap:0.25rem;" id="period-btns">
-      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="loadAdoption('1J',this)">1J</button>
-      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="loadAdoption('1S',this)">1S</button>
-      <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="loadAdoption('1M',this)">1M</button>
-      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="loadAdoption('3M',this)">3M</button>
+    <div style="display:flex;gap:0.75rem;align-items:center;">
+      <!-- Axe de comptage : par poste (client_uuid) ou par utilisateur (email).
+           Tout le widget (tuiles + courbe) suit ce mode. -->
+      <div style="display:flex;gap:0.25rem;" id="mode-btns" title="Axe de comptage : postes (uuid) ou utilisateurs (email)">
+        <button class="dm-btn dm-btn--primary dm-btn--sm" data-mode="device" onclick="setAdoptionMode('device',this)">Appareils</button>
+        <button class="dm-btn dm-btn--ghost dm-btn--sm" data-mode="user" onclick="setAdoptionMode('user',this)">Utilisateurs</button>
+      </div>
+      <div style="display:flex;gap:0.25rem;" id="period-btns">
+        <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setAdoptionPeriod('1J',this)">1J</button>
+        <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setAdoptionPeriod('1S',this)">1S</button>
+        <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="setAdoptionPeriod('1M',this)">1M</button>
+        <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setAdoptionPeriod('3M',this)">3M</button>
+      </div>
     </div>
   </div>
   <div style="position:relative;height:250px;width:100%;"><canvas id="adoption-chart"></canvas></div>
@@ -24,34 +55,149 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 let adoptionChart = null;
-function loadAdoption(period, btn) {
+let adoptionPeriod = '1M';
+let adoptionMode = 'device';
+const ADOPTION_LABELS = {
+  device: {serie: 'Postes enrolles',       total: 'postes enrolles'},
+  user:   {serie: 'Utilisateurs enrolles', total: 'utilisateurs enrolles'},
+};
+function setAdoptionPeriod(period, btn) {
+  adoptionPeriod = period;
   document.querySelectorAll('#period-btns button').forEach(b => {b.className='dm-btn dm-btn--ghost dm-btn--sm';});
   if(btn) btn.className='dm-btn dm-btn--primary dm-btn--sm';
-  fetch('/admin/api/adoption?period=' + period, {credentials:'same-origin'})
+  loadAdoption();
+}
+function setAdoptionMode(mode, btn) {
+  adoptionMode = mode;
+  document.querySelectorAll('#mode-btns button').forEach(b => {b.className='dm-btn dm-btn--ghost dm-btn--sm';});
+  if(btn) btn.className='dm-btn dm-btn--primary dm-btn--sm';
+  loadAdoption();
+}
+// Palette catégorielle (une couleur STABLE par plugin, ordre alphabétique des
+// slugs côté serveur — jamais réattribuée quand une série apparaît/disparaît).
+// Validée sur fond #F5F5FE : bande de luminance, chroma, séparation CVD ≥ 16,
+// contraste ≥ 3:1 (dataviz/validate_palette.js). #000091 est RÉSERVÉ au Total.
+const PLUGIN_PALETTE = ['#0063CB','#18753C','#B34000','#8B12C4','#C9191E','#008F8F','#A87E00','#C51A85'];
+function loadAdoption() {
+  const labels = ADOPTION_LABELS[adoptionMode] || ADOPTION_LABELS.device;
+  fetch('/admin/api/adoption?period=' + adoptionPeriod + '&mode=' + adoptionMode, {credentials:'same-origin'})
     .then(r => r.json()).then(data => {
       const ctx = document.getElementById('adoption-chart').getContext('2d');
       if(adoptionChart) adoptionChart.destroy();
+      // Total en gras + une courbe fine par plugin (au-delà de 8 plugins, le
+      // surplus alphabétique est agrégé en « autres » — palette jamais cyclée).
+      const datasets = [{
+        label: labels.serie + ' — total',
+        data: data.timeseries.map(d => ({x: d.date, y: d.enrolled})),
+        borderColor: '#000091', borderWidth: 3, fill: true,
+        backgroundColor: 'rgba(0,0,145,0.08)', tension: 0.3, pointRadius: 0,
+      }];
+      const series = data.series || [];
+      const shown = series.slice(0, PLUGIN_PALETTE.length);
+      const rest = series.slice(PLUGIN_PALETTE.length);
+      shown.forEach((s, i) => {
+        datasets.push({
+          label: s.slug,
+          data: s.points.map(p => ({x: p.date, y: p.enrolled})),
+          borderColor: PLUGIN_PALETTE[i], borderWidth: 2, fill: false,
+          tension: 0.3, pointRadius: 0,
+        });
+      });
+      if (rest.length) {
+        const agg = {};
+        rest.forEach(s => s.points.forEach(p => { agg[p.date] = (agg[p.date] || 0) + p.enrolled; }));
+        datasets.push({
+          label: 'autres (' + rest.length + ')',
+          data: Object.keys(agg).sort().map(d => ({x: d, y: agg[d]})),
+          borderColor: '#929292', borderWidth: 2, borderDash: [4, 3], fill: false,
+          tension: 0.3, pointRadius: 0,
+        });
+      }
       adoptionChart = new Chart(ctx, {
-        type:'line',
-        data:{labels:data.timeseries.map(d=>d.date), datasets:[{
-          label:'Devices enrolles', data:data.timeseries.map(d=>d.enrolled),
-          borderColor:'#000091', borderWidth:2, fill:true,
-          backgroundColor:'rgba(0,0,145,0.08)', tension:0.3, pointRadius:0,
-        }]},
-        options:{responsive:true, maintainAspectRatio:false,
-          scales:{x:{type:'time',time:{unit:period==='1J'?'hour':'day'}},y:{beginAtZero:true}},
-          plugins:{legend:{display:false}}
+        type: 'line',
+        data: {datasets: datasets},
+        options: {responsive: true, maintainAspectRatio: false,
+          interaction: {mode: 'index', intersect: false},
+          scales: {x: {type: 'time', time: {unit: adoptionPeriod === '1J' ? 'hour' : 'day'}}, y: {beginAtZero: true}},
+          plugins: {legend: {
+            display: datasets.length > 1,
+            position: 'bottom',
+            labels: {boxWidth: 12, boxHeight: 12, usePointStyle: false, font: {size: 11}},
+          }}
         }
       });
       const s = data.summary;
       document.getElementById('adoption-tiles').innerHTML =
-        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.total+'</div><div style="font-size:0.8rem;color:#666;">enrolles</div></div>' +
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.total+'</div><div style="font-size:0.8rem;color:#666;">'+labels.total+'</div></div>' +
         '<div class="dm-metric-tile dm-metric-tile--success"><div style="font-size:1.25rem;font-weight:bold;">+'+s.new_period+'</div><div style="font-size:0.8rem;color:#666;">nouveaux</div></div>' +
         '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.active_pct+'%</div><div style="font-size:0.8rem;color:#666;">actifs (7j)</div></div>' +
         '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+s.plugins+'</div><div style="font-size:0.8rem;color:#666;">plugins</div></div>';
     }).catch(()=>{});
 }
-loadAdoption('1M', document.querySelector('#period-btns button:nth-child(3)'));
+loadAdoption();
+</script>
+
+<!-- Trafic LLM — histogramme chat vs embeddings (table llm_traffic, buckets
+     5 min agrégés par le proxy ; multi-pods et persistant, contrairement aux
+     métriques Prometheus par pod). -->
+<div style="background:#F5F5FE;border-radius:8px;padding:1.25rem;margin-bottom:1.5rem;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
+    <h2 style="font-size:1rem;margin:0;">Trafic LLM</h2>
+    <div style="display:flex;gap:0.25rem;" id="llm-period-btns">
+      <button class="dm-btn dm-btn--primary dm-btn--sm" onclick="setLlmPeriod('1J',this)">1J</button>
+      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setLlmPeriod('1S',this)">1S</button>
+      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setLlmPeriod('1M',this)">1M</button>
+      <button class="dm-btn dm-btn--ghost dm-btn--sm" onclick="setLlmPeriod('3M',this)">3M</button>
+    </div>
+  </div>
+  <div style="position:relative;height:220px;width:100%;"><canvas id="llm-chart"></canvas></div>
+  <div class="dm-grid-4" id="llm-tiles" style="margin-top:0.75rem;"></div>
+</div>
+<script>
+let llmChart = null;
+let llmPeriod = '1J';
+function setLlmPeriod(period, btn) {
+  llmPeriod = period;
+  document.querySelectorAll('#llm-period-btns button').forEach(b => {b.className='dm-btn dm-btn--ghost dm-btn--sm';});
+  if(btn) btn.className='dm-btn dm-btn--primary dm-btn--sm';
+  loadLlmTraffic();
+}
+function loadLlmTraffic() {
+  fetch('/admin/api/llm-traffic?period=' + llmPeriod, {credentials:'same-origin'})
+    .then(r => r.json()).then(data => {
+      const ctx = document.getElementById('llm-chart').getContext('2d');
+      if(llmChart) llmChart.destroy();
+      const rows = data.series || [];
+      // Barres EMPILÉES chat + embeddings (volumes très asymétriques pendant
+      // une indexation RAG) + erreurs en rouge par-dessus, même axe temps que
+      // le widget adoption. Palette : couleurs catégorielles déjà validées.
+      llmChart = new Chart(ctx, {
+        type: 'bar',
+        data: {datasets: [
+          {label: 'Chat',       data: rows.map(d => ({x: d.date, y: d.chat})),       backgroundColor: '#0063CB', stack: 'calls'},
+          {label: 'Embeddings', data: rows.map(d => ({x: d.date, y: d.embeddings})), backgroundColor: '#008F8F', stack: 'calls'},
+          {label: 'Erreurs',    data: rows.map(d => ({x: d.date, y: d.errors})),     backgroundColor: '#C9191E', stack: 'errors'},
+        ]},
+        options: {responsive: true, maintainAspectRatio: false,
+          interaction: {mode: 'index', intersect: false},
+          scales: {
+            x: {type: 'time', stacked: true, time: {unit: llmPeriod === '1J' ? 'hour' : 'day'}},
+            y: {stacked: true, beginAtZero: true},
+          },
+          plugins: {legend: {position: 'bottom', labels: {boxWidth: 12, boxHeight: 12, font: {size: 11}}}}
+        }
+      });
+      const t = data.tiles || {};
+      const err = t.error_rate || 0;
+      const errClass = err > 5 ? ' dm-metric-tile--error' : (err > 0 ? ' dm-metric-tile--warning' : '');
+      document.getElementById('llm-tiles').innerHTML =
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+(t.calls_24h ?? 0)+'</div><div style="font-size:0.8rem;color:#666;">appels (24h)</div></div>' +
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+(t.avg_ms ?? 0)+' ms</div><div style="font-size:0.8rem;color:#666;">latence moyenne</div></div>' +
+        '<div class="dm-metric-tile'+errClass+'"><div style="font-size:1.25rem;font-weight:bold;">'+err+'%</div><div style="font-size:0.8rem;color:#666;">taux d\'erreur (24h)</div></div>' +
+        '<div class="dm-metric-tile"><div style="font-size:1.25rem;font-weight:bold;">'+(t.embed_share ?? 0)+'%</div><div style="font-size:0.8rem;color:#666;">part embeddings</div></div>';
+    }).catch(()=>{});
+}
+loadLlmTraffic();
 </script>
 
 <!-- Metric tiles — auto-refresh every 30s -->
@@ -59,7 +205,7 @@ loadAdoption('1M', document.querySelector('#period-btns button:nth-child(3)'));
   <div class="dm-grid-4">
     <div class="dm-metric-tile">
       <div style="font-size: 1.5rem; font-weight: bold;">{{ metrics.active_devices }}</div>
-      <div style="font-size: 0.875rem; color: #666;">Appareils actifs (7j)</div>
+      <div style="font-size: 0.875rem; color: #666;">Appareils actifs (7j) &middot; {{ metrics.interactions_7d }} interactions</div>
     </div>
     <div class="dm-metric-tile dm-metric-tile--success">
       <div style="font-size: 1.5rem; font-weight: bold;">{{ metrics.enrollment_rate }}%</div>

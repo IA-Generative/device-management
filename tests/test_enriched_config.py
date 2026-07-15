@@ -163,15 +163,20 @@ def test_schema_version_2_present():
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Feature flag with default_value=True appears in features dict
+# Test 3: Catalog default_value is INDICATIVE only — it must NOT populate
+# `features` (the authoritative defaults come from the config template,
+# resolved per profile; cohort overrides win on top). Refonte flags v2.
 # ---------------------------------------------------------------------------
 
-def test_feature_flag_default_value():
+def test_feature_flag_forced_value_surfaces():
+    """default_value TRI-ÉTAT : un flag FORCÉ (true/false) surcharge le template
+    et apparaît dans `features`. Un flag transparent (NULL) est filtré par le
+    WHERE default_value IS NOT NULL → il ne remonte jamais (donc absent ici)."""
     mod = _load_module()
     db_rows = {
         "cohorts": [],
-        # feature_flags query returns (name, default_value)
-        "feature_flags": [("my_feature", True)],
+        # _resolve_forced_flags : (name, default_value, min_plugin_version).
+        "default_value IS NOT NULL": [("my_feature", True, None)],
         "feature_flag_overrides": [],
         "campaigns": [],
     }
@@ -182,6 +187,7 @@ def test_feature_flag_default_value():
         assert res.status_code == 200
         body = res.json()
         assert "features" in body
+        # Flag global forcé ON → présent et True dans l'objet résolu.
         assert body["features"].get("my_feature") is True
     finally:
         patcher.stop()

@@ -15,11 +15,28 @@
                placeholder="ex: writer_assistant">
       </div>
       <div class="dm-form-row">
-        <label class="dm-label" for="default_value">Valeur par defaut</label>
-        <select class="dm-select" id="default_value" name="default_value" style="width: 100%;">
-          <option value="true">Active (true)</option>
-          <option value="false">Desactive (false)</option>
+        <label class="dm-label" for="plugin_slug">Plugin</label>
+        <select class="dm-select" id="plugin_slug" name="plugin_slug" style="width: 100%;">
+          <option value="">Global (tous les plugins)</option>
+          {% for slug in plugin_slugs %}
+          <option value="{{ slug }}">{{ slug }}</option>
+          {% endfor %}
         </select>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label" for="default_value">État</label>
+        <select class="dm-select" id="default_value" name="default_value" style="width: 100%;">
+          <option value="transparent">Transparent (le template décide)</option>
+          <option value="true">Forcé ON (surcharge)</option>
+          <option value="false">Forcé OFF (surcharge)</option>
+        </select>
+      </div>
+    </div>
+    <div class="dm-grid-3">
+      <div class="dm-form-row">
+        <label class="dm-label" for="min_plugin_version">Version plugin minimale (optionnelle)</label>
+        <input class="dm-input" id="min_plugin_version" name="min_plugin_version"
+               pattern="[0-9]+(\.[0-9]+)*" placeholder="vide = toutes les versions">
       </div>
     </div>
     <div class="dm-form-row">
@@ -33,12 +50,22 @@
 </details>
 
 <!-- Flag list -->
+<p style="color: #666; font-size: 0.85rem; margin-bottom: 0.5rem;">
+  Le catalogue est synchronisé à chaque import de plugin (dm-config.json) et
+  scopé par plugin. L'<strong>état</strong> est <strong>tri-état</strong> :
+  <em>Transparent</em> = pas de surcharge (le template par profil ⊕ overrides
+  cohorte décident) ; <em>Forcé ON</em> / <em>Forcé OFF</em> = surcharge le
+  template pour tous. Un flag <em>orphelin</em> a disparu du template au dernier
+  import — il n'est plus diffusé, supprimez-le après vérification.
+</p>
 <div id="flag-list">
   <table>
     <thead>
       <tr>
         <th>Nom</th>
-        <th>Valeur defaut</th>
+        <th>Plugin</th>
+        <th>Version min</th>
+        <th>État</th>
         <th>Overrides</th>
         <th>Derniere modif</th>
         <th>Actions</th>
@@ -47,23 +74,37 @@
     <tbody>
       {% for f in flags %}
       <tr>
-        <td><a href="/admin/flags/{{ f.id }}">{{ f.name }}</a></td>
         <td>
-          {% if f.default_value %}
-          <span class="dm-badge dm-badge--success">ON</span>
+          <a href="/admin/flags/{{ f.id }}">{{ f.name }}</a>
+          {% if f.deprecated %}
+          <span class="dm-badge dm-badge--warning" title="Flag absent du dernier template importé — plus diffusé aux clients">orphelin</span>
+          {% endif %}
+        </td>
+        <td>{{ f.plugin_slug or 'global' }}</td>
+        <td>{{ f.min_plugin_version or 'toutes' }}</td>
+        <td>
+          {% if f.state == 'forced_on' %}
+          <span class="dm-badge dm-badge--success" title="Surcharge le template : servi ON pour tous">Forcé ON</span>
+          {% elif f.state == 'forced_off' %}
+          <span class="dm-badge dm-badge--error" title="Surcharge le template : servi OFF pour tous">Forcé OFF</span>
           {% else %}
-          <span class="dm-badge dm-badge--error">OFF</span>
+          <span class="dm-badge" title="Pas de surcharge : le template par profil décide">Transparent</span>
           {% endif %}
         </td>
         <td>{{ f.override_count }}</td>
         <td>{{ f.updated_at.strftime('%d/%m/%Y') if f.updated_at else '-' }}</td>
         <td>
           <a href="/admin/flags/{{ f.id }}" class="dm-btn dm-btn--sm dm-btn--ghost">Detail</a>
+          <form hx-delete="/admin/flags/{{ f.id }}"
+                hx-confirm="Supprimer le flag « {{ f.name }} » et tous ses overrides ?"
+                style="display:inline;">
+            <button type="submit" class="dm-btn dm-btn--sm dm-btn--danger">Supprimer</button>
+          </form>
         </td>
       </tr>
       {% endfor %}
       {% if not flags %}
-      <tr><td colspan="5" style="text-align: center; color: #666;">Aucun feature flag.</td></tr>
+      <tr><td colspan="7" style="text-align: center; color: #666;">Aucun feature flag.</td></tr>
       {% endif %}
     </tbody>
   </table>

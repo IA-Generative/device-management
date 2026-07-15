@@ -22,7 +22,9 @@ ENV DM_ENROLL_DIR=/data/enroll \
     DM_MAX_BODY_SIZE_MB=10
 
 # Non-root : uid fixe (sans home ni shell) pour satisfaire les PodSecurityContext
-# runAsNonRoot/runAsUser des overlays de déploiement.
+# runAsNonRoot/runAsUser des overlays de déploiement. Sans cette directive,
+# kubelet refuse de créer le container avec « container has runAsNonRoot and
+# image will run as root » (constaté sur llm-proxy en 0.9.0).
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin dm-app
 USER 10001
 

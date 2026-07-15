@@ -3,62 +3,73 @@
 {% block content %}
 <h1 class="dm-page-title">Journal d'audit</h1>
 
-<!-- Filters -->
-<form class="dm-search" method="GET" action="/admin/audit">
-  <input class="dm-input" name="actor" placeholder="Acteur (email)" value="{{ filters.actor or '' }}" style="flex:1;">
-  <input class="dm-input" name="action" placeholder="Action" value="{{ filters.action or '' }}" style="flex:1;">
+<style>
+  /* Lignes denses : le padding table global (0.75rem) doublait la hauteur utile */
+  #audit-table td { padding: 0.3rem 0.6rem; font-size: 0.85rem; vertical-align: top; }
+  #audit-table th { padding: 0.45rem 0.6rem; }
+  .audit-ts { white-space: nowrap; font-variant-numeric: tabular-nums; color: #3a3a3a; }
+  .audit-actor { white-space: nowrap; }
+  .audit-action { font-size: 0.75rem; background: #f6f6f6; padding: 0.1rem 0.35rem; border-radius: 3px; }
+  .audit-res { white-space: nowrap; }
+  .audit-payload-cell { max-width: 420px; }
+  .audit-payload summary { cursor: pointer; list-style: none; }
+  .audit-payload summary::-webkit-details-marker { display: none; }
+  .audit-payload summary code { font-size: 0.72rem; color: #555; }
+  .audit-payload[open] summary code { color: #000091; }
+  .audit-payload pre { font-size: 0.72rem; background: #f6f6f6; border-radius: 4px;
+                       padding: 0.5rem; margin: 0.25rem 0 0; overflow-x: auto; max-width: 420px; }
+  .audit-filters .dm-input, .audit-filters .dm-select { font-size: 0.85rem; }
+  .audit-dates { display: none; gap: 0.5rem; }
+  .audit-dates.visible { display: flex; }
+</style>
+
+<!-- Filtres LIVE : chaque frappe/sélection re-rend le tableau (délai 300ms).
+     Autocomplétion native (datalist) alimentée par les valeurs RÉELLES du journal. -->
+<!-- Trigger `input` (pas keyup) : couvre la frappe, le collage ET la sélection
+     dans le menu d'autocomplétion datalist, qui n'émet aucun keyup. -->
+<form class="dm-search audit-filters" onsubmit="return false;"
+      hx-get="/admin/audit" hx-target="#audit-table" hx-swap="outerHTML"
+      hx-trigger="input changed delay:300ms from:input, change from:select">
+  <select class="dm-select" name="period" id="audit-period"
+          onchange="document.getElementById('audit-dates').classList.toggle('visible', this.value === 'custom');">
+    <option value="">Toute la période</option>
+    <option value="24h" {% if filters.period == '24h' %}selected{% endif %}>24 heures</option>
+    <option value="7d" {% if filters.period == '7d' %}selected{% endif %}>7 jours</option>
+    <option value="30d" {% if filters.period == '30d' %}selected{% endif %}>30 jours</option>
+    <option value="custom" {% if filters.period == 'custom' %}selected{% endif %}>Dates…</option>
+  </select>
+  <span id="audit-dates" class="audit-dates {% if filters.period == 'custom' %}visible{% endif %}">
+    <input class="dm-input" type="date" name="date_from" value="{{ filters.date_from or '' }}" title="Du">
+    <input class="dm-input" type="date" name="date_to" value="{{ filters.date_to or '' }}" title="Au (inclus)">
+  </span>
+  <input class="dm-input" name="actor" list="dl-audit-actors" placeholder="Acteur"
+         value="{{ filters.actor or '' }}" style="flex:1;min-width:10rem;">
+  <input class="dm-input" name="action" list="dl-audit-actions" placeholder="Action"
+         value="{{ filters.action or '' }}" style="flex:1;min-width:10rem;">
+  <input class="dm-input" name="plugin" list="dl-audit-plugins" placeholder="Plugin"
+         value="{{ filters.plugin or '' }}" style="flex:1;min-width:9rem;">
   <select class="dm-select" name="resource_type">
     <option value="">Toutes les ressources</option>
-    <option value="campaign" {% if filters.resource_type == 'campaign' %}selected{% endif %}>Campagne</option>
-    <option value="cohort" {% if filters.resource_type == 'cohort' %}selected{% endif %}>Cohorte</option>
-    <option value="flag" {% if filters.resource_type == 'flag' %}selected{% endif %}>Feature flag</option>
-    <option value="artifact" {% if filters.resource_type == 'artifact' %}selected{% endif %}>Artifact</option>
-    <option value="device" {% if filters.resource_type == 'device' %}selected{% endif %}>Appareil</option>
+    {% for rt in facets.resource_types %}
+    <option value="{{ rt }}" {% if filters.resource_type == rt %}selected{% endif %}>{{ rt }}</option>
+    {% endfor %}
   </select>
-  <button type="submit" class="dm-btn dm-btn--primary dm-btn--sm">Filtrer</button>
-  <a href="/admin/audit/export?actor={{ filters.actor or '' }}&action={{ filters.action or '' }}&resource_type={{ filters.resource_type or '' }}"
-     class="dm-btn dm-btn--secondary dm-btn--sm">Export CSV</a>
+  <input class="dm-input" name="q" placeholder="Détails (contient…)"
+         value="{{ filters.q or '' }}" style="flex:1;min-width:10rem;">
+  <datalist id="dl-audit-actors">
+    {% for v in facets.actors %}<option value="{{ v }}">{% endfor %}
+  </datalist>
+  <datalist id="dl-audit-actions">
+    {% for v in facets.actions %}<option value="{{ v }}">{% endfor %}
+  </datalist>
+  <datalist id="dl-audit-plugins">
+    {% for v in facets.plugins %}<option value="{{ v }}">{% endfor %}
+  </datalist>
+  <!-- Export : mêmes filtres que la vue courante (Entrée dans un champ ne
+       doit PAS déclencher l'export — soumission native neutralisée) -->
+  <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm"
+          onclick="window.location='/admin/audit/export?'+new URLSearchParams(new FormData(this.form));">Export CSV</button>
 </form>
 
-<table>
-  <thead>
-    <tr>
-      <th>Horodatage</th>
-      <th>Acteur</th>
-      <th>Action</th>
-      <th>Ressource</th>
-      <th>Details</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for a in entries %}
-    <tr>
-      <td>{{ a.created_at.strftime('%d/%m/%Y %H:%M') if a.created_at else '-' }}</td>
-      <td>{{ a.actor_email }}</td>
-      <td><code>{{ a.action }}</code></td>
-      <td>{{ a.resource_type }}{% if a.resource_id %}:{{ a.resource_id }}{% endif %}</td>
-      <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;">
-        {% if a.payload %}
-        <code title="{{ a.payload }}">{{ a.payload | string | truncate(60) }}</code>
-        {% else %}-{% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-    {% if not entries %}
-    <tr><td colspan="5" style="text-align: center; color: #666;">Aucune entree d'audit.</td></tr>
-    {% endif %}
-  </tbody>
-</table>
-
-{% if page > 0 or entries | length >= 100 %}
-<div class="dm-pagination">
-  {% if page > 0 %}
-  <a href="/admin/audit?page={{ page - 1 }}" class="dm-btn dm-btn--sm dm-btn--secondary">&laquo; Precedent</a>
-  {% endif %}
-  <span>Page {{ page + 1 }}</span>
-  {% if entries | length >= 100 %}
-  <a href="/admin/audit?page={{ page + 1 }}" class="dm-btn dm-btn--sm dm-btn--secondary">Suivant &raquo;</a>
-  {% endif %}
-</div>
-{% endif %}
+{% include "_audit_table.html" %}
 {% endblock %}

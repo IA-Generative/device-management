@@ -15,6 +15,12 @@ spec:
       labels:
         app: queue-worker
     spec:
+      # Non-root enforcement (voir 20-device-management-deployment.yaml).
+      # S'applique aussi à l'initContainer wait-for-postgres : postgres:16-alpine
+      # tourne en uid 70 (postgres), donc pas de conflit.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
       imagePullSecrets:
         - name: regcred
       initContainers:
@@ -42,7 +48,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             - name: DM_APP_VERSION
-              value: "0.8.1"
+              value: "0.9.0"
             - name: DM_CONFIG_POLL_INTERVAL_SECONDS
               value: "3"
             - name: DM_RUNTIME_CONFIG_EDITABLE

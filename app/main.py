@@ -191,6 +191,37 @@ if _RUNTIME_MODE in ("api", "all"):
         return RedirectResponse(f"{prefix}/catalog/", status_code=307)
 
 
+# ---- Trace-id (corrélation de bout en bout) ---------------------------------
+# Chaque requête porte un X-Request-Id (repris du client s'il en fournit un,
+# généré sinon), exposé dans request.state.trace_id (audit LLM, logs) et rendu
+# au client — prêt pour OpenTelemetry.
+@app.middleware("http")
+async def trace_id_middleware(request: Request, call_next):
+    trace_id = (request.headers.get("x-request-id") or "").strip()[:64] or uuid.uuid4().hex
+    request.state.trace_id = trace_id
+    response = await call_next(request)
+    response.headers.setdefault("X-Request-Id", trace_id)
+    return response
+
+
+# ---- Mode runtime "llm" : deployment dédié au proxy LLM ----------------------
+# Les routes du monolithe sont déclarées au niveau module ; en mode llm on ne
+# sert QUE le proxy + sondes + métriques (pod stateless scalable, sans PVC).
+_LLM_MODE_ALLOWED_PREFIXES = (
+    "/llm/", "/livez", "/readyz", "/healthz", "/metrics", "/internal",
+)
+
+if _RUNTIME_MODE == "llm":
+    @app.middleware("http")
+    async def _llm_mode_allowlist(request: Request, call_next):
+        if not request.url.path.startswith(_LLM_MODE_ALLOWED_PREFIXES):
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "error": "Not available in llm runtime mode."},
+            )
+        return await call_next(request)
+
+
 # ---- Security headers middleware (admin UI + API)
 # Paths whose mutation (POST/PUT/PATCH/DELETE) invalidates the config cache.
 _CACHE_INVALIDATION_PATH_PREFIXES = (
@@ -465,6 +496,13 @@ def _config_cache_clear() -> None:
         _CONFIG_CACHE.clear()
 
 
+# Hot-reload : quand une nouvelle génération de config runtime est appliquée
+# (toggle admin, ex: FORCE_LLM_ENDPOINT_OVERRIDE), les réponses /config en cache
+# ont été bâties avec l'ancienne valeur → invalidation immédiate sur chaque pod
+# (supprime la fenêtre de staleness du TTL 60s).
+runtime_config.register_reload_hook(_config_cache_clear)
+
+
 def _queue_db_url() -> str | None:
     return _db_url_bootstrap() or _db_url()
 
@@ -724,11 +762,20 @@ def _check_plugin_access(plugin_row: dict | None, request: Request, cur) -> bool
 
 
 def _build_config_from_template(template: dict, profile: str) -> dict:
-    """Merge default + profile section from a dm-config.json template."""
+    """Merge default + profile section from a dm-config.json template.
+
+    `featureToggles` is deep-merged (default ⊕ profile) instead of the shallow
+    top-level merge: a profile section that overrides one flag must not wipe
+    the other flags declared in `default`.
+    """
     default = dict(template.get("default", {}))
     env_section = template.get(profile, {})
     if isinstance(env_section, dict):
         merged = {**default, **env_section}
+        default_toggles = default.get("featureToggles")
+        profile_toggles = env_section.get("featureToggles")
+        if isinstance(default_toggles, dict) and isinstance(profile_toggles, dict):
+            merged["featureToggles"] = {**default_toggles, **profile_toggles}
     else:
         merged = default
     # Remove inline documentation fields
@@ -752,9 +799,19 @@ def _load_config_template(profile: str, device: str | None = None,
         try:
             slug = device_name or device
             if slug:
+                # Doublons possibles sur device_type : ignorer les templates vides et
+                # préférer le match exact par slug puis le plus récent, sinon une ligne
+                # arbitraire sans template masque le vrai template (issue #3).
                 cur.execute(
-                    "SELECT config_template FROM plugins WHERE (slug = %s OR device_type = %s) AND status <> 'removed' LIMIT 1",
-                    (slug, device or slug),
+                    """
+                    SELECT config_template FROM plugins
+                    WHERE (slug = %s OR device_type = %s) AND status <> 'removed'
+                      AND config_template IS NOT NULL
+                      AND config_template NOT IN ('null'::jsonb, '{}'::jsonb)
+                    ORDER BY (slug = %s) DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (slug, device or slug, slug),
                 )
                 row = cur.fetchone()
                 if row and row[0]:
@@ -840,7 +897,14 @@ def _resolve_public_telemetry_endpoint() -> str:
     if not endpoint.startswith("/"):
         endpoint = "/" + endpoint
 
-    public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip()
+    # Endpoint relatif : servir la RACINE de l'origine (scheme://netloc), SANS
+    # le chemin de PUBLIC_BASE_URL. C'est le PLUGIN (telemetry.js
+    # _resolveEndpoint) qui re-base le path reçu sur bootstrapUrl — préfixe
+    # d'ingress compris : préfixer AUSSI le BASE_PATH ici doublait /bootstrap
+    # (POST .../bootstrap/bootstrap/telemetry/v1/traces → 404, constaté DGX).
+    # L'ancienne préservation du chemin (« 502 ») datait d'un plugin qui ne
+    # re-basait pas. Un endpoint configuré en ABSOLU reste servi verbatim.
+    public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if public_base:
         parsed = urlparse(public_base)
         if parsed.scheme and parsed.netloc:
@@ -849,7 +913,8 @@ def _resolve_public_telemetry_endpoint() -> str:
     return endpoint
 
 
-def _mint_telemetry_token(*, device: str | None, profile: str) -> tuple[str, int | None]:
+def _mint_telemetry_token(*, device: str | None, profile: str,
+                          client_uuid: str = "") -> tuple[str, int | None]:
     secret = (settings.telemetry_token_signing_key or "").strip()
     if not secret:
         return "", None
@@ -863,6 +928,12 @@ def _mint_telemetry_token(*, device: str | None, profile: str) -> tuple[str, int
         "profile": profile,
         "device": device or "unknown",
     }
+    # `cuid` = identité STABLE du client (X-Client-UUID au mint). Le relais
+    # loggue device_connections avec elle — jamais avec le jti, régénéré à
+    # chaque token, qui fabriquait un « appareil » distinct par token et
+    # gonflait tous les compteurs d'actifs.
+    if client_uuid:
+        payload["cuid"] = client_uuid
     payload_raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     payload_b64 = _b64url_encode(payload_raw)
     sig = hmac.new(secret.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
@@ -1052,43 +1123,138 @@ def _resolve_device_cohorts(cur, *, email: str, client_uuid: str) -> list[int]:
     return matched
 
 
-def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version: str) -> dict:
-    """Compute the effective feature flags dict for the device."""
+def _upsert_plugin_installation(cur, *, plugin_id, client_uuid: str,
+                                email: str = "", version: str = "") -> None:
+    """Heartbeat d'installation : chaque /config enrichi marque l'installation
+    active du plugin pour ce client.
+
+    C'est la SEULE écriture de `plugin_installations` — la table était lue par
+    le catalogue admin (onglet Installations, stats actifs/en retard) mais
+    jamais alimentée : l'onglet restait vide même après enrôlement. Non-fatal.
+
+    La VERSION est requise : un vrai plugin envoie toujours X-Plugin-Version
+    (repli '0.0.0' côté client). Sans ce gate, toute sonde curl/monitoring avec
+    un simple X-Client-UUID créait une « installation » sans version — comptée
+    dans la tuile « actives » mais rattachée à aucune ligne du tableau des
+    versions (incohérence 2 actives / 1 install constatée sur int).
+    """
+    if not plugin_id or not client_uuid or not version:
+        return
     try:
-        cur.execute("SELECT name, default_value FROM feature_flags")
-        flags: dict[str, bool] = {row[0]: bool(row[1]) for row in cur.fetchall()}
+        cur.execute("""
+            INSERT INTO plugin_installations (plugin_id, client_uuid, email, installed_version, status)
+            VALUES (%s, %s, %s, %s, 'active')
+            ON CONFLICT (plugin_id, client_uuid) DO UPDATE SET
+                installed_version = COALESCE(NULLIF(EXCLUDED.installed_version, ''),
+                                             plugin_installations.installed_version),
+                email = COALESCE(NULLIF(EXCLUDED.email, ''), plugin_installations.email),
+                last_seen_at = NOW(),
+                status = 'active'
+        """, (plugin_id, client_uuid, email or "", version or ""))
+    except Exception:
+        logger.debug("plugin_installations upsert skipped (non-fatal)")
+
+
+def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version: str,
+                           plugin_slug: str = "") -> dict:
+    """Return ONLY the cohort-driven feature-flag overrides for this device.
+
+    The catalog `default_value` is INDICATIVE (mirrors the template default at
+    import time) and is deliberately NOT returned: the authoritative defaults
+    come from the config template, resolved per profile in /config. Hierarchy:
+    template default → template profile → cohort override (this function).
+
+    - Catalogue SCOPÉ par plugin : seuls les flags du slug demandé (ou les
+      flags globaux/legacy, plugin_slug='') sont considérés.
+    - Les flags `deprecated` (orphelins d'un import) sont exclus : un flag
+      retiré du template ne peut pas ressusciter via un vieil override.
+    - `min_plugin_version` gating is fail-safe: an override gated by a minimum
+      version — au niveau du FLAG (création admin, NULL = toutes les versions)
+      ou de l'override — is skipped when the plugin version is unknown (no
+      header) or older than the gate.
+    - When several cohorts override the same flag, false wins.
+    """
+    if not device_cohort_ids:
+        return {}
+    try:
+        placeholders = ",".join(["%s"] * len(device_cohort_ids))
+        cur.execute(
+            f"""
+            SELECT ff.name, ffo.value, ffo.min_plugin_version, ff.min_plugin_version
+            FROM feature_flag_overrides ffo
+            JOIN feature_flags ff ON ff.id = ffo.feature_id
+            WHERE ffo.cohort_id IN ({placeholders})
+              AND ff.deprecated = false
+              AND ff.plugin_slug IN ('', %s)
+            """,
+            [*device_cohort_ids, plugin_slug or ""],
+        )
+        overrides = cur.fetchall()
     except Exception:
         return {}
 
-    if not flags:
-        return {}
+    def _gated(min_pv) -> bool:
+        """True si le gate bloque : version inconnue (fail-safe) ou trop vieille."""
+        if not min_pv:
+            return False
+        if not plugin_version:
+            return True
+        return _parse_version_tuple(plugin_version) < _parse_version_tuple(min_pv)
 
-    if device_cohort_ids:
-        try:
-            placeholders = ",".join(["%s"] * len(device_cohort_ids))
-            cur.execute(
-                f"""
-                SELECT ff.name, ffo.value, ffo.min_plugin_version
-                FROM feature_flag_overrides ffo
-                JOIN feature_flags ff ON ff.id = ffo.feature_id
-                WHERE ffo.cohort_id IN ({placeholders})
-                """,
-                device_cohort_ids,
-            )
-            overrides = cur.fetchall()
-        except Exception:
-            overrides = []
-
-        for row in overrides:
-            flag_name, override_val, min_pv = row[0], bool(row[1]), row[2]
-            if min_pv and plugin_version:
-                if _parse_version_tuple(plugin_version) < _parse_version_tuple(min_pv):
-                    continue  # plugin too old, skip this override
-            # false wins: once false, stays false
-            if flag_name in flags:
-                flags[flag_name] = flags[flag_name] and override_val
+    flags: dict[str, bool] = {}
+    for row in overrides:
+        flag_name, override_val = row[0], bool(row[1])
+        override_min_pv = row[2]
+        flag_min_pv = row[3] if len(row) > 3 else None
+        if _gated(flag_min_pv) or _gated(override_min_pv):
+            continue
+        # false wins entre cohortes: once false, stays false
+        flags[flag_name] = flags.get(flag_name, True) and override_val
 
     return flags
+
+
+def _resolve_forced_flags(cur, *, plugin_version: str, plugin_slug: str = "") -> dict:
+    """Flags FORCÉS par le catalogue (tri-état `default_value`) → surchargent le template.
+
+    `feature_flags.default_value` est TRI-ÉTAT :
+      - NULL  → transparent : aucune surcharge (template/profil, puis cohortes, décident) ;
+      - true  → forcé ON  : la feature est servie ON même si le template la livre OFF ;
+      - false → forcé OFF : la feature est servie OFF même si le template la livre ON.
+    Seuls les flags NON NULL sont renvoyés (les transparents n'apparaissent pas).
+    Scopé plugin (`plugin_slug` demandé ou global ''), non `deprecated`, gate
+    `min_plugin_version` fail-safe (version inconnue ou trop vieille → ignoré).
+
+    Précédence globale (croissante) : template → CE forçage → override cohorte
+    (plus spécifique, cf. `_resolve_feature_flags`).
+    """
+    try:
+        cur.execute(
+            """
+            SELECT name, default_value, min_plugin_version
+            FROM feature_flags
+            WHERE default_value IS NOT NULL
+              AND deprecated = false
+              AND plugin_slug IN ('', %s)
+            """,
+            [plugin_slug or ""],
+        )
+        rows = cur.fetchall()
+    except Exception:
+        return {}
+
+    out: dict[str, bool] = {}
+    for row in rows:
+        name = row[0]
+        forced_val = bool(row[1])
+        flag_min_pv = row[2] if len(row) > 2 else None
+        if flag_min_pv:
+            if not plugin_version:
+                continue
+            if _parse_version_tuple(plugin_version) < _parse_version_tuple(flag_min_pv):
+                continue
+        out[str(name)] = forced_val
+    return out
 
 
 def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: str, platform_version: str) -> dict | None:
@@ -1454,6 +1620,8 @@ def _relay_allowed_targets() -> list[str]:
         targets.append("config")
     if "telemetry" not in targets:
         targets.append("telemetry")
+    if "llm" not in targets:
+        targets.append("llm")
     return sorted(set(targets))
 
 
@@ -1583,6 +1751,11 @@ def _verify_relay_credentials(relay_client_id: str, relay_key: str, target: str 
     if "config" in effective_targets and "telemetry" not in effective_targets:
         effective_targets.append("telemetry")
         effective_targets.sort()
+    # Rétrocompat proxy LLM : un plugin déjà enrôlé (target 'config') bascule sur
+    # /llm/v1 sans ré-enrôlement, juste via le llmEndpoint reçu au prochain /config.
+    if "config" in effective_targets and "llm" not in effective_targets:
+        effective_targets.append("llm")
+        effective_targets.sort()
 
     if target_norm and effective_targets and target_norm not in effective_targets:
         return False, f"target '{target_norm}' not allowed"
@@ -1640,7 +1813,8 @@ def _scrub_secret_values(cfg: dict) -> dict:
     cfg_obj["config"] = config_obj
     return cfg_obj
 
-def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> dict:
+def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None,
+                     client_uuid: str = "") -> dict:
     """Apply targeted overrides from env."""
     global _telemetry_signing_warning_emitted
 
@@ -1672,7 +1846,8 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
     token = ""  # nosec B105: valeur vide par défaut, pas un secret
     expires_at: int | None = None
     if settings.telemetry_enabled and settings.telemetry_authorization_type.lower() == "bearer":
-        token, expires_at = _mint_telemetry_token(device=device, profile=profile)
+        token, expires_at = _mint_telemetry_token(device=device, profile=profile,
+                                                  client_uuid=client_uuid)
         if settings.telemetry_require_token and not token and not _telemetry_signing_warning_emitted:
             logger.warning(
                 "Telemetry token rotation requested but DM_TELEMETRY_TOKEN_SIGNING_KEY is empty."
@@ -1683,6 +1858,85 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None) -> d
     if expires_at is not None:
         config_obj["telemetryKeyExpiresAt"] = expires_at
         config_obj["telemetryKeyTtlSeconds"] = int(settings.telemetry_token_ttl_seconds)
+    return cfg
+
+
+def _force_llm_endpoint_override() -> bool:
+    """FORCE_LLM_ENDPOINT_OVERRIDE — bool, défaut TRUE, hot-reloadable (onglet Config).
+
+    Chaîne vide (clé jamais définie, y compris après un reset apply_state sans
+    baseline) = défaut ON.
+    """
+    raw = str(runtime_config.cfg("FORCE_LLM_ENDPOINT_OVERRIDE", "") or "").strip().lower()
+    if not raw:
+        return True
+    return raw in ("1", "true", "yes", "on")
+
+
+_llm_override_warning_emitted = False
+
+
+def _apply_llm_proxy_overrides(cfg: dict, *, relay_ok: bool, relay_meta: dict | None) -> dict:
+    """Override du llmEndpoint annoncé au plugin — cœur de la Tâche 2.
+
+    Appelé APRÈS _apply_catalog_overrides (priorité garantie sur les overrides
+    catalogue) et APRÈS le scrub (les tokens posés ici ne sont pas re-scrubés).
+
+    - FORCE_LLM_ENDPOINT_OVERRIDE=true (défaut) : llmEndpoint / llm_base_urls /
+      relayAssistantBaseUrl = URL publique du proxy DM ; la clé backend
+      (LLM_API_TOKEN) ne sort JAMAIS — remplacée par un llmToken signé par
+      client, minté ici (par requête, jamais mis en cache) si la paire
+      X-Relay-Client/Key vient d'être validée.
+    - false : mode direct (comportement historique), llmEndpoint = LLM_BASE_URL.
+    """
+    global _llm_override_warning_emitted
+    config_obj = cfg.get("config")
+    if not isinstance(config_obj, dict):
+        return cfg
+
+    from .llm.backends import public_llm_proxy_url  # import différé (pas de cycle)
+    from .llm.tokens import mint_llm_token
+
+    force = _force_llm_endpoint_override()
+    proxy_url = public_llm_proxy_url() if force else ""
+    if force and not proxy_url:
+        if not _llm_override_warning_emitted:
+            logger.warning(
+                "FORCE_LLM_ENDPOINT_OVERRIDE=true mais ni PUBLIC_LLM_PROXY_URL ni "
+                "PUBLIC_BASE_URL ne sont définis — fallback mode direct."
+            )
+            _llm_override_warning_emitted = True
+        force = False
+
+    if force:
+        config_obj["llmEndpoint"] = proxy_url
+        config_obj["llm_base_urls"] = proxy_url
+        config_obj["relayAssistantBaseUrl"] = proxy_url
+        # La clé backend réelle ne transite jamais par le client en mode proxy.
+        config_obj["llm_api_tokens"] = ""
+        config_obj["llmToken"] = ""
+        if relay_ok and relay_meta:
+            token, expires_at = mint_llm_token(
+                client_uuid=str(relay_meta.get("client_uuid") or ""),
+                email=str(relay_meta.get("email") or ""),
+            )
+            if token:
+                config_obj["llmToken"] = token
+                config_obj["llm_api_tokens"] = token
+                if expires_at is not None:
+                    config_obj["llmTokenExpiresAt"] = expires_at
+    else:
+        direct_url = str(runtime_config.cfg("LLM_BASE_URL", "") or "").strip()
+        config_obj["llmEndpoint"] = direct_url or str(config_obj.get("llm_base_urls") or "")
+
+    # Embedder (RAG) : réutilise le MÊME endpoint LLM (le provider sert chat ET
+    # embeddings sur /v1) et le MÊME auth. On dérive embdUrl/embdToken des valeurs
+    # LLM déjà résolues ci-dessus → marche pour les deux modes (proxy et direct),
+    # hérite du préfixe de base-path, et n'expose aucune nouvelle frontière.
+    # Seule EMBD_MODEL_NAME est une variable propre (vide = embedder désactivé).
+    config_obj["embdModel"] = str(runtime_config.cfg("EMBD_MODEL_NAME", "") or "")
+    config_obj["embdUrl"] = str(config_obj.get("llmEndpoint") or "")
+    config_obj["embdToken"] = str(config_obj.get("llmToken") or "")
     return cfg
 
 
@@ -2267,6 +2521,17 @@ def metrics():
         f'dm_runtime_worker_active{{mode="{mode}"}} {worker_active}',
     ]
 
+    # Métriques du proxy LLM (registry prometheus_client dédié) : latence
+    # p50/p95/p99 via histogramme, RPS, erreurs, requêtes actives, quota.
+    try:
+        from .llm import metrics as _llm_metrics
+
+        llm_text = _llm_metrics.render().strip()
+        if llm_text:
+            lines.append(llm_text)
+    except Exception:
+        logger.debug("llm metrics render failed", exc_info=True)
+
     return Response(
         content="\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4; charset=utf-8",
@@ -2297,8 +2562,15 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         or request.headers.get("X-Client-UUID", "").strip()
         or request.headers.get("X-User-Email", "").strip()
     )
+    # Bypass aussi sur présence de credentials relay : la réponse contient alors
+    # des valeurs PAR CLIENT (llmToken signé, secrets révélés) qui ne doivent
+    # jamais alimenter ni sortir du cache partagé.
+    _has_relay_creds = bool(
+        (request.headers.get("X-Relay-Client") or request.headers.get("X-Client-Id") or "").strip()
+    )
+    _cacheable = not (_has_enrichment or _has_relay_creds)
     cache_key = f"{dev or '_'}:{prof}"
-    if not _has_enrichment:
+    if _cacheable:
         cached = _config_cache_get(cache_key)
         if cached is not None:
             return JSONResponse(cached, headers={"Cache-Control": "public, max-age=60", "X-Cache": "HIT"})
@@ -2381,7 +2653,8 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
 
     # ── STEP 3: Substitution + DM overrides ──
     cfg = _substitute_env(cfg)
-    cfg = _apply_overrides(cfg, profile=prof, device=device_type or None)
+    cfg = _apply_overrides(cfg, profile=prof, device=device_type or None,
+                           client_uuid=request.headers.get("X-Client-UUID", "").strip())
 
     # ── STEPS 4+5: Catalog overrides + access control (pooled connection) ──
     if plugin_id and psycopg2 is not None:
@@ -2451,6 +2724,15 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     if settings.relay_require_key_for_secrets and not relay_ok:
         cfg = _scrub_secret_values(cfg)
 
+    # ── Proxy LLM : override llmEndpoint (APRÈS catalog overrides + scrub :
+    # priorité garantie, et le llmToken par client posé ici n'est pas re-scrubé
+    # ni mis en cache — cf. bypass _has_relay_creds plus haut). ──
+    cfg = _apply_llm_proxy_overrides(
+        cfg,
+        relay_ok=bool(relay_ok),
+        relay_meta=relay_meta if relay_ok and isinstance(relay_meta, dict) else None,
+    )
+
     # 3) keep top-level enable switch from service settings if you still want a global kill-switch
     cfg["enabled"] = bool(settings.config_enabled)
 
@@ -2481,12 +2763,17 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     # ---- Steps 3-9: DB-backed enrichment (pooled connection, degrade gracefully)
     update_directive: dict | None = None
     flags: dict = {}
+    forced_flags: dict = {}
 
     enrich_ctx = _pooled_conn()
     if enrich_ctx is not None:
         try:
             with enrich_ctx as econn:
                 with econn.cursor() as cur:
+                    _upsert_plugin_installation(
+                        cur, plugin_id=plugin_id, client_uuid=client_uuid,
+                        email=email, version=plugin_version,
+                    )
                     device_cohort_ids = _resolve_device_cohorts(
                         cur, email=email, client_uuid=client_uuid
                     )
@@ -2494,6 +2781,12 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                         cur,
                         device_cohort_ids=device_cohort_ids,
                         plugin_version=plugin_version,
+                        plugin_slug=device_name or "",
+                    )
+                    forced_flags = _resolve_forced_flags(
+                        cur,
+                        plugin_version=plugin_version,
+                        plugin_slug=device_name or "",
                     )
                     campaign = _resolve_active_campaign(
                         cur,
@@ -2530,6 +2823,10 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                 conn.autocommit = True
                 try:
                     with conn.cursor() as cur:
+                        _upsert_plugin_installation(
+                            cur, plugin_id=plugin_id, client_uuid=client_uuid,
+                            email=email, version=plugin_version,
+                        )
                         device_cohort_ids = _resolve_device_cohorts(
                             cur, email=email, client_uuid=client_uuid
                         )
@@ -2537,6 +2834,12 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                             cur,
                             device_cohort_ids=device_cohort_ids,
                             plugin_version=plugin_version,
+                            plugin_slug=device_name or "",
+                        )
+                        forced_flags = _resolve_forced_flags(
+                            cur,
+                            plugin_version=plugin_version,
+                            plugin_slug=device_name or "",
                         )
                         campaign = _resolve_active_campaign(
                             cur,
@@ -2566,9 +2869,24 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
             except Exception:
                 update_directive = None
                 flags = {}
+                forced_flags = {}
 
     # ---- Step 10: Build final EnrichedConfigResponse
     inner_config = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
+
+    # `features` = objet RÉSOLU côté serveur, par précédence croissante :
+    #   1. défauts du template (deep-mergés par profil)
+    #   2. ⊕ flags FORCÉS par le catalogue (feature_flags.default_value tri-état :
+    #      true=forcé ON, false=forcé OFF ; NULL=transparent → absent). L'admin
+    #      active/désactive une feature sans éditer le template.
+    #   3. ⊕ overrides cohorte (gated min_plugin_version, false gagne) — le plus
+    #      spécifique l'emporte.
+    # Le plugin REMPLACE EN BLOC (pref featureTogglesOverride) — un flag retiré
+    # ici disparaît chez le client à la réponse suivante.
+    template_toggles = inner_config.get("featureToggles") if isinstance(inner_config, dict) else None
+    features_resolved: dict = dict(template_toggles) if isinstance(template_toggles, dict) else {}
+    features_resolved.update(forced_flags)
+    features_resolved.update(flags)
 
     response_body = {
         "meta": {
@@ -2582,15 +2900,16 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         },
         "config": inner_config,
         "update": update_directive,
-        "features": flags,
+        "features": features_resolved,
     }
 
-    # P2: Cache the response only when no enrichment headers (generic response)
-    if not _has_enrichment:
+    # P2: Cache the response only for generic requests (no enrichment headers,
+    # no relay credentials — the latter carry per-client tokens/secrets).
+    if _cacheable:
         _config_cache_set(cache_key, response_body)
 
     return JSONResponse(response_body, headers={
-        "Cache-Control": "public, max-age=60" if not _has_enrichment else "no-store",
+        "Cache-Control": "public, max-age=60" if _cacheable else "no-store",
         "X-Cache": "MISS",
     })
 
@@ -2612,9 +2931,10 @@ def clear_config_cache(request: Request):
 
 
 @app.get("/telemetry/token")
-def get_telemetry_token(profile: str | None = None, device: str | None = None):
+def get_telemetry_token(request: Request, profile: str | None = None, device: str | None = None):
     prof = (profile or os.getenv("DM_CONFIG_PROFILE", "prod")).strip().lower()
     dev = (device or "").strip().lower()
+    req_client_uuid = request.headers.get("X-Client-UUID", "").strip()
 
     if not settings.telemetry_enabled:
         return JSONResponse(
@@ -2625,7 +2945,8 @@ def get_telemetry_token(profile: str | None = None, device: str | None = None):
                 "telemetryKey": "",
             },
         )
-    token, exp = _mint_telemetry_token(device=dev or None, profile=prof)
+    token, exp = _mint_telemetry_token(device=dev or None, profile=prof,
+                                       client_uuid=req_client_uuid)
     if settings.telemetry_require_token and not token:
         raise HTTPException(status_code=503, detail="Telemetry signing key is not configured.")
     return JSONResponse(
@@ -2695,27 +3016,40 @@ async def telemetry_traces(request: Request):
     if settings.telemetry_require_token:
         token = _extract_bearer_token(request)
         client_uuid = None
+        token_valid = False
         if token:
             try:
                 payload = _verify_telemetry_token(token)
-                client_uuid = str(payload.get("jti") or "telemetry")
+                token_valid = True
+                # `cuid` = identité STABLE embarquée au mint (0.9.4+). Le jti
+                # ne sert JAMAIS d'identité : uuid4 régénéré à chaque token, il
+                # créait un client_uuid distinct par token dans device_connections
+                # et gonflait tous les compteurs d'« appareils actifs ».
+                cuid = str(payload.get("cuid") or "").strip()
+                if cuid:
+                    client_uuid = _normalize_client_uuid(cuid)
             except HTTPException:
                 # Token invalid/expired – fall through to X-Client-UUID fallback
                 pass
         if not client_uuid:
-            # Fallback: accept X-Client-UUID header for pre-enrollment devices
-            # or when the Bearer token has expired.
+            # Fallback: accept X-Client-UUID header for pre-enrollment devices,
+            # expired tokens, or tokens mintés sans identité (cache partagé).
             header_uuid = (
                 request.headers.get("x-client-uuid")
                 or request.headers.get("x-plugin-uuid")
                 or ""
             ).strip()
-            if not header_uuid:
+            if header_uuid:
+                client_uuid = _normalize_client_uuid(header_uuid)
+        if not client_uuid:
+            if not token_valid:
                 raise HTTPException(
                     status_code=401,
                     detail="Missing telemetry Bearer token or X-Client-UUID header.",
                 )
-            client_uuid = _normalize_client_uuid(header_uuid)
+            # Token valide mais aucune identité → uuid zéro (agrégé en UN seul
+            # distinct, comme CONFIG_GET) plutôt qu'un pseudo-appareil par token.
+            client_uuid = "00000000-0000-0000-0000-000000000000"
     else:
         client_uuid = "telemetry-open"
 
@@ -3164,12 +3498,26 @@ def _deploy_plugin_db_work(
             version_id = cur.fetchone()[0]
 
             # 7. Update config_template + changelog from manifest
+            flags_diff = None
             if deploy_config_template:
                 try:
                     cur.execute("UPDATE plugins SET config_template = %s WHERE id = %s",
                                 (json.dumps(deploy_config_template), plugin_id))
                 except Exception:
                     pass
+                # Réconciliation du catalogue de flags (scopé plugin) : union
+                # des clés featureToggles sur tous les profils → UPSERT ;
+                # orphelins MARQUÉS deprecated (pas de delete). Wrapper partagé
+                # avec les chemins admin (deploy/create, config-template,
+                # migration) — une seule implémentation, non-fatale.
+                try:
+                    from app.admin.services import flags as _flags_svc
+                    flags_diff = _flags_svc.safe_reconcile_catalog(
+                        cur, plugin_slug=slug, template=deploy_config_template,
+                        actor={"email": "api", "sub": "plugin-deploy"},
+                        source="api:plugin-deploy")
+                except Exception:
+                    logger.exception("api_plugin_deploy: flags reconciliation failed (non-fatal)")
             if dm_manifest and dm_manifest.get("changelog"):
                 try:
                     cur.execute("UPDATE plugins SET changelog = %s WHERE id = %s",
@@ -3217,6 +3565,7 @@ def _deploy_plugin_db_work(
             "campaign_id": campaign_id,
             "checksum": checksum,
             "strategy": strategy,
+            "feature_flags": flags_diff,
         }, status_code=201)
     except Exception as e:
         logger.exception("api_plugin_deploy failed")
@@ -4591,6 +4940,27 @@ async def relay_assistant_proxy(path: str, request: Request):
         status_code=upstream_resp.status_code,
         headers=resp_headers,
     )
+
+
+# ---- Proxy LLM OpenAI-compatible (/llm/v1) -----------------------------------
+# Monté en fin de module : build_router reçoit les helpers relay par injection
+# (_relay_auth_from_request, _RELAY_HOP_HEADERS définis plus haut) — pas d'import
+# circulaire. Modes api/all (pods API existants) et llm (deployment dédié
+# stateless, scalable horizontalement — cf. _llm_mode_allowlist).
+if _RUNTIME_MODE in ("api", "all", "llm"):
+    from .llm.router import build_router as _build_llm_router
+
+    app.include_router(_build_llm_router(
+        relay_auth=_relay_auth_from_request,
+        hop_headers=_RELAY_HOP_HEADERS,
+    ))
+
+
+@app.on_event("shutdown")
+async def _shutdown_llm_http_client() -> None:
+    from .llm.http_client import aclose_async_client
+
+    await aclose_async_client()
 
 
 # ---- Local entrypoint (VS Code friendly)

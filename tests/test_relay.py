@@ -76,6 +76,11 @@ def _load_module():
     os.environ["KEYCLOAK_ISSUER_URL"] = "https://issuer.from.config.test/realms/bootstrap"
     os.environ["PUBLIC_BASE_URL"] = "https://example.test/bootstrap"
     os.environ["LLM_API_TOKEN"] = "very-secret-token"
+    # Ce module épingle le comportement HISTORIQUE (mode direct : le client
+    # reçoit llm_base_urls/llm_api_tokens réels). Le défaut est désormais le
+    # mode proxy (FORCE_LLM_ENDPOINT_OVERRIDE=true), couvert par
+    # tests/test_llm_config_override.py.
+    os.environ["FORCE_LLM_ENDPOINT_OVERRIDE"] = "false"
     # Unset DATABASE_URL to prevent real DB connections (may be set by other test modules)
     os.environ.pop("DATABASE_URL", None)
     os.environ.pop("DATABASE_ADMIN_URL", None)

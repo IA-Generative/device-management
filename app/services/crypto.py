@@ -88,6 +88,7 @@ def verify_telemetry_token(token: str, signing_key: str) -> dict | None:
 # Secret config keys that should be scrubbed without relay auth
 SECRET_CONFIG_KEYS = {
     "llm_api_tokens",
+    "llmToken",
     "tokenOWUI",
     "telemetryKey",
     "keycloak_client_secret",

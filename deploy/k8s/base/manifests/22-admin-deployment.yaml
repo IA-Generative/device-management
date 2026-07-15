@@ -15,6 +15,11 @@ spec:
       labels:
         app: device-management-admin
     spec:
+      # Non-root enforcement (voir 20-device-management-deployment.yaml pour le
+      # détail). Garde-fou face à une régression du USER 10001 côté image.
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 10001
       imagePullSecrets:
         - name: regcred
       containers:
@@ -36,7 +41,7 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
             - name: DM_APP_VERSION
-              value: "0.8.1"
+              value: "0.9.0"
             - name: DM_CONFIG_POLL_INTERVAL_SECONDS
               value: "3"
             - name: DM_RUNTIME_CONFIG_EDITABLE
@@ -139,6 +144,12 @@ spec:
                 secretKeyRef:
                   name: device-management-secrets
                   key: DEFAULT_MODEL_NAME
+            - name: EMBD_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: device-management-secrets
+                  key: EMBD_MODEL_NAME
+                  optional: true
             # Telemetry (for debug page)
             - name: DM_TELEMETRY_ENABLED
               valueFrom:

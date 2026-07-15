@@ -12,7 +12,9 @@ import os
 import time
 import urllib.parse
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -70,6 +72,9 @@ from .services import (
 )
 from .services import (
     keycloak as keycloak_svc,
+)
+from .services import (
+    llm_traffic as llm_traffic_svc,
 )
 from .services import runtime_config as rcfg_svc
 
@@ -209,7 +214,12 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         raise HTTPException(401, "ID token verification failed") from exc
 
     if not _has_admin_group(claims):
-        raise HTTPException(403, f"Acces refuse : groupe {REQUIRED_GROUP!r} requis")
+        # Ne pas révéler le nom du groupe requis au client (issue #1) — détail en log serveur.
+        _logging.getLogger("dm-admin-auth").warning(
+            "acces admin refuse pour %s : groupe %r manquant",
+            claims.get("email") or claims.get("sub"), REQUIRED_GROUP,
+        )
+        raise HTTPException(403, "Acces refuse")
 
     session = {
         "sub": claims.get("sub"),
@@ -276,37 +286,87 @@ async def admin_base_redirect(request: Request):
 
 # ─── Dashboard ────────────────────────────────────────────────────────────
 
+def _compute_dashboard_metrics(cur) -> dict:
+    """Tuiles métriques du dashboard — calcul UNIQUE (route + fragment HTMX).
+
+    « Appareils actifs (7j) » = clients réellement vus par le heartbeat
+    /config (plugin_installations.last_seen_at, vrais client_uuid) — PAS
+    device_connections, dont les client_uuid étaient pollués par les jti
+    aléatoires des tokens télémétrie (145 « appareils » pour 23 enrôlés).
+    Les interactions (volume brut de connexions : config + télémétrie +
+    enroll) sont exposées séparément.
+    """
+    cur.execute("""
+        SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations
+        WHERE last_seen_at > NOW() - INTERVAL '7 days'
+    """)
+    active_devices = cur.fetchone()[0]
+    cur.execute("""
+        SELECT COUNT(*) FROM device_connections
+        WHERE created_at > NOW() - INTERVAL '7 days'
+    """)
+    interactions_7d = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM provisioning WHERE status = 'ENROLLED'")
+    enrolled = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM provisioning")
+    total_prov = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM campaigns WHERE status = 'active'")
+    active_campaigns_count = cur.fetchone()[0]
+    # Taux d'erreur RÉEL (proxy LLM, 24 h, table llm_traffic) — remplace le 0
+    # codé en dur historique. SAVEPOINT : une table absente (base pas migrée)
+    # ne doit pas empoisonner la transaction du reste du dashboard.
+    cur.execute("SAVEPOINT dm_llm_traffic")
+    try:
+        error_rate = llm_traffic_svc.error_rate_24h(cur)
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT dm_llm_traffic")
+        error_rate = 0
+    return {
+        "active_devices": active_devices,
+        "interactions_7d": interactions_7d,
+        "enrollment_rate": round(enrolled / total_prov * 100, 1) if total_prov else 0,
+        "error_rate": error_rate,
+        "active_campaigns": active_campaigns_count,
+    }
+
+
+def _dashboard_versions(cur) -> list[dict]:
+    """Versions du DM vues PAR POD — même mécanisme que la page debug/runtime :
+    chaque pod upsert son `app_version` (env DM_APP_VERSION, posée par les
+    déploiements) dans `config_pod_state` à l'enrôlement et au heartbeat.
+
+    Seuls les pods « frais » (< 15 min) comptent : les lignes mortes en attente
+    du reaper (TTL 1 h) ne doivent pas crier au faux mélange de versions.
+    Plus d'une version distincte = rollout en cours ou pod en retard — le
+    dashboard doit attirer l'attention.
+    """
+    cur.execute("""
+        SELECT app_version, COUNT(*) AS pods
+        FROM config_pod_state
+        WHERE last_heartbeat_at > now() - interval '15 minutes'
+        GROUP BY app_version
+        ORDER BY pods DESC, app_version
+    """)
+    return [{"version": row[0] or "dev", "pods": row[1]} for row in cur.fetchall()]
+
+
 @router.get("/", response_class=HTMLResponse)
 @require_admin
 async def dashboard(request: Request):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            # Metrics
-            cur.execute("""
-                SELECT COUNT(DISTINCT client_uuid) FROM device_connections
-                WHERE created_at > NOW() - INTERVAL '7 days'
-            """)
-            active_devices = cur.fetchone()[0]
+            metrics = _compute_dashboard_metrics(cur)
 
-            cur.execute("""
-                SELECT COUNT(*) FROM provisioning WHERE status = 'ENROLLED'
-            """)
-            enrolled = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM provisioning")
-            total_prov = cur.fetchone()[0]
-
-            cur.execute("""
-                SELECT COUNT(*) FROM campaigns WHERE status = 'active'
-            """)
-            active_campaigns_count = cur.fetchone()[0]
-
-            metrics = {
-                "active_devices": active_devices,
-                "enrollment_rate": round(enrolled / total_prov * 100, 1) if total_prov else 0,
-                "error_rate": 0,
-                "active_campaigns": active_campaigns_count,
-            }
+            # Version(s) du DM — non-fatal : table éventuellement absente sur
+            # une base pas encore migrée, le dashboard doit s'afficher.
+            # SAVEPOINT : ne pas empoisonner la transaction pour la suite.
+            cur.execute("SAVEPOINT dm_versions")
+            try:
+                dm_versions = _dashboard_versions(cur)
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT dm_versions")
+                dm_versions = []
 
             # Active campaigns with stats
             active_campaigns = campaigns_svc.list_campaigns(cur, status="active")
@@ -321,6 +381,8 @@ async def dashboard(request: Request):
         return templates.TemplateResponse(request, "dashboard.html", {
             "request": request,
             "metrics": metrics,
+            "dm_versions": dm_versions,
+            "dm_version_local": os.getenv("DM_APP_VERSION") or os.getenv("APP_VERSION") or "dev",
             "active_campaigns": active_campaigns,
             "recent_audit": recent_audit,
         })
@@ -335,30 +397,13 @@ async def api_metrics(request: Request):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT COUNT(DISTINCT client_uuid) FROM device_connections
-                WHERE created_at > NOW() - INTERVAL '7 days'
-            """)
-            active_devices = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM provisioning WHERE status = 'ENROLLED'")
-            enrolled = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM provisioning")
-            total_prov = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM campaigns WHERE status = 'active'")
-            active_campaigns_count = cur.fetchone()[0]
-
-        metrics = {
-            "active_devices": active_devices,
-            "enrollment_rate": round(enrolled / total_prov * 100, 1) if total_prov else 0,
-            "error_rate": 0,
-            "active_campaigns": active_campaigns_count,
-        }
+            metrics = _compute_dashboard_metrics(cur)
 
         html = f"""
         <div class="dm-grid-4">
             <div class="dm-metric-tile">
                 <div style="font-size:1.5rem;font-weight:bold;">{metrics['active_devices']}</div>
-                <div style="font-size:0.875rem;color:#666;">Appareils actifs (7j)</div>
+                <div style="font-size:0.875rem;color:#666;">Appareils actifs (7j) &middot; {metrics['interactions_7d']} interactions</div>
             </div>
             <div class="dm-metric-tile dm-metric-tile--success">
                 <div style="font-size:1.5rem;font-weight:bold;">{metrics['enrollment_rate']}%</div>
@@ -651,8 +696,11 @@ async def flags_list(request: Request):
     try:
         with conn.cursor() as cur:
             flag_list = flags_svc.list_flags(cur)
+            # Slugs pour le sélecteur « plugin » du formulaire de création
+            cur.execute("SELECT slug FROM plugins WHERE status <> 'removed' ORDER BY slug")
+            plugin_slugs = [row[0] for row in cur.fetchall()]
         return templates.TemplateResponse(request, "feature_flags.html", {
-            "request": request, "flags": flag_list,
+            "request": request, "flags": flag_list, "plugin_slugs": plugin_slugs,
         })
     finally:
         conn.close()
@@ -662,18 +710,25 @@ async def flags_list(request: Request):
 @require_admin
 async def flags_create(request: Request, name: str = Form(...),
                        description: str = Form(""),
-                       default_value: str = Form("true")):
+                       default_value: str = Form("transparent"),
+                       plugin_slug: str = Form(""),
+                       min_plugin_version: str = Form("")):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             flag_id = flags_svc.create_flag(
                 cur, name=name, description=description,
-                default_value=default_value == "true",
+                # Tri-état : 'true'=forcé ON, 'false'=forcé OFF, autre='transparent' (None).
+                default_value={"true": True, "false": False}.get(default_value),
+                plugin_slug=plugin_slug.strip(),
+                min_plugin_version=min_plugin_version.strip() or None,
             )
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="flag.create",
                       resource_type="flag", resource_id=str(flag_id),
-                      payload={"name": name, "default_value": default_value},
+                      payload={"name": name, "default_value": default_value,
+                               "plugin_slug": plugin_slug.strip(),
+                               "min_plugin_version": min_plugin_version.strip() or None},
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse("/admin/flags", status_code=303)
@@ -711,11 +766,13 @@ async def flag_update_default(request: Request, flag_id: int,
     try:
         with conn.cursor() as cur:
             old_flag = flags_svc.get_flag(cur, flag_id)
-            flags_svc.update_flag_default(cur, flag_id, value == "true")
+            # Tri-état : 'true'=forcé ON, 'false'=forcé OFF, autre='transparent' (None).
+            forced = {"true": True, "false": False}.get(value)
+            flags_svc.update_flag_default(cur, flag_id, forced)
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="flag.update",
                       resource_type="flag", resource_id=str(flag_id),
-                      payload={"before": old_flag.get("default_value"), "after": value == "true"},
+                      payload={"before": old_flag.get("default_value"), "after": forced},
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/flags/{flag_id}", status_code=303)
@@ -768,6 +825,27 @@ async def flag_delete_override(request: Request, flag_id: int, cohort_id: int):
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/flags/{flag_id}", status_code=303)
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e)) from e
+    finally:
+        conn.close()
+
+
+@router.delete("/flags/{flag_id}")
+@require_admin
+async def flag_delete(request: Request, flag_id: int):
+    """Supprime un flag et ses overrides (miroir de cohort_delete)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="flag.delete",
+                      resource_type="flag", resource_id=str(flag_id),
+                      ip=request.client.host if request.client else None)
+            flags_svc.delete_flag(cur, flag_id)
+            conn.commit()
+        return RedirectResponse("/admin/flags", status_code=303)
     except Exception as e:
         conn.rollback()
         raise HTTPException(400, str(e)) from e
@@ -1306,7 +1384,7 @@ async def deploy_create(request: Request,
             campaign_name = name.strip() or f"MaJ {device_type} {version}"
             # Resolve plugin_id from device_type for auto-completion of older campaigns
             _deploy_plugin_id = None
-            cur.execute("SELECT id FROM plugins WHERE device_type = %s AND status = 'active' LIMIT 1", (device_type,))
+            cur.execute("SELECT id FROM plugins WHERE device_type = %s AND status = 'active' ORDER BY id DESC LIMIT 1", (device_type,))
             _prow = cur.fetchone()
             if _prow:
                 _deploy_plugin_id = _prow[0]
@@ -1325,11 +1403,26 @@ async def deploy_create(request: Request,
             if deploy_config_template:
                 try:
                     cur.execute(
-                        "UPDATE plugins SET config_template = %s WHERE device_type = %s",
+                        "UPDATE plugins SET config_template = %s WHERE device_type = %s AND status <> 'removed'",
                         (json.dumps(deploy_config_template), device_type),
                     )
                 except Exception as ct_err:
                     logger.warning("deploy: config_template store failed: %s", ct_err)
+                # Sans cette réconciliation, un upload via ce formulaire admin
+                # (le cas des sites air-gap : DGX/prod-sdid) mettait le template
+                # à jour mais laissait l'onglet Flags vide.
+                try:
+                    cur.execute(
+                        "SELECT slug FROM plugins WHERE device_type = %s AND status <> 'removed' ORDER BY id DESC LIMIT 1",
+                        (device_type,),
+                    )
+                    _row = cur.fetchone()
+                    _slug = _row[0] if _row and _row[0] else device_type
+                except Exception:
+                    _slug = device_type
+                flags_svc.safe_reconcile_catalog(
+                    cur, plugin_slug=_slug, template=deploy_config_template,
+                    actor=actor, source="admin:deploy/create")
 
             # Store changelog from dm-manifest.json if present
             if deploy_dm_manifest:
@@ -1953,6 +2046,13 @@ async def catalog_create(request: Request):
                 config_template=parsed_template,
             )
             actor = getattr(request.state, "admin_session", {})
+            # Le template arrive ici en champ de formulaire (extrait du
+            # dm-config.json côté front à la création du plugin) : même contrat
+            # que tous les autres chemins d'import — peupler l'onglet Flags.
+            if parsed_template:
+                flags_svc.safe_reconcile_catalog(
+                    cur, plugin_slug=slug or device_type, template=parsed_template,
+                    actor=actor, source="admin:catalog-create")
             # Create alias if provided
             if alias and alias.strip():
                 try:
@@ -2537,6 +2637,19 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                     catalog_svc.update_plugin(cur, plugin_id, config_template=deploy_config_template)
                 except Exception as ct_err:
                     logger.warning("version upload: config_template store failed: %s", ct_err)
+                # Chemin d'import du template comme les autres → même contrat :
+                # peupler l'onglet Flags (c'est LE chemin « ajouter une version
+                # depuis le Catalogue », utilisé sur les sites air-gap).
+                try:
+                    _plugin = catalog_svc.get_plugin(cur, plugin_id)
+                    _slug = (_plugin or {}).get("slug") or (_plugin or {}).get("device_type")
+                except Exception:
+                    _slug = None
+                if _slug:
+                    flags_svc.safe_reconcile_catalog(
+                        cur, plugin_slug=_slug, template=deploy_config_template,
+                        actor=getattr(request.state, "admin_session", {}),
+                        source="admin:catalog-version-upload")
 
             # 6b. Extract release_notes + update plugin changelog from dm-manifest.json
             if dm_manifest:
@@ -2919,6 +3032,9 @@ async def catalog_migrate_config_templates(request: Request):
                     template = _apply_platform_defaults(template)
                     cur.execute("UPDATE plugins SET config_template = %s WHERE id = %s",
                                 (json.dumps(template), p["id"]))
+                    flags_svc.safe_reconcile_catalog(
+                        cur, plugin_slug=p["slug"] or p["device_type"], template=template,
+                        source="admin:migrate-config-templates")
                     migrated.append({"slug": p["slug"], "status": "migrated"})
                 except Exception as e:
                     errors.append({"slug": p["slug"], "error": str(e)})
@@ -2955,6 +3071,17 @@ async def catalog_save_config_template(request: Request, plugin_id: int):
             audit_log(cur, actor=actor, action="plugin.config_template.update",
                       resource_type="plugin", resource_id=str(plugin_id),
                       ip=request.client.host if request.client else None)
+            # L'édition du template (admin UI ou CI via deploy-release.sh) doit
+            # refléter ses featureToggles dans l'onglet Flags.
+            try:
+                _plugin = catalog_svc.get_plugin(cur, plugin_id)
+                _slug = (_plugin or {}).get("slug") or (_plugin or {}).get("device_type")
+            except Exception:
+                _slug = None
+            if _slug:
+                flags_svc.safe_reconcile_catalog(
+                    cur, plugin_slug=_slug, template=template,
+                    actor=actor, source="admin:config-template")
             conn.commit()
         return JSONResponse({"ok": True})
     except Exception as e:
@@ -3398,51 +3525,138 @@ async def api_debug_status(request: Request):
     return HTMLResponse(banner)
 
 
-@router.get("/api/adoption")
+@router.get("/api/llm-traffic")
 @require_admin
-async def api_adoption(request: Request, period: str = "1M"):
-    """Adoption metrics for dashboard chart."""
-    intervals = {"1J": "1 day", "1S": "7 days", "1M": "30 days", "3M": "90 days", "6M": "180 days"}
-    interval = intervals.get(period, "30 days")
+async def api_llm_traffic(request: Request, period: str = "1J"):
+    """Trafic LLM pour l'histogramme du dashboard (chat vs embeddings).
+
+    Source : table llm_traffic (buckets 5 min agrégés par le proxy —
+    app/llm/traffic.py). Non-fatal : table absente → séries vides.
+    """
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM provisioning WHERE status = 'ENROLLED'")
+            try:
+                data = {
+                    "series": llm_traffic_svc.series(cur, period),
+                    "tiles": llm_traffic_svc.tiles(cur),
+                }
+            except Exception:
+                data = {"series": [], "tiles": {}}
+        return JSONResponse(data)
+    finally:
+        conn.close()
+
+
+@router.get("/api/adoption")
+@require_admin
+async def api_adoption(request: Request, period: str = "1M", mode: str = "device"):
+    """Adoption metrics for dashboard chart.
+
+    `mode` : axe de comptage de TOUT le widget (tuiles + courbe) —
+    `device` = par poste (COUNT DISTINCT client_uuid, comportement historique),
+    `user` = par utilisateur (COUNT DISTINCT email — CITEXT NOT NULL + index
+    sur provisioning ET device_connections). Un 3e mode « total » serait
+    redondant : uq_prov_active garantit 1 enrôlement actif max par device.
+    """
+    intervals = {"1J": "1 day", "1S": "7 days", "1M": "30 days", "3M": "90 days", "6M": "180 days"}
+    interval = intervals.get(period, "30 days")
+    # Allow-list stricte (comme `intervals`) : la valeur interpolée dans les
+    # f-strings SQL vient de CE dict, jamais de l'entrée utilisateur.
+    mode_cols = {"device": "client_uuid", "user": "email"}
+    if mode not in mode_cols:
+        mode = "device"
+    col = mode_cols[mode]
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(DISTINCT {col}) FROM provisioning WHERE status = 'ENROLLED'")
             total = cur.fetchone()[0]
             cur.execute(f"""
-                SELECT COUNT(DISTINCT client_uuid) FROM provisioning
+                SELECT COUNT(DISTINCT {col}) FROM provisioning
                 WHERE status = 'ENROLLED' AND created_at > NOW() - INTERVAL '{interval}'
             """)
             new_period = cur.fetchone()[0]
-            cur.execute("""
-                SELECT COUNT(DISTINCT client_uuid) FROM device_connections
-                WHERE created_at > NOW() - INTERVAL '7 days'
-            """)
+            # « actifs 7j » : clients vus par le heartbeat /config
+            # (plugin_installations, vrais client_uuid) — même population que
+            # le dénominateur (enrôlés). device_connections était pollué par
+            # les jti aléatoires des tokens télémétrie → ratios > 100 % (630 %
+            # constaté sur int).
+            if mode == "user":
+                cur.execute("""
+                    SELECT COUNT(DISTINCT email) FROM plugin_installations
+                    WHERE last_seen_at > NOW() - INTERVAL '7 days' AND email <> ''
+                """)
+            else:
+                cur.execute("""
+                    SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations
+                    WHERE last_seen_at > NOW() - INTERVAL '7 days'
+                """)
             active_7d = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM plugins WHERE status = 'active'")
             plugins_count = cur.fetchone()[0]
-            # Timeseries
+            # Timeseries — total (rétro-compat)
             cur.execute(f"""
-                SELECT d::date AS date, COUNT(DISTINCT p.client_uuid) AS enrolled
+                SELECT d::date AS date, COUNT(DISTINCT p.{col}) AS enrolled
                 FROM generate_series(NOW() - INTERVAL '{interval}', NOW(), '1 day') d
                 LEFT JOIN provisioning p ON p.status = 'ENROLLED' AND p.created_at <= d
                 GROUP BY d::date ORDER BY d::date
             """)
             timeseries = [{"date": str(r[0]), "enrolled": r[1]} for r in cur.fetchall()]
+            # Timeseries PAR PLUGIN — provisioning.device_name = slug du plugin
+            # (le client enrôle avec l'identifiant du plugin ; client_uuid =
+            # plugin_uuid → 1 ligne par poste×plugin). Slug canonique résolu
+            # via plugins.slug puis plugin_aliases, sinon device_name brut.
+            cur.execute(f"""
+                SELECT d::date AS date,
+                       COALESCE(pl.slug, pl2.slug, p.device_name) AS slug,
+                       COUNT(DISTINCT p.{col}) AS enrolled
+                FROM generate_series(NOW() - INTERVAL '{interval}', NOW(), '1 day') d
+                LEFT JOIN provisioning p ON p.status = 'ENROLLED' AND p.created_at <= d
+                LEFT JOIN plugins pl        ON pl.slug  = p.device_name
+                LEFT JOIN plugin_aliases pa ON pa.alias = p.device_name
+                LEFT JOIN plugins pl2       ON pl2.id   = pa.plugin_id
+                GROUP BY 1, 2 ORDER BY 1
+            """)
+            per_plugin: dict[str, list] = {}
+            for r in cur.fetchall():
+                if r[1] is None:
+                    continue  # jours sans aucun enrôlement (LEFT JOIN à vide)
+                per_plugin.setdefault(r[1], []).append({"date": str(r[0]), "enrolled": r[2]})
         return JSONResponse({
             "period": period,
+            "mode": mode,
             "summary": {
                 "total": total, "new_period": new_period,
                 "active_pct": round(active_7d / total * 100) if total else 0,
                 "plugins": plugins_count,
             },
             "timeseries": timeseries,
+            # Une série par plugin, ordre alphabétique STABLE (les couleurs
+            # suivent l'entité, pas le rang d'arrivée)
+            "series": [{"slug": slug, "points": pts} for slug, pts in sorted(per_plugin.items())],
         })
     finally:
         conn.close()
 
 
 # ─── Debug Page ──────────────────────────────────────────────────────────
+
+def _llm_models_detail() -> str:
+    """Détail de la ligne LLM du debug : modèle de chat + modèle d'embedding.
+
+    L'embedding vient du registre runtime_config (valeur EFFECTIVE, surcharges
+    comprises — la même que celle diffusée aux plugins dans `embdModel`), avec
+    repli sur l'env si le registre est indisponible. Vide = embedder désactivé.
+    """
+    model = os.getenv("DEFAULT_MODEL_NAME", "?")
+    try:
+        from app import runtime_config as _rc
+        embd = str(_rc.cfg("EMBD_MODEL_NAME", "") or "")
+    except Exception:
+        embd = str(os.getenv("EMBD_MODEL_NAME", "") or "")
+    return f"{model} · embed: {embd or '(désactivé)'}"
+
 
 @router.get("/debug", response_class=HTMLResponse)
 @require_admin
@@ -3493,19 +3707,19 @@ async def debug_page(request: Request):
         if not llm_url:
             return "non configure"
         token = os.getenv("LLM_API_TOKEN", "")
-        model = os.getenv("DEFAULT_MODEL_NAME", "?")
+        models = _llm_models_detail()
         req = urlreq.Request(f"{llm_url.rstrip('/')}/models",
                              headers={"Authorization": f"Bearer {token}"})
         try:
             with urlreq.urlopen(req, timeout=5):
                 pass
-            return f"{model}"
+            return models
         except urllib_error.HTTPError as e:
             if e.code in (401, 403):
-                return f"{model} (accessible, auth relay requise)"
+                return f"{models} (accessible, auth relay requise)"
             raise
         except OSError:
-            return f"{model} (upstream injoignable)"
+            return f"{models} (upstream injoignable)"
 
     def check_relay():
         relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant")
@@ -3796,22 +4010,66 @@ async def config_verify(request: Request):
 
 # ─── Audit Log ────────────────────────────────────────────────────────────
 
+_AUDIT_PAGE_SIZE = 50
+
+
+def _audit_date_bounds(period: str, date_from: str, date_to: str) -> tuple[str | None, str | None]:
+    """Bornes temporelles : presets (24h/7j/30j) ou dates custom (inclusives)."""
+    presets = {"24h": 1, "7d": 7, "30d": 30}
+    if period in presets:
+        start = datetime.now(UTC) - timedelta(days=presets[period])
+        return start.isoformat(), None
+    if period == "custom":
+        d_from = (date_from or "").strip() or None
+        d_to = (date_to or "").strip() or None
+        if d_to and len(d_to) == 10:
+            d_to = f"{d_to}T23:59:59"  # borne haute inclusive (fin de journée)
+        return d_from, d_to
+    return None, None
+
+
 @router.get("/audit", response_class=HTMLResponse)
 @require_admin
 async def audit_list(request: Request, actor: str = "", action: str = "",
-                     resource_type: str = "", page: int = 0):
+                     resource_type: str = "", q: str = "", period: str = "",
+                     date_from: str = "", date_to: str = "", plugin: str = "",
+                     page: int = 0, partial: str = ""):
+    d_from, d_to = _audit_date_bounds(period, date_from, date_to)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             entries = audit_svc.list_audit_entries(
                 cur, actor=actor or None, action=action or None,
-                resource_type=resource_type or None,
-                limit=100, offset=page * 100,
+                resource_type=resource_type or None, q=q or None,
+                plugin=plugin or None,
+                date_from=d_from, date_to=d_to,
+                limit=_AUDIT_PAGE_SIZE, offset=page * _AUDIT_PAGE_SIZE,
             )
-        return templates.TemplateResponse(request, "audit_log.html", {
+            # Facettes (datalists d'autocomplétion) : uniquement au rendu
+            # complet — les swaps HTMX (filtres live, scroll) n'en ont pas besoin.
+            facets = None
+            if not partial and not request.headers.get("HX-Request"):
+                facets = audit_svc.get_audit_facets(cur)
+
+        filters = {"actor": actor, "action": action, "resource_type": resource_type,
+                   "q": q, "period": period, "date_from": date_from, "date_to": date_to,
+                   "plugin": plugin}
+        # Query string des filtres courants — réutilisée par le sentinel du
+        # scroll infini et le lien d'export (sans `page`).
+        filters_qs = urlencode({k: v for k, v in filters.items() if v})
+        ctx = {
             "request": request, "entries": entries, "page": page,
-            "filters": {"actor": actor, "action": action, "resource_type": resource_type},
-        })
+            "has_more": len(entries) >= _AUDIT_PAGE_SIZE,
+            "filters": filters, "filters_qs": filters_qs,
+        }
+        if partial == "rows":
+            # Scroll infini : le sentinel se remplace par la page suivante
+            return templates.TemplateResponse(request, "_audit_rows.html", ctx)
+        if request.headers.get("HX-Request"):
+            # Filtres live : re-rendu du tableau complet
+            return templates.TemplateResponse(request, "_audit_table.html", ctx)
+        ctx["facets"] = facets
+        return templates.TemplateResponse(request, "audit_log.html", ctx)
     finally:
         conn.close()
 
@@ -3819,13 +4077,17 @@ async def audit_list(request: Request, actor: str = "", action: str = "",
 @router.get("/audit/export")
 @require_admin
 async def audit_export(request: Request, actor: str = "", action: str = "",
-                       resource_type: str = ""):
+                       resource_type: str = "", q: str = "", period: str = "",
+                       date_from: str = "", date_to: str = "", plugin: str = ""):
+    d_from, d_to = _audit_date_bounds(period, date_from, date_to)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             entries = audit_svc.list_audit_entries(
                 cur, actor=actor or None, action=action or None,
-                resource_type=resource_type or None, limit=10000,
+                resource_type=resource_type or None, q=q or None,
+                plugin=plugin or None,
+                date_from=d_from, date_to=d_to, limit=10000,
             )
             # Audit the export itself
             admin_actor = getattr(request.state, "admin_session", {})
@@ -3836,10 +4098,11 @@ async def audit_export(request: Request, actor: str = "", action: str = "",
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["horodatage", "acteur", "action", "type_ressource", "id_ressource", "details"])
+        writer.writerow(["horodatage", "acteur", "action", "plugin", "type_ressource", "id_ressource", "details"])
         for e in entries:
             writer.writerow([
                 e["created_at"], e["actor_email"], e["action"],
+                e.get("plugin_slug") or "",
                 e["resource_type"], e.get("resource_id", ""),
                 json.dumps(e.get("payload")) if e.get("payload") else "",
             ])

@@ -1,0 +1,29 @@
+{# Lignes du journal + sentinel de scroll infini (se remplace par la page
+   suivante quand il devient visible — hx-trigger="revealed"). #}
+{% for a in entries %}
+<tr>
+  <td class="audit-ts" title="{{ a.created_at }}">{{ a.created_at.strftime('%d/%m %H:%M:%S') if a.created_at else '-' }}</td>
+  <td class="audit-actor">{{ a.actor_email }}</td>
+  <td><code class="audit-action">{{ a.action }}</code></td>
+  <td class="audit-res">{{ a.plugin_slug or '-' }}</td>
+  <td class="audit-res">{{ a.resource_type }}{% if a.resource_id %}:{{ a.resource_id }}{% endif %}</td>
+  <td class="audit-payload-cell">
+    {% if a.payload %}
+    <details class="audit-payload">
+      <summary><code>{{ a.payload | string | truncate(64) }}</code></summary>
+      <pre>{{ a.payload | tojson(indent=2) }}</pre>
+    </details>
+    {% else %}-{% endif %}
+  </td>
+</tr>
+{% endfor %}
+{% if not entries and page == 0 %}
+<tr><td colspan="6" style="text-align:center;color:#666;padding:1rem;">Aucune entrée d'audit pour ces filtres.</td></tr>
+{% endif %}
+{% if has_more %}
+<tr class="audit-sentinel"
+    hx-get="/admin/audit?partial=rows&page={{ page + 1 }}{% if filters_qs %}&{{ filters_qs }}{% endif %}"
+    hx-trigger="revealed" hx-swap="outerHTML">
+  <td colspan="6" style="text-align:center;color:#929292;padding:0.5rem;">chargement…</td>
+</tr>
+{% endif %}

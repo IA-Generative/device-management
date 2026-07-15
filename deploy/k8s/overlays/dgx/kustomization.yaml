@@ -19,7 +19,7 @@ resources:
 images:
   - name: <SCALEWAY_REGISTRY>/device-management
     newName: docker.io/<DOCKERHUB_NAMESPACE>/device-management
-    newTag: "0.8.1"
+    newTag: "0.9.0"
   - name: nginx
     newName: docker.io/<DOCKERHUB_NAMESPACE>/nginx
     newTag: "1.29-alpine"
@@ -58,6 +58,10 @@ patches:
     target:
       kind: Deployment
       name: device-management-admin
+  - path: proxy-patch-llm-proxy.yaml
+    target:
+      kind: Deployment
+      name: llm-proxy
   - path: grafana-dgx-patch.yaml
     target:
       kind: Deployment

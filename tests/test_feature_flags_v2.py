@@ -1,0 +1,497 @@
+"""
+Tests de la refonte feature-flags v2 (résolution côté serveur).
+
+Hiérarchie : défaut (template.default) → profil (template.<profil>, deep-merge)
+→ flag FORCÉ (feature_flags.default_value tri-état : true=ON, false=OFF,
+NULL=transparent) → cohorte (feature_flag_overrides, gating min_plugin_version,
+plus spécifique). Le /config transporte l'objet RÉSOLU dans `features`.
+
+Toutes les interactions DB sont mockées — pas de PostgreSQL requis
+(réutilise les helpers de test_enriched_config.py).
+"""
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+from test_enriched_config import _install_db_mock, _load_module
+
+# ---------------------------------------------------------------------------
+# Unit: _build_config_from_template — deep-merge featureToggles
+# ---------------------------------------------------------------------------
+
+_TEMPLATE = {
+    "configVersion": 3,
+    "default": {
+        "enabled": True,
+        "featureToggles": {"composePromptPanel": True, "dailySummary": True, "search": False},
+    },
+    "int": {"featureToggles": {"search": True}},
+    "prod": {},
+}
+
+
+def test_template_deep_merge_feature_toggles():
+    """Le profil qui surcharge UN flag ne doit pas effacer les autres (deep vs superficiel)."""
+    mod = _load_module()
+    out = mod._build_config_from_template(_TEMPLATE, "int")
+    assert out["config"]["featureToggles"] == {
+        "composePromptPanel": True,   # préservé du default (perdu avec un merge superficiel)
+        "dailySummary": True,          # préservé du default
+        "search": True,                # surchargé par le profil int
+    }
+
+
+def test_template_profile_without_toggles_keeps_default():
+    mod = _load_module()
+    out = mod._build_config_from_template(_TEMPLATE, "prod")
+    assert out["config"]["featureToggles"] == _TEMPLATE["default"]["featureToggles"]
+
+
+def test_template_default_without_toggles():
+    mod = _load_module()
+    tpl = {"default": {"enabled": True}, "int": {"featureToggles": {"search": True}}}
+    out = mod._build_config_from_template(tpl, "int")
+    assert out["config"]["featureToggles"] == {"search": True}
+
+
+# ---------------------------------------------------------------------------
+# Unit: _resolve_feature_flags — overrides cohorte UNIQUEMENT
+# ---------------------------------------------------------------------------
+
+class _FakeCur:
+    """Cursor minimal : renvoie les mêmes rows pour tout fetchall."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append(sql)
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+def test_resolve_flags_no_cohort_returns_empty_without_query():
+    mod = _load_module()
+    cur = _FakeCur([("search", True, None)])
+    assert mod._resolve_feature_flags(cur, device_cohort_ids=[], plugin_version="1.0.0") == {}
+    assert cur.executed == [], "sans cohorte, aucun SQL ne doit partir"
+
+
+def test_resolve_flags_returns_only_cohort_overrides():
+    mod = _load_module()
+    cur = _FakeCur([("search", True, None)])
+    flags = mod._resolve_feature_flags(cur, device_cohort_ids=[1], plugin_version="1.0.0")
+    assert flags == {"search": True}
+
+
+def test_resolve_flags_false_wins_between_cohorts():
+    mod = _load_module()
+    cur = _FakeCur([("search", True, None), ("search", False, None)])
+    flags = mod._resolve_feature_flags(cur, device_cohort_ids=[1, 2], plugin_version="1.0.0")
+    assert flags == {"search": False}
+
+
+def test_resolve_flags_min_plugin_version_gating():
+    mod = _load_module()
+    rows = [("search", True, "0.13.7")]
+    # plugin trop vieux → override ignoré
+    assert mod._resolve_feature_flags(_FakeCur(rows), device_cohort_ids=[1], plugin_version="0.13.6") == {}
+    # plugin au niveau → override appliqué
+    assert mod._resolve_feature_flags(_FakeCur(rows), device_cohort_ids=[1], plugin_version="0.13.7") == {"search": True}
+    # version inconnue → fail-safe, override gated ignoré
+    assert mod._resolve_feature_flags(_FakeCur(rows), device_cohort_ids=[1], plugin_version="") == {}
+
+
+# ---------------------------------------------------------------------------
+# Unit: _resolve_forced_flags — surcharge tri-état (default_value NULL/true/false)
+# ---------------------------------------------------------------------------
+
+def test_resolve_forced_flags_on_and_off():
+    mod = _load_module()
+    # La requête filtre `default_value IS NOT NULL` : seuls les flags forcés
+    # remontent. true=forcé ON, false=forcé OFF sont tous deux renvoyés.
+    cur = _FakeCur([("search", True, None), ("dailySummary", False, None)])
+    forced = mod._resolve_forced_flags(cur, plugin_version="1.0.0", plugin_slug="matisse")
+    assert forced == {"search": True, "dailySummary": False}
+    assert any("IS NOT NULL" in s for s in cur.executed), "les transparents sont filtrés en SQL"
+
+
+def test_resolve_forced_flags_empty_when_all_transparent():
+    mod = _load_module()
+    # Aucun flag forcé (tous transparents) → le curseur ne renvoie rien.
+    got = mod._resolve_forced_flags(_FakeCur([]), plugin_version="1.0.0", plugin_slug="matisse")
+    assert got == {}
+
+
+def test_resolve_forced_flags_min_plugin_version_gating():
+    mod = _load_module()
+    rows = [("search", True, "0.13.7")]
+    off = mod._resolve_forced_flags(_FakeCur(rows), plugin_version="0.13.6", plugin_slug="matisse")
+    assert off == {}, "plugin trop vieux → forçage ignoré"
+    ok = mod._resolve_forced_flags(_FakeCur(rows), plugin_version="0.13.7", plugin_slug="matisse")
+    assert ok == {"search": True}
+    unknown = mod._resolve_forced_flags(_FakeCur(rows), plugin_version="", plugin_slug="matisse")
+    assert unknown == {}, "version inconnue → fail-safe"
+
+
+# ---------------------------------------------------------------------------
+# E2E (/config, DB mockée) : per-profil, override cohorte, gating
+# ---------------------------------------------------------------------------
+
+def _db_rows_for_device(extra: dict | None = None) -> dict:
+    """Rows mockées pour un device 'matisse' avec _TEMPLATE en DB.
+
+    NB fragments : la requête config_template contient à la fois
+    'OR device_type' et 'AND status' — 'OR device_type' doit être déclaré
+    AVANT pour matcher en premier (ordre d'insertion du dict).
+    """
+    rows = {
+        "OR device_type": [(_TEMPLATE,)],
+        "AND status": [("matisse", "thunderbird", 1)],
+        "access_mode": [(1, "open", None)],
+        "FROM cohorts": [],
+        "cohort_members": [],
+        "feature_flag_overrides": [],
+        "campaigns": [],
+    }
+    rows.update(extra or {})
+    return rows
+
+
+def test_config_features_per_profile():
+    """int → search=true, prod → search=false : le per-profil vient du template."""
+    mod = _load_module()
+    patcher = _install_db_mock(mod, _db_rows_for_device())
+    try:
+        client = TestClient(mod.app)
+
+        res_int = client.get("/config/config.json?profile=int&device=matisse")
+        assert res_int.status_code == 200
+        feats_int = res_int.json()["features"]
+        assert feats_int["search"] is True
+        assert feats_int["composePromptPanel"] is True, "deep-merge : flag du default préservé"
+        assert feats_int["dailySummary"] is True
+
+        res_prod = client.get("/config/config.json?profile=prod&device=matisse")
+        assert res_prod.status_code == 200
+        feats_prod = res_prod.json()["features"]
+        assert feats_prod["search"] is False
+        assert feats_prod["composePromptPanel"] is True
+    finally:
+        patcher.stop()
+
+
+def test_config_cohort_override_beats_template():
+    """L'override cohorte gagne sur la valeur du profil (int: search=true → false)."""
+    mod = _load_module()
+    rows = _db_rows_for_device({
+        "FROM cohorts": [(7, "manual", {})],
+        "cohort_members": [(7,)],
+        "feature_flag_overrides": [("search", False, None)],
+    })
+    patcher = _install_db_mock(mod, rows)
+    try:
+        client = TestClient(mod.app)
+        res = client.get(
+            "/config/config.json?profile=int&device=matisse",
+            headers={"X-User-Email": "user@example.gouv.fr"},
+        )
+        assert res.status_code == 200
+        feats = res.json()["features"]
+        assert feats["search"] is False, "cohorte l'emporte sur le template"
+        assert feats["composePromptPanel"] is True, "flags non surchargés inchangés"
+    finally:
+        patcher.stop()
+
+
+def test_config_cohort_override_gated_by_min_plugin_version():
+    """Override gated : plugin trop vieux → la valeur du profil s'applique."""
+    mod = _load_module()
+    rows = _db_rows_for_device({
+        "FROM cohorts": [(7, "manual", {})],
+        "cohort_members": [(7,)],
+        "feature_flag_overrides": [("search", False, "9.9.9")],
+    })
+    patcher = _install_db_mock(mod, rows)
+    try:
+        client = TestClient(mod.app)
+        res = client.get(
+            "/config/config.json?profile=int&device=matisse",
+            headers={"X-User-Email": "user@example.gouv.fr", "X-Plugin-Version": "0.13.7"},
+        )
+        assert res.status_code == 200
+        assert res.json()["features"]["search"] is True, "override 9.9.9 ignoré pour un plugin 0.13.7"
+    finally:
+        patcher.stop()
+
+
+def test_config_forced_flag_on_overrides_template():
+    """Flag forcé ON (default_value=true) → surcharge le template prod (search=false)."""
+    mod = _load_module()
+    rows = _db_rows_for_device({"default_value IS NOT NULL": [("search", True, None)]})
+    patcher = _install_db_mock(mod, rows)
+    try:
+        client = TestClient(mod.app)
+        res = client.get("/config/config.json?profile=prod&device=matisse",
+                         headers={"X-User-Email": "user@example.gouv.fr"})
+        assert res.status_code == 200
+        feats = res.json()["features"]
+        assert feats["search"] is True, "forcé ON surcharge le template prod (false)"
+        assert feats["composePromptPanel"] is True, "flags non forcés inchangés"
+    finally:
+        patcher.stop()
+
+
+def test_config_forced_flag_off_overrides_template():
+    """Flag forcé OFF (default_value=false) → surcharge le template int (search=true)."""
+    mod = _load_module()
+    rows = _db_rows_for_device({"default_value IS NOT NULL": [("search", False, None)]})
+    patcher = _install_db_mock(mod, rows)
+    try:
+        client = TestClient(mod.app)
+        res = client.get("/config/config.json?profile=int&device=matisse",
+                         headers={"X-User-Email": "user@example.gouv.fr"})
+        assert res.status_code == 200
+        assert res.json()["features"]["search"] is False, "forcé OFF surcharge le template int (true)"
+    finally:
+        patcher.stop()
+
+
+def test_config_cohort_override_beats_forced_flag():
+    """Précédence : l'override cohorte (plus spécifique) gagne sur le forçage global."""
+    mod = _load_module()
+    rows = _db_rows_for_device({
+        "default_value IS NOT NULL": [("search", True, None)],   # forcé ON global
+        "FROM cohorts": [(7, "manual", {})],
+        "cohort_members": [(7,)],
+        "feature_flag_overrides": [("search", False, None)],     # cohorte force OFF
+    })
+    patcher = _install_db_mock(mod, rows)
+    try:
+        client = TestClient(mod.app)
+        res = client.get("/config/config.json?profile=prod&device=matisse",
+                         headers={"X-User-Email": "user@example.gouv.fr"})
+        assert res.status_code == 200
+        assert res.json()["features"]["search"] is False, "la cohorte l'emporte sur le forçage global"
+    finally:
+        patcher.stop()
+
+
+# ---------------------------------------------------------------------------
+# Unit: catalogue scopé — réconciliation à l'import + delete_flag (Phase 3)
+# ---------------------------------------------------------------------------
+
+class _ScriptedCur:
+    """Cursor scripté : fetchall/fetchone selon un fragment SQL, executes enregistrés."""
+
+    def __init__(self, rows_by_fragment: dict):
+        self._rows = rows_by_fragment
+        self.executed: list[tuple[str, object]] = []
+        self._last_sql = ""
+
+    def execute(self, sql, params=None):
+        self._last_sql = sql
+        self.executed.append((" ".join(sql.split()), params))
+
+    def fetchall(self):
+        for fragment, rows in self._rows.items():
+            if fragment in self._last_sql:
+                return list(rows)
+        return []
+
+    def fetchone(self):
+        rows = self.fetchall()
+        return rows[0] if rows else None
+
+
+def _flags_svc():
+    from app.admin.services import flags
+    return flags
+
+
+def test_reconcile_import_adds_union_of_profiles():
+    """+flag au bump : union des clés featureToggles (default + tous profils) → UPSERT scopé."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"SELECT name, deprecated": []})
+    tpl = {
+        "configVersion": 3,
+        "default": {"featureToggles": {"a": True, "b": False}},
+        "int": {"featureToggles": {"c": True}},
+        "prod": {},
+    }
+    diff = svc.reconcile_catalog_from_template(cur, plugin_slug="matisse", template=tpl)
+    assert diff["added"] == ["a", "b", "c"]
+    assert diff["kept"] == [] and diff["orphaned"] == []
+    inserts = [(sql, p) for sql, p in cur.executed if "INSERT INTO feature_flags" in sql]
+    # Import = TRANSPARENT : default_value NULL (littéral SQL, non passé en param).
+    assert [(p[0], p[1]) for _, p in inserts] == [
+        ("a", "matisse"), ("b", "matisse"), ("c", "matisse"),
+    ]
+    assert all("VALUES (%s, %s, %s, NULL, false)" in sql for sql, _ in inserts)
+    assert all("ON CONFLICT (plugin_slug, name)" in sql for sql, _ in inserts)
+    # L'état admin (forcé ON/OFF/transparent) n'est JAMAIS réécrit au reconcile.
+    assert all("default_value = EXCLUDED" not in sql for sql, _ in inserts)
+
+
+def test_reconcile_import_marks_orphans_no_delete():
+    """−flag au bump : flag absent du template → deprecated (marqué), jamais DELETE."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"SELECT name, deprecated": [("a", False), ("ghost", False), ("dead", True)]})
+    tpl = {"default": {"featureToggles": {"a": True}}}
+    diff = svc.reconcile_catalog_from_template(cur, plugin_slug="matisse", template=tpl)
+    assert diff["kept"] == ["a"]
+    assert diff["orphaned"] == ["ghost"]
+    assert diff["already_deprecated"] == ["dead"]
+    updates = [sql for sql, _ in cur.executed if "SET deprecated = true" in sql]
+    assert len(updates) == 1
+    assert not any(sql.startswith("DELETE") for sql, _ in cur.executed), "pas d'auto-delete"
+
+
+def test_reconcile_import_reactivates_returning_flag():
+    """Un flag revenu dans le template après avoir été orphelin est réactivé."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"SELECT name, deprecated": [("a", True)]})
+    tpl = {"default": {"featureToggles": {"a": True}}}
+    diff = svc.reconcile_catalog_from_template(cur, plugin_slug="matisse", template=tpl)
+    assert diff["reactivated"] == ["a"]
+    assert diff["orphaned"] == []
+
+
+def test_delete_flag_removes_overrides_then_flag():
+    svc = _flags_svc()
+    cur = _ScriptedCur({"DELETE FROM feature_flags": [(42,)]})
+    assert svc.delete_flag(cur, 42) is True
+    sqls = [sql for sql, _ in cur.executed]
+    assert "DELETE FROM feature_flag_overrides WHERE feature_id = %s" in sqls[0]
+    assert "DELETE FROM feature_flags WHERE id = %s RETURNING id" in sqls[1]
+
+
+def test_delete_flag_missing_returns_false():
+    svc = _flags_svc()
+    cur = _ScriptedCur({})
+    assert svc.delete_flag(cur, 999) is False
+
+
+def test_resolve_flags_scoped_by_plugin_and_excludes_deprecated():
+    """La requête des overrides est scopée (plugin_slug IN ('', slug)) et exclut les deprecated."""
+    mod = _load_module()
+    cur = _FakeCur([("search", True, None)])
+    mod._resolve_feature_flags(cur, device_cohort_ids=[1], plugin_version="1.0.0",
+                               plugin_slug="matisse")
+    sql = cur.executed[0]
+    assert "ff.deprecated = false" in sql
+    assert "ff.plugin_slug IN ('', %s)" in sql
+
+
+def test_resolve_flags_gated_by_flag_level_min_version():
+    """min_plugin_version posé sur le FLAG (création admin) gate tous ses overrides."""
+    mod = _load_module()
+    # rows: (name, value, override_min_pv, flag_min_pv)
+    rows = [("search", True, None, "0.13.8")]
+    # plugin trop vieux → gate flag bloque
+    assert mod._resolve_feature_flags(_FakeCur(rows), device_cohort_ids=[1],
+                                      plugin_version="0.13.7") == {}
+    # version inconnue → fail-safe
+    assert mod._resolve_feature_flags(_FakeCur(rows), device_cohort_ids=[1],
+                                      plugin_version="") == {}
+    # au niveau → appliqué
+    assert mod._resolve_feature_flags(_FakeCur(rows), device_cohort_ids=[1],
+                                      plugin_version="0.13.8") == {"search": True}
+    # les deux gates doivent passer (flag OK mais override plus exigeant → bloqué)
+    rows2 = [("search", True, "9.9.9", "0.13.8")]
+    assert mod._resolve_feature_flags(_FakeCur(rows2), device_cohort_ids=[1],
+                                      plugin_version="0.13.8") == {}
+
+
+def test_create_flag_with_plugin_and_min_version():
+    """create_flag persiste plugin_slug + min_plugin_version (2a)."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"RETURNING id": [(11,)]})
+    fid = svc.create_flag(cur, name="beta_panel", description="", default_value=True,
+                          plugin_slug="mirai-matisse", min_plugin_version="0.14.0")
+    assert fid == 11
+    sql, params = cur.executed[0]
+    assert "plugin_slug, min_plugin_version" in sql
+    assert params == ("beta_panel", "", True, "mirai-matisse", "0.14.0")
+    # défauts : global, toutes versions
+    cur2 = _ScriptedCur({"RETURNING id": [(12,)]})
+    svc.create_flag(cur2, name="x", description="", default_value=False)
+    assert cur2.executed[0][1] == ("x", "", False, "", None)
+
+
+def test_upsert_plugin_installation_heartbeat():
+    """/config enrichi alimente plugin_installations (la table n'était JAMAIS écrite)."""
+    mod = _load_module()
+    cur = _ScriptedCur({})
+    mod._upsert_plugin_installation(cur, plugin_id=9, client_uuid="uuid-1",
+                                    email="e@x.fr", version="0.13.8")
+    sql, params = cur.executed[0]
+    assert "INSERT INTO plugin_installations" in sql
+    assert "ON CONFLICT (plugin_id, client_uuid)" in sql
+    assert params == (9, "uuid-1", "e@x.fr", "0.13.8")
+    # sans client_uuid, plugin_id OU version → no-op (une sonde curl sans
+    # X-Plugin-Version ne doit pas créer d'installation fantôme sans version,
+    # comptée dans « actives » mais rattachée à aucune version)
+    cur2 = _ScriptedCur({})
+    mod._upsert_plugin_installation(cur2, plugin_id=None, client_uuid="u", version="1.0")
+    mod._upsert_plugin_installation(cur2, plugin_id=9, client_uuid="", version="1.0")
+    mod._upsert_plugin_installation(cur2, plugin_id=9, client_uuid="u", version="")
+    assert cur2.executed == []
+
+
+def test_config_flag_removed_from_template_disappears():
+    """−flag au bump : un flag retiré du template ne doit plus apparaître dans features."""
+    mod = _load_module()
+    tpl_v2 = {
+        "configVersion": 4,
+        "default": {"enabled": True, "featureToggles": {"composePromptPanel": True}},
+        "int": {},
+    }
+    patcher = _install_db_mock(mod, _db_rows_for_device({"OR device_type": [(tpl_v2,)]}))
+    try:
+        client = TestClient(mod.app)
+        res = client.get("/config/config.json?profile=int&device=matisse")
+        assert res.status_code == 200
+        feats = res.json()["features"]
+        assert feats == {"composePromptPanel": True}
+        assert "search" not in feats, "zéro fantôme côté serveur"
+    finally:
+        patcher.stop()
+
+
+# ── safe_reconcile_catalog : wrapper partagé par TOUS les chemins d'import ────
+# (API plugin-deploy, formulaire admin deploy/create, éditeur config-template,
+# migration). Bug historique : seule la route API réconciliait — un upload via
+# le formulaire admin (sites air-gap) laissait l'onglet Flags vide.
+
+def test_safe_reconcile_returns_diff_and_audits():
+    """Chemin nominal : diff retourné + entrée d'audit flag.reconcile écrite."""
+    svc = _flags_svc()
+    cur = _ScriptedCur({"SELECT name, deprecated": []})
+    tpl = {"default": {"featureToggles": {"search": False, "dailySummary": True}}}
+
+    diff = svc.safe_reconcile_catalog(
+        cur, plugin_slug="matisse", template=tpl,
+        actor={"email": "admin@test", "sub": "x"}, source="admin:deploy/create")
+
+    assert diff is not None
+    assert diff["added"] == ["dailySummary", "search"]
+    audit_inserts = [sql for sql, _ in cur.executed if "admin_audit_log" in sql]
+    assert audit_inserts, "l'audit flag.reconcile doit être journalisé"
+
+
+def test_safe_reconcile_is_never_fatal():
+    """Un échec de réconciliation ne doit JAMAIS faire échouer l'import du template."""
+    svc = _flags_svc()
+
+    class _BrokenCur:
+        def execute(self, sql, params=None):
+            raise RuntimeError("db down")
+
+    diff = svc.safe_reconcile_catalog(
+        _BrokenCur(), plugin_slug="matisse",
+        template={"default": {"featureToggles": {"search": True}}},
+        source="admin:config-template")
+
+    assert diff is None

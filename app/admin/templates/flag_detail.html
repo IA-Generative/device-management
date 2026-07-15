@@ -9,13 +9,22 @@
 <h1 class="dm-page-title">{{ flag.name }}</h1>
 <p style="color: #666;">{{ flag.description or 'Aucune description' }}</p>
 
-<!-- Default value -->
-<h2 style="font-size: 1.125rem; margin-top: 1.5rem;">Valeur globale</h2>
+<!-- Default value (tri-état) -->
+<h2 style="font-size: 1.125rem; margin-top: 1.5rem;">État global</h2>
+<p style="color: #666; font-size: 0.85rem;">
+  État actuel :
+  {% if flag.state == 'forced_on' %}<span class="dm-badge dm-badge--success">Forcé ON</span>
+  {% elif flag.state == 'forced_off' %}<span class="dm-badge dm-badge--error">Forcé OFF</span>
+  {% else %}<span class="dm-badge">Transparent</span>{% endif %}
+  — <em>Transparent</em> laisse le template (par profil) ⊕ overrides cohorte décider ;
+  <em>Forcé ON/OFF</em> surcharge le template pour tous.
+</p>
 <form hx-post="/admin/flags/{{ flag.id }}/default" hx-swap="none"
       style="display: flex; gap: 0.5rem; align-items: center;">
   <select name="value" class="dm-select">
-    <option value="true" {% if flag.default_value %}selected{% endif %}>Active pour tous</option>
-    <option value="false" {% if not flag.default_value %}selected{% endif %}>Desactive par defaut</option>
+    <option value="transparent" {% if flag.default_value is none %}selected{% endif %}>Transparent (le template décide)</option>
+    <option value="true" {% if flag.default_value is true %}selected{% endif %}>Forcé ON</option>
+    <option value="false" {% if flag.default_value is false %}selected{% endif %}>Forcé OFF</option>
   </select>
   <button type="submit" class="dm-btn dm-btn--primary dm-btn--sm">Enregistrer</button>
 </form>

@@ -237,7 +237,10 @@ CREATE INDEX IF NOT EXISTS idx_pva_version ON plugin_version_artifacts(plugin_ve
 
 CREATE TABLE IF NOT EXISTS plugin_installations (
     id SERIAL PRIMARY KEY,
-    plugin_id INT NOT NULL REFERENCES plugins(id),
+    -- CASCADE comme les FK sœurs (plugin_versions/aliases/…) : sans lui, la
+    -- purge d'un plugin 'removed' ayant des installations est bloquée (FK
+    -- NO ACTION — constaté DGX). Bases existantes : fixup dans apply_schema.
+    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
     client_uuid VARCHAR(255) NOT NULL,
     email VARCHAR(255),
     installed_version VARCHAR(50),
@@ -309,20 +312,39 @@ CREATE TABLE IF NOT EXISTS campaign_device_status (
 );
 CREATE INDEX IF NOT EXISTS idx_cds ON campaign_device_status(campaign_id, status);
 
+-- Catalogue des feature flags, SCOPÉ par plugin (plugin_slug, ''=global/legacy).
+-- default_value est TRI-ÉTAT (surcharge admin appliquée dans /config) :
+--   NULL  = transparent (le template par profil ⊕ overrides cohorte décident),
+--   true  = forcé ON, false = forcé OFF.
+-- Un flag est enregistré transparent (NULL) au premier import ; le reconcile ne
+-- réécrit jamais un état admin déjà posé. deprecated = orphelin (flag disparu du
+-- template au dernier import) — marqué, jamais auto-supprimé. Migration des
+-- tables existantes : ALTERs idempotents dans app/services/db.py (apply_schema).
 CREATE TABLE IF NOT EXISTS feature_flags (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(100) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    plugin_slug VARCHAR(100) NOT NULL DEFAULT '',
     description TEXT,
-    default_value BOOLEAN DEFAULT true,
+    default_value BOOLEAN,  -- NULL=transparent | true=forcé ON | false=forcé OFF
+    deprecated BOOLEAN NOT NULL DEFAULT false,
+    -- Version plugin minimale à partir de laquelle le flag s'applique
+    -- (NULL = toutes les versions). Gate fail-safe : version inconnue = pas
+    -- d'application des overrides de ce flag.
+    min_plugin_version VARCHAR(50),
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS ux_feature_flags_slug_name ON feature_flags (plugin_slug, name);
+CREATE INDEX IF NOT EXISTS ix_feature_flags_plugin_slug ON feature_flags (plugin_slug);
 
 CREATE TABLE IF NOT EXISTS feature_flag_overrides (
     feature_id INT NOT NULL REFERENCES feature_flags(id) ON DELETE CASCADE,
     cohort_id INT NOT NULL REFERENCES cohorts(id) ON DELETE CASCADE,
     value BOOLEAN NOT NULL,
     min_plugin_version VARCHAR(50),
+    -- Référencée par get_flag_overrides et l'ON CONFLICT de create_override :
+    -- son absence historique cassait /admin/flags/{id} (UndefinedColumn).
+    updated_at TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (feature_id, cohort_id)
 );
 
@@ -428,10 +450,15 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
     resource_id TEXT,
     payload JSONB,
     ip_address INET,
-    user_agent TEXT
+    user_agent TEXT,
+    -- Plugin concerné, rempli À L'ÉCRITURE par le helper audit_log (dérivation
+    -- ressource/payload/catalogue). Migration + backfill one-shot de
+    -- l'historique : app/services/db.py (apply_schema).
+    plugin_slug VARCHAR(100)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at ON admin_audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON admin_audit_log(actor_email);
+CREATE INDEX IF NOT EXISTS idx_audit_plugin ON admin_audit_log(plugin_slug);
 
 -- ═══════════════════════════════════════════════════════════════
 -- RUNTIME CONFIG OVERRIDES (admin-editable, propagated across pods)
@@ -478,6 +505,38 @@ CREATE TABLE IF NOT EXISTS config_pod_state (
     last_heartbeat_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_cps_heartbeat ON config_pod_state(last_heartbeat_at DESC);
+
+-- ═══════════════════════════════════════════════════════════════
+-- PROXY LLM : compteurs de quota par utilisateur (fenêtre fixe)
+-- ═══════════════════════════════════════════════════════════════
+
+-- Une ligne par (subject = client_uuid du relay client, fenêtre) ; créée lazy à
+-- la première requête via UPSERT atomique. Compteurs PARTAGÉS entre tous les
+-- réplicas llm-proxy (aucun état local) — cf. app/llm/throttle.py.
+CREATE TABLE IF NOT EXISTS llm_quota_counters (
+    subject       TEXT        NOT NULL,
+    window_start  TIMESTAMPTZ NOT NULL,
+    count         INT         NOT NULL DEFAULT 0,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (subject, window_start)
+);
+CREATE INDEX IF NOT EXISTS idx_llm_quota_window ON llm_quota_counters(window_start);
+
+-- Trafic LLM agrégé par bucket de 5 min (app/llm/traffic.py, flush périodique
+-- UPSERT) — alimente l'histogramme chat/embeddings du dashboard admin. Table
+-- volontairement AGRÉGÉE (jamais une ligne par appel : rafales d'embeddings).
+CREATE TABLE IF NOT EXISTS llm_traffic (
+    bucket_ts TIMESTAMPTZ NOT NULL,
+    route VARCHAR(30) NOT NULL,            -- 'chat' | 'embeddings' | 'models'
+    model VARCHAR(200) NOT NULL DEFAULT '',
+    status_class VARCHAR(5) NOT NULL,      -- '2xx' | '4xx' | '5xx' | '0xx'
+    count INT NOT NULL DEFAULT 0,
+    duration_ms_sum BIGINT NOT NULL DEFAULT 0,
+    duration_ms_max INT NOT NULL DEFAULT 0,
+    tokens_sum BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (bucket_ts, route, model, status_class)
+);
+CREATE INDEX IF NOT EXISTS idx_llm_traffic_bucket ON llm_traffic(bucket_ts DESC);
 
 -- ═══════════════════════════════════════════════════════════════
 -- ═══════════════════════════════════════════════════════════════

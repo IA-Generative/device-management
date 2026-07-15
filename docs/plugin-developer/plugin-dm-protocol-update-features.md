@@ -158,12 +158,20 @@ EnrichedConfigResponse
     "keycloakRealm": "mirai",
     "keycloakClientId": "mirai-lo",
     "systemPrompt": "Tu es un assistant...",
+    "embdModel": "bge-multilingual-gemma2",
+    "embdUrl": "https://host/bootstrap/llm/v1",
+    "embdToken": "<= llmToken minté (ou vide si pas de relay auth)>",
     "telemetryEnabled": true,
     "telemetryEndpoint": "https://traces.example.com/v1/traces",
     "telemetryKey": "<token>"
   }
 }
 ```
+
+**Embedder (RAG)** — `embdModel` / `embdUrl` / `embdToken` sont émis par le DM en **miroir du LLM** :
+`embdUrl = llmEndpoint` (le plugin appende `/embeddings`), `embdToken = llmToken`. Seul `embdModel`
+(= `EMBD_MODEL_NAME` côté DM, vide = embedder désactivé) est propre à l'embedder. Côté plugin, `embdModel`
+va en pref ; l'URL/token sont réutilisés in-memory depuis le LLM (pas de token périssable en `about:config`).
 
 ### 4.3 Objet `update` — directive de mise à jour
 
@@ -219,20 +227,36 @@ EnrichedConfigResponse
 { "update": null }
 ```
 
-### 4.4 Objet `features` — flags calculés pour ce device
+### 4.4 Objet `features` — l'objet RÉSOLU par le serveur (v2, DM 0.9.2+)
 
-Calcul : `défaut global` + `surcharge de cohorte` + `contrainte de version plugin`.
+> **Refonte 2026-07-14 (« feature flags v2 »).** L'ancienne résolution (défauts du
+> catalogue `feature_flags` + overrides) créait une double source de vérité et des
+> flags fantômes côté client. Depuis la v2 :
+
+```
+features = deepMerge(template.default, template.<profil>).featureToggles
+           ⊕ overrides_cohorte
+```
+
+- **L'autorité des défauts est le config template** (dm-config.json du plugin,
+  ingéré à l'upload), résolu PAR PROFIL avec un **deep-merge** : un profil qui
+  surcharge un flag n'efface pas les autres.
+- Le **catalogue** `feature_flags` est **scopé par plugin** (`plugin_slug`) et
+  synchronisé automatiquement à chaque import (union des clés `featureToggles` de
+  tous les profils) ; son `default_value` est **indicatif**. Un flag disparu du
+  template est marqué **orphelin** (`deprecated`) — plus jamais diffusé, jamais
+  auto-supprimé (suppression explicite via l'admin).
+- Seuls les **overrides de cohorte** participent à la résolution serveur, par-dessus
+  le template.
 
 ```json
 {
   "features": {
-    "writer_assistant":        true,
-    "calc_assistant":          false,
-    "edit_whole_document":     true,
-    "show_thinking_widget":    true,
-    "auto_update":             true,
-    "telemetry":               true,
-    "experimental_streaming":  false
+    "composePromptPanel": true,
+    "dailySummary":       true,
+    "calendarDetector":   true,
+    "threadSummary":      true,
+    "search":             true
   }
 }
 ```
@@ -240,34 +264,36 @@ Calcul : `défaut global` + `surcharge de cohorte` + `contrainte de version plug
 **Règle de résolution (priorité décroissante) :**
 
 ```
-1. override cohorte  (false > true si plusieurs cohortes contradictoires)
-2. défaut global du flag
-3. true si flag absent côté DM (non-cassant pour les vieux clients)
+1. override cohorte   (false gagne si plusieurs cohortes contradictoires)
+2. valeur du PROFIL du template   (deep-merge default ⊕ profil)
+3. côté client : défaut local (prefs.js) si le flag est absent de `features`
 ```
 
-**Contrainte de version sur un flag** — DB uniquement, transparent pour le plugin :
+**Côté plugin (contrat de consommation)** : `features` est stocké tel quel dans un
+pref d'override (`featureTogglesOverride`) **remplacé EN BLOC** à chaque `/config`
+(jamais fusionné) ; l'état effectif est recalculé à chaque lecture :
+`effectif = défauts prefs.js ⊕ override`. Un flag retiré côté DM disparaît donc du
+poste à la réponse suivante — zéro fantôme, y compris via le cache disque.
+
+**Contraintes de version** — deux gates, tous deux **fail-safe** (version inconnue
+= gate fermé), transparents pour le plugin :
 
 ```
-feature: edit_whole_document
-  default: false
-  override cohort=all: true  MAIS min_plugin_version = "1.5.0"
+flag.min_plugin_version       (posé à la création admin ; NULL = toutes versions)
+override.min_plugin_version   (posé sur l'override de cohorte)
 
-→ plugin v1.2.0 : features.edit_whole_document = false  (version trop ancienne)
-→ plugin v1.5.0 : features.edit_whole_document = true
+→ l'override ne s'applique que si les DEUX gates passent pour X-Plugin-Version
 ```
 
 ```mermaid
 flowchart TD
-    A[Compute feature flag F pour device D] --> B[Lire default_value de F]
-    B --> C{Cohortes de D ont\nun override pour F ?}
-    C -- non --> D[valeur = default_value]
-    C -- oui --> E[valeur = override\nfalse gagne si conflit]
-    E --> F{min_plugin_version\ndéfini ?}
-    D --> F
-    F -- non --> G[retourner valeur]
-    F -- oui --> H{X-Plugin-Version\n>= min_plugin_version ?}
-    H -- oui --> G
-    H -- non --> I[retourner false\nfeature indisponible\npour cette version]
+    A[Résoudre features pour device D, profil P] --> B[featureToggles du template :\ndeepMerge default ⊕ P]
+    B --> C{Cohortes de D ont\ndes overrides ?}
+    C -- non --> G[features = valeurs du template]
+    C -- oui --> E{gates min_plugin_version\nflag ET override passent ?\nfail-safe si version inconnue}
+    E -- non --> G
+    E -- oui --> F[appliquer override\nfalse gagne si conflit]
+    F --> G[retourner l'objet résolu\nremplacé EN BLOC côté client]
 ```
 
 ---
@@ -416,6 +442,58 @@ stateDiagram-v2
 
 Ces événements permettent au DM de mettre à jour `campaign_device_status.status`
 (`updated` | `failed`) et `version_after` via le pipeline telemetry existant.
+
+## 8 bis. Journalisation fonctionnelle des erreurs du relais LLM (`/llm/v1`)
+
+Depuis la 0.9.0, le trafic LLM des plugins transite par le proxy du DM, qui répond avec
+des erreurs **exploitables** : statut HTTP réel + corps JSON
+`{"error": {"message", "type", "code"}}`, complété pour le quota (`429`) par
+`"retry_after"` (secondes) et le header `Retry-After`, et pour toutes les réponses par
+l'en-tête de corrélation `X-Request-Id`.
+
+**Exigence plugin** : tout plugin actif DOIT journaliser fonctionnellement ces erreurs
+via le pipeline télémétrie existant — c'est ce qui donne la vue *parc côté client*
+(vécu utilisateur : combien d'agents butent sur le quota, réessaient, abandonnent),
+complémentaire de la vue serveur (le DM compte déjà chaque 429 émis : métrique
+`dm_llm_quota_denied_total` + journal d'audit par requête).
+
+```json
+{
+  "name": "LlmRelayError",
+  "attributes": {
+    "llm.status_code":    429,
+    "llm.error_code":     "rate_limit_exceeded",
+    "llm.retry_after_s":  30,
+    "llm.request_id":     "<valeur de l'en-tête X-Request-Id>",
+    "llm.model":          "modele-demande",
+    "llm.endpoint":       "chat/completions",
+    "llm.will_retry":     true,
+    "plugin.platform_type": "libreoffice"
+  }
+}
+```
+
+Règles :
+
+- **statuts à couvrir** : `429` (quota — avec `retry_after_s`), `401` (credentials
+  invalides/expirés → déclencher un rafraîchissement `/config`, voire un ré-enrôlement),
+  `403` (guardrail), `5xx`/timeout (backend indisponible) ;
+- **`llm.request_id` obligatoire** (recopie de `X-Request-Id`) : c'est la clé de
+  corrélation avec le journal d'audit serveur du proxy — un incident se suit de bout en
+  bout avec cet identifiant ;
+- **jamais de contenu** : ni prompt ni réponse dans les attributs (même règle que le
+  journal d'audit serveur) ;
+- **anti-tempête** : dédupliquer côté client (au plus un événement par
+  (`error_code`, fenêtre de ~1 min)) — un utilisateur au quota qui insiste ne doit pas
+  générer une rafale d'événements ; le champ `llm.will_retry` distingue le réessai
+  automatique de l'abandon ;
+- **comportement UX attendu sur 429** : respecter `retry_after` (pas de réessai
+  immédiat) et l'afficher à l'utilisateur (« réessayez dans N s »).
+
+> **Cas du plugin figé (Thunderbird 60)** : il ne peut pas émettre ces événements. Le
+> suivi de son parc repose sur la vue serveur (audit + métriques du proxy), qui couvre
+> tous les clients sans exception — l'événement client est un enrichissement, pas la
+> source de vérité.
 
 ---
 

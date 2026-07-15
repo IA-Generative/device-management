@@ -199,6 +199,13 @@ def ensure_dev_privileges(admin_bootstrap_url: str) -> None:
         conn.close()
 
 
+# Verrou consultatif : sérialise l'application du schéma quand N pods démarrent
+# en même temps (sinon course Postgres « tuple concurrently updated » sur les
+# GRANT concurrents → le batch entier est annulé sur TOUS les pods et les tables
+# config_state/… manquent, laissant le readiness gate à 503).
+_SCHEMA_APPLY_LOCK_ID = 727270910
+
+
 def apply_schema(db_url_str: str, schema_path: str) -> None:
     """Apply schema.sql with pre-migration fixups."""
     if psycopg2 is None:
@@ -211,6 +218,7 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s)", (_SCHEMA_APPLY_LOCK_ID,))
             cur.execute("""
                 DO $$ BEGIN
                   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'campaigns') THEN
@@ -253,6 +261,102 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                       WHERE table_name = 'plugins' AND column_name = 'gecko_id'
                     ) THEN
                       ALTER TABLE plugins ADD COLUMN gecko_id VARCHAR(128);
+                    END IF;
+                  END IF;
+                  -- Flags v2 : catalogue scopé par plugin + marquage orphelins
+                  -- (CREATE TABLE IF NOT EXISTS n'ajoute pas de colonne à une
+                  -- table existante → ALTER explicite ; l'unicité globale sur
+                  -- name laisse place à (plugin_slug, name), cf. schema.sql).
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'feature_flags') THEN
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'feature_flags' AND column_name = 'plugin_slug'
+                    ) THEN
+                      ALTER TABLE feature_flags ADD COLUMN plugin_slug VARCHAR(100) NOT NULL DEFAULT '';
+                    END IF;
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'feature_flags' AND column_name = 'deprecated'
+                    ) THEN
+                      ALTER TABLE feature_flags ADD COLUMN deprecated BOOLEAN NOT NULL DEFAULT false;
+                    END IF;
+                    -- Version min PAR FLAG (création manuelle admin ; NULL = toutes)
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'feature_flags' AND column_name = 'min_plugin_version'
+                    ) THEN
+                      ALTER TABLE feature_flags ADD COLUMN min_plugin_version VARCHAR(50);
+                    END IF;
+                    IF EXISTS (
+                      SELECT 1 FROM pg_constraint
+                      WHERE conname = 'feature_flags_name_key' AND conrelid = 'feature_flags'::regclass
+                    ) THEN
+                      ALTER TABLE feature_flags DROP CONSTRAINT feature_flags_name_key;
+                    END IF;
+                  END IF;
+                  -- feature_flag_overrides.updated_at : référencée depuis toujours
+                  -- par get_flag_overrides + l'ON CONFLICT de create_override, mais
+                  -- jamais créée → /admin/flags/{id} cassait (UndefinedColumn).
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'feature_flag_overrides') THEN
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'feature_flag_overrides' AND column_name = 'updated_at'
+                    ) THEN
+                      ALTER TABLE feature_flag_overrides ADD COLUMN updated_at TIMESTAMPTZ DEFAULT now();
+                    END IF;
+                  END IF;
+                  -- feature_flags.default_value TRI-ÉTAT : le défaut colonne passe
+                  -- de `true` à NULL (transparent). Les lignes EXISTANTES gardent
+                  -- leur valeur (true=forcé ON / false=forcé OFF) ; seuls les
+                  -- NOUVEAUX flags naissent transparents (le reconcile insère NULL).
+                  -- ALTER ... DROP DEFAULT est un no-op si déjà absent (idempotent).
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'feature_flags') THEN
+                    ALTER TABLE feature_flags ALTER COLUMN default_value DROP DEFAULT;
+                  END IF;
+                  -- plugin_installations.plugin_id → ON DELETE CASCADE (aligne
+                  -- sur les FK sœurs). La contrainte d'origine (NO ACTION)
+                  -- bloquait la purge d'un plugin 'removed' ayant des
+                  -- installations (constaté DGX). CREATE TABLE IF NOT EXISTS ne
+                  -- rejoue pas la contrainte sur une base existante → DROP/ADD
+                  -- explicite, UNIQUEMENT si la règle n'est pas déjà CASCADE
+                  -- (idempotent, rejouable).
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'plugin_installations') THEN
+                    IF EXISTS (
+                      SELECT 1 FROM pg_constraint
+                      WHERE conname = 'plugin_installations_plugin_id_fkey'
+                        AND conrelid = 'plugin_installations'::regclass
+                        AND confdeltype <> 'c'
+                    ) THEN
+                      ALTER TABLE plugin_installations DROP CONSTRAINT plugin_installations_plugin_id_fkey;
+                      ALTER TABLE plugin_installations
+                        ADD CONSTRAINT plugin_installations_plugin_id_fkey
+                        FOREIGN KEY (plugin_id) REFERENCES plugins(id) ON DELETE CASCADE;
+                    END IF;
+                  END IF;
+                  -- Journal d'audit : plugin_slug PERSISTÉ (rempli à l'écriture
+                  -- par le helper audit_log). Backfill ONE-SHOT de l'historique à
+                  -- la création de la colonne — même dérivation que la lecture
+                  -- (ressource plugin:*, payload plugin_slug/plugin_id, flag:N) ;
+                  -- fige la valeur avant toute suppression future de plugin/flag.
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'admin_audit_log') THEN
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'admin_audit_log' AND column_name = 'plugin_slug'
+                    ) THEN
+                      ALTER TABLE admin_audit_log ADD COLUMN plugin_slug VARCHAR(100);
+                      UPDATE admin_audit_log a SET plugin_slug = COALESCE(
+                        CASE WHEN a.resource_type = 'plugin' AND a.resource_id !~ '^[0-9]+$'
+                              AND a.resource_id <> '*' THEN a.resource_id END,
+                        CASE WHEN a.resource_type = 'plugin' AND a.resource_id ~ '^[0-9]+$' THEN
+                          (SELECT p.slug FROM plugins p WHERE p.id = a.resource_id::int) END,
+                        a.payload->>'plugin_slug',
+                        (SELECT p.slug FROM plugins p
+                          WHERE (a.payload->>'plugin_id') ~ '^[0-9]+$'
+                            AND p.id = (a.payload->>'plugin_id')::int),
+                        CASE WHEN a.resource_type = 'flag' AND a.resource_id ~ '^[0-9]+$' THEN
+                          (SELECT NULLIF(ff.plugin_slug, '') FROM feature_flags ff
+                            WHERE ff.id = a.resource_id::int) END
+                      );
                     END IF;
                   END IF;
                 END $$;

@@ -18,20 +18,66 @@ def get_db_connection():
     return psycopg2.connect(os.getenv("DATABASE_URL", ""))
 
 
+def _derive_audit_plugin(cur, *, resource_type: str, resource_id,
+                         payload: dict | None) -> str | None:
+    """Plugin concerné par l'entrée d'audit — dérivé À L'ÉCRITURE (persisté),
+    pour que l'historique survive aux suppressions futures de plugins/flags.
+    Sources, dans l'ordre : ressource plugin:<slug> ; payload.plugin_slug ;
+    payload.plugin_id résolu via le catalogue ; flag:N → feature_flags."""
+    if resource_type == "plugin" and resource_id:
+        rid = str(resource_id)
+        if rid.isdigit():
+            # Certaines actions historiques référencent plugin:<id> numérique
+            cur.execute("SELECT slug FROM plugins WHERE id = %s", (int(rid),))
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0]
+        elif rid != "*":  # '*' = purge globale, pas de plugin unique
+            return rid
+    if isinstance(payload, dict):
+        slug = str(payload.get("plugin_slug") or "").strip()
+        if slug:
+            return slug
+        plugin_id = payload.get("plugin_id")
+        if plugin_id is not None and str(plugin_id).isdigit():
+            cur.execute("SELECT slug FROM plugins WHERE id = %s", (int(plugin_id),))
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0]
+    if resource_type == "flag" and resource_id and str(resource_id).isdigit():
+        cur.execute("SELECT NULLIF(plugin_slug, '') FROM feature_flags WHERE id = %s",
+                    (int(resource_id),))
+        row = cur.fetchone()
+        if row and row[0]:
+            return row[0]
+    return None
+
+
 def audit_log(cur, *, actor: dict, action: str, resource_type: str,
               resource_id: str = None, payload: dict = None,
-              ip: str = None, ua: str = None):
-    """Insert an audit log entry. Must be called within the same transaction."""
+              ip: str = None, ua: str = None, plugin: str = None):
+    """Insert an audit log entry. Must be called within the same transaction.
+
+    `plugin` : slug explicite ; sinon dérivé automatiquement (ressource,
+    payload, catalogue) — aucun call-site à modifier. Non-fatal : une
+    dérivation qui échoue ne bloque jamais l'écriture de l'audit.
+    """
+    if plugin is None:
+        try:
+            plugin = _derive_audit_plugin(cur, resource_type=resource_type,
+                                          resource_id=resource_id, payload=payload)
+        except Exception:
+            plugin = None
     cur.execute("""
         INSERT INTO admin_audit_log
-          (actor_email, actor_sub, action, resource_type, resource_id, payload, ip_address, user_agent)
-        VALUES (%s, %s, %s, %s, %s, %s, %s::inet, %s)
+          (actor_email, actor_sub, action, resource_type, resource_id, payload, ip_address, user_agent, plugin_slug)
+        VALUES (%s, %s, %s, %s, %s, %s, %s::inet, %s, %s)
     """, (
         actor.get("email", "unknown"),
         actor.get("sub", "unknown"),
         action, resource_type, resource_id,
         json.dumps(payload) if payload else None,
-        ip, ua
+        ip, ua, plugin
     ))
     # Émet aussi l'entrée d'audit sur stdout (visible via `kubectl logs` / SIEM).
     # La table admin_audit_log reste la source de vérité ; ce log assure qu'une
