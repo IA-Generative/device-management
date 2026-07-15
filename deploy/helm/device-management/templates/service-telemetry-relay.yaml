@@ -1,0 +1,16 @@
+{{- if .Values.telemetryRelay.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "telemetry-relay") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "telemetry-relay") | nindent 4 }}
+spec:
+  type: {{ .Values.telemetryRelay.service.type }}
+  selector:
+    {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "telemetry-relay") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.telemetryRelay.service.port }}
+      targetPort: http
+{{- end }}

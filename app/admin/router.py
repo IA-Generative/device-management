@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.templating import Jinja2Templates
 
 from app.pathsafe import safe_path_join, safe_segment
+from app.resilience import retry_transient
 
 from .. import runtime_config as rcfg
 from ..services.crypto import encrypt_secret, secrets_encryption_available
@@ -1604,6 +1605,18 @@ A partir du texte fourni, extrais les informations suivantes au format JSON stri
 Si tu ne trouves pas une info, mets une chaine vide ou une liste vide. Reponds uniquement avec le JSON."""
 
 
+@retry_transient()
+async def _call_llm_chat_completions(llm_url: str, llm_token: str, payload: dict, *, verify: bool = True) -> dict:
+    """POST /chat/completions — retry bornée : contrairement à l'échange de
+    code OIDC (usage unique), rejouer une génération LLM n'a pas d'effet de
+    bord persistant à double-soumission."""
+    async with httpx.AsyncClient(verify=verify, timeout=30) as client:
+        r = await client.post(f"{llm_url}/chat/completions", json=payload,
+                              headers={"Authorization": f"Bearer {llm_token}"})
+        r.raise_for_status()
+        return r.json()
+
+
 # ─── Chunked upload (bypass WAF body size limits) ──────────────────────
 # WAF corporate blocks multipart POST > ~2 MB. This endpoint receives
 # file chunks of ≤512 KB each, stores them in /tmp, and returns an
@@ -1843,11 +1856,7 @@ async def api_catalog_suggest(request: Request):
         "max_tokens": 2000,
     }
     try:
-        async with httpx.AsyncClient(verify=_tls_verify(), timeout=30) as client:
-            r = await client.post(f"{llm_url}/chat/completions", json=payload,
-                                  headers={"Authorization": f"Bearer {llm_token}"})
-            r.raise_for_status()
-            result = r.json()
+        result = await _call_llm_chat_completions(llm_url, llm_token, payload, verify=_tls_verify())
         content = result["choices"][0]["message"]["content"]
         suggestion = extract_suggestion_json(content)  # défensif, jamais d'IndexError
     except Exception as e:

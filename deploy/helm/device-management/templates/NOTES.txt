@@ -1,0 +1,52 @@
+device-management has been deployed ({{ .Release.Name }} in {{ .Release.Namespace }}).
+
+{{- if .Values.migration.enabled }}
+Schema migrations ran as a pre-install/pre-upgrade hook Job:
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "device-management.componentName" (dict "root" . "component" "migrate") }}
+{{- end }}
+
+Enabled components:
+{{- if .Values.api.enabled }}
+  - api            {{ include "device-management.componentName" (dict "root" . "component" "api") }} ({{ .Values.api.replicaCount }} replica(s){{ if .Values.api.autoscaling.enabled }}, autoscaled {{ .Values.api.autoscaling.minReplicas }}-{{ .Values.api.autoscaling.maxReplicas }}{{ end }})
+{{- end }}
+{{- if .Values.admin.enabled }}
+  - admin          {{ include "device-management.componentName" (dict "root" . "component" "admin") }} ({{ .Values.admin.replicaCount }} replica)
+{{- end }}
+{{- if .Values.worker.enabled }}
+  - worker         {{ include "device-management.componentName" (dict "root" . "component" "worker") }} ({{ .Values.worker.replicaCount }} replica(s){{ if .Values.worker.autoscaling.enabled }}, autoscaled {{ .Values.worker.autoscaling.minReplicas }}-{{ .Values.worker.autoscaling.maxReplicas }}{{ end }})
+{{- end }}
+{{- if .Values.telemetryRelay.enabled }}
+  - telemetryRelay {{ include "device-management.componentName" (dict "root" . "component" "telemetry-relay") }} ({{ .Values.telemetryRelay.replicaCount }} replica)
+{{- end }}
+{{- if .Values.postgres.internal.enabled }}
+  - postgres (dev) {{ include "device-management.componentName" (dict "root" . "component" "postgres") }} — NOT for production use
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+Ingress:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+
+No Ingress created (ingress.enabled=false). Expose the api/admin/telemetryRelay
+Services yourself (OpenShift Route, Gateway API HTTPRoute, or your own
+Ingress/proxy) — see README.md "Install matrix".
+{{- end }}
+
+{{- if (not .Values.secrets.existingSecret) }}
+
+WARNING: secrets.existingSecret is not set — this release owns a Secret
+({{ include "device-management.secretName" . }}) created from
+secrets.values in your values file / --set flags. For production, prefer
+managing that Secret outside Helm (external-secrets, sealed-secrets, manual
+apply) and point secrets.existingSecret at it instead.
+{{- end }}
+
+{{- if .Values.postgres.internal.enabled }}
+
+WARNING: postgres.internal.enabled=true deploys a single, non-HA Postgres
+instance for development/demo only. Point secrets.values.DATABASE_URL /
+DATABASE_ADMIN_URL at an externally managed database for production.
+{{- end }}

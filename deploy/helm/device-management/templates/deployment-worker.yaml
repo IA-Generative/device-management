@@ -1,0 +1,148 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "worker") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
+  replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- toYaml .Values.worker.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 8 }}
+        {{- with .Values.worker.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.worker.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "device-management.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "device-management.podSecurityContext" . | nindent 8 }}
+      # Leaves time for the worker to finish the job it is currently
+      # processing before SIGTERM (per-job stop-check on the app side).
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      {{- if .Values.worker.waitForPostgres.enabled }}
+      initContainers:
+        - name: wait-for-postgres
+          image: "{{ .Values.worker.waitForPostgres.image.repository }}:{{ .Values.worker.waitForPostgres.image.tag }}"
+          securityContext:
+            {{- include "device-management.containerSecurityContext" . | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h {{ .Values.worker.waitForPostgres.host | default (include "device-management.postgresHost" .) }} -U {{ .Values.config.postgres.user }}; do
+                echo "waiting for postgres...";
+                sleep 2;
+              done
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "device-management.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "device-management.containerSecurityContext" . | nindent 12 }}
+          command: ["python", "-m", "app.worker_main"]
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "device-management.configMapName" . }}
+          env:
+            - name: DM_RUNTIME_MODE
+              value: "worker"
+            {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" 3 "editable" true) | nindent 12 }}
+            - name: DM_QUEUE_ENABLED
+              value: {{ .Values.worker.queue.enabled | quote }}
+            - name: DM_QUEUE_BATCH_SIZE
+              value: {{ .Values.worker.queue.batchSize | quote }}
+            - name: DM_QUEUE_POLL_INTERVAL_SECONDS
+              value: {{ .Values.worker.queue.pollIntervalSeconds | quote }}
+            - name: DM_QUEUE_LOCK_TTL_SECONDS
+              value: {{ .Values.worker.queue.lockTtlSeconds | quote }}
+            - name: DM_QUEUE_DEFAULT_MAX_ATTEMPTS
+              value: {{ .Values.worker.queue.defaultMaxAttempts | quote }}
+            - name: DM_QUEUE_RETRY_BASE_SECONDS
+              value: {{ .Values.worker.queue.retryBaseSeconds | quote }}
+            - name: DM_QUEUE_RETRY_MAX_SECONDS
+              value: {{ .Values.worker.queue.retryMaxSeconds | quote }}
+            - name: DM_QUEUE_RETRY_JITTER_SECONDS
+              value: {{ .Values.worker.queue.retryJitterSeconds | quote }}
+            - name: DM_STORE_ENROLL_LOCALLY
+              value: "false"
+            - name: DM_ENROLL_DIR
+              value: /tmp/enroll
+            # Heartbeat file touched on every worker-loop iteration,
+            # consumed by the livenessProbe below (freshness check).
+            - name: DM_WORKER_HEARTBEAT_FILE
+              value: {{ .Values.worker.heartbeatFile | quote }}
+            {{- include "device-management.awsEnv" . | nindent 12 }}
+            {{- include "device-management.databaseEnv" . | nindent 12 }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: enroll
+              mountPath: /data/enroll
+            {{- with .Values.worker.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          # The worker exposes no HTTP endpoint: heartbeat-file freshness is
+          # used as the liveness signal instead (stuck/crashed loop -> file
+          # stops being refreshed).
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import os,sys,time; p=os.environ.get('DM_WORKER_HEARTBEAT_FILE','/tmp/dm-worker-heartbeat'); sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<{{ .Values.worker.livenessProbe.maxAgeSeconds }} else 1)"
+            initialDelaySeconds: {{ .Values.worker.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.worker.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.worker.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.worker.livenessProbe.failureThreshold }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: enroll
+          emptyDir: {}
+        {{- with .Values.worker.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

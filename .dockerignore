@@ -1,8 +1,8 @@
 # Allow-list : on ignore tout par défaut, on ne laisse entrer dans le contexte
-# de build QUE ce que le Dockerfile copie (requirements.txt, app/, db/).
-# Cela exclut notamment deploy/ (qui contient les secrets d'overlay gitignored),
-# .git, .venv, tests/, docs/, scripts/ — rien de sensible ne part au daemon.
+# de build QUE ce que le Dockerfile copie.
 *
 !requirements.txt
 !app
 !db
+!alembic
+!alembic.ini

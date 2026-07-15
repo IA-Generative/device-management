@@ -29,6 +29,8 @@ from functools import wraps
 from fastapi import HTTPException, Request
 from fastapi.responses import RedirectResponse
 
+from app.resilience import retry_transient
+
 logger = logging.getLogger("dm-admin-auth")
 
 SESSION_COOKIE = "dm_admin_session"
@@ -100,6 +102,13 @@ _oidc_config: dict = {}
 _oidc_config_lock = threading.Lock()
 
 
+@retry_transient()
+def _fetch_oidc_discovery(url: str) -> bytes:
+    """GET (idempotent) → retry bornée sur erreur réseau transitoire."""
+    with urllib.request.urlopen(url, timeout=5) as r:
+        return r.read()
+
+
 def _get_oidc_config() -> dict:
     """Fetch OIDC discovery config. If ADMIN_OIDC_PUBLIC_ISSUER_URL is set,
     rewrite endpoint URLs so browser-side redirects use the public URL
@@ -116,8 +125,7 @@ def _get_oidc_config() -> dict:
             return _oidc_config
         url = OIDC_ISSUER.rstrip("/") + "/.well-known/openid-configuration"
         try:
-            with urllib.request.urlopen(url, timeout=5) as r:
-                cfg = json.loads(r.read())
+            cfg = json.loads(_fetch_oidc_discovery(url))
         except Exception:
             logger.warning("OIDC discovery failed for %s", url)
             return _oidc_config

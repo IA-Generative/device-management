@@ -26,6 +26,7 @@ from botocore.client import Config
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 try:
     import psycopg2  # type: ignore
@@ -45,6 +46,8 @@ except ModuleNotFoundError:  # pragma: no cover
 if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.environ:
     os.environ["DATABASE_URL"] = "postgresql://dev:dev@localhost:5432/bootstrap"
 
+from . import observability as _observability
+from . import resilience as _resilience
 from . import runtime_config
 from .postgres_queue import PostgresQueue, QueueJob
 from .s3 import s3_client
@@ -112,15 +115,23 @@ logger = logging.getLogger("device-management")
 # émettant un récap horaire des lignes filtrées (preuve que le filtrage est actif).
 def _configure_logging() -> None:
     from .logfilters import HealthProbeFilter
+    from .observability import JsonLogFormatter, RequestIdLogFilter
 
     level_name = os.getenv("LOG_LEVEL", "info").upper()
     level = getattr(logging, level_name, logging.INFO)
+    # DM_LOG_FORMAT=json → formateur JSON stdlib (agrégateurs de logs) ; sinon
+    # format texte historique, désormais enrichi du request_id de corrélation.
+    log_format = os.getenv("DM_LOG_FORMAT", "text").strip().lower()
     root = logging.getLogger()
     if not any(getattr(h, "_dm_stdout", False) for h in root.handlers):
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-        )
+        if log_format == "json":
+            handler.setFormatter(JsonLogFormatter())
+        else:
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s [%(name)s] request_id=%(request_id)s %(message)s")
+            )
+        handler.addFilter(RequestIdLogFilter())
         handler._dm_stdout = True  # type: ignore[attr-defined]
         root.addHandler(handler)
     root.setLevel(level)
@@ -329,6 +340,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---- Request-ID de corrélation (toujours actif — ne dépend d'aucun service
+# externe) : honore X-Request-ID si fourni, sinon en génère un ; le renvoie en
+# en-tête de réponse et l'injecte dans les logs + le span OTel courant.
+# Enregistré APRÈS le CORS ci-dessus → il devient le middleware le plus externe
+# (exécuté en premier), donc le request_id est disponible dès le début du
+# traitement (y compris pour security_headers, plus interne).
+app.middleware("http")(_observability.request_id_middleware)
+
+# ---- OpenTelemetry (traces) : no-op tant que OTEL_EXPORTER_OTLP_ENDPOINT n'est
+# pas défini — comportement air-gapped inchangé par défaut.
+_observability.configure_otel(app)
+
 MAX_BODY_BYTES = settings.max_body_size_mb * 1024 * 1024
 TELEMETRY_MAX_BODY_BYTES = settings.telemetry_max_body_size_mb * 1024 * 1024
 S3_BINARIES_PREFIX = settings.s3_prefix_binaries
@@ -387,7 +410,11 @@ def _pull_binary_from_admin(s3_path: str) -> bool:
     """Pull a binary from the admin pod's files API and cache it locally.
 
     Called on download-miss: the API pod doesn't have the file yet.
+    No-op when binaries_mode isn't "local" — there is no PVC-backed admin pod
+    to pull from, and binaries are served straight from S3 instead.
     """
+    if settings.binaries_mode != "local":
+        return False
     token = (settings.queue_admin_token or "").strip()
     admin_url = os.getenv("DM_ADMIN_INTERNAL_URL", "http://device-management-admin").rstrip("/")
     if not token:
@@ -415,6 +442,52 @@ def _pull_binary_from_admin(s3_path: str) -> bool:
     except Exception as exc:
         logger.warning("pull_binary_from_admin: %s failed: %s", url, exc)
     return False
+
+
+def _persist_plugin_binary(data: bytes, rel_path: str, filename: str, device_type: str) -> str:
+    """Persiste un binaire uploadé et renvoie la valeur à stocker en `artifacts.s3_path`.
+
+    - binaries_mode == "local" : écrit dans le cache disque du pod API et
+      transfère une copie vers le pod admin (PVC), comme avant — la référence
+      renvoyée suit la convention "/data/content/binaries/..." consommée par
+      `_pull_binary_from_admin`.
+    - binaries_mode in ("presign", "proxy") : upload direct vers S3, aucun
+      disque impliqué ; la référence renvoyée est la clé S3.
+    """
+    if settings.binaries_mode != "local":
+        if not settings.s3_bucket:
+            raise RuntimeError(
+                f"S3 bucket not configured (DM_S3_BUCKET) for DM_BINARIES_MODE={settings.binaries_mode}"
+            )
+        key = f"{S3_BINARIES_PREFIX.rstrip('/')}/{rel_path}"
+        s3_client().put_object(Bucket=settings.s3_bucket, Key=key, Body=data, ContentType="application/octet-stream")
+        return key
+
+    _binaries_base = settings.local_binaries_dir
+    os.makedirs(_safe_path_join(_binaries_base, device_type), exist_ok=True)
+    full_path = _safe_path_join(_binaries_base, rel_path)
+    with open(full_path, "wb") as f:
+        f.write(data)
+
+    # Forward to admin pod (persistent storage) for pull-on-miss
+    _admin_url = os.getenv("DM_ADMIN_INTERNAL_URL", "http://device-management-admin").rstrip("/")
+    _admin_token = (settings.queue_admin_token or "").strip()
+    _admin_base = "/data/content/binaries"
+    _admin_full = f"{_admin_base}/{rel_path}"
+    if _admin_token:
+        try:
+            import io as _io2
+            _files = {"file": (filename, _io2.BytesIO(data), "application/octet-stream")}
+            _resp = httpx.put(
+                f"{_admin_url}/admin/api/files/upload/{rel_path}",
+                files=_files, headers={"x-admin-token": _admin_token}, timeout=30,
+                verify=_TLS_VERIFY,
+            )
+            if _resp.status_code == 200:
+                logger.info("persist_plugin_binary: forwarded %s to admin pod", rel_path)
+        except Exception as fwd_err:
+            logger.warning("persist_plugin_binary: admin forward failed: %s", fwd_err)
+    return _admin_full
 
 
 def _config_cache_clear() -> None:
@@ -1415,6 +1488,20 @@ def _resolve_allowed_auth_algorithms() -> list[str]:
     return values or ["RS256"]
 
 
+@_resilience.retry_transient()
+def _fetch_oidc_discovery(url: str) -> bytes:
+    """GET (idempotent) → retry bornée sur erreur réseau transitoire."""
+    req = urllib_request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    with urllib_request.urlopen(req, timeout=5) as resp:
+        return resp.read()
+
+
+@_resilience.retry_transient()
+def _fetch_jwks_signing_key(jwks_client, token: str):
+    """GET du JWKS (idempotent) → retry bornée sur erreur réseau transitoire."""
+    return jwks_client.get_signing_key_from_jwt(token)
+
+
 def _resolve_jwks_uri(issuer: str) -> str:
     explicit_jwks_url = str(settings.auth_jwks_url or "").strip()
     if explicit_jwks_url:
@@ -1431,15 +1518,9 @@ def _resolve_jwks_uri(issuer: str) -> str:
     discovery_url = f"{issuer}/.well-known/openid-configuration"
     jwks_uri = ""
     try:
-        req = urllib_request.Request(
-            discovery_url,
-            headers={"Accept": "application/json"},
-            method="GET",
-        )
-        with urllib_request.urlopen(req, timeout=5) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-            if isinstance(payload, dict):
-                jwks_uri = str(payload.get("jwks_uri") or "").strip()
+        payload = json.loads(_fetch_oidc_discovery(discovery_url).decode("utf-8"))
+        if isinstance(payload, dict):
+            jwks_uri = str(payload.get("jwks_uri") or "").strip()
     except Exception:
         jwks_uri = ""
 
@@ -1492,7 +1573,7 @@ def _verify_access_token(token: str) -> dict:
 
     try:
         jwks_client = _get_jwks_client(issuer)
-        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        signing_key = _fetch_jwks_signing_key(jwks_client, token)
         payload = jwt.decode(
             token,
             signing_key.key,
@@ -2098,6 +2179,16 @@ def _process_queue_job(job: QueueJob) -> None:
     raise RuntimeError(f"unknown queue topic '{job.topic}'")
 
 
+def _touch_worker_heartbeat() -> None:
+    """Write the current timestamp to the worker heartbeat file (liveness probe)."""
+    path = os.getenv("DM_WORKER_HEARTBEAT_FILE", "/tmp/dm-worker-heartbeat")
+    try:
+        with open(path, "w") as f:
+            f.write(str(time.time()))
+    except OSError as exc:
+        logger.warning("Queue worker heartbeat write failed (path=%s): %s", path, exc)
+
+
 def _run_queue_worker_loop(stop_event: threading.Event | None = None, once: bool = False) -> None:
     queue = _get_queue_manager()
     if not queue:
@@ -2110,6 +2201,7 @@ def _run_queue_worker_loop(stop_event: threading.Event | None = None, once: bool
     logger.info("Queue worker loop started: worker_id=%s batch_size=%s", worker_id, batch_size)
 
     while not stop.is_set():
+        _touch_worker_heartbeat()
         jobs = queue.claim_jobs(worker_id=worker_id, limit=batch_size)
         if not jobs:
             if once:
@@ -2118,6 +2210,8 @@ def _run_queue_worker_loop(stop_event: threading.Event | None = None, once: bool
             continue
 
         for job in jobs:
+            if stop.is_set():
+                break
             try:
                 _process_queue_job(job)
                 queue.ack(job_id=job.id, worker_id=worker_id)
@@ -2141,6 +2235,7 @@ def _run_queue_worker_loop(stop_event: threading.Event | None = None, once: bool
                     job.max_attempts,
                     error_text,
                 )
+            _touch_worker_heartbeat()
 
 
 def _s3_connectivity_check_worker() -> None:
@@ -3005,6 +3100,52 @@ async def telemetry_traces(request: Request):
     return response
 
 
+def _enroll_persist_sync(
+    *,
+    body: bytes,
+    email: str,
+    client_uuid: str,
+    fingerprint: str,
+    device_name: str,
+    source_ip: str | None,
+    user_agent: str | None,
+    dedupe_key: str | None,
+) -> tuple[dict, dict[str, str | bool], bool, str | None]:
+    """Partie bloquante de /enroll (DB relay + enqueue + éventuel persist
+    disque/S3) — exécutée en threadpool par l'endpoint async."""
+    relay_data = _mint_or_rotate_relay_credentials(client_uuid=client_uuid, email=email)
+
+    queued, job_id = _enqueue_enroll_payload(
+        body=body,
+        email=email,
+        client_uuid=client_uuid,
+        fingerprint=fingerprint,
+        device_name=device_name,
+        source_ip=source_ip,
+        user_agent=user_agent,
+        dedupe_key=dedupe_key,
+    )
+
+    stored: dict[str, str | bool] = {}
+    if queued:
+        stored = {"queued": True, "jobId": str(job_id or "")}
+    else:
+        try:
+            stored = _persist_enroll_side_effects(
+                body=body,
+                email=email,
+                client_uuid=client_uuid,
+                fingerprint=fingerprint,
+                device_name=device_name,
+                source_ip=source_ip,
+                user_agent=user_agent,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Cannot persist enroll payload: {e!r}") from e
+
+    return relay_data, stored, queued, job_id
+
+
 @app.api_route("/enroll", methods=["POST", "PUT", "OPTIONS"])
 async def enroll(request: Request):
     if request.method == "OPTIONS":
@@ -3036,7 +3177,8 @@ async def enroll(request: Request):
     access_token = _extract_access_token_from_request(request)
     logger.info("Enroll: bearer token present=%s length=%d", bool(access_token), len(access_token) if access_token else 0)
     try:
-        auth_email = _email_from_access_token(access_token)
+        # Blocking : fetch JWKS / vérif JWT (réseau) — hors event-loop.
+        auth_email = await run_in_threadpool(_email_from_access_token, access_token)
     except HTTPException as exc:
         logger.warning("Enroll: _email_from_access_token raised HTTP %d: %s", exc.status_code, exc.detail)
         if exc.status_code >= 500:
@@ -3059,8 +3201,6 @@ async def enroll(request: Request):
     source_ip = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
 
-    relay_data = _mint_or_rotate_relay_credentials(client_uuid=client_uuid, email=email)
-
     idempotency_key = (
         request.headers.get("x-idempotency-key")
         or request.headers.get("x-request-id")
@@ -3068,7 +3208,12 @@ async def enroll(request: Request):
     ).strip()
     dedupe_key = f"enroll:{client_uuid}:{idempotency_key}" if idempotency_key else None
 
-    queued, job_id = _enqueue_enroll_payload(
+    # Blocking : DB (relay mint, enqueue) + éventuellement disque/S3 (persist) —
+    # hors event-loop, en un seul aller-retour dans le threadpool. Le detail
+    # HTTPException(500) de _enroll_persist_sync (échec du persist uniquement)
+    # traverse run_in_threadpool tel quel — même contrat d'erreur qu'avant.
+    relay_data, stored, queued, job_id = await run_in_threadpool(
+        _enroll_persist_sync,
         body=body,
         email=email,
         client_uuid=client_uuid,
@@ -3078,23 +3223,6 @@ async def enroll(request: Request):
         user_agent=user_agent,
         dedupe_key=dedupe_key,
     )
-
-    stored: dict[str, str | bool] = {}
-    if queued:
-        stored = {"queued": True, "jobId": str(job_id or "")}
-    else:
-        try:
-            stored = _persist_enroll_side_effects(
-                body=body,
-                email=email,
-                client_uuid=client_uuid,
-                fingerprint=fingerprint,
-                device_name=device_name,
-                source_ip=source_ip,
-                user_agent=user_agent,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Cannot persist enroll payload: {e!r}") from e
 
     return JSONResponse(
         status_code=201,
@@ -3114,13 +3242,52 @@ async def enroll(request: Request):
 # ── Update status reporting ─────────────────────────────────────────────
 
 
+def _update_campaign_device_status_sync(
+    *,
+    campaign_id,
+    client_uuid: str,
+    status: str,
+    version_before: str,
+    version_after: str,
+    error_detail: str,
+) -> None:
+    """Partie bloquante (DB) de /update/status — exécutée en threadpool."""
+    db_url = _db_url()
+    if not db_url:
+        return
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            # Map plugin status to DB enum
+            db_status = "updated" if status == "installed" else "failed"
+            cur.execute(
+                """
+                INSERT INTO campaign_device_status
+                    (campaign_id, client_uuid, status, version_before, version_after, error_message, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (campaign_id, client_uuid)
+                DO UPDATE SET status = EXCLUDED.status,
+                              version_after = EXCLUDED.version_after,
+                              error_message = EXCLUDED.error_message,
+                              updated_at = NOW()
+                """,
+                (campaign_id, client_uuid, db_status,
+                 version_before, version_after or None, error_detail or None),
+            )
+        conn.close()
+    except Exception as e:
+        logger.warning(f"update/status DB error: {e}")
+
+
 @app.post("/update/status")
 async def report_update_status(request: Request):
     """Receive update status report from a plugin after install/failure."""
     # VULN-007: require valid relay credentials so statuses cannot be forged.
     relay_info: dict | str | None = None
     if settings.relay_enabled:
-        ok, relay_info = _relay_auth_from_request(request)
+        # Blocking : lookup DB du client relay — hors event-loop.
+        ok, relay_info = await run_in_threadpool(_relay_auth_from_request, request)
         if not ok:
             return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     try:
@@ -3146,31 +3313,15 @@ async def report_update_status(request: Request):
         if authed_uuid and str(client_uuid) != str(authed_uuid):
             return JSONResponse({"ok": False, "error": "client_uuid mismatch"}, status_code=403)
 
-    db_url = _db_url()
-    if db_url:
-        try:
-            conn = psycopg2.connect(db_url)
-            conn.autocommit = True
-            with conn.cursor() as cur:
-                # Map plugin status to DB enum
-                db_status = "updated" if status == "installed" else "failed"
-                cur.execute(
-                    """
-                    INSERT INTO campaign_device_status
-                        (campaign_id, client_uuid, status, version_before, version_after, error_message, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (campaign_id, client_uuid)
-                    DO UPDATE SET status = EXCLUDED.status,
-                                  version_after = EXCLUDED.version_after,
-                                  error_message = EXCLUDED.error_message,
-                                  updated_at = NOW()
-                    """,
-                    (campaign_id, client_uuid, db_status,
-                     version_before, version_after or None, error_detail or None),
-                )
-            conn.close()
-        except Exception as e:
-            logger.warning(f"update/status DB error: {e}")
+    await run_in_threadpool(
+        _update_campaign_device_status_sync,
+        campaign_id=campaign_id,
+        client_uuid=client_uuid,
+        status=status,
+        version_before=version_before,
+        version_after=version_after,
+        error_detail=error_detail,
+    )
 
     return JSONResponse({"ok": True, "status": status})
 
@@ -3210,6 +3361,7 @@ async def api_plugin_deploy(slug: str, request: Request):
     data = await binary.read()
     if not data:
         return JSONResponse({"ok": False, "error": "empty file"}, status_code=400)
+    orig_filename = binary.filename or ""
 
     version = str(form.get("version", "")).strip()
     strategy = str(form.get("strategy", "canary")).strip()
@@ -3220,6 +3372,18 @@ async def api_plugin_deploy(slug: str, request: Request):
     if not psycopg2 or not db_url:
         return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
 
+    # Blocking : DB + parsing zip + persist binaire (disque/S3) — un seul
+    # aller-retour dans le threadpool, hors event-loop.
+    return await run_in_threadpool(
+        _deploy_plugin_db_work, slug, data, orig_filename, version, strategy, urgency, cohort_id, db_url,
+    )
+
+
+def _deploy_plugin_db_work(
+    slug: str, data: bytes, orig_filename: str, version: str, strategy: str, urgency: str, cohort_id, db_url: str,
+):
+    """Partie bloquante de POST /api/plugins/{slug}/deploy (DB + zip + persist
+    binaire) — exécutée en threadpool par l'endpoint async."""
     import io as _io
     import zipfile as _zf
 
@@ -3295,43 +3459,22 @@ async def api_plugin_deploy(slug: str, request: Request):
             # dans le package, device_type) — cf. app/pathsafe.py.
             device_type = _safe_segment(device_type, "device_type")
             version = _safe_segment(version, "version")
-            filename = _safe_segment(binary.filename or f"{slug}-{version}.oxt", "filename")
+            filename = _safe_segment(orig_filename or f"{slug}-{version}.oxt", "filename")
             rel_path = f"{device_type}/{version}_{filename}"
 
-            # Store locally (API pod cache)
-            _binaries_base = settings.local_binaries_dir
-            os.makedirs(_safe_path_join(_binaries_base, device_type), exist_ok=True)
-            full_path = _safe_path_join(_binaries_base, rel_path)
-            with open(full_path, "wb") as f:
-                f.write(data)
+            # Persist (local PVC cache + admin forward, or straight to S3 — see
+            # settings.binaries_mode) and use the returned reference as canonical.
+            # Déjà hors event-loop (threadpool) — pas besoin d'un second aller-retour.
+            binary_ref = _persist_plugin_binary(data, rel_path, filename, device_type)
 
-            # Forward to admin pod (persistent storage) for pull-on-miss
-            _admin_url = os.getenv("DM_ADMIN_INTERNAL_URL", "http://device-management-admin").rstrip("/")
-            _admin_token = (settings.queue_admin_token or "").strip()
-            _admin_base = "/data/content/binaries"
-            _admin_full = f"{_admin_base}/{rel_path}"
-            if _admin_token:
-                try:
-                    import io as _io2
-                    _files = {"file": (filename, _io2.BytesIO(data), "application/octet-stream")}
-                    _resp = httpx.put(
-                        f"{_admin_url}/admin/api/files/upload/{rel_path}",
-                        files=_files, headers={"x-admin-token": _admin_token}, timeout=30,
-                        verify=_TLS_VERIFY,
-                    )
-                    if _resp.status_code == 200:
-                        logger.info("api_plugin_deploy: forwarded %s to admin pod", rel_path)
-                except Exception as fwd_err:
-                    logger.warning("api_plugin_deploy: admin forward failed: %s", fwd_err)
-
-            # 5. Upsert artifact — use admin path as canonical (persistent)
+            # 5. Upsert artifact — use the persisted reference as canonical
             cur.execute("""
                 INSERT INTO artifacts (device_type, platform_variant, version, s3_path, checksum)
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (device_type, platform_variant, version) DO UPDATE SET
                     s3_path = EXCLUDED.s3_path, checksum = EXCLUDED.checksum, released_at = NOW()
                 RETURNING id
-            """, (device_type, "", version, _admin_full, checksum))
+            """, (device_type, "", version, binary_ref, checksum))
             artifact_id = cur.fetchone()[0]
 
             # 6. Deprecate old versions + upsert new version
@@ -3445,6 +3588,12 @@ async def api_create_campaign(request: Request):
     if not db_url:
         return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
 
+    # Blocking (DB) — hors event-loop.
+    return await run_in_threadpool(_create_campaign_db_work, body, db_url)
+
+
+def _create_campaign_db_work(body: dict, db_url: str):
+    """Partie bloquante de POST /api/campaigns — exécutée en threadpool."""
     try:
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
@@ -4169,25 +4318,9 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None):
                 cur.execute("SELECT s3_path FROM artifacts WHERE id = %s", (artifact_id,))
                 arow = cur.fetchone()
                 if arow and arow[0]:
-                    s3_path = arow[0]
-                    if not os.path.isfile(s3_path):
-                        # Pull-on-miss: fetch from admin pod and cache locally
-                        _pull_binary_from_admin(s3_path)
-                    if os.path.isfile(s3_path):
-                        return FileResponse(s3_path, filename=filename,
-                                            media_type="application/octet-stream",
-                                            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
-                    # Try S3 presigned URL
-                    try:
-                        client = s3_client()
-                        if client:
-                            bucket = os.getenv("S3_BUCKET", "device-management")
-                            presigned = client.generate_presigned_url(
-                                "get_object", Params={"Bucket": bucket, "Key": s3_path}, ExpiresIn=300
-                            )
-                            return RedirectResponse(presigned, status_code=302)
-                    except Exception:
-                        pass
+                    served = _serve_binary_path(arow[0], filename)
+                    if served is not None:
+                        return served
                 raise HTTPException(404, "Fichier binaire introuvable")
 
             if dist_mode in ("download_link", "store") and download_url:
@@ -4361,25 +4494,43 @@ def _with_bootstrap_cursor(fn):
 
 
 def _serve_binary_path(s3_path: str, filename: str):
-    """Sert un binaire depuis le disque (pull-on-miss) ou via URL S3 présignée."""
+    """Sert un binaire — depuis le disque (pull-on-miss) en mode local, sinon
+    directement depuis S3 (présignée ou proxy), sans jamais toucher le disque."""
     if not s3_path:
         return None
-    if not os.path.isfile(s3_path):
-        try:
-            _pull_binary_from_admin(s3_path)
-        except Exception:
-            pass
-    if os.path.isfile(s3_path):
-        return FileResponse(s3_path, filename=filename,
-                            media_type="application/octet-stream",
-                            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    if settings.binaries_mode == "local":
+        if not os.path.isfile(s3_path):
+            try:
+                _pull_binary_from_admin(s3_path)
+            except Exception:
+                pass
+        if os.path.isfile(s3_path):
+            return FileResponse(s3_path, filename=filename,
+                                media_type="application/octet-stream",
+                                headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        return None
+
+    if not settings.s3_bucket:
+        return None
     try:
         client = s3_client()
-        if client:
-            bucket = os.getenv("S3_BUCKET", "device-management")
+        if settings.binaries_mode == "presign":
             presigned = client.generate_presigned_url(
-                "get_object", Params={"Bucket": bucket, "Key": s3_path}, ExpiresIn=300)
+                "get_object", Params={"Bucket": settings.s3_bucket, "Key": s3_path},
+                ExpiresIn=settings.presign_ttl_seconds,
+            )
             return RedirectResponse(presigned, status_code=302)
+        if settings.binaries_mode == "proxy":
+            obj = client.get_object(Bucket=settings.s3_bucket, Key=s3_path)
+            body_stream = obj["Body"]
+            content_type = obj.get("ContentType") or "application/octet-stream"
+
+            def iterfile():
+                yield from iter(lambda: body_stream.read(1024 * 1024), b"")
+
+            return StreamingResponse(iterfile(), media_type=content_type,
+                                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
     except Exception:
         pass
     return None
@@ -4845,6 +4996,9 @@ if __name__ == "__main__":
             # confiance à X-Forwarded-Proto/Host (sinon scheme/host = http interne).
             proxy_headers=True,
             forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
+            # Parité avec le CMD conteneur : laisse le temps aux requêtes/jobs en
+            # cours de se terminer avant l'arrêt (SIGTERM K8s).
+            timeout_graceful_shutdown=20,
         )
 
 

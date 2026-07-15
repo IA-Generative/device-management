@@ -1,0 +1,198 @@
+{{- if .Values.api.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "api") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- toYaml .Values.api.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "api") | nindent 8 }}
+        {{- with .Values.api.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.api.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "device-management.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "device-management.podSecurityContext" . | nindent 8 }}
+      # The pod must leave the Service endpoints list before receiving
+      # SIGTERM: preStop sleep gives that grace period, and
+      # terminationGracePeriodSeconds covers the sleep plus uvicorn's own
+      # --timeout-graceful-shutdown (in-flight requests finish cleanly).
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
+      containers:
+        - name: api
+          image: {{ include "device-management.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "device-management.containerSecurityContext" . | nindent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.service.targetPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "device-management.configMapName" . }}
+          env:
+            - name: DM_UVICORN_WORKERS
+              value: {{ .Values.api.uvicorn.workers | quote }}
+            - name: DM_UVICORN_ACCESS_LOG
+              value: {{ .Values.api.uvicorn.accessLog | quote }}
+            - name: DM_UVICORN_TIMEOUT_KEEP_ALIVE
+              value: {{ .Values.api.uvicorn.timeoutKeepAliveSeconds | quote }}
+            - name: DM_RUNTIME_MODE
+              value: "api"
+            {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.api.runtimeConfig.pollIntervalSeconds "editable" .Values.api.runtimeConfig.editable) | nindent 12 }}
+            - name: DM_QUEUE_ENABLED
+              value: {{ .Values.api.queue.enabled | quote }}
+            - name: DM_QUEUE_BATCH_SIZE
+              value: {{ .Values.api.queue.batchSize | quote }}
+            - name: DM_QUEUE_POLL_INTERVAL_SECONDS
+              value: {{ .Values.api.queue.pollIntervalSeconds | quote }}
+            - name: DM_QUEUE_LOCK_TTL_SECONDS
+              value: {{ .Values.api.queue.lockTtlSeconds | quote }}
+            - name: DM_QUEUE_DEFAULT_MAX_ATTEMPTS
+              value: {{ .Values.api.queue.defaultMaxAttempts | quote }}
+            - name: DM_QUEUE_RETRY_BASE_SECONDS
+              value: {{ .Values.api.queue.retryBaseSeconds | quote }}
+            - name: DM_QUEUE_RETRY_MAX_SECONDS
+              value: {{ .Values.api.queue.retryMaxSeconds | quote }}
+            - name: DM_QUEUE_RETRY_JITTER_SECONDS
+              value: {{ .Values.api.queue.retryJitterSeconds | quote }}
+            - name: DM_QUEUE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_QUEUE_ADMIN_TOKEN
+            - name: DM_METRICS_ENABLED
+              value: "true"
+            - name: DM_RELAY_PROXY_SHARED_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_RELAY_PROXY_SHARED_TOKEN
+            - name: DM_RELAY_SECRET_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_RELAY_SECRET_PEPPER
+            # Required by the prod startup guard (validate_security_config in
+            # app/main.py): without it the app sees the 'changeme-dev-only'
+            # default and refuses to start when DM_APP_ENV=prod.
+            - name: ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: ADMIN_SESSION_SECRET
+                  optional: true
+            - name: LLM_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: LLM_API_TOKEN
+            - name: ADMIN_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: ADMIN_OIDC_CLIENT_SECRET
+                  optional: true
+            - name: TELEMETRY_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: TELEMETRY_SALT
+            - name: TELEMETRY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: TELEMETRY_KEY
+            - name: DM_TELEMETRY_UPSTREAM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_TELEMETRY_UPSTREAM_KEY
+            - name: DM_TELEMETRY_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_TELEMETRY_TOKEN_SIGNING_KEY
+            {{- include "device-management.awsEnv" . | nindent 12 }}
+            {{- include "device-management.databaseEnv" . | nindent 12 }}
+            {{- with .Values.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.api.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.api.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.api.probes.startup.failureThreshold }}
+            timeoutSeconds: {{ .Values.api.probes.startup.timeoutSeconds }}
+          readinessProbe:
+            # /readyz reports 503 until the runtime config has loaded once.
+            httpGet:
+              path: {{ .Values.api.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.api.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.api.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.api.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.api.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.api.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.api.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.api.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.api.probes.liveness.failureThreshold }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.api.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
