@@ -1257,8 +1257,16 @@ def _resolve_forced_flags(cur, *, plugin_version: str, plugin_slug: str = "") ->
     return out
 
 
-def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: str, platform_version: str) -> dict | None:
-    """Find the best active plugin_update campaign for the device, or None."""
+def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: str, platform_version: str, plugin_id: int | None = None) -> dict | None:
+    """Find the best active plugin_update campaign for the device, or None.
+
+    Une campagne ne matche que le plugin du device demandeur : par ``plugin_id``
+    quand les deux sont connus, sinon par ``artifacts.device_type`` (campagnes
+    legacy à plugin_id NULL, ou device résolu en fallback sans id). Sans ce
+    scoping, la campagne la plus récente — tous plugins confondus — fuyait vers
+    tous les devices (issue #14 : un plugin LibreOffice recevait la version
+    Matisse).
+    """
     try:
         cohort_filter = list(device_cohort_ids) if device_cohort_ids else []
         cur.execute(
@@ -1281,11 +1289,20 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
             LEFT JOIN artifacts ra ON ra.id = c.rollback_artifact_id
             WHERE c.status = 'active'
               AND c.type   = 'plugin_update'
-              AND (c.target_cohort_id IS NULL OR c.target_cohort_id = ANY(%s))
+              AND (c.target_cohort_id IS NULL OR c.target_cohort_id = ANY(%(cohort_ids)s))
+              AND (
+                    (%(plugin_id)s::int IS NOT NULL AND c.plugin_id = %(plugin_id)s)
+                 OR ((%(plugin_id)s::int IS NULL OR c.plugin_id IS NULL)
+                     AND a.device_type = %(device_type)s)
+              )
             ORDER BY c.created_at DESC
             LIMIT 1
             """,
-            (cohort_filter if cohort_filter else [None],),
+            {
+                "cohort_ids": cohort_filter if cohort_filter else [None],
+                "plugin_id": plugin_id,
+                "device_type": device_type,
+            },
         )
         row = cur.fetchone()
     except Exception:
@@ -1408,6 +1425,7 @@ def _build_update_directive(
             "changelog_url": campaign["changelog_url"],
             "deadline_at": campaign["deadline_iso"],
             "campaign_id": campaign["campaign_id"],
+            "plugin_slug": device_name or None,
         }
 
     # plugin_version > artifact_version → possible rollback
@@ -1422,6 +1440,7 @@ def _build_update_directive(
             "changelog_url": campaign["changelog_url"],
             "deadline_at": campaign["deadline_iso"],
             "campaign_id": campaign["campaign_id"],
+            "plugin_slug": device_name or None,
         }
 
     return None
@@ -2793,6 +2812,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                         device_cohort_ids=device_cohort_ids,
                         device_type=device_type or "misc",
                         platform_version=platform_version,
+                        plugin_id=plugin_id,
                     )
                     update_directive = _build_update_directive(
                         plugin_version=plugin_version,
@@ -2846,6 +2866,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                             device_cohort_ids=device_cohort_ids,
                             device_type=device_type or "misc",
                             platform_version=platform_version,
+                            plugin_id=plugin_id,
                         )
                         update_directive = _build_update_directive(
                             plugin_version=plugin_version,

@@ -137,10 +137,17 @@ VALUES (
 
 ### 3.1 Campagne de mise à jour plugin
 
+> **Scoping par plugin (0.9.13+)** : une campagne n'est servie qu'aux devices du
+> plugin qu'elle cible — via `plugin_id` si renseigné, sinon via le
+> `device_type` de l'artifact. Avant 0.9.13, la campagne active la plus récente
+> fuyait vers TOUS les devices (issue #14 : un plugin LibreOffice recevait la
+> version Matisse). Toujours renseigner `plugin_id` à la création manuelle ;
+> le deploy via l'admin le fait automatiquement.
+
 ```sql
 INSERT INTO campaigns (
     name, description, type, status,
-    target_cohort_id, artifact_id, rollback_artifact_id,
+    plugin_id, target_cohort_id, artifact_id, rollback_artifact_id,
     urgency, deadline_at,
     created_by
 ) VALUES (
@@ -148,6 +155,7 @@ INSERT INTO campaigns (
     'Déploiement version 2.0.0 sur cohorte canary initiale',
     'plugin_update',
     'draft',                      -- toujours créer en draft !
+    <plugin_id_mirai_libreoffice>, -- scope la campagne au bon plugin
     <cohort_id_canary>,
     <artifact_id_2_0_0>,
     <artifact_id_1_9_0>,          -- artifact de rollback
