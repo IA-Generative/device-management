@@ -60,13 +60,13 @@ def _load_module():
 # artifact_version, artifact_s3_path, artifact_checksum, changelog_url,
 # min_host_version, max_host_version,
 # rollback_s3_path, rollback_version, rollback_checksum,
-# rollout_config, campaign_created_at
+# rollout_config, campaign_created_at, is_experiment
 CAMPAIGN_ROW = (
     42, "normal", None, None,
     "2.0.0", "libreoffice/plugin-2.0.0.oxt", "sha256:abc123", None,
     None, None,
     None, None, None,
-    None, None,
+    None, None, False,
 )
 
 

@@ -240,6 +240,47 @@ def apply_schema(db_url_str: str, schema_path: str) -> None:
                     ) THEN
                       ALTER TABLE campaigns ADD COLUMN version_id INT REFERENCES plugin_versions(id);
                     END IF;
+                    -- Expérimentation (branches parallèles) : campagne exemptée de
+                    -- l'auto-complétion du rollout général, départagée par priority.
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'campaigns' AND column_name = 'is_experiment'
+                    ) THEN
+                      ALTER TABLE campaigns ADD COLUMN is_experiment BOOLEAN NOT NULL DEFAULT false;
+                    END IF;
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'campaigns' AND column_name = 'priority'
+                    ) THEN
+                      ALTER TABLE campaigns ADD COLUMN priority INT NOT NULL DEFAULT 0;
+                    END IF;
+                  END IF;
+                  -- Versions expérimentales (pull catalogue) : tag de branche +
+                  -- questions clés testées, et élargissement du CHECK status pour
+                  -- inclure 'experimental' (servable par version/tag, jamais latest).
+                  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'plugin_versions') THEN
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'plugin_versions' AND column_name = 'tag'
+                    ) THEN
+                      ALTER TABLE plugin_versions ADD COLUMN tag VARCHAR(80);
+                    END IF;
+                    IF NOT EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'plugin_versions' AND column_name = 'hypotheses'
+                    ) THEN
+                      ALTER TABLE plugin_versions ADD COLUMN hypotheses JSONB;
+                    END IF;
+                    IF EXISTS (
+                      SELECT 1 FROM pg_constraint
+                      WHERE conname = 'plugin_versions_status_check'
+                        AND conrelid = 'plugin_versions'::regclass
+                        AND pg_get_constraintdef(oid) NOT LIKE '%experimental%'
+                    ) THEN
+                      ALTER TABLE plugin_versions DROP CONSTRAINT plugin_versions_status_check;
+                      ALTER TABLE plugin_versions ADD CONSTRAINT plugin_versions_status_check
+                        CHECK (status IN ('draft','published','deprecated','yanked','experimental'));
+                    END IF;
                   END IF;
                   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'plugins') THEN
                     IF EXISTS (

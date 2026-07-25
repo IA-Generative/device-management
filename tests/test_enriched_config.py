@@ -210,7 +210,7 @@ def test_update_action_when_behind():
         "2.0.0", "libreoffice/plugin-2.0.0.xpi", "sha256:abc123", None,
         None, None,
         None, None, None,
-        None, None,  # rollout_config, campaign_created_at
+        None, None, False,  # rollout_config, campaign_created_at, is_experiment
     )
 
     # Minimal config_template for the plugin (loaded from DB)
@@ -265,7 +265,7 @@ def test_update_null_when_current():
         "2.0.0", "libreoffice/plugin-2.0.0.xpi", "sha256:abc123", None,
         None, None,
         None, None, None,
-        None, None,  # rollout_config, campaign_created_at
+        None, None, False,  # rollout_config, campaign_created_at, is_experiment
     )
 
     db_rows = {

@@ -177,6 +177,48 @@ INSERT INTO feature_flag_overrides (feature_id, cohort_id, value, min_plugin_ver
 VALUES (<flag_id>, <cohort_all_id>, false, NULL);
 ```
 
+### 3.3 Campagne d'expérimentation — tester une future version sur une cohorte (0.9.14+)
+
+> **Coexistence.** Une campagne `is_experiment = true` **coexiste** avec le rollout
+> général : créer/activer l'une ne complète PAS l'autre. On peut donc pousser une
+> future version main (RC) à une cohorte de testeurs pendant que le stable continue
+> de tourner. Utiliser une cohorte **manuelle / email_pattern / groupe Keycloak** —
+> **pas `percentage`** (deux cohortes % se recouvrent au lieu de partitionner).
+
+```sql
+-- RC 1.6.0-rc1 servie à la cohorte de testeurs, en parallèle du rollout stable.
+INSERT INTO campaigns (
+    name, type, status, plugin_id, artifact_id, target_cohort_id,
+    is_experiment, priority, urgency, created_by
+) VALUES (
+    'Mirai LO 1.6.0-rc1 — testeurs', 'plugin_update', 'active',
+    <plugin_id>, <artifact_id_1_6_0_rc1>, <cohort_id_testeurs>,
+    true,          -- exempte de l'auto-complétion + mode PIN
+    10,            -- priority : départage si un device matche plusieurs campagnes
+    'normal', 'admin@example.com'
+);
+```
+
+Comportement à connaître :
+
+- **Mode PIN.** Une campagne d'expérimentation sert sa version cible dès que le device
+  n'y est pas déjà, **sans exiger cible > courante**. Indispensable pour les versions
+  suffixées (`1.6.0-rc1`) que la comparaison numérique réduirait sinon à `(0,)` → aucun
+  update. Corollaire : le client DOIT renvoyer la version cible **exacte** (suffixe
+  inclus) dans `X-Plugin-Version`, sinon il se met à jour à chaque poll.
+- **Précédence.** Un device qui matche plusieurs campagnes actives résout dans l'ordre :
+  bras ciblé (cohorte) > rollout général non ciblé, puis `priority` décroissante, puis
+  `created_at`. Un device **hors** cohorte d'expé ne voit que le rollout général (témoin).
+- **Portée de l'auto-complétion.** Une nouvelle **release générale** supersede toutes les
+  campagnes non-expé du plugin (comme avant) mais laisse les expés. Une nouvelle **expé**
+  ne remplace que l'expé active du **même plugin + même cohorte** (re-déploiement d'un bras).
+
+```sql
+-- Terminer un bras d'expérimentation (revient au stable pour cette cohorte)
+UPDATE campaigns SET status = 'completed'
+WHERE id = <campaign_exp_id> AND is_experiment = true;
+```
+
 ---
 
 ## 4. Valider avant activation
@@ -366,7 +408,57 @@ UPDATE feature_flags SET default_value = true WHERE id = <flag_id>;
 
 ---
 
-## 9. Diagnostics rapides
+## 9. Versions expérimentales au catalogue (pull) & purge du cache binaire (0.9.14+)
+
+Deux besoins distincts du multi-versions :
+
+- **Push cohortes** (RC / future main) → campagne `is_experiment` (§3.3), auto-update.
+- **Pull catalogue** (versions martyres / prototypes d'une branche) → téléchargement
+  **manuel opt-in** depuis le catalogue, décrit ici.
+
+### 9.1 Publier une version expérimentale
+
+Depuis l'admin **Catalogue → onglet Versions → wizard** : renseigner un **Tag
+expérimental** (ex. `exp-resume`) + les **Questions testées** (une par ligne), puis
+**« Publier comme expérimentale »**. La version est créée en `status='experimental'` :
+servable par version/tag précis mais **jamais** comme « latest main » (fail-safe — toutes
+les requêtes « dernière publiée » filtrent `status='published'`). Aucune campagne n'est
+créée (pas de push).
+
+Modèle : `plugin_versions.tag` (NULL = ligne main ; sinon branche), `hypotheses` (JSONB,
+les questions clés). Promouvoir une expé en main = repasser `published` + retirer le tag.
+
+### 9.2 Distribuer / accéder
+
+- **Page catalogue** : `GET /catalog/<slug>?exp=<tag>` révèle la section « Versions
+  expérimentales » (titre + version + questions + bouton de téléchargement). **Sans le
+  tag, la section est invisible** au grand public → partager le lien `?exp=<tag>` aux
+  testeurs.
+- **Téléchargement direct** : `GET /catalog/<slug>/download?tag=<tag>` sert la dernière
+  version de la branche taguée ; `…/download` (sans tag) sert toujours la main.
+
+### 9.3 Purge / invalidation du cache binaire
+
+En mode `local`, chaque pod de serving met le binaire **en cache disque** (pull-on-miss
+depuis l'admin). Quand une version est **purgée / dépréciée**, le binaire est invalidé :
+
+- **À la source (automatique).** La purge (`/admin/catalog/<id>/versions/purge` et
+  `…/deployments/purge`) supprime désormais le fichier des artefacts orphelins (PVC admin
+  en local, `delete_object` en S3) **avant** de supprimer la ligne → plus de re-pull ni de
+  raw-serve d'une version supprimée.
+- **Éviction des pods (self-healing).** `POST /api/files/evict` (token admin) balaie le
+  cache local et supprime les binaires sans artifact vivant en base — à appeler après une
+  purge de masse ou en cron. `DELETE /api/files/<path>` évince un fichier précis
+  immédiatement. No-op hors mode `local`.
+
+```bash
+# Éviction des orphelins sur un pod de serving
+curl -X POST -H "x-admin-token: $DM_QUEUE_ADMIN_TOKEN" https://<host>/api/files/evict
+```
+
+---
+
+## 10. Diagnostics rapides
 
 ### Plugin ne reçoit pas l'update
 
@@ -419,7 +511,7 @@ WHERE ff.name = '<flag_name>';
 
 ---
 
-## 10. Contacts et escalade
+## 11. Contacts et escalade
 
 | Situation | Contact |
 |---|---|

@@ -155,19 +155,25 @@ def create_version(cur, *, plugin_id: int, version: str, artifact_id: int = None
                    release_notes: str = "", download_url: str = "",
                    min_host_version: str = "", max_host_version: str = "",
                    distribution_mode: str = "managed",
-                   status: str = "draft") -> int:
-    # Deprecate older published versions when publishing a new one
+                   status: str = "draft",
+                   tag: str = "", hypotheses: list = None) -> int:
+    # Deprecate older published versions when publishing a new one. Une version
+    # 'experimental' ne déprécie RIEN : elle coexiste avec la main (pull opt-in).
     if status == "published":
         cur.execute("""
             UPDATE plugin_versions SET status = 'deprecated'
             WHERE plugin_id = %s AND status = 'published' AND version <> %s
         """, (plugin_id, version))
+    hyp_json = json.dumps(hypotheses) if hypotheses else None
+    # published_at est aussi horodaté pour 'experimental' : le catalogue ordonne
+    # les branches par published_at DESC (dernière build d'un tag servie en 1er).
     cur.execute("""
         INSERT INTO plugin_versions
             (plugin_id, version, artifact_id, release_notes, download_url,
              min_host_version, max_host_version, distribution_mode, status,
-             published_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, CASE WHEN %s = 'published' THEN NOW() ELSE NULL END)
+             tag, hypotheses, published_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                CASE WHEN %s IN ('published','experimental') THEN NOW() ELSE NULL END)
         ON CONFLICT (plugin_id, version) DO UPDATE SET
             artifact_id = COALESCE(EXCLUDED.artifact_id, plugin_versions.artifact_id),
             release_notes = CASE WHEN EXCLUDED.release_notes <> '' THEN EXCLUDED.release_notes ELSE plugin_versions.release_notes END,
@@ -176,11 +182,14 @@ def create_version(cur, *, plugin_id: int, version: str, artifact_id: int = None
             max_host_version = COALESCE(EXCLUDED.max_host_version, plugin_versions.max_host_version),
             distribution_mode = EXCLUDED.distribution_mode,
             status = EXCLUDED.status,
-            published_at = CASE WHEN EXCLUDED.status = 'published' THEN COALESCE(plugin_versions.published_at, NOW()) ELSE plugin_versions.published_at END
+            tag = COALESCE(EXCLUDED.tag, plugin_versions.tag),
+            hypotheses = COALESCE(EXCLUDED.hypotheses, plugin_versions.hypotheses),
+            published_at = CASE WHEN EXCLUDED.status IN ('published','experimental') THEN COALESCE(plugin_versions.published_at, NOW()) ELSE plugin_versions.published_at END
         RETURNING id
     """, (plugin_id, version, artifact_id or None, release_notes,
           download_url or None, min_host_version or None,
-          max_host_version or None, distribution_mode, status, status))
+          max_host_version or None, distribution_mode, status,
+          tag or None, hyp_json, status))
     return cur.fetchone()[0]
 
 

@@ -25,6 +25,7 @@ from app.pathsafe import safe_path_join, safe_segment
 from app.resilience import retry_transient
 
 from .. import runtime_config as rcfg
+from ..services import binaries as binaries_svc
 from ..services.crypto import encrypt_secret, secrets_encryption_available
 from ..settings import settings
 from .auth import (
@@ -990,7 +991,9 @@ async def campaign_create(request: Request,
                           target_cohort_id: str = Form(""),
                           urgency: str = Form("normal"),
                           deadline_at: str = Form(""),
-                          start_status: str = Form("draft")):
+                          start_status: str = Form("draft"),
+                          is_experiment: bool = Form(False),
+                          priority: int = Form(0)):
     conn = get_db_connection()
     try:
         actor = getattr(request.state, "admin_session", {})
@@ -1005,6 +1008,8 @@ async def campaign_create(request: Request,
                 deadline_at=deadline_at or None,
                 status=start_status,
                 created_by=actor.get("email"),
+                is_experiment=is_experiment,
+                priority=priority,
             )
             audit_log(cur, actor=actor, action="campaign.create",
                       resource_type="campaign", resource_id=str(campaign_id),
@@ -2346,9 +2351,13 @@ async def catalog_version_create(request: Request, plugin_id: int,
                                  distribution_mode: str = Form("managed"),
                                  min_host_version: str = Form(""),
                                  max_host_version: str = Form(""),
-                                 status: str = Form("draft")):
+                                 status: str = Form("draft"),
+                                 tag: str = Form(""),
+                                 hypotheses: str = Form("")):
     if not artifact_id and not download_url.strip():
         raise HTTPException(400, "Un artifact ou une URL de téléchargement est requis.")
+    # "Une question par ligne" → liste JSONB (questions clés testées par la branche).
+    hyp_list = [ln.strip() for ln in hypotheses.splitlines() if ln.strip()] or None
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -2359,6 +2368,7 @@ async def catalog_version_create(request: Request, plugin_id: int,
                 distribution_mode=distribution_mode,
                 min_host_version=min_host_version,
                 max_host_version=max_host_version, status=status,
+                tag=tag, hypotheses=hyp_list,
             )
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="version.create",
@@ -2417,6 +2427,15 @@ async def catalog_versions_purge(request: Request, plugin_id: int):
                 WHERE plugin_id = %s AND status IN ('deprecated', 'yanked')
             """, (plugin_id,))
             deleted = cur.rowcount
+            # Capture les binaires des artefacts devenus orphelins AVANT de
+            # supprimer les lignes (sinon on perd les s3_path) → purge à la source.
+            cur.execute("""
+                SELECT s3_path FROM artifacts
+                WHERE id NOT IN (SELECT artifact_id FROM plugin_versions WHERE artifact_id IS NOT NULL)
+                  AND id NOT IN (SELECT artifact_id FROM campaigns WHERE artifact_id IS NOT NULL)
+                  AND id NOT IN (SELECT rollback_artifact_id FROM campaigns WHERE rollback_artifact_id IS NOT NULL)
+            """)
+            orphan_paths = [r[0] for r in cur.fetchall() if r[0]]
             # Clean orphan artifacts
             cur.execute("""
                 DELETE FROM artifacts
@@ -2424,6 +2443,8 @@ async def catalog_versions_purge(request: Request, plugin_id: int):
                   AND id NOT IN (SELECT artifact_id FROM campaigns WHERE artifact_id IS NOT NULL)
                   AND id NOT IN (SELECT rollback_artifact_id FROM campaigns WHERE rollback_artifact_id IS NOT NULL)
             """)
+            for _p in orphan_paths:
+                binaries_svc.delete_binary(_p)
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="versions.purge",
                       resource_type="plugin", resource_id=str(plugin_id),
@@ -2472,6 +2493,14 @@ async def catalog_deployments_purge(request: Request, plugin_id: int):
                 WHERE plugin_id IS NULL AND status IN ('completed', 'rolled_back')
             """)
             deleted += cur.rowcount
+            # Purge des binaires orphelins à la source (capture avant DELETE).
+            cur.execute("""
+                SELECT s3_path FROM artifacts
+                WHERE id NOT IN (SELECT artifact_id FROM plugin_versions WHERE artifact_id IS NOT NULL)
+                  AND id NOT IN (SELECT artifact_id FROM campaigns WHERE artifact_id IS NOT NULL)
+                  AND id NOT IN (SELECT rollback_artifact_id FROM campaigns WHERE rollback_artifact_id IS NOT NULL)
+            """)
+            orphan_paths = [r[0] for r in cur.fetchall() if r[0]]
             # Clean orphan artifacts
             cur.execute("""
                 DELETE FROM artifacts
@@ -2479,6 +2508,8 @@ async def catalog_deployments_purge(request: Request, plugin_id: int):
                   AND id NOT IN (SELECT artifact_id FROM campaigns WHERE artifact_id IS NOT NULL)
                   AND id NOT IN (SELECT rollback_artifact_id FROM campaigns WHERE rollback_artifact_id IS NOT NULL)
             """)
+            for _p in orphan_paths:
+                binaries_svc.delete_binary(_p)
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="deployments.purge",
                       resource_type="plugin", resource_id=str(plugin_id),
@@ -2518,6 +2549,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         percent = body.get("percent", "10")
         emails = body.get("emails", "")
         action = body.get("action", "deploy")
+        tag = body.get("tag", "")
+        hypotheses = body.get("hypotheses", "")
         upload_id = body.get("upload_id", "")
         if not upload_id:
             raise HTTPException(400, "Missing upload_id in JSON body")
@@ -2541,6 +2574,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         percent = form.get("percent", "10")
         emails = form.get("emails", "")
         action = form.get("action", "deploy")
+        tag = form.get("tag", "")
+        hypotheses = form.get("hypotheses", "")
         binary = form.get("binary")
         if not binary or not hasattr(binary, "read"):
             raise HTTPException(400, "Missing binary file")
@@ -2554,6 +2589,15 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         raise HTTPException(400, "Missing version")
     if len(data) > artifacts_svc.MAX_UPLOAD_SIZE:
         raise HTTPException(400, "Fichier trop volumineux (>100 Mo)")
+
+    # Branche expérimentale (pull opt-in) : version publiée en 'experimental'
+    # (jamais servie comme latest main), portant un tag + ses questions clés ; on
+    # ne déploie PAS de campagne (action != 'deploy' → pas de push automatique).
+    is_experimental = (action == "experimental")
+    if isinstance(hypotheses, list):
+        hyp_list = [str(x).strip() for x in hypotheses if str(x).strip()] or None
+    else:
+        hyp_list = [ln.strip() for ln in str(hypotheses).splitlines() if ln.strip()] or None
 
     # 2. Extract dm-config.json and dm-manifest.json before stripping
     deploy_config_template = None
@@ -2612,7 +2656,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 version=version, s3_path=local_path, checksum=checksum,
             )
 
-            # 5. Create version (published immediately; idempotent sur (plugin,version))
+            # 5. Create version. 'published' (main, immédiat) OU 'experimental'
+            # (branche martyre/prototype : tag + questions, servie par pull opt-in).
             vid = catalog_svc.create_version(
                 cur, plugin_id=plugin_id, version=version,
                 artifact_id=artifact_id,
@@ -2620,7 +2665,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 distribution_mode=distribution_mode,
                 min_host_version=min_host_version,
                 max_host_version=max_host_version,
-                status="published",
+                status="experimental" if is_experimental else "published",
+                tag=tag, hypotheses=hyp_list,
             )
 
             # 5b. Lien 1:N version→artefacts : enregistre la variante pour les
