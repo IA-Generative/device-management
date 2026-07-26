@@ -433,6 +433,17 @@ créée (pas de push).
 Modèle : `plugin_versions.tag` (NULL = ligne main ; sinon branche), `hypotheses` (JSONB,
 les questions clés). Promouvoir une expé en main = repasser `published` + retirer le tag.
 
+> **En promouvant, dépréciez l'ancienne.** Repasser une expé en `published` sans passer la
+> précédente en `deprecated` laisse **deux versions publiées** pour le même plugin. Le code
+> résout désormais « dernière version » par `published_at` partout (0.9.15), donc les
+> endpoints restent cohérents — mais deux `published` simultanées restent une anomalie de
+> données : le wizard d'upload, lui, déprécie automatiquement.
+>
+> ```sql
+> UPDATE plugin_versions SET status = 'deprecated'
+> WHERE plugin_id = <id> AND status = 'published' AND version <> '<nouvelle>';
+> ```
+
 ### 9.2 Distribuer / accéder
 
 - **Page catalogue** : `GET /catalog/<slug>?exp=<tag>` révèle la section « Versions
@@ -441,8 +452,35 @@ les questions clés). Promouvoir une expé en main = repasser `published` + reti
   testeurs.
 - **Téléchargement direct** : `GET /catalog/<slug>/download?tag=<tag>` sert la dernière
   version de la branche taguée ; `…/download` (sans tag) sert toujours la main.
+- **API JSON (0.9.15+)** : `GET /catalog/api/plugins/<slug>?exp=<tag>` renvoie la clé
+  `experiments` — versions de la branche, `tag`, `hypotheses`, URL de téléchargement
+  versionnée. Même barrière que la page HTML. **Sans `?exp=`, la clé n'existe pas** : la
+  réponse par défaut est identique à celle d'avant 0.9.15, rien ne trahit l'existence
+  d'une branche. Sert à outiller les testeurs (script d'installation, tableau de bord)
+  sans gratter le HTML.
 
-### 9.3 Purge / invalidation du cache binaire
+  ```bash
+  curl -s "https://<host>/catalog/api/plugins/<slug>?exp=<tag>" | jq '.experiments'
+  ```
+
+### 9.3 Lire la cohabitation — où voir quoi (0.9.15+)
+
+Créer la cohabitation ne suffit pas : il faut pouvoir la relire. Voici où chaque
+information se trouve.
+
+| Où | Ce qu'on y lit |
+|---|---|
+| Admin → Catalogue → *Versions* | Une ligne par version, badge **Experimental** et **tag** de la branche à côté du numéro (survol du tag = questions testées). C'est la vue « quelles versions existent ». |
+| Admin → **Campagnes** | Badge **Expe** et colonne **Priorité**. C'est la vue « laquelle gagne » : bras ciblé > rollout général, puis `priority` décroissante. |
+| Admin → Catalogue → *Installations* | Une version par appareil, et sous la tuile « Installations actives » : « sur N versions en circulation » — **affiché seulement si N > 1**, donc exactement quand il y a cohabitation. C'est la vue « qui est sur quoi ». |
+| Catalogue public `?exp=<tag>` | La branche, ses questions, la version stable en regard et un lien de retour. **Sans le tag : rien.** |
+| API `?exp=<tag>` | Idem en JSON (cf. §9.2). |
+
+> Une version au statut inconnu s'affiche désormais avec son statut brut plutôt qu'une
+> case vide : la 0.9.14 avait ajouté `experimental` en base sans l'ajouter à l'affichage,
+> et les versions expérimentales apparaissaient **sans statut** pendant deux versions.
+
+### 9.4 Purge / invalidation du cache binaire
 
 En mode `local`, chaque pod de serving met le binaire **en cache disque** (pull-on-miss
 depuis l'admin). Quand une version est **purgée / dépréciée**, le binaire est invalidé :

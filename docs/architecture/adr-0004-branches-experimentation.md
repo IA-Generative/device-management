@@ -56,7 +56,9 @@ d'expérimentation n'existe).
 - `tag` (NULL = ligne main ; sinon branche, sert de tag d'URL) + `hypotheses` (JSONB : les
   questions clés testées, portées par la **version** donc partagées push/pull).
 - Accès : `/catalog/<slug>?exp=<tag>` (section révélée par tag uniquement — invisible au
-  public) et `/catalog/<slug>/download?tag=<tag>`.
+  public), `/catalog/<slug>/download?tag=<tag>`, et depuis 0.9.15
+  `/catalog/api/plugins/<slug>?exp=<tag>` (même barrière ; sans `exp`, la clé
+  `experiments` n'existe pas et la réponse est inchangée).
 
 ### 3. Invalidation du cache binaire
 
@@ -82,6 +84,16 @@ source** (PVC admin / S3) pour couper re-pull et raw-serve ; `POST /api/files/ev
   tant qu'`is_experiment`/`experimental`/`?exp=` ne sont pas utilisés.
 - **À surveiller** : le client d'une expé doit renvoyer la version cible **exacte** (sinon
   re-update en boucle) ; ne pas utiliser de cohorte `percentage` pour un bras.
+- **Le fail-safe est désormais gardé par des tests** (0.9.15). Il reposait sur une
+  discipline — `status = 'published'` dans toutes les requêtes « dernière version » — que
+  rien n'attestait : un `status IN (…)` ajouté par distraction serait passé inaperçu.
+  `tests/test_experiment_campaigns_pg.py` vérifie sur un vrai PostgreSQL, à chaque push,
+  qu'aucune surface publique (liste, fiche JSON, téléchargement) n'expose une version
+  `experimental` sans son tag, et que chaque tag ne révèle que sa propre branche.
+- **Leçon d'affichage** : élargir un domaine de valeurs en base sans élargir les cascades
+  d'affichage rend la nouveauté *invisible*. Les versions expérimentales sont apparues
+  sans statut dans l'admin pendant deux versions. Les cascades de badges portent
+  maintenant un `{% else %}` de repli — voir mode opératoire §9.3.
 - **Non couvert (volontairement)** : pas de plateforme A/B (bras aléatoires disjoints, groupe
   témoin formel, comparaison de métriques par bras). Extension possible si le besoin émerge.
 

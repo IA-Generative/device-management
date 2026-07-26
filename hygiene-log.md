@@ -9,13 +9,61 @@ applicatif), le volume sur l'ensemble des fichiers suivis par git.
 
 ---
 
-### Passe du 2026-07-26 (3/3) — revue du code produit par l'agent — branche `fix/qc-round2`
+### Passe du 2026-07-26 (4/4) — lisibilité de la cohabitation — branche `fix/campaign-plugin-filter`
+
+Déclenchée par une question d'usage, pas par une mesure : « comment voit-on que plusieurs
+versions cohabitent ? ». La réponse était **mal** — les écrans livrés en 0.9.14 étaient
+presque tous des champs de saisie. L'inspection a mis au jour deux défauts que ni la
+passe 1 ni la passe 3 n'avaient vus, parce que **les deux n'avaient lu que des diffs,
+jamais un écran**.
+
+| Métrique | Passe 3/4 | Passe 4/4 | Delta |
+|---|---|---|---|
+| Statuts de version affichables | 4 sur 5 (`experimental` invisible) | **5 + repli** | +1 et un `else` |
+| Endpoints publics d'accord sur « dernière version » | non (`MAX(version)` vs `published_at`) | **oui** | ✔ |
+| Fonctions de test | 300 | **303** | +3 |
+| Tests d'intégration exécutés en CI | 9 | **12** | +3 |
+| Vérifications E2E rejouables | 26 | **30** | +4 |
+| Surfaces publiques gardées contre une fuite d'`experimental` | 0 | **4** | +4 |
+
+Défauts corrigés :
+
+1. **Cellule Statut vide** — la cascade de badges de l'onglet Versions couvrait
+   `published`/`draft`/`deprecated`/`yanked` sans `experimental` **ni `else`**. La 0.9.14
+   avait élargi le `CHECK` en base et oublié l'affichage. Le `else` de repli garantit
+   qu'un futur statut restera visible.
+2. **« Dernière version » lexicographique** — `/catalog/api/plugins` et la grille
+   résolvaient par `MAX(pv.version)` quand la fiche ordonnait par `published_at`. Prouvé
+   sur Postgres réel : avec `0.13.9` et `0.13.22` toutes deux publiées, l'ancienne requête
+   renvoyait `0.13.9`. Masqué tant qu'un seul rang est publié, mais la promotion d'une
+   expé en main (mode opératoire §9.1) crée exactement cet état.
+
+Ajouts : tag et badge dans l'admin, badge « Expe » + colonne Priorité sur les campagnes,
+compteur « N versions en circulation » (affiché seulement si N > 1, calculé par agrégat
+car `list_installations` est paginée), version stable et lien de retour sur la page
+taguée, et `?exp=<tag>` sur l'API JSON.
+
+**Garde d'étanchéité** — trois tests sur PostgreSQL réel vérifient qu'aucune surface
+publique n'expose une version `experimental` sans son tag. Vérifié par mutation :
+élargir un filtre « latest » fait rougir les tests.
+
+Tendance : ↓ — deux bugs sortis, quatre surfaces publiques désormais gardées, et la
+capacité livrée en 0.9.14 devient enfin lisible par un opérateur.
+
+**Leçon de méthode, à retenir pour les prochaines passes** : relire un diff ne suffit pas
+quand le diff élargit un domaine de valeurs. Il faut ouvrir l'écran — ou, à défaut, rendre
+le gabarit avec les vraies formes de données, ce qui coûte quelques lignes et aurait
+attrapé la cellule vide dès la première passe.
+
+---
+
+### Passe du 2026-07-26 (3/4) — revue du code produit par l'agent — branche `fix/qc-round2`
 
 Deuxième application de la grille, cette fois **sur le code produit par l'agent lors de
 la passe précédente** (règle 3.2 : une porte unique vaut aussi pour soi). Verdict
 CORRIGER — deux bloquants, trois points majeurs.
 
-| Métrique | Outil (version) | Passe 2/3 | Passe 3/3 | Delta |
+| Métrique | Outil (version) | Passe 2/4 | Passe 3/4 | Delta |
 |---|---|---|---|---|
 | Copies de la règle d'auto-complétion | grep | 1 | 1 | = |
 | Copies du repli `/binaries/` | grep | 2 (divergentes) | **1** | −1 |
@@ -52,9 +100,9 @@ Tendance : ↓ — la duplication sémantique restante est éliminée, la preuve
 
 ---
 
-### Passe du 2026-07-26 (2/3) — après corrections de revue — branche `fix/experiment-directive-url`
+### Passe du 2026-07-26 (2/4) — après corrections de revue — branche `fix/experiment-directive-url`
 
-Application des trois actions recommandées par la passe 1/2. Mêmes outils, mêmes
+Application des trois actions recommandées par la passe 1/4. Mêmes outils, mêmes
 flags. La colonne « Avant » reprend la mesure de `7dbdf30`.
 
 | Métrique | Outil (version) | Avant (`7dbdf30`) | Après | Delta |
@@ -93,7 +141,7 @@ règle centrale est désormais prouvée par exécution et non par comparaison de
 
 ---
 
-### Passe du 2026-07-26 (1/3) — commit `7dbdf30` (branche `fix/campaign-plugin-filter`, 0.9.14) — état zéro
+### Passe du 2026-07-26 (1/4) — commit `7dbdf30` (branche `fix/campaign-plugin-filter`, 0.9.14) — état zéro
 
 Passe comparative **avant/après** : la colonne « Avant » mesure `main` (`715599a`,
 0.9.12) dans un worktree séparé, la colonne « Après » mesure la branche. Les deux
