@@ -181,13 +181,44 @@ def test_experiment_directive_url_round_trips_to_target_version():
 
 
 def test_experiment_directive_url_falls_back_to_raw_binary_on_unknown_ext():
-    """Extension que la route de téléchargement ne sait pas retirer → chemin brut,
-    qui désigne l'artefact exact (plutôt qu'une URL que le parse casserait)."""
+    """Extension que la route de téléchargement ne sait pas retirer → chemin brut.
+
+    Le s3_path porté ici est ABSOLU, comme en base réelle : c'est justement ce
+    que le repli doit savoir ramener à un chemin relatif servable.
+    """
     mod = _load_module()
-    camp = _experiment_campaign(artifact_s3_path="libreoffice/plugin-1.6.0-rc1.tar.gz")
+    camp = _experiment_campaign(
+        artifact_s3_path="/data/content/binaries/libreoffice/plugin-1.6.0-rc1.tar.gz")
     d = mod._build_update_directive(plugin_version="1.5.0", campaign=camp,
                                     client_uuid="u1", device_name="mirai-libreoffice")
     assert d["artifact_url"] == "/binaries/libreoffice/plugin-1.6.0-rc1.tar.gz"
+
+
+def test_binaries_fallback_url_resolves_to_the_real_file():
+    """Non-régression : l'URL de repli doit désigner le FICHIER RÉEL.
+
+    Le repli concaténait `s3_path` tel quel derrière /binaries/. Comme get_binary
+    re-préfixe par local_binaries_dir, un s3_path absolu produisait un chemin
+    doublé (/data/content/binaries/data/content/binaries/…) donc un 404 —
+    silencieux, puisque jamais exercé par un test.
+    """
+    from app.pathsafe import safe_path_join
+    from app.services import binaries as b
+
+    real = "/data/content/binaries/matisse/mirai-matisse-0.13.22.xpi"
+    url = "/binaries/" + b.route_rel_path(real)
+    resolved = safe_path_join(b.settings.local_binaries_dir, url[len("/binaries/"):])
+    assert resolved == real, f"l'URL {url} ne résout pas vers {real} mais vers {resolved}"
+
+
+def test_route_rel_path_handles_every_storage_convention():
+    from app.services import binaries as b
+    assert b.route_rel_path("/data/content/binaries/libreoffice/x.oxt") == "libreoffice/x.oxt"
+    assert b.route_rel_path("/data/binaries/libreoffice/x.oxt") == "libreoffice/x.oxt"
+    assert b.route_rel_path("binaries/libreoffice/x.oxt") == "libreoffice/x.oxt"  # clé S3 préfixée
+    assert b.route_rel_path("libreoffice/x.oxt") == "libreoffice/x.oxt"           # déjà relatif
+    assert b.route_rel_path("") == ""
+    assert b.route_rel_path(None) == ""
 
 
 def test_general_campaign_url_unchanged():

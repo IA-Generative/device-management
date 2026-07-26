@@ -27,6 +27,31 @@ def _s3_key_from_path(s3_path: str) -> str:
     return rel.lstrip("/")
 
 
+def route_rel_path(s3_path: str) -> str:
+    """Chemin à placer derrière la route publique ``/binaries/``.
+
+    ``get_binary`` reconstruit lui-même l'emplacement réel en préfixant la valeur
+    reçue : ``local_binaries_dir`` en mode local, ``s3_prefix_binaries`` en mode
+    S3. Ce qui circule dans l'URL doit donc être RELATIF à ces préfixes — or
+    ``artifacts.s3_path`` stocke un chemin ABSOLU en mode local
+    (``/data/content/binaries/<type>/<fichier>``, convention constatée en base)
+    et une clé déjà préfixée en mode S3. Sans ce strip, l'URL produit un chemin
+    doublé (``/data/content/binaries/data/content/binaries/…``) et donc un 404.
+    """
+    rel = str(s3_path or "").strip()
+    if not rel:
+        return ""
+    for base in (settings.local_binaries_dir, "/data/content/binaries", "/data/binaries"):
+        base = (base or "").rstrip("/")
+        if base and rel.startswith(base + "/"):
+            return rel[len(base) + 1:]
+    prefix = settings.s3_prefix_binaries.strip("/")
+    stripped = rel.lstrip("/")
+    if prefix and stripped.startswith(prefix + "/"):
+        return stripped[len(prefix) + 1:]
+    return stripped
+
+
 def delete_binary(s3_path: str) -> bool:
     """Supprime le binaire pointé par ``s3_path`` (best-effort, idempotent).
 

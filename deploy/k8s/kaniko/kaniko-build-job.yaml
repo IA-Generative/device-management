@@ -12,6 +12,12 @@
 # Limite assumée : Kaniko produit une image MONO-ARCHITECTURE (celle du nœud).
 # Pour un manifeste multi-arch (amd64 + arm64), utiliser scripts/build-k8s.sh
 # (docker buildx) depuis un poste. Voir deploy/k8s/kaniko/README.md.
+#
+# ATTENTION : Kaniko est un projet ARCHIVÉ (dernière release v1.24.0, mai 2025) —
+# aucun correctif à venir, y compris de sécurité. Remplaçants maintenus dans le
+# README. Kaniko exige par ailleurs de tourner en ROOT (il écrit la racine du
+# système de fichiers pendant la construction) : on ne peut donc pas poser
+# runAsNonRoot. Le jeton de ServiceAccount est en revanche retiré.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -30,6 +36,9 @@ spec:
         app.kubernetes.io/component: image-build
     spec:
       restartPolicy: Never
+      # Le pod porte un secret de PUSH : il n'a aucune raison de porter en plus
+      # un jeton d'API Kubernetes. Kaniko n'appelle pas l'API du cluster.
+      automountServiceAccountToken: false
       containers:
         - name: kaniko
           image: __KANIKO_IMAGE__

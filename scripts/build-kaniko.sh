@@ -33,7 +33,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="$ROOT_DIR/deploy/k8s/kaniko/kaniko-build-job.yaml"
-KANIKO_IMAGE="${KANIKO_IMAGE:-gcr.io/kaniko-project/executor:v1.23.2}"
+# ATTENTION — Kaniko est un projet ARCHIVÉ (GoogleContainerTools/kaniko, archivé
+# en 2025 ; dernière release v1.24.0, mai 2025). Aucun correctif, y compris de
+# sécurité, ne sortira. On épingle la dernière version publiée plutôt que
+# `latest`, et la question du remplaçant est ouverte : cf. deploy/k8s/kaniko/README.md.
+KANIKO_IMAGE="${KANIKO_IMAGE:-gcr.io/kaniko-project/executor:v1.24.0}"
 DOCKERFILE="deploy/docker/Dockerfile"
 
 TAG=""; NAMESPACE=""; KUBE_CONTEXT=""; GIT_REF=""; PUSH_SECRET=""

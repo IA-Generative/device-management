@@ -1,5 +1,21 @@
 # Build de l'image — deux options
 
+> ⚠️ **Kaniko est un projet archivé.** `GoogleContainerTools/kaniko` a été
+> archivé en 2025 (dernier commit 2025-06-03, dernière release **v1.24.0** en
+> mai 2025) : aucun correctif ne sortira, y compris de sécurité, et l'image
+> `executor` ne sera plus reconstruite.
+>
+> Ce que cela implique : cette voie de build reste **fonctionnelle et vérifiée**
+> (elle a produit l'image 0.9.14-qc1 déployée en intégration), mais c'est une
+> dépendance à durée de vie finie. `scripts/build-k8s.sh` (buildx) demeure la
+> voie de référence pour les releases ; Kaniko est un confort, pas un socle.
+>
+> Remplaçants maintenus si l'on veut garder un build in-cluster :
+> **BuildKit rootless** (`moby/buildkit`, l'amont de buildx — même moteur, donc
+> images identiques) ou **Buildah**. La bascule n'a pas été faite ici : elle
+> change le gabarit de Job et mérite sa propre décision.
+
+
 | | `scripts/build-k8s.sh` (buildx) | `scripts/build-kaniko.sh` (in-cluster) |
 |---|---|---|
 | Où tourne le build | poste de dev | dans le cluster cible |
