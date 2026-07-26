@@ -1419,6 +1419,22 @@ def _build_update_directive(
             return f"/catalog/{device_name}/download"
         return "/binaries/" + str(s3_path or "").lstrip("/")
 
+    def _pinned_artifact_url(s3_path, version):
+        """URL épinglée sur la version de la campagne (et non « la dernière main »).
+
+        ``/catalog/<slug>/download`` sans tag résout ``status = 'published'``, donc
+        la version main : l'utiliser pour un bras d'expérimentation servirait le
+        stable sous l'étiquette de la RC (checksum mismatch, puis re-update à
+        chaque poll). On passe par la route versionnée, dont catalog_download_file
+        ré-extrait la version en retirant l'extension connue puis le préfixe slug ;
+        si l'extension du binaire n'est pas reconnue par cette route, on retombe
+        sur le chemin brut, qui désigne l'artefact exact dans tous les modes.
+        """
+        ext = os.path.splitext(str(s3_path or ""))[1]
+        if device_name and ext in _CATALOG_KNOWN_EXT:
+            return f"/catalog/{device_name}/download/{device_name}-{version}{ext}"
+        return "/binaries/" + str(s3_path or "").lstrip("/")
+
     # Campagnes d'expérimentation : PIN de la version cible. On sert la cible dès
     # que le device n'y est pas déjà (l'égalité stricte est court-circuitée plus
     # haut), sans exiger cible > courante. C'est ce qui rend déployables les
@@ -1429,7 +1445,7 @@ def _build_update_directive(
             "action": "update",
             "current_version": plugin_version,
             "target_version": artifact_version,
-            "artifact_url": _artifact_url(campaign["artifact_s3_path"]),
+            "artifact_url": _pinned_artifact_url(campaign["artifact_s3_path"], artifact_version),
             "checksum": campaign["artifact_checksum"],
             "urgency": campaign["urgency"],
             "changelog_url": campaign["changelog_url"],
@@ -3573,12 +3589,9 @@ def _deploy_plugin_db_work(
             # 8. Auto-complete old campaigns + create new one.
             # Release générale : supersede toutes les campagnes NON-expé du plugin,
             # mais laisse coexister les campagnes d'expérimentation (is_experiment).
-            cur.execute("""
-                UPDATE campaigns SET status = 'completed', updated_at = NOW()
-                WHERE status IN ('active', 'paused') AND type = 'plugin_update'
-                  AND COALESCE(is_experiment, false) = false
-                  AND (plugin_id = %s OR plugin_id IS NULL)
-            """, (plugin_id,))
+            from app.admin.services import campaigns as _campaigns_svc
+            _campaigns_svc.autocomplete_superseded(
+                cur, plugin_id=plugin_id, is_experiment=False, target_cohort_id=None)
 
             rollout_config = None
             if strategy == "canary":
@@ -3668,14 +3681,11 @@ def _create_campaign_db_work(body: dict, db_url: str):
             # une release générale supersede les non-expé du plugin ; une expé ne
             # remplace que son propre bras (même cohorte). Jamais l'un l'autre.
             if status == "active":
-                cur.execute("""
-                    UPDATE campaigns SET status = 'completed', updated_at = NOW()
-                    WHERE status IN ('active','paused') AND type = %(type)s
-                      AND COALESCE(is_experiment, false) = %(is_exp)s
-                      AND (%(is_exp)s = false OR target_cohort_id IS NOT DISTINCT FROM %(cohort)s)
-                      AND (plugin_id = %(pid)s OR (%(is_exp)s = false AND plugin_id IS NULL))
-                """, {"type": body.get("type", "plugin_update"), "is_exp": is_experiment,
-                      "cohort": target_cohort_id, "pid": plugin_id})
+                from app.admin.services import campaigns as _campaigns_svc
+                _campaigns_svc.autocomplete_superseded(
+                    cur, plugin_id=plugin_id, is_experiment=is_experiment,
+                    target_cohort_id=target_cohort_id,
+                    campaign_type=body.get("type", "plugin_update"))
 
             cur.execute(
                 """
@@ -3744,31 +3754,14 @@ def _api_campaign_action(campaign_id: int, new_status: str):
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
         with conn.cursor() as cur:
-            # À l'activation (start/resume), appliquer l'auto-complétion scopée :
-            # cette transition manuelle ne passe pas par create_campaign, sinon
-            # activer un rollout général laisserait 2 gagnants non déterministes.
-            if new_status == "active":
-                cur.execute("""
-                    SELECT plugin_id, COALESCE(is_experiment, false), target_cohort_id
-                    FROM campaigns WHERE id = %s AND type = 'plugin_update'
-                """, (campaign_id,))
-                crow = cur.fetchone()
-                if crow:
-                    cur.execute("""
-                        UPDATE campaigns SET status = 'completed', updated_at = NOW()
-                        WHERE status IN ('active','paused') AND type = 'plugin_update'
-                          AND COALESCE(is_experiment, false) = %(is_exp)s
-                          AND (%(is_exp)s = false OR target_cohort_id IS NOT DISTINCT FROM %(cohort)s)
-                          AND (plugin_id = %(pid)s OR (%(is_exp)s = false AND plugin_id IS NULL))
-                          AND id <> %(self)s
-                    """, {"is_exp": crow[1], "cohort": crow[2], "pid": crow[0], "self": campaign_id})
-            cur.execute(
-                "UPDATE campaigns SET status = %s, updated_at = NOW() WHERE id = %s RETURNING id",
-                (new_status, campaign_id),
-            )
-            row = cur.fetchone()
+            # Transition de statut : même implémentation que l'admin, y compris
+            # l'auto-complétion scopée à l'activation (start/resume ne passent pas
+            # par create_campaign — sans elle, activer un rollout général laisserait
+            # deux gagnants généraux non déterministes).
+            from app.admin.services import campaigns as _campaigns_svc
+            updated = _campaigns_svc.update_campaign_status(cur, campaign_id, new_status)
         conn.close()
-        if not row:
+        if not updated:
             return JSONResponse({"ok": False, "error": "Campaign not found"}, status_code=404)
         return JSONResponse({"ok": True, "campaign_id": campaign_id, "status": new_status})
     except Exception as e:
@@ -4268,6 +4261,10 @@ _catalog_templates = _Jinja2Templates(
 
 # Download extensions: .crx triggers Chrome auto-install block, use .zip instead
 _DEVICE_TYPE_EXT = {"libreoffice": "oxt", "firefox": "xpi", "chrome": "zip", "edge": "zip", "matisse": "xpi"}
+# Extensions que /catalog/<slug>/download/<filename> sait retirer pour retrouver
+# la version. Source unique : catalog_download_file la consomme pour parser,
+# _build_update_directive pour construire une URL épinglée qu'elle saura parser.
+_CATALOG_KNOWN_EXT = (".oxt", ".xpi", ".crx", ".zip", ".bin")
 
 
 @app.get("/catalog", response_class=Response)
@@ -4427,9 +4424,8 @@ def catalog_download_file(slug: str, filename: str):
     if served is not None:
         return served
     # Strip known extensions, then remove slug prefix to get version
-    _known_ext = (".oxt", ".xpi", ".crx", ".zip", ".bin")
     base = filename
-    for ext in _known_ext:
+    for ext in _CATALOG_KNOWN_EXT:
         if base.endswith(ext):
             base = base[:-len(ext)]
             break

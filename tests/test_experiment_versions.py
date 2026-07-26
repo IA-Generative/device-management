@@ -150,6 +150,56 @@ def test_non_experiment_still_requires_greater_version():
     assert d is None
 
 
+# ── A4 : l'URL servie est épinglée sur la version du bras ────────────────
+
+def test_experiment_directive_url_is_pinned_not_latest_main():
+    """Régression : /catalog/<slug>/download (sans tag) résout status='published',
+    donc la version MAIN. Un bras d'expé qui l'utilisait annonçait 1.6.0-rc1 et
+    servait le stable → checksum mismatch puis re-update à chaque poll."""
+    mod = _load_module()
+    d = mod._build_update_directive(plugin_version="1.5.0",
+                                    campaign=_experiment_campaign(),
+                                    client_uuid="u1", device_name="mirai-libreoffice")
+    assert d["artifact_url"] != "/catalog/mirai-libreoffice/download", \
+        "l'URL générique sert la dernière version publiée, pas le bras testé"
+    assert d["target_version"] in d["artifact_url"]
+
+
+def test_experiment_directive_url_round_trips_to_target_version():
+    """Bout en bout : l'URL produite, re-parsée par la route de téléchargement,
+    doit sélectionner la version cible de la campagne."""
+    mod = _load_module()
+    d = mod._build_update_directive(plugin_version="1.5.0",
+                                    campaign=_experiment_campaign(),
+                                    client_uuid="u1", device_name="mirai-libreoffice")
+    seen = {}
+    mod._serve_variant_by_filename = lambda slug, filename: None
+    mod._serve_plugin_download = lambda slug, version_filter=None: seen.update(
+        slug=slug, version=version_filter)
+    mod.catalog_download_file("mirai-libreoffice", d["artifact_url"].rsplit("/", 1)[-1])
+    assert seen == {"slug": "mirai-libreoffice", "version": "1.6.0-rc1"}
+
+
+def test_experiment_directive_url_falls_back_to_raw_binary_on_unknown_ext():
+    """Extension que la route de téléchargement ne sait pas retirer → chemin brut,
+    qui désigne l'artefact exact (plutôt qu'une URL que le parse casserait)."""
+    mod = _load_module()
+    camp = _experiment_campaign(artifact_s3_path="libreoffice/plugin-1.6.0-rc1.tar.gz")
+    d = mod._build_update_directive(plugin_version="1.5.0", campaign=camp,
+                                    client_uuid="u1", device_name="mirai-libreoffice")
+    assert d["artifact_url"] == "/binaries/libreoffice/plugin-1.6.0-rc1.tar.gz"
+
+
+def test_general_campaign_url_unchanged():
+    """Non-régression : hors expé, l'URL catalogue générique reste utilisée
+    (la campagne générale sert justement la dernière version publiée)."""
+    mod = _load_module()
+    camp = _experiment_campaign(is_experiment=False, artifact_version="2.0.0")
+    d = mod._build_update_directive(plugin_version="1.0.0", campaign=camp,
+                                    client_uuid="u1", device_name="mirai-libreoffice")
+    assert d["artifact_url"] == "/catalog/mirai-libreoffice/download"
+
+
 # ── A1 : auto-complétion scopée ──────────────────────────────────────────
 
 def _camp_svc():
