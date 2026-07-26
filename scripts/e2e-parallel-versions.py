@@ -419,6 +419,32 @@ def main() -> int:
           d_left is None or d_left.get("target_version") == V_NEXT,
           f"target={d_left and d_left.get('target_version')} (rollout général = {V_NEXT})")
 
+    section("E. Surfaces publiques — l'API dit la même chose que le HTML")
+    st_api, body_api, _ = http(f"/catalog/api/plugins/{SLUG}")
+    api = json.loads(body_api) if st_api == 200 else {}
+    check("E1 fiche JSON sans tag : la main, et aucune trace de branche",
+          api.get("latest_version") == V_STABLE and "experiments" not in api,
+          f"latest={api.get('latest_version')}, clé experiments={'presente' if 'experiments' in api else 'absente'}")
+
+    st_exp, body_exp, _ = http(f"/catalog/api/plugins/{SLUG}?exp={TAG_EXP}")
+    apix = json.loads(body_exp) if st_exp == 200 else {}
+    vers = [e["version"] for e in apix.get("experiments", [])]
+    check("E2 avec ?exp=<tag> : la branche, ses questions et son URL versionnée",
+          vers == [V_EXP] and apix["experiments"][0]["hypotheses"]
+          and V_EXP in apix["experiments"][0]["download_url"],
+          f"versions={vers}")
+
+    st_b, body_b, _ = http(f"/catalog/api/plugins/{SLUG}?exp={TAG_EXP2}")
+    vers_b = [e["version"] for e in json.loads(body_b).get("experiments", [])] if st_b == 200 else []
+    check("E3 chaque tag ne révèle que SA branche",
+          vers_b == [V_EXP2] and V_EXP not in vers_b, f"{TAG_EXP2} → {vers_b}")
+
+    st_l, body_l, _ = http("/catalog/api/plugins")
+    entree = next((p for p in json.loads(body_l).get("plugins", []) if p["slug"] == SLUG), None)
+    check("E4 liste publique : la version annoncée est la main, pas une branche",
+          entree is not None and entree.get("latest_version") == V_STABLE,
+          f"latest_version={entree and entree.get('latest_version')}")
+
     if not KEEP:
         cleanup()
         print(f"\n  {Y}données E2E supprimées{N}")
