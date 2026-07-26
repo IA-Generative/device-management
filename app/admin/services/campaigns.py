@@ -19,6 +19,10 @@ def list_campaigns(cur, *, status: str = None, limit: int = 50,
     cur.execute(f"""
         SELECT c.id, c.name, c.description, c.type, c.status, c.urgency,
                c.created_at, c.updated_at, c.deadline_at, c.created_by,
+               -- Sans ces deux champs, la liste montre deux campagnes « actives »
+               -- sur le même plugin sans dire laquelle l'emporte : la précédence
+               -- (bras ciblé > général, puis priority) resterait illisible.
+               COALESCE(c.is_experiment, false) AS is_experiment, c.priority,
                co.name AS cohort_name,
                a.version AS artifact_version, a.device_type,
                ra.version AS rollback_version

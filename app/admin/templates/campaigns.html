@@ -25,6 +25,7 @@
       <th>Statut</th>
       <th>Nom</th>
       <th>Cohorte</th>
+      <th>Priorite</th>
       <th>Artifact</th>
       <th>Urgence</th>
       <th>Creee le</th>
@@ -47,8 +48,17 @@
         <span class="dm-badge dm-badge--error">Rollback</span>
         {% endif %}
       </td>
-      <td><a href="/admin/campaigns/{{ c.id }}">{{ c.name }}</a></td>
+      <td>
+        <a href="/admin/campaigns/{{ c.id }}">{{ c.name }}</a>
+        {% if c.is_experiment %}
+        <span class="dm-badge dm-badge--info" style="margin-left:0.35rem;"
+              title="Bras d'experimentation : coexiste avec le rollout general et l'emporte pour les devices de sa cohorte">Expe</span>
+        {% endif %}
+      </td>
       <td>{{ c.cohort_name or '-' }}</td>
+      {# priority ne se lit que face a une autre campagne : afficher le 0 par
+         defaut n'apprendrait rien et brouillerait la colonne. #}
+      <td>{% if c.priority %}<strong>{{ c.priority }}</strong>{% else %}<span style="color:#888;">-</span>{% endif %}</td>
       <td>{{ c.device_type or '' }} {{ c.artifact_version or '-' }}</td>
       <td>{{ c.urgency }}</td>
       <td>{{ c.created_at.strftime('%d/%m/%Y') if c.created_at else '-' }}</td>
@@ -71,7 +81,7 @@
     </tr>
     {% endfor %}
     {% if not campaigns %}
-    <tr><td colspan="7" style="text-align: center; color: #666;">Aucune campagne.</td></tr>
+    <tr><td colspan="8" style="text-align: center; color: #666;">Aucune campagne.</td></tr>
     {% endif %}
   </tbody>
 </table>

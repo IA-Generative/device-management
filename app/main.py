@@ -3996,8 +3996,16 @@ def api_public_plugins():
 
 
 @app.get("/catalog/api/plugins/{slug}")
-def api_public_plugin_detail(slug: str):
-    """JSON public — plugin detail for external integration."""
+def api_public_plugin_detail(slug: str, exp: str | None = None):
+    """JSON public — plugin detail for external integration.
+
+    ``?exp=<tag>`` ajoute la clé ``experiments`` : les versions de la branche
+    portant ce tag, avec leurs questions testées. Symétrique de la page HTML
+    ``/catalog/<slug>?exp=<tag>`` et gaté par la même barrière — rien n'est exposé
+    sans le tag, et la réponse SANS ``exp`` est inchangée. Sert à outiller les
+    testeurs (script d'installation, tableau de bord de branche) sans leur imposer
+    de gratter le HTML.
+    """
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
@@ -4021,6 +4029,15 @@ def api_public_plugin_detail(slug: str):
             vrow = cur.fetchone()
             cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations WHERE plugin_id=%s AND status='active'", (p["id"],))
             installs = cur.fetchone()[0]
+            exp_rows = []
+            if exp:
+                cur.execute("""
+                    SELECT version, tag, hypotheses, release_notes
+                    FROM plugin_versions
+                    WHERE plugin_id = %s AND status = 'experimental' AND tag = %s
+                    ORDER BY published_at DESC NULLS LAST
+                """, (p["id"], exp))
+                exp_rows = cur.fetchall()
         kf = p.get("key_features") or []
         if isinstance(kf, str):
             kf = json.loads(kf)
@@ -4053,6 +4070,16 @@ def api_public_plugin_detail(slug: str):
             "license": p.get("license"),
             "detail_url": f"{public_base}/catalog/{p['slug']}",
             "download_url": f"{public_base}/catalog/{p['slug']}/download",
+            # Clé ABSENTE sans ?exp= : la réponse par défaut reste identique à
+            # celle d'avant, et rien ne trahit l'existence d'une branche.
+            **({"experiments": [
+                {"version": _v, "tag": _t,
+                 "hypotheses": (json.loads(_h) if isinstance(_h, str) else _h) or [],
+                 "release_notes": _n or "",
+                 "download_url": f"{public_base}/catalog/{p['slug']}/download/"
+                                 f"{p['slug']}-{_v}.{_DEVICE_TYPE_EXT.get(p['device_type'], 'bin')}"}
+                for _v, _t, _h, _n in exp_rows
+            ]} if exp else {}),
         }, headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=300"})
     finally:
         conn.close()

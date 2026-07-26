@@ -122,6 +122,14 @@
           Branches en test — chacune repond a des questions precises. A installer
           manuellement pour tester ; ce ne sont pas les versions stables.
         </p>
+        {# Le testeur doit voir de QUOI il devie, et comment y revenir : sans ce
+           repere, une branche ressemble a la version courante du plugin. #}
+        <p class="fr-text--sm">
+          {% if plugin.latest_version %}
+          Version stable actuelle : <strong>v{{ plugin.latest_version }}</strong> —
+          {% endif %}
+          <a href="/catalog/{{ plugin.slug }}">revenir a la fiche sans branche</a>
+        </p>
         {% for exp in experiments %}
         <div class="fr-callout fr-callout--brown-caramel" style="margin-bottom:1rem;">
           <p class="fr-callout__title">v{{ exp.version }}{% if exp.tag %} &middot; {{ exp.tag }}{% endif %}</p>

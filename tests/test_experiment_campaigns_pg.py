@@ -15,6 +15,7 @@ Exécution : `DATABASE_URL=postgresql://dev:dev@localhost:5433/bootstrap \\
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -257,3 +258,84 @@ def test_plugin_versions_status_check_accepts_experimental_only(fixt):
             VALUES (%s, '1.6.0-rc2', 'bidon')
         """, (ids["plugin_id"],))
     cur.execute("ROLLBACK TO SAVEPOINT sp_check")
+
+
+# ── Étanchéité des surfaces publiques ────────────────────────────────────────
+
+_SEAL_SLUG = "it-seal-plugin"
+_SEAL_TAG = "it-seal-branche"
+
+
+@pytest.fixture
+def sealed(_db_url):
+    """Jeu de données COMMITÉ : les routes publiques ouvrent leur propre connexion,
+    elles ne verraient pas une transaction en cours. Nettoyage en sortie."""
+    import psycopg2
+    conn = psycopg2.connect(_db_url)
+    conn.autocommit = True
+
+    def _purge(cur):
+        cur.execute(f"DELETE FROM plugin_versions WHERE plugin_id IN "
+                    f"(SELECT id FROM plugins WHERE slug = '{_SEAL_SLUG}')")
+        cur.execute(f"DELETE FROM artifacts WHERE device_type = '{_SEAL_SLUG}'")
+        cur.execute(f"DELETE FROM plugins WHERE slug = '{_SEAL_SLUG}'")
+
+    with conn.cursor() as cur:
+        _purge(cur)
+        cur.execute("""INSERT INTO plugins (slug, name, device_type, status, visibility)
+                       VALUES (%s, 'IT etancheite', %s, 'active', 'public') RETURNING id""",
+                    (_SEAL_SLUG, _SEAL_SLUG))
+        pid = cur.fetchone()[0]
+        ids = {}
+        for version, status, tag in (("2.0.0", "published", None),
+                                     ("2.1.0-exp", "experimental", _SEAL_TAG)):
+            cur.execute("""INSERT INTO artifacts (device_type, version, s3_path, checksum, is_active)
+                           VALUES (%s, %s, %s, %s, true) RETURNING id""",
+                        (_SEAL_SLUG, version, f"/data/content/binaries/{_SEAL_SLUG}/{version}.oxt",
+                         f"sha256:{version}"))
+            aid = cur.fetchone()[0]
+            cur.execute("""INSERT INTO plugin_versions (plugin_id, version, artifact_id, status, tag, published_at)
+                           VALUES (%s, %s, %s, %s, %s, NOW())""", (pid, version, aid, status, tag))
+            ids[version] = aid
+    try:
+        yield pid
+    finally:
+        with conn.cursor() as cur:
+            _purge(cur)
+        conn.close()
+
+
+def test_public_surfaces_never_expose_experimental_without_tag(sealed):
+    """Le fail-safe de l'ADR-0004 tient par construction (`status='published'`
+    partout) — mais rien ne l'attestait. Un `status IN (…)` ajouté par distraction
+    passerait inaperçu. Ce test garde la décision d'architecture, pas le code.
+    """
+    mod = _load_main()
+
+    liste = json.loads(bytes(mod.api_public_plugins().body))
+    entree = next((p for p in liste["plugins"] if p["slug"] == _SEAL_SLUG), None)
+    assert entree is not None, "le plugin de test doit apparaître au catalogue"
+    assert entree["latest_version"] == "2.0.0", \
+        f"la liste publique expose une version non publiée : {entree['latest_version']}"
+
+    detail = json.loads(bytes(mod.api_public_plugin_detail(_SEAL_SLUG).body))
+    assert detail["latest_version"] == "2.0.0"
+    assert "experiments" not in detail, "la clé experiments ne doit exister qu'avec ?exp="
+
+    redirection = mod.catalog_download(_SEAL_SLUG).headers.get("location", "")
+    assert "2.0.0" in redirection and "2.1.0-exp" not in redirection, \
+        f"/download sans tag a servi une branche : {redirection}"
+
+
+def test_public_api_reveals_the_branch_only_with_its_tag(sealed):
+    mod = _load_main()
+
+    avec = json.loads(bytes(mod.api_public_plugin_detail(_SEAL_SLUG, exp=_SEAL_TAG).body))
+    versions = [e["version"] for e in avec["experiments"]]
+    assert versions == ["2.1.0-exp"], f"branche attendue, obtenu {versions}"
+    assert avec["experiments"][0]["tag"] == _SEAL_TAG
+    assert "2.1.0-exp" in avec["experiments"][0]["download_url"]
+    assert avec["latest_version"] == "2.0.0", "la main reste la main, même sur la page taguée"
+
+    faux = json.loads(bytes(mod.api_public_plugin_detail(_SEAL_SLUG, exp="mauvais-tag").body))
+    assert faux["experiments"] == [], "un tag inconnu ne doit rien révéler"
