@@ -44,8 +44,10 @@ EMAIL_OUT = "e2e-par-temoin@example.test"
 UUID_IN = "e2e0aaaa-0000-4000-8000-000000000001"
 UUID_OUT = "e2e0bbbb-0000-4000-8000-000000000002"
 TAG_EXP = "e2e-exp"
+TAG_EXP2 = "e2e-exp-b"
 
 V_STABLE, V_RC, V_EXP, V_NEXT = "1.5.0", "1.6.0-rc1", "1.7.0-exp", "1.8.0"
+V_EXP2 = "1.7.0-exp-b"   # seconde branche expérimentale, réutilise l'artefact 1.8.0
 
 G, R, Y, B, N = "\033[0;32m", "\033[0;31m", "\033[0;33m", "\033[0;34m", "\033[0m"
 RESULTS: list[tuple[str, bool, str]] = []
@@ -379,6 +381,43 @@ def main() -> int:
     check("C3 après éviction, le binaire vivant est re-servi (pull-on-miss)",
           st_after == 200 and hashlib.sha256(payload_after).hexdigest() == SHA[V_EXP][7:],
           f"HTTP {st_after}")
+
+    section("D. Cohabitation étendue — plusieurs branches sur le même plugin")
+    # Une seconde branche taguée, en parallèle de la première ET de la main.
+    psql(f"""INSERT INTO plugin_versions (plugin_id, version, artifact_id, status, tag, published_at)
+             VALUES ({ids['plugin']}, '{V_EXP2}', {ids[f'art_{V_NEXT}']}, 'experimental',
+                     '{TAG_EXP2}', NOW())""")
+
+    st_a, _, hdr_a = http(f"/catalog/{SLUG}/download?tag={TAG_EXP}", follow=False)
+    st_b, _, hdr_b = http(f"/catalog/{SLUG}/download?tag={TAG_EXP2}", follow=False)
+    loc_a, loc_b = hdr_a.get("location", ""), hdr_b.get("location", "")
+    check("D1 deux branches taguées coexistent, chacune sert SA version",
+          V_EXP in loc_a and V_EXP2 in loc_b and loc_a != loc_b,
+          f"{TAG_EXP}→{loc_a.rsplit('/', 1)[-1]}  |  {TAG_EXP2}→{loc_b.rsplit('/', 1)[-1]}")
+
+    st_m2, _, hdr_m2 = http(f"/catalog/{SLUG}/download", follow=False)
+    loc_m2 = hdr_m2.get("location", "")
+    check("D2 la main reste servie par défaut malgré 2 branches expérimentales",
+          V_STABLE in loc_m2 and V_EXP not in loc_m2 and V_EXP2 not in loc_m2,
+          f"→ {loc_m2.rsplit('/', 1)[-1]}")
+
+    _, page_a, _ = http(f"/catalog/{SLUG}?exp={TAG_EXP}")
+    check("D3 la page d'une branche ne révèle pas l'autre (étanchéité des tags)",
+          V_EXP.encode() in page_a and V_EXP2.encode() not in page_a)
+
+    # La version publiée n'a pas été dépréciée par les publications expérimentales.
+    statuses = psql(f"""SELECT version || '=' || status FROM plugin_versions
+                        WHERE plugin_id = {ids['plugin']} ORDER BY version""").replace("\n", " ")
+    check("D4 publier des expérimentales ne déprécie PAS la version publiée",
+          f"{V_STABLE}=published" in statuses, statuses)
+
+    # Le device retiré de la cohorte doit retomber sur le rollout général.
+    psql(f"""DELETE FROM cohort_members
+             WHERE identifier_value IN ('{EMAIL_IN}', '{UUID_IN}')""")
+    d_left = directive(config_for(EMAIL_IN, UUID_IN, V_STABLE))
+    check("D5 device sorti des cohortes : retour au rollout général, pas de blocage",
+          d_left is None or d_left.get("target_version") == V_NEXT,
+          f"target={d_left and d_left.get('target_version')} (rollout général = {V_NEXT})")
 
     if not KEEP:
         cleanup()
