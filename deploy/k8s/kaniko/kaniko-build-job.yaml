@@ -1,0 +1,65 @@
+# Job de build in-cluster (Kaniko) — construit l'image device-management depuis
+# le dépôt git, sans démon Docker ni poste de dev.
+#
+# Ce fichier est un GABARIT : les jetons __XXX__ sont substitués par
+# scripts/build-kaniko.sh. Pour un apply manuel, remplacez-les à la main.
+#
+# Prérequis dans le namespace cible :
+#   - un secret kubernetes.io/dockerconfigjson ayant les droits de PUSH sur le
+#     dépôt d'images (par défaut `regcred`, le même que le pull secret ; si ce
+#     token est en lecture seule, créez-en un dédié et passez --push-secret).
+#
+# Limite assumée : Kaniko produit une image MONO-ARCHITECTURE (celle du nœud).
+# Pour un manifeste multi-arch (amd64 + arm64), utiliser scripts/build-k8s.sh
+# (docker buildx) depuis un poste. Voir deploy/k8s/kaniko/README.md.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: device-management
+    app.kubernetes.io/component: image-build
+spec:
+  backoffLimit: 0            # pas de reconstruction silencieuse : un échec reste un échec
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: device-management
+        app.kubernetes.io/component: image-build
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kaniko
+          image: __KANIKO_IMAGE__
+          args:
+            - "--context=__GIT_CONTEXT__"
+            - "--dockerfile=__DOCKERFILE__"
+            - "--destination=__IMAGE__:__TAG__"
+            # Remplacé par 0..n arguments (destinations et cache) — ou retiré.
+            - "__EXTRA_ARGS__"
+            # Pas de --single-snapshot : on garde le découpage en couches du
+            # Dockerfile, pour que l'image soit équivalente à celle produite par
+            # build-k8s.sh (buildx) et non un aplat mono-couche.
+            - "--label=org.opencontainers.image.revision=__GIT_SHA__"
+            - "--label=org.opencontainers.image.version=__TAG__"
+          resources:
+            # Calibré pour le pool standard de l'intégration (1800m / ~6 Gi par
+            # nœud) : le job doit tenir sans évincer les pods applicatifs.
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1500m"
+              memory: "4Gi"
+          volumeMounts:
+            - name: docker-config
+              mountPath: /kaniko/.docker
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: __PUSH_SECRET__
+            items:
+              - key: .dockerconfigjson
+                path: config.json
