@@ -9,7 +9,50 @@ applicatif), le volume sur l'ensemble des fichiers suivis par git.
 
 ---
 
-### Passe du 2026-07-26 (2/2) — après corrections de revue — branche `fix/experiment-directive-url`
+### Passe du 2026-07-26 (3/3) — revue du code produit par l'agent — branche `fix/qc-round2`
+
+Deuxième application de la grille, cette fois **sur le code produit par l'agent lors de
+la passe précédente** (règle 3.2 : une porte unique vaut aussi pour soi). Verdict
+CORRIGER — deux bloquants, trois points majeurs.
+
+| Métrique | Outil (version) | Passe 2/3 | Passe 3/3 | Delta |
+|---|---|---|---|---|
+| Copies de la règle d'auto-complétion | grep | 1 | 1 | = |
+| Copies du repli `/binaries/` | grep | 2 (divergentes) | **1** | −1 |
+| Complexité moyenne | radon 6.0.1 | B (5,26) | B (5,26) | = |
+| Blocs CC > 15 | radon 6.0.1 | 30 | 30 | = |
+| Fonctions de test | grep | 298 | **300** | +2 |
+| Tests d'intégration **exécutés en CI** | ci.yml | **0** | **9** | +9 |
+| Vérifications E2E rejouables depuis le dépôt | script | 0 (hors dépôt) | **26** | +26 |
+| Lint / SAST | ruff 0.15.5 / bandit 1.9.2 | ruff 0 / bandit **exit 1** | ruff 0 / bandit **exit 0** | ✔ |
+| Dépendances de build archivées | gh api | 1 (Kaniko) | **0** | −1 |
+
+Défauts relevés et traités :
+
+1. **Le repli `/binaries/` ne pouvait pas résoudre** — `artifacts.s3_path` est absolu en
+   mode local, `get_binary` re-préfixe : l'URL produisait un chemin doublé, donc un 404.
+   Le défaut préexistait et avait été recopié dans le code neuf. Une implémentation
+   unique (`binaries_svc.route_rel_path`), 3 tests, mutation vérifiée.
+2. **Kaniko archivé depuis 2025** — remplacé par BuildKit rootless, cf.
+   [adr-0005](docs/architecture/adr-0005-build-in-cluster.md).
+3. **Les tests d'intégration ne tournaient jamais** — la CI exécutait
+   `pytest -m "not integration"`. Job `integration-db` ajouté (PostgreSQL 16).
+4. **Le harnais E2E vivait hors du dépôt** — versé en `scripts/e2e-parallel-versions.py`,
+   étendu d'une section « cohabitation » : 26 vérifications.
+5. **Le pod de build portait un jeton d'API inutile** — `automountServiceAccountToken: false`.
+
+Découverte incidente, antérieure aux trois passes : **la CI n'avait pas tourné depuis le
+2026-07-15**. Ni 0.9.13 ni 0.9.14 n'ont déclenché de run ; la PR #17 est le premier
+déclenchement en 11 jours, et elle est arrivée rouge sur un `bandit` B108 préexistant
+(vérifié en le rejouant sur `7dbdf30`). Les mentions « checks » des relevés précédents
+sont donc à lire avec cette réserve : il n'y avait pas de checks.
+
+Tendance : ↓ — la duplication sémantique restante est éliminée, la preuve passe de
+« déclarative » à « exécutée par la CI », et une dépendance morte sort de la base.
+
+---
+
+### Passe du 2026-07-26 (2/3) — après corrections de revue — branche `fix/experiment-directive-url`
 
 Application des trois actions recommandées par la passe 1/2. Mêmes outils, mêmes
 flags. La colonne « Avant » reprend la mesure de `7dbdf30`.
@@ -50,7 +93,7 @@ règle centrale est désormais prouvée par exécution et non par comparaison de
 
 ---
 
-### Passe du 2026-07-26 (1/2) — commit `7dbdf30` (branche `fix/campaign-plugin-filter`, 0.9.14) — état zéro
+### Passe du 2026-07-26 (1/3) — commit `7dbdf30` (branche `fix/campaign-plugin-filter`, 0.9.14) — état zéro
 
 Passe comparative **avant/après** : la colonne « Avant » mesure `main` (`715599a`,
 0.9.12) dans un worktree séparé, la colonne « Après » mesure la branche. Les deux

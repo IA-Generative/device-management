@@ -1380,6 +1380,17 @@ def _get_current_rollout_percent(campaign: dict, stages: list) -> int:
     return 100
 
 
+def _binaries_route_url(s3_path: str) -> str:
+    """URL publique servant l'artefact brut, quel que soit le mode de stockage.
+
+    Implémentation unique du repli : ``artifacts.s3_path`` n'est pas directement
+    utilisable derrière ``/binaries/`` (chemin absolu en local, clé préfixée en
+    S3) — cf. ``binaries_svc.route_rel_path``.
+    """
+    from app.services import binaries as _binaries_svc
+    return "/binaries/" + _binaries_svc.route_rel_path(s3_path)
+
+
 def _build_update_directive(
     *,
     plugin_version: str,
@@ -1417,7 +1428,7 @@ def _build_update_directive(
     def _artifact_url(s3_path):
         if device_name:
             return f"/catalog/{device_name}/download"
-        return "/binaries/" + str(s3_path or "").lstrip("/")
+        return _binaries_route_url(s3_path)
 
     def _pinned_artifact_url(s3_path, version):
         """URL épinglée sur la version de la campagne (et non « la dernière main »).
@@ -1433,7 +1444,7 @@ def _build_update_directive(
         ext = os.path.splitext(str(s3_path or ""))[1]
         if device_name and ext in _CATALOG_KNOWN_EXT:
             return f"/catalog/{device_name}/download/{device_name}-{version}{ext}"
-        return "/binaries/" + str(s3_path or "").lstrip("/")
+        return _binaries_route_url(s3_path)
 
     # Campagnes d'expérimentation : PIN de la version cible. On sert la cible dès
     # que le device n'y est pas déjà (l'égalité stricte est court-circuitée plus
@@ -2240,7 +2251,13 @@ def _process_queue_job(job: QueueJob) -> None:
 
 def _touch_worker_heartbeat() -> None:
     """Write the current timestamp to the worker heartbeat file (liveness probe)."""
-    path = os.getenv("DM_WORKER_HEARTBEAT_FILE", "/tmp/dm-worker-heartbeat")
+    # nosec B108 — chemin /tmp en dur : le défaut est surchargeable par
+    # DM_WORKER_HEARTBEAT_FILE, et /tmp est propre au conteneur du worker (pas
+    # de répertoire partagé, donc pas de course ni de lien symbolique posé par
+    # un tiers). Le fichier ne contient qu'un horodatage lu par la sonde de
+    # liveness. Convention du dépôt (cf. [tool.bandit] de pyproject.toml) :
+    # « vrai correctif ou # nosec inline justifié ».
+    path = os.getenv("DM_WORKER_HEARTBEAT_FILE", "/tmp/dm-worker-heartbeat")  # nosec B108
     try:
         with open(path, "w") as f:
             f.write(str(time.time()))

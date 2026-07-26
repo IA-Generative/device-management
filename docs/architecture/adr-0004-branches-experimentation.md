@@ -1,7 +1,7 @@
 # ADR-0004 : Branches d'expérimentation — tester plusieurs versions d'un plugin en parallèle
 
 **Date** : 2026-07-25
-**Statut** : En vigueur (0.9.14, déployé intégration)
+**Statut** : En vigueur (0.9.14 ; corrigée en 0.9.15 — cf. « URL épinglée » ci-dessous)
 **Auteurs** : eric.tiquet + Claude Opus 4.8
 **Portée** : coexistence de campagnes par cohorte + mode PIN (push, `app/main.py`,
 `app/admin/services/campaigns.py`) ; canal `experimental` + `tag` + `hypotheses` au
