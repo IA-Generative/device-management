@@ -43,6 +43,9 @@ d'expérimentation n'existe).
   témoin sur le stable.
 - **Mode PIN** : une campagne d'expé sert sa version cible dès que le device n'y est pas
   déjà, **sans** exiger cible > courante — c'est ce qui rend déployables les builds suffixées.
+  L'URL servie est **épinglée sur cette version** (route versionnée, repli sur le chemin
+  brut) : l'URL catalogue générique résout `status='published'`, elle aurait servi la main
+  sous l'étiquette de la RC.
 
 ### 2. Pull — versions expérimentales au catalogue
 

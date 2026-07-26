@@ -206,6 +206,11 @@ Comportement à connaître :
   suffixées (`1.6.0-rc1`) que la comparaison numérique réduirait sinon à `(0,)` → aucun
   update. Corollaire : le client DOIT renvoyer la version cible **exacte** (suffixe
   inclus) dans `X-Plugin-Version`, sinon il se met à jour à chaque poll.
+- **URL épinglée.** L'`artifact_url` d'un bras d'expé pointe la route versionnée
+  `/catalog/<slug>/download/<slug>-<version>.<ext>` (et non `…/download`, qui résout
+  `status='published'`, donc la main). Un bras dont l'artefact n'a pas d'extension
+  reconnue retombe sur `/binaries/<s3_path>`. Les campagnes générales, elles, gardent
+  l'URL catalogue générique : c'est bien la dernière publiée qu'elles servent.
 - **Précédence.** Un device qui matche plusieurs campagnes actives résout dans l'ordre :
   bras ciblé (cohorte) > rollout général non ciblé, puis `priority` décroissante, puis
   `created_at`. Un device **hors** cohorte d'expé ne voit que le rollout général (témoin).

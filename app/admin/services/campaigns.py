@@ -96,9 +96,15 @@ def get_campaign_events(cur, campaign_id: int, limit: int = 20) -> list[dict]:
 
 
 def autocomplete_superseded(cur, *, plugin_id, is_experiment: bool,
-                            target_cohort_id, exclude_id: int = None) -> None:
+                            target_cohort_id, exclude_id: int = None,
+                            campaign_type: str = "plugin_update") -> None:
     """Auto-complète UNIQUEMENT la campagne que la nouvelle remplace, pour permettre
     la coexistence des branches d'expérimentation.
+
+    **Implémentation unique de cette règle** : tous les chemins qui activent une
+    campagne l'appellent (création admin, création API, deploy plugin, transitions
+    manuelles activate/resume). Ne pas réécrire l'UPDATE ailleurs — la précédence
+    des campagnes doit rester modifiable en un seul endroit.
 
     Portée, par classe (COALESCE(is_experiment,false)) et même plugin :
       - release GÉNÉRALE (is_experiment=false) → supersede TOUTES les campagnes
@@ -111,12 +117,12 @@ def autocomplete_superseded(cur, *, plugin_id, is_experiment: bool,
     """
     cur.execute("""
         UPDATE campaigns SET status = 'completed', updated_at = NOW()
-        WHERE status IN ('active','paused') AND type = 'plugin_update'
+        WHERE status IN ('active','paused') AND type = %(type)s
           AND COALESCE(is_experiment, false) = %(is_exp)s
           AND (%(is_exp)s = false OR target_cohort_id IS NOT DISTINCT FROM %(cohort)s)
           AND (plugin_id = %(pid)s OR (%(is_exp)s = false AND plugin_id IS NULL))
           AND (%(exclude)s::int IS NULL OR id <> %(exclude)s)
-    """, {"is_exp": is_experiment, "cohort": target_cohort_id,
+    """, {"type": campaign_type, "is_exp": is_experiment, "cohort": target_cohort_id,
           "pid": plugin_id, "exclude": exclude_id})
 
 
