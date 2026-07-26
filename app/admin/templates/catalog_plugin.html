@@ -107,6 +107,14 @@
   <div class="dm-metric-tile">
     <div style="font-size:1.5rem;font-weight:bold;">{{ stats.active }}</div>
     <div style="font-size:0.875rem;color:#666;">Installations actives</div>
+    {# N'apparait QUE s'il y a effectivement cohabitation : un parc homogene n'a
+       rien a signaler, et une ligne toujours affichee cesse d'etre lue. #}
+    {% if stats.distinct_versions and stats.distinct_versions > 1 %}
+    <div style="font-size:0.8rem;color:#b26a00;margin-top:0.25rem;"
+         title="Nombre de versions distinctes installees sur les appareils actifs">
+      sur {{ stats.distinct_versions }} versions en circulation
+    </div>
+    {% endif %}
   </div>
   <div class="dm-metric-tile">
     <div style="font-size:1.5rem;font-weight:bold;">{{ versions|selectattr('status','eq','published')|list|length }}</div>

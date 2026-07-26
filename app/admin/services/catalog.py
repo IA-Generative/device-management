@@ -242,11 +242,19 @@ def get_plugin_stats(cur, plugin_id: int) -> dict:
             COUNT(*) FILTER (WHERE status = 'active') AS active,
             COUNT(*) FILTER (WHERE status = 'inactive') AS inactive,
             COUNT(*) FILTER (WHERE status = 'uninstalled') AS uninstalled,
-            COUNT(*) AS total
+            COUNT(*) AS total,
+            -- Combien de versions distinctes circulent réellement sur le parc.
+            -- DOIT venir de l'agrégat : list_installations est paginée (20 lignes
+            -- dans la route), un comptage Python sur la page serait faux dès le
+            -- 21e appareil.
+            COUNT(DISTINCT installed_version) FILTER (
+                WHERE status = 'active' AND installed_version IS NOT NULL
+            ) AS distinct_versions
         FROM plugin_installations WHERE plugin_id = %s
     """, (plugin_id,))
     row = cur.fetchone()
-    return {"active": row[0], "inactive": row[1], "uninstalled": row[2], "total": row[3]}
+    return {"active": row[0], "inactive": row[1], "uninstalled": row[2], "total": row[3],
+            "distinct_versions": row[4]}
 
 
 def list_installations(cur, plugin_id: int, limit: int = 50, offset: int = 0) -> list[dict]:

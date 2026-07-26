@@ -339,3 +339,23 @@ def test_public_api_reveals_the_branch_only_with_its_tag(sealed):
 
     faux = json.loads(bytes(mod.api_public_plugin_detail(_SEAL_SLUG, exp="mauvais-tag").body))
     assert faux["experiments"] == [], "un tag inconnu ne doit rien révéler"
+
+
+def test_plugin_stats_counts_distinct_versions_across_the_fleet(fixt):
+    """Le compteur doit venir de l'agrégat SQL : list_installations est paginée
+    (20 lignes dans la route), un comptage sur la page serait faux dès le 21e
+    appareil — et c'est précisément un parc nombreux qui fait cohabiter."""
+    from app.admin.services import catalog as cat_svc
+    cur, ids = fixt
+    for i, version in enumerate(["1.5.0", "1.5.0", "1.6.0-rc1", "1.7.0-exp"]):
+        cur.execute("""INSERT INTO plugin_installations (plugin_id, client_uuid, installed_version, status)
+                       VALUES (%s, %s, %s, 'active')""",
+                    (ids["plugin_id"], f"it-fleet-{i}", version))
+    # Un appareil inactif ne compte pas : il ne « fait pas circuler » sa version.
+    cur.execute("""INSERT INTO plugin_installations (plugin_id, client_uuid, installed_version, status)
+                   VALUES (%s, 'it-fleet-off', '9.9.9', 'inactive')""", (ids["plugin_id"],))
+
+    stats = cat_svc.get_plugin_stats(cur, ids["plugin_id"])
+    assert stats["active"] == 4
+    assert stats["distinct_versions"] == 3, \
+        f"3 versions distinctes attendues sur le parc actif, obtenu {stats['distinct_versions']}"
