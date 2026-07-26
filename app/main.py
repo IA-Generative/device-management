@@ -3937,7 +3937,14 @@ def api_public_plugins():
                 SELECT p.id, p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
                        p.maturity, p.access_mode, p.icon_url, p.icon_path, p.key_features, p.source_url,
                        COUNT(DISTINCT pi.client_uuid) FILTER (WHERE pi.status='active') AS install_count,
-                       MAX(pv.version) FILTER (WHERE pv.status='published') AS latest_version
+                       -- « Dernière » au sens de la plus récemment publiée, PAS du plus
+                       -- grand libellé : MAX() sur une chaîne classe '0.13.9' au-dessus
+                       -- de '0.13.22'. Tant qu'un seul rang est 'published' le défaut ne
+                       -- se voit pas, mais promouvoir une expé en main sans déprécier
+                       -- l'ancienne (cf. mode opératoire §9.1) crée ce cas — et la fiche
+                       -- plugin, elle, ordonne déjà par published_at.
+                       (array_agg(pv.version ORDER BY pv.published_at DESC NULLS LAST)
+                          FILTER (WHERE pv.status='published'))[1] AS latest_version
                 FROM plugins p
                 LEFT JOIN plugin_installations pi ON pi.plugin_id = p.id
                 LEFT JOIN plugin_versions pv ON pv.plugin_id = p.id
@@ -4308,7 +4315,14 @@ def catalog_index(request: Request, category: str | None = None):
                 SELECT p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
                        p.maturity, p.icon_url, p.icon_path, p.key_features,
                        COUNT(DISTINCT pi.client_uuid) FILTER (WHERE pi.status='active') AS install_count,
-                       MAX(pv.version) FILTER (WHERE pv.status='published') AS latest_version
+                       -- « Dernière » au sens de la plus récemment publiée, PAS du plus
+                       -- grand libellé : MAX() sur une chaîne classe '0.13.9' au-dessus
+                       -- de '0.13.22'. Tant qu'un seul rang est 'published' le défaut ne
+                       -- se voit pas, mais promouvoir une expé en main sans déprécier
+                       -- l'ancienne (cf. mode opératoire §9.1) crée ce cas — et la fiche
+                       -- plugin, elle, ordonne déjà par published_at.
+                       (array_agg(pv.version ORDER BY pv.published_at DESC NULLS LAST)
+                          FILTER (WHERE pv.status='published'))[1] AS latest_version
                 FROM plugins p
                 LEFT JOIN plugin_installations pi ON pi.plugin_id = p.id
                 LEFT JOIN plugin_versions pv ON pv.plugin_id = p.id

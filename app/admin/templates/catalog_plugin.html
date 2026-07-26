@@ -360,12 +360,24 @@
     <tbody>
       {% for v in versions %}
       <tr>
-        <td><strong>{{ v.version }}</strong></td>
+        <td>
+          <strong>{{ v.version }}</strong>
+          {# Le tag distingue deux branches parallèles : sans lui, deux versions
+             experimentales sont indiscernables autrement que par leur numero. #}
+          {% if v.tag %}
+          <span class="dm-badge dm-badge--neutral" style="margin-left:0.35rem;"
+                title="{% if v.hypotheses %}{{ v.hypotheses | join(' · ') }}{% else %}Branche d'experimentation{% endif %}">{{ v.tag }}</span>
+          {% endif %}
+        </td>
         <td>
           {% if v.status == 'published' %}<span class="dm-badge dm-badge--success">Publie</span>
           {% elif v.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
           {% elif v.status == 'deprecated' %}<span class="dm-badge dm-badge--warning">Obsolete</span>
-          {% elif v.status == 'yanked' %}<span class="dm-badge dm-badge--error">Retire</span>{% endif %}
+          {% elif v.status == 'yanked' %}<span class="dm-badge dm-badge--error">Retire</span>
+          {% elif v.status == 'experimental' %}<span class="dm-badge dm-badge--info">Experimental</span>
+          {# Repli : un statut inconnu doit rester VISIBLE. Sans ce else, la 0.9.14
+             a affiche une cellule vide pour 'experimental' pendant deux versions. #}
+          {% else %}<span class="dm-badge dm-badge--neutral">{{ v.status }}</span>{% endif %}
         </td>
         <td>{{ v.distribution_mode }}</td>
         <td>{{ v.published_at.strftime('%d/%m/%Y') if v.published_at else v.created_at.strftime('%d/%m/%Y') }}</td>
