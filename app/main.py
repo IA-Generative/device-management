@@ -2251,7 +2251,13 @@ def _process_queue_job(job: QueueJob) -> None:
 
 def _touch_worker_heartbeat() -> None:
     """Write the current timestamp to the worker heartbeat file (liveness probe)."""
-    path = os.getenv("DM_WORKER_HEARTBEAT_FILE", "/tmp/dm-worker-heartbeat")
+    # nosec B108 — chemin /tmp en dur : le défaut est surchargeable par
+    # DM_WORKER_HEARTBEAT_FILE, et /tmp est propre au conteneur du worker (pas
+    # de répertoire partagé, donc pas de course ni de lien symbolique posé par
+    # un tiers). Le fichier ne contient qu'un horodatage lu par la sonde de
+    # liveness. Convention du dépôt (cf. [tool.bandit] de pyproject.toml) :
+    # « vrai correctif ou # nosec inline justifié ».
+    path = os.getenv("DM_WORKER_HEARTBEAT_FILE", "/tmp/dm-worker-heartbeat")  # nosec B108
     try:
         with open(path, "w") as f:
             f.write(str(time.time()))
