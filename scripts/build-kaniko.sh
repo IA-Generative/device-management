@@ -187,7 +187,19 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 [ -n "${POD:-}" ] || { echo "ERROR: aucun pod pour le job $JOB_NAME" >&2; exit 1; }
-"${KCTL[@]}" logs -f "$POD" -n "$NAMESPACE" 2>&1 || true
+
+# Attendre que le conteneur ait démarré AVANT d'attacher : `logs -f` sur un pod
+# en ContainerCreating échoue immédiatement, et on perdrait toute la sortie du
+# build (constaté au premier run réel).
+for _ in $(seq 1 150); do
+  PHASE="$("${KCTL[@]}" get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  case "$PHASE" in Running|Succeeded|Failed) break ;; esac
+  sleep 2
+done
+if ! "${KCTL[@]}" logs -f "$POD" -n "$NAMESPACE" 2>&1; then
+  # Repli : le pod a pu terminer avant l'attache — on relit les logs figés.
+  "${KCTL[@]}" logs "$POD" -n "$NAMESPACE" 2>&1 || echo "(logs indisponibles)"
+fi
 
 if "${KCTL[@]}" wait --for=condition=complete --timeout=30m \
      job/"$JOB_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then

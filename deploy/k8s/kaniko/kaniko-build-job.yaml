@@ -50,9 +50,14 @@ spec:
             requests:
               cpu: "500m"
               memory: "1Gi"
+              # Déclaré pour que l'ORDONNANCEUR réserve la place du build (image
+              # extraite + couches + cache). Sans cette demande, le kubelet ne
+              # voit la consommation qu'après coup et évince des pods voisins.
+              ephemeral-storage: "4Gi"
             limits:
               cpu: "1500m"
               memory: "4Gi"
+              ephemeral-storage: "12Gi"
           volumeMounts:
             - name: docker-config
               mountPath: /kaniko/.docker
