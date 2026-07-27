@@ -165,3 +165,25 @@ def test_metrics_exposes_queue_stats(monkeypatch):
     assert "dm_queue_pending_jobs 7" in res.text
     assert "dm_queue_processing_jobs 3" in res.text
     assert "dm_queue_oldest_pending_age_seconds 12" in res.text
+
+
+def test_dead_letter_conflict_target_exists_in_schema():
+    """`ON CONFLICT (job_id)` exige une contrainte unique sur cette colonne.
+
+    Sans elle, Postgres refuse la requête (InvalidColumnReference) : la mise en
+    lettre morte lève, l'exception remonte la boucle du worker et la TUE. Un
+    amont OTLP injoignable — le cas nominal d'une coupure réseau — suffisait
+    alors à figer définitivement TOUTE la file, télémétrie comme enrôlements,
+    jusqu'au redémarrage du conteneur. Constaté en recette locale le
+    2026-07-27.
+    """
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    with open(os.path.join(root, "app", "postgres_queue.py"), encoding="utf-8") as f:
+        code = f.read()
+    with open(os.path.join(root, "db", "schema.sql"), encoding="utf-8") as f:
+        schema = f.read().lower()
+
+    assert "on conflict (job_id)" in code.lower(), (
+        "test à réviser : le code n'utilise plus ON CONFLICT (job_id)")
+    assert "unique index" in schema and "queue_job_dead_letters (job_id)" in schema, (
+        "queue_job_dead_letters.job_id doit porter une contrainte unique")

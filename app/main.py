@@ -2168,6 +2168,33 @@ def _decode_job_body(encoded: str) -> bytes:
     return _b64url_decode(value)
 
 
+def _otlp_attr_value(value: dict | None):
+    """Read an OTLP/JSON AnyValue, keeping its type.
+
+    The plugin now encodes attributes with OTLP types (intValue serialized as a
+    string per the OTLP/JSON spec, boolValue, doubleValue). Reading only
+    stringValue silently dropped every counter/flag from the admin device
+    activity view, while Tempo received them intact.
+    """
+    if not isinstance(value, dict):
+        return ""
+    if "stringValue" in value:
+        return value.get("stringValue", "")
+    if "intValue" in value:
+        try:
+            return int(value["intValue"])
+        except (TypeError, ValueError):
+            return str(value.get("intValue", ""))
+    if "boolValue" in value:
+        return bool(value["boolValue"])
+    if "doubleValue" in value:
+        try:
+            return float(value["doubleValue"])
+        except (TypeError, ValueError):
+            return str(value.get("doubleValue", ""))
+    return ""
+
+
 def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
     """Parse OTLP JSON payload and insert spans into device_telemetry_events."""
     dsn = _db_url_bootstrap() or _db_url()
@@ -2179,13 +2206,13 @@ def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
         return
     rows: list[tuple] = []
     for rs in otlp.get("resourceSpans", []):
-        res_attrs = {a["key"]: a.get("value", {}).get("stringValue", "") for a in rs.get("resource", {}).get("attributes", [])}
+        res_attrs = {a["key"]: _otlp_attr_value(a.get("value")) for a in rs.get("resource", {}).get("attributes", [])}
         for ss in rs.get("scopeSpans", []):
             for span in ss.get("spans", []):
                 name = span.get("name", "")
                 if not name:
                     continue
-                span_attrs = {a["key"]: a.get("value", {}).get("stringValue", "") for a in span.get("attributes", [])}
+                span_attrs = {a["key"]: _otlp_attr_value(a.get("value")) for a in span.get("attributes", [])}
                 email = span_attrs.get("user.email") or res_attrs.get("user.email") or ""
                 plugin_version = span_attrs.get("extension.version") or res_attrs.get("service.version") or ""
                 start_ns = int(span.get("startTimeUnixNano", 0))
