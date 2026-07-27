@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS queue_job_dead_letters (
     last_error TEXT
 );
 
+-- move_to_dead_letter() fait ON CONFLICT (job_id) : sans cette contrainte,
+-- Postgres refuse la requête (InvalidColumnReference), l'exception remonte la
+-- boucle du worker et la TUE. Un amont OTLP injoignable suffisait alors à
+-- arrêter définitivement le traitement de TOUTE la file — télémétrie comme
+-- enrôlements — jusqu'au redémarrage du conteneur.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_job_dead_letters_job_id
+    ON queue_job_dead_letters (job_id);
+
 -- ═══════════════════════════════════════════════════════════════
 -- CATALOGUE : plugins, versions, aliases, env overrides
 -- ═══════════════════════════════════════════════════════════════
