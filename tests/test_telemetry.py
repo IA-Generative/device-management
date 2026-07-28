@@ -218,3 +218,35 @@ def test_persisted_spans_keep_typed_attributes(monkeypatch):
     assert attributes["assistant.ok"] is True
     assert attributes["assistant.duration_ms"] == 1234
     assert attributes["ratio"] == 0.5
+
+
+def test_otlp_composite_and_unknown_values(caplog):
+    """Les six variantes d'AnyValue sont lues. N'en couvrir qu'une partie
+    reproduirait le défaut corrigé : une valeur qui disparaît sans bruit."""
+    m = _load_module()
+
+    assert m._otlp_attr_value({"arrayValue": {"values": [
+        {"stringValue": "a"}, {"intValue": "2"}, {"boolValue": True}]}}) == ["a", 2, True]
+    assert m._otlp_attr_value({"kvlistValue": {"values": [
+        {"key": "n", "value": {"intValue": "3"}},
+        {"key": "s", "value": {"stringValue": "x"}}]}}) == {"n": 3, "s": "x"}
+    assert m._otlp_attr_value({"bytesValue": "aGVsbG8="}) == "aGVsbG8="
+    assert m._otlp_attr_value({"arrayValue": {}}) == []
+
+    # Un type hors spécification est journalisé, pas avalé en silence.
+    with caplog.at_level("WARNING"):
+        assert m._otlp_attr_value({"quantumValue": 1}) == ""
+    assert any("AnyValue OTLP inconnu" in r.getMessage() for r in caplog.records)
+
+
+def test_jsonb_list_tolerates_every_shape():
+    """Le parse des `hypotheses` existait en deux exemplaires, dont le mien —
+    le moins robuste : un JSON invalide y levait, donc un 500 sur une page
+    publique. Une seule implémentation, celle qui enveloppe au lieu de lever."""
+    m = _load_module()
+    assert m._jsonb_list(["a", "b"]) == ["a", "b"]
+    assert m._jsonb_list('["a", "b"]') == ["a", "b"]
+    assert m._jsonb_list("pas du json") == ["pas du json"]
+    assert m._jsonb_list(None) == []
+    assert m._jsonb_list("") == []
+    assert m._jsonb_list([]) == []
