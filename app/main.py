@@ -2168,6 +2168,22 @@ def _decode_job_body(encoded: str) -> bytes:
     return _b64url_decode(value)
 
 
+def _jsonb_list(value) -> list:
+    """Ramène une colonne JSONB « liste » à une vraie liste Python.
+
+    psycopg2 renvoie normalement du JSONB déjà décodé, mais la valeur peut
+    arriver en chaîne selon le chemin (curseur brut, donnée écrite à la main).
+    Une chaîne non décodable est enveloppée plutôt que perdue, et n'interrompt
+    surtout pas la requête : ces champs sont de l'affichage, pas du contrat.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return [value] if value else []
+    return list(value) if isinstance(value, list) else ([] if value is None else [value])
+
+
 def _otlp_attr_value(value: dict | None):
     """Read an OTLP/JSON AnyValue, keeping its type.
 
@@ -2175,6 +2191,10 @@ def _otlp_attr_value(value: dict | None):
     string per the OTLP/JSON spec, boolValue, doubleValue). Reading only
     stringValue silently dropped every counter/flag from the admin device
     activity view, while Tempo received them intact.
+
+    Les SIX variantes d'AnyValue sont traitées : n'en couvrir qu'une partie
+    reproduirait le défaut corrigé — une valeur qui disparaît sans bruit. Un
+    type hors spécification est journalisé plutôt qu'avalé.
     """
     if not isinstance(value, dict):
         return ""
@@ -2192,6 +2212,20 @@ def _otlp_attr_value(value: dict | None):
             return float(value["doubleValue"])
         except (TypeError, ValueError):
             return str(value.get("doubleValue", ""))
+    if "arrayValue" in value:
+        values = (value.get("arrayValue") or {}).get("values") or []
+        return [_otlp_attr_value(v) for v in values]
+    if "kvlistValue" in value:
+        values = (value.get("kvlistValue") or {}).get("values") or []
+        return {kv.get("key", ""): _otlp_attr_value(kv.get("value"))
+                for kv in values if isinstance(kv, dict)}
+    if "bytesValue" in value:
+        # Déjà en base64 dans OTLP/JSON : on le garde tel quel, la colonne est
+        # du JSONB et n'accepte pas d'octets bruts.
+        return str(value.get("bytesValue") or "")
+    if value:
+        logger.warning("telemetry: type d'AnyValue OTLP inconnu, attribut ignoré: %s",
+                       ",".join(sorted(value.keys()))[:120])
     return ""
 
 
@@ -4101,7 +4135,7 @@ def api_public_plugin_detail(slug: str, exp: str | None = None):
             # celle d'avant, et rien ne trahit l'existence d'une branche.
             **({"experiments": [
                 {"version": _v, "tag": _t,
-                 "hypotheses": (json.loads(_h) if isinstance(_h, str) else _h) or [],
+                 "hypotheses": _jsonb_list(_h),
                  "release_notes": _n or "",
                  "download_url": f"{public_base}/catalog/{p['slug']}/download/"
                                  f"{p['slug']}-{_v}.{_DEVICE_TYPE_EXT.get(p['device_type'], 'bin')}"}
@@ -4870,19 +4904,12 @@ def catalog_detail(request: Request, slug: str, exp: str | None = None):
         if isinstance(kf, str):
             kf = json.loads(kf)
 
-        experiments = []
-        for _v, _tag, _hyp, _notes in exp_rows:
-            if isinstance(_hyp, str):
-                try:
-                    _hyp = json.loads(_hyp)
-                except Exception:
-                    _hyp = [_hyp] if _hyp else []
-            experiments.append({
-                "version": _v,
-                "tag": _tag,
-                "hypotheses": _hyp or [],
-                "release_notes": _notes or "",
-            })
+        experiments = [
+            {"version": _v, "tag": _tag,
+             "hypotheses": _jsonb_list(_hyp),
+             "release_notes": _notes or ""}
+            for _v, _tag, _hyp, _notes in exp_rows
+        ]
 
         _raw_icon = p.get("icon_url") or ""
         if _raw_icon.startswith("data:"):

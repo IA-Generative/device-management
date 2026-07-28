@@ -77,8 +77,14 @@ def test_queue_load_smoke(monkeypatch):
     # Correction (toujours vérifiée) : tout est enfilé, rien n'échoue, pas de backlog.
     assert failure_rate_pct == 0.0
     assert backlog == 0
-    # Seuils de PERF : dépendants du matériel → non fiables sur un runner CI
-    # partagé (faux négatifs). On ne les exige qu'en local / run perf dédié.
-    if not os.getenv("CI"):
+    # Seuils de PERF : dépendants du matériel, donc non fiables partout où la
+    # machine n'est pas au repos. Ils étaient neutralisés en CI mais actifs en
+    # local — c'est-à-dire exigés là où les conditions sont les MOINS
+    # contrôlées : sur un poste chargé, ce test rougit sans qu'aucune
+    # régression n'existe, et un test qui rougit au hasard apprend à ignorer le
+    # rouge. Le défaut est donc inversé : opt-in explicite pour un run perf.
+    #
+    #   DM_PERF_ASSERTS=1 pytest tests/test_queue_load.py
+    if os.getenv("DM_PERF_ASSERTS") == "1":
         assert avg_latency_ms < 50.0
         assert throughput_rps > 500.0
