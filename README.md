@@ -5,6 +5,10 @@
 > un peu comme un **magasin d'applications interne** doublé d'un **gestionnaire
 > de déploiement** pour ces plugins.
 
+> 🧩 **Vous écrivez un plugin ?** Le parcours d'intégration complet — enrôlement SSO,
+> boucle de configuration, appels au modèle, télémétrie, packaging — est décrit dans
+> [`docs/plugin-developer/README.md`](docs/plugin-developer/README.md).
+
 ---
 
 ## Le problème
@@ -553,7 +557,11 @@ curl -sS http://localhost:8089/healthz
 
 La documentation est organisée par audience sous [`docs/`](docs/) (voir [docs/README.fr.md](docs/README.fr.md)) :
 
-- 🧩 **Développeur de plugin** — [`docs/plugin-developer/`](docs/plugin-developer/) (intégration client PKCE, endpoints, packaging, protocole update)
+- 🧩 **Développeur de plugin** — [`docs/plugin-developer/README.md`](docs/plugin-developer/README.md) : le parcours guidé, de l'enrôlement à la publication. C'est le point d'entrée ; il enchaîne les documents ci-dessous.
+  - [`consumer-readme.md`](docs/plugin-developer/consumer-readme.md) — intégration côté client : enrôlement SSO (OIDC + PKCE), credentials de relais, boucle de configuration, télémétrie
+  - [`packaging-guide.md`](docs/plugin-developer/packaging-guide.md) — préparer une archive que DM sait détecter, décrire et publier automatiquement
+  - [`plugin-dm-protocol-update-features.md`](docs/plugin-developer/plugin-dm-protocol-update-features.md) — le contrat d'interface qui fait foi des deux côtés : mises à jour, feature toggling, branches d'expérimentation, appels LLM et embeddings
+  - [`config.default.example.json`](docs/plugin-developer/config.default.example.json) — gabarit de configuration à copier
+  - hors parcours, pour un **portail tiers** qui veut afficher le catalogue DM : [`mirai-integration-README.md`](docs/plugin-developer/mirai-integration-README.md) et son [snippet DSFR](docs/plugin-developer/mirai-catalog-snippet.html)
 - 🏛️ **Architecte** — [`docs/architecture/`](docs/architecture/) (ADR : vue d'ensemble, architecture produit, déploiement DGX)
-- 🔒 **Auditeur de sécurité** — [`docs/security/`](docs/security/) (remédiation d'audit, doctrine)
 - 🛠️ **Opérateur** — [`docs/operations/`](docs/operations/) (dev local + K8s, campagnes, tests, troubleshooting)
