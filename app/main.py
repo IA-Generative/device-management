@@ -1257,8 +1257,16 @@ def _resolve_forced_flags(cur, *, plugin_version: str, plugin_slug: str = "") ->
     return out
 
 
-def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: str, platform_version: str) -> dict | None:
-    """Find the best active plugin_update campaign for the device, or None."""
+def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: str, platform_version: str, plugin_id: int | None = None) -> dict | None:
+    """Find the best active plugin_update campaign for the device, or None.
+
+    Une campagne ne matche que le plugin du device demandeur : par ``plugin_id``
+    quand les deux sont connus, sinon par ``artifacts.device_type`` (campagnes
+    legacy à plugin_id NULL, ou device résolu en fallback sans id). Sans ce
+    scoping, la campagne la plus récente — tous plugins confondus — fuyait vers
+    tous les devices (issue #14 : un plugin LibreOffice recevait la version
+    Matisse).
+    """
     try:
         cohort_filter = list(device_cohort_ids) if device_cohort_ids else []
         cur.execute(
@@ -1275,17 +1283,30 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
               ra.version  AS rollback_version,
               ra.checksum AS rollback_checksum,
               c.rollout_config,
-              c.created_at AS campaign_created_at
+              c.created_at AS campaign_created_at,
+              c.is_experiment
             FROM campaigns c
             LEFT JOIN artifacts a  ON a.id  = c.artifact_id
             LEFT JOIN artifacts ra ON ra.id = c.rollback_artifact_id
             WHERE c.status = 'active'
               AND c.type   = 'plugin_update'
-              AND (c.target_cohort_id IS NULL OR c.target_cohort_id = ANY(%s))
-            ORDER BY c.created_at DESC
+              AND (c.target_cohort_id IS NULL OR c.target_cohort_id = ANY(%(cohort_ids)s))
+              AND (
+                    (%(plugin_id)s::int IS NOT NULL AND c.plugin_id = %(plugin_id)s)
+                 OR ((%(plugin_id)s::int IS NULL OR c.plugin_id IS NULL)
+                     AND a.device_type = %(device_type)s)
+              )
+            -- Précédence : un bras ciblé (cohorte) bat le rollout général non
+            -- ciblé ; priority départage ; created_at en dernier ressort. Permet
+            -- au rollout stable et aux campagnes d'expé cohorte de coexister.
+            ORDER BY (c.target_cohort_id IS NOT NULL) DESC, c.priority DESC, c.created_at DESC
             LIMIT 1
             """,
-            (cohort_filter if cohort_filter else [None],),
+            {
+                "cohort_ids": cohort_filter if cohort_filter else [None],
+                "plugin_id": plugin_id,
+                "device_type": device_type,
+            },
         )
         row = cur.fetchone()
     except Exception:
@@ -1299,7 +1320,7 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         artifact_version, artifact_s3_path, artifact_checksum, changelog_url,
         min_host_version, max_host_version,
         rollback_s3_path, rollback_version, rollback_checksum,
-        rollout_config, campaign_created_at,
+        rollout_config, campaign_created_at, is_experiment,
     ) = row
 
     # Filter by host (platform) version compatibility
@@ -1333,6 +1354,7 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         "rollback_checksum": str(rollback_checksum or ""),
         "rollout_config": rollout_config if isinstance(rollout_config, dict) else None,
         "campaign_created_at": campaign_created_at,
+        "is_experiment": bool(is_experiment),
     }
 
 
@@ -1356,6 +1378,17 @@ def _get_current_rollout_percent(campaign: dict, stages: list) -> int:
         if elapsed_hours < cumulative_hours or stage.get("percent", 100) == 100:
             return stage.get("percent", 100)
     return 100
+
+
+def _binaries_route_url(s3_path: str) -> str:
+    """URL publique servant l'artefact brut, quel que soit le mode de stockage.
+
+    Implémentation unique du repli : ``artifacts.s3_path`` n'est pas directement
+    utilisable derrière ``/binaries/`` (chemin absolu en local, clé préfixée en
+    S3) — cf. ``binaries_svc.route_rel_path``.
+    """
+    from app.services import binaries as _binaries_svc
+    return "/binaries/" + _binaries_svc.route_rel_path(s3_path)
 
 
 def _build_update_directive(
@@ -1395,7 +1428,42 @@ def _build_update_directive(
     def _artifact_url(s3_path):
         if device_name:
             return f"/catalog/{device_name}/download"
-        return "/binaries/" + str(s3_path or "").lstrip("/")
+        return _binaries_route_url(s3_path)
+
+    def _pinned_artifact_url(s3_path, version):
+        """URL épinglée sur la version de la campagne (et non « la dernière main »).
+
+        ``/catalog/<slug>/download`` sans tag résout ``status = 'published'``, donc
+        la version main : l'utiliser pour un bras d'expérimentation servirait le
+        stable sous l'étiquette de la RC (checksum mismatch, puis re-update à
+        chaque poll). On passe par la route versionnée, dont catalog_download_file
+        ré-extrait la version en retirant l'extension connue puis le préfixe slug ;
+        si l'extension du binaire n'est pas reconnue par cette route, on retombe
+        sur le chemin brut, qui désigne l'artefact exact dans tous les modes.
+        """
+        ext = os.path.splitext(str(s3_path or ""))[1]
+        if device_name and ext in _CATALOG_KNOWN_EXT:
+            return f"/catalog/{device_name}/download/{device_name}-{version}{ext}"
+        return _binaries_route_url(s3_path)
+
+    # Campagnes d'expérimentation : PIN de la version cible. On sert la cible dès
+    # que le device n'y est pas déjà (l'égalité stricte est court-circuitée plus
+    # haut), sans exiger cible > courante. C'est ce qui rend déployables les
+    # builds suffixées (ex. 1.6.0-rc1) que _parse_version_tuple réduit à (0,).
+    # Le client DOIT renvoyer la version cible exacte ensuite, sinon re-update.
+    if campaign.get("is_experiment"):
+        return {
+            "action": "update",
+            "current_version": plugin_version,
+            "target_version": artifact_version,
+            "artifact_url": _pinned_artifact_url(campaign["artifact_s3_path"], artifact_version),
+            "checksum": campaign["artifact_checksum"],
+            "urgency": campaign["urgency"],
+            "changelog_url": campaign["changelog_url"],
+            "deadline_at": campaign["deadline_iso"],
+            "campaign_id": campaign["campaign_id"],
+            "plugin_slug": device_name or None,
+        }
 
     if pv < av:
         return {
@@ -1408,6 +1476,7 @@ def _build_update_directive(
             "changelog_url": campaign["changelog_url"],
             "deadline_at": campaign["deadline_iso"],
             "campaign_id": campaign["campaign_id"],
+            "plugin_slug": device_name or None,
         }
 
     # plugin_version > artifact_version → possible rollback
@@ -1422,6 +1491,7 @@ def _build_update_directive(
             "changelog_url": campaign["changelog_url"],
             "deadline_at": campaign["deadline_iso"],
             "campaign_id": campaign["campaign_id"],
+            "plugin_slug": device_name or None,
         }
 
     return None
@@ -2098,6 +2168,67 @@ def _decode_job_body(encoded: str) -> bytes:
     return _b64url_decode(value)
 
 
+def _jsonb_list(value) -> list:
+    """Ramène une colonne JSONB « liste » à une vraie liste Python.
+
+    psycopg2 renvoie normalement du JSONB déjà décodé, mais la valeur peut
+    arriver en chaîne selon le chemin (curseur brut, donnée écrite à la main).
+    Une chaîne non décodable est enveloppée plutôt que perdue, et n'interrompt
+    surtout pas la requête : ces champs sont de l'affichage, pas du contrat.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return [value] if value else []
+    return list(value) if isinstance(value, list) else ([] if value is None else [value])
+
+
+def _otlp_attr_value(value: dict | None):
+    """Read an OTLP/JSON AnyValue, keeping its type.
+
+    The plugin now encodes attributes with OTLP types (intValue serialized as a
+    string per the OTLP/JSON spec, boolValue, doubleValue). Reading only
+    stringValue silently dropped every counter/flag from the admin device
+    activity view, while Tempo received them intact.
+
+    Les SIX variantes d'AnyValue sont traitées : n'en couvrir qu'une partie
+    reproduirait le défaut corrigé — une valeur qui disparaît sans bruit. Un
+    type hors spécification est journalisé plutôt qu'avalé.
+    """
+    if not isinstance(value, dict):
+        return ""
+    if "stringValue" in value:
+        return value.get("stringValue", "")
+    if "intValue" in value:
+        try:
+            return int(value["intValue"])
+        except (TypeError, ValueError):
+            return str(value.get("intValue", ""))
+    if "boolValue" in value:
+        return bool(value["boolValue"])
+    if "doubleValue" in value:
+        try:
+            return float(value["doubleValue"])
+        except (TypeError, ValueError):
+            return str(value.get("doubleValue", ""))
+    if "arrayValue" in value:
+        values = (value.get("arrayValue") or {}).get("values") or []
+        return [_otlp_attr_value(v) for v in values]
+    if "kvlistValue" in value:
+        values = (value.get("kvlistValue") or {}).get("values") or []
+        return {kv.get("key", ""): _otlp_attr_value(kv.get("value"))
+                for kv in values if isinstance(kv, dict)}
+    if "bytesValue" in value:
+        # Déjà en base64 dans OTLP/JSON : on le garde tel quel, la colonne est
+        # du JSONB et n'accepte pas d'octets bruts.
+        return str(value.get("bytesValue") or "")
+    if value:
+        logger.warning("telemetry: type d'AnyValue OTLP inconnu, attribut ignoré: %s",
+                       ",".join(sorted(value.keys()))[:120])
+    return ""
+
+
 def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
     """Parse OTLP JSON payload and insert spans into device_telemetry_events."""
     dsn = _db_url_bootstrap() or _db_url()
@@ -2109,13 +2240,13 @@ def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
         return
     rows: list[tuple] = []
     for rs in otlp.get("resourceSpans", []):
-        res_attrs = {a["key"]: a.get("value", {}).get("stringValue", "") for a in rs.get("resource", {}).get("attributes", [])}
+        res_attrs = {a["key"]: _otlp_attr_value(a.get("value")) for a in rs.get("resource", {}).get("attributes", [])}
         for ss in rs.get("scopeSpans", []):
             for span in ss.get("spans", []):
                 name = span.get("name", "")
                 if not name:
                     continue
-                span_attrs = {a["key"]: a.get("value", {}).get("stringValue", "") for a in span.get("attributes", [])}
+                span_attrs = {a["key"]: _otlp_attr_value(a.get("value")) for a in span.get("attributes", [])}
                 email = span_attrs.get("user.email") or res_attrs.get("user.email") or ""
                 plugin_version = span_attrs.get("extension.version") or res_attrs.get("service.version") or ""
                 start_ns = int(span.get("startTimeUnixNano", 0))
@@ -2181,7 +2312,13 @@ def _process_queue_job(job: QueueJob) -> None:
 
 def _touch_worker_heartbeat() -> None:
     """Write the current timestamp to the worker heartbeat file (liveness probe)."""
-    path = os.getenv("DM_WORKER_HEARTBEAT_FILE", "/tmp/dm-worker-heartbeat")
+    # nosec B108 — chemin /tmp en dur : le défaut est surchargeable par
+    # DM_WORKER_HEARTBEAT_FILE, et /tmp est propre au conteneur du worker (pas
+    # de répertoire partagé, donc pas de course ni de lien symbolique posé par
+    # un tiers). Le fichier ne contient qu'un horodatage lu par la sonde de
+    # liveness. Convention du dépôt (cf. [tool.bandit] de pyproject.toml) :
+    # « vrai correctif ou # nosec inline justifié ».
+    path = os.getenv("DM_WORKER_HEARTBEAT_FILE", "/tmp/dm-worker-heartbeat")  # nosec B108
     try:
         with open(path, "w") as f:
             f.write(str(time.time()))
@@ -2793,6 +2930,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                         device_cohort_ids=device_cohort_ids,
                         device_type=device_type or "misc",
                         platform_version=platform_version,
+                        plugin_id=plugin_id,
                     )
                     update_directive = _build_update_directive(
                         plugin_version=plugin_version,
@@ -2846,6 +2984,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                             device_cohort_ids=device_cohort_ids,
                             device_type=device_type or "misc",
                             platform_version=platform_version,
+                            plugin_id=plugin_id,
                         )
                         update_directive = _build_update_directive(
                             plugin_version=plugin_version,
@@ -3525,12 +3664,12 @@ def _deploy_plugin_db_work(
                 except Exception:
                     pass
 
-            # 8. Auto-complete old campaigns + create new one
-            cur.execute("""
-                UPDATE campaigns SET status = 'completed', updated_at = NOW()
-                WHERE status IN ('active', 'paused') AND type = 'plugin_update'
-                  AND (plugin_id = %s OR plugin_id IS NULL)
-            """, (plugin_id,))
+            # 8. Auto-complete old campaigns + create new one.
+            # Release générale : supersede toutes les campagnes NON-expé du plugin,
+            # mais laisse coexister les campagnes d'expérimentation (is_experiment).
+            from app.admin.services import campaigns as _campaigns_svc
+            _campaigns_svc.autocomplete_superseded(
+                cur, plugin_id=plugin_id, is_experiment=False, target_cohort_id=None)
 
             rollout_config = None
             if strategy == "canary":
@@ -3612,20 +3751,26 @@ def _create_campaign_db_work(body: dict, db_url: str):
                     plugin_id = prow[0]
 
             status = body.get("status", "draft")
+            is_experiment = bool(body.get("is_experiment", False))
+            priority = int(body.get("priority", 0) or 0)
+            target_cohort_id = body.get("target_cohort_id")
 
-            # Auto-complete older active campaigns
+            # Auto-complétion scopée (voir campaigns_svc.autocomplete_superseded) :
+            # une release générale supersede les non-expé du plugin ; une expé ne
+            # remplace que son propre bras (même cohorte). Jamais l'un l'autre.
             if status == "active":
-                cur.execute("""
-                    UPDATE campaigns SET status = 'completed', updated_at = NOW()
-                    WHERE status = 'active' AND type = %s
-                      AND (%s IS NULL OR plugin_id = %s OR plugin_id IS NULL)
-                """, (body.get("type", "plugin_update"), plugin_id, plugin_id))
+                from app.admin.services import campaigns as _campaigns_svc
+                _campaigns_svc.autocomplete_superseded(
+                    cur, plugin_id=plugin_id, is_experiment=is_experiment,
+                    target_cohort_id=target_cohort_id,
+                    campaign_type=body.get("type", "plugin_update"))
 
             cur.execute(
                 """
                 INSERT INTO campaigns (name, description, type, artifact_id, rollback_artifact_id,
-                    target_cohort_id, urgency, status, rollout_config, created_by, plugin_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    target_cohort_id, urgency, status, rollout_config, created_by, plugin_id,
+                    is_experiment, priority)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -3634,12 +3779,14 @@ def _create_campaign_db_work(body: dict, db_url: str):
                     body.get("type", "plugin_update"),
                     artifact_id,
                     body.get("rollback_artifact_id"),
-                    body.get("target_cohort_id"),
+                    target_cohort_id,
                     body.get("urgency", "normal"),
                     status,
                     json.dumps(body["rollout_config"]) if body.get("rollout_config") else None,
                     "api",
                     plugin_id,
+                    is_experiment,
+                    priority,
                 ),
             )
             campaign_id = cur.fetchone()[0]
@@ -3685,13 +3832,14 @@ def _api_campaign_action(campaign_id: int, new_status: str):
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE campaigns SET status = %s, updated_at = NOW() WHERE id = %s RETURNING id",
-                (new_status, campaign_id),
-            )
-            row = cur.fetchone()
+            # Transition de statut : même implémentation que l'admin, y compris
+            # l'auto-complétion scopée à l'activation (start/resume ne passent pas
+            # par create_campaign — sans elle, activer un rollout général laisserait
+            # deux gagnants généraux non déterministes).
+            from app.admin.services import campaigns as _campaigns_svc
+            updated = _campaigns_svc.update_campaign_status(cur, campaign_id, new_status)
         conn.close()
-        if not row:
+        if not updated:
             return JSONResponse({"ok": False, "error": "Campaign not found"}, status_code=404)
         return JSONResponse({"ok": True, "campaign_id": campaign_id, "status": new_status})
     except Exception as e:
@@ -3850,7 +3998,14 @@ def api_public_plugins():
                 SELECT p.id, p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
                        p.maturity, p.access_mode, p.icon_url, p.icon_path, p.key_features, p.source_url,
                        COUNT(DISTINCT pi.client_uuid) FILTER (WHERE pi.status='active') AS install_count,
-                       MAX(pv.version) FILTER (WHERE pv.status='published') AS latest_version
+                       -- « Dernière » au sens de la plus récemment publiée, PAS du plus
+                       -- grand libellé : MAX() sur une chaîne classe '0.13.9' au-dessus
+                       -- de '0.13.22'. Tant qu'un seul rang est 'published' le défaut ne
+                       -- se voit pas, mais promouvoir une expé en main sans déprécier
+                       -- l'ancienne (cf. mode opératoire §9.1) crée ce cas — et la fiche
+                       -- plugin, elle, ordonne déjà par published_at.
+                       (array_agg(pv.version ORDER BY pv.published_at DESC NULLS LAST)
+                          FILTER (WHERE pv.status='published'))[1] AS latest_version
                 FROM plugins p
                 LEFT JOIN plugin_installations pi ON pi.plugin_id = p.id
                 LEFT JOIN plugin_versions pv ON pv.plugin_id = p.id
@@ -3902,8 +4057,16 @@ def api_public_plugins():
 
 
 @app.get("/catalog/api/plugins/{slug}")
-def api_public_plugin_detail(slug: str):
-    """JSON public — plugin detail for external integration."""
+def api_public_plugin_detail(slug: str, exp: str | None = None):
+    """JSON public — plugin detail for external integration.
+
+    ``?exp=<tag>`` ajoute la clé ``experiments`` : les versions de la branche
+    portant ce tag, avec leurs questions testées. Symétrique de la page HTML
+    ``/catalog/<slug>?exp=<tag>`` et gaté par la même barrière — rien n'est exposé
+    sans le tag, et la réponse SANS ``exp`` est inchangée. Sert à outiller les
+    testeurs (script d'installation, tableau de bord de branche) sans leur imposer
+    de gratter le HTML.
+    """
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
@@ -3927,6 +4090,15 @@ def api_public_plugin_detail(slug: str):
             vrow = cur.fetchone()
             cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations WHERE plugin_id=%s AND status='active'", (p["id"],))
             installs = cur.fetchone()[0]
+            exp_rows = []
+            if exp:
+                cur.execute("""
+                    SELECT version, tag, hypotheses, release_notes
+                    FROM plugin_versions
+                    WHERE plugin_id = %s AND status = 'experimental' AND tag = %s
+                    ORDER BY published_at DESC NULLS LAST
+                """, (p["id"], exp))
+                exp_rows = cur.fetchall()
         kf = p.get("key_features") or []
         if isinstance(kf, str):
             kf = json.loads(kf)
@@ -3959,6 +4131,16 @@ def api_public_plugin_detail(slug: str):
             "license": p.get("license"),
             "detail_url": f"{public_base}/catalog/{p['slug']}",
             "download_url": f"{public_base}/catalog/{p['slug']}/download",
+            # Clé ABSENTE sans ?exp= : la réponse par défaut reste identique à
+            # celle d'avant, et rien ne trahit l'existence d'une branche.
+            **({"experiments": [
+                {"version": _v, "tag": _t,
+                 "hypotheses": _jsonb_list(_h),
+                 "release_notes": _n or "",
+                 "download_url": f"{public_base}/catalog/{p['slug']}/download/"
+                                 f"{p['slug']}-{_v}.{_DEVICE_TYPE_EXT.get(p['device_type'], 'bin')}"}
+                for _v, _t, _h, _n in exp_rows
+            ]} if exp else {}),
         }, headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=300"})
     finally:
         conn.close()
@@ -4191,6 +4373,10 @@ _catalog_templates = _Jinja2Templates(
 
 # Download extensions: .crx triggers Chrome auto-install block, use .zip instead
 _DEVICE_TYPE_EXT = {"libreoffice": "oxt", "firefox": "xpi", "chrome": "zip", "edge": "zip", "matisse": "xpi"}
+# Extensions que /catalog/<slug>/download/<filename> sait retirer pour retrouver
+# la version. Source unique : catalog_download_file la consomme pour parser,
+# _build_update_directive pour construire une URL épinglée qu'elle saura parser.
+_CATALOG_KNOWN_EXT = (".oxt", ".xpi", ".crx", ".zip", ".bin")
 
 
 @app.get("/catalog", response_class=Response)
@@ -4217,7 +4403,14 @@ def catalog_index(request: Request, category: str | None = None):
                 SELECT p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
                        p.maturity, p.icon_url, p.icon_path, p.key_features,
                        COUNT(DISTINCT pi.client_uuid) FILTER (WHERE pi.status='active') AS install_count,
-                       MAX(pv.version) FILTER (WHERE pv.status='published') AS latest_version
+                       -- « Dernière » au sens de la plus récemment publiée, PAS du plus
+                       -- grand libellé : MAX() sur une chaîne classe '0.13.9' au-dessus
+                       -- de '0.13.22'. Tant qu'un seul rang est 'published' le défaut ne
+                       -- se voit pas, mais promouvoir une expé en main sans déprécier
+                       -- l'ancienne (cf. mode opératoire §9.1) crée ce cas — et la fiche
+                       -- plugin, elle, ordonne déjà par published_at.
+                       (array_agg(pv.version ORDER BY pv.published_at DESC NULLS LAST)
+                          FILTER (WHERE pv.status='published'))[1] AS latest_version
                 FROM plugins p
                 LEFT JOIN plugin_installations pi ON pi.plugin_id = p.id
                 LEFT JOIN plugin_versions pv ON pv.plugin_id = p.id
@@ -4292,10 +4485,14 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None):
             plugin_id, device_type = prow[0], prow[1]
 
             if version_filter:
+                # Une version précise est servable si publiée OU expérimentale
+                # (pull opt-in d'un prototype par version/tag). Les versions
+                # 'experimental' restent exclues du défaut (branche else).
                 cur.execute("""
                     SELECT pv.version, pv.distribution_mode, pv.download_url, pv.artifact_id
                     FROM plugin_versions pv
-                    WHERE pv.plugin_id = %s AND pv.version = %s AND pv.status = 'published'
+                    WHERE pv.plugin_id = %s AND pv.version = %s
+                      AND pv.status IN ('published','experimental')
                     LIMIT 1
                 """, (plugin_id, version_filter))
             else:
@@ -4346,9 +4543,8 @@ def catalog_download_file(slug: str, filename: str):
     if served is not None:
         return served
     # Strip known extensions, then remove slug prefix to get version
-    _known_ext = (".oxt", ".xpi", ".crx", ".zip", ".bin")
     base = filename
-    for ext in _known_ext:
+    for ext in _CATALOG_KNOWN_EXT:
         if base.endswith(ext):
             base = base[:-len(ext)]
             break
@@ -4357,8 +4553,13 @@ def catalog_download_file(slug: str, filename: str):
 
 
 @app.get("/catalog/{slug}/download")
-def catalog_download(slug: str):
-    """Public — redirect to latest version with proper filename."""
+def catalog_download(slug: str, tag: str | None = None):
+    """Public — redirect to latest version with proper filename.
+
+    Sans ``tag`` : dernière version main (status='published', ce que tout le monde
+    reçoit). Avec ``tag`` : dernière version expérimentale portant ce tag (branche
+    RC / prototype) — pull opt-in. La version exacte reste dans le nom de fichier.
+    """
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
         raise HTTPException(404, "Aucune version disponible")
@@ -4376,11 +4577,19 @@ def catalog_download(slug: str):
             if not prow:
                 raise HTTPException(404, "Plugin introuvable")
             plugin_id, device_type = prow[0], prow[1]
-            cur.execute("""
-                SELECT pv.version FROM plugin_versions pv
-                WHERE pv.plugin_id = %s AND pv.status = 'published'
-                ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
-            """, (plugin_id,))
+            if tag:
+                cur.execute("""
+                    SELECT pv.version FROM plugin_versions pv
+                    WHERE pv.plugin_id = %s AND pv.tag = %s
+                      AND pv.status IN ('published','experimental')
+                    ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
+                """, (plugin_id, tag))
+            else:
+                cur.execute("""
+                    SELECT pv.version FROM plugin_versions pv
+                    WHERE pv.plugin_id = %s AND pv.status = 'published'
+                    ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
+                """, (plugin_id,))
             vrow = cur.fetchone()
             if not vrow:
                 raise HTTPException(404, "Aucune version disponible")
@@ -4639,8 +4848,13 @@ def updates_manifest_json(request: Request, slug: str, target: str):
 
 
 @app.get("/catalog/{slug}", response_class=Response)
-def catalog_detail(request: Request, slug: str):
-    """Public HTML — plugin detail page."""
+def catalog_detail(request: Request, slug: str, exp: str | None = None):
+    """Public HTML — plugin detail page.
+
+    ``?exp=<tag>`` révèle la section « Versions expérimentales » (branches
+    martyres / prototypes) portant ce tag — lien réservé aux testeurs. Sans le
+    tag, ces versions restent invisibles au grand public.
+    """
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
         raise HTTPException(404)
@@ -4675,9 +4889,27 @@ def catalog_detail(request: Request, slug: str):
             )
             installs = cur.fetchone()[0]
 
+            # Versions expérimentales (pull opt-in) — révélées seulement par ?exp=<tag>.
+            exp_rows = []
+            if exp:
+                cur.execute("""
+                    SELECT version, tag, hypotheses, release_notes
+                    FROM plugin_versions
+                    WHERE plugin_id = %s AND status = 'experimental' AND tag = %s
+                    ORDER BY published_at DESC NULLS LAST
+                """, (p["id"], exp))
+                exp_rows = cur.fetchall()
+
         kf = p.get("key_features") or []
         if isinstance(kf, str):
             kf = json.loads(kf)
+
+        experiments = [
+            {"version": _v, "tag": _tag,
+             "hypotheses": _jsonb_list(_hyp),
+             "release_notes": _notes or ""}
+            for _v, _tag, _hyp, _notes in exp_rows
+        ]
 
         _raw_icon = p.get("icon_url") or ""
         if _raw_icon.startswith("data:"):
@@ -4722,6 +4954,7 @@ def catalog_detail(request: Request, slug: str):
         }
         return _catalog_templates.TemplateResponse(request, "catalog_detail.html", {
             "request": request, "plugin": plugin, "file_ext": file_ext,
+            "experiments": experiments,
         })
     finally:
         if pool_ctx is not None:
@@ -4762,6 +4995,52 @@ def files_list(request: Request, prefix: str = ""):
             result.append({"path": rel, "size": os.path.getsize(full)})
     result.sort(key=lambda x: x["path"])
     return JSONResponse({"files": result, "total": len(result)})
+
+
+@app.delete("/api/files/{path:path}")
+def files_delete(request: Request, path: str):
+    """Évince un binaire du cache local du pod (invalidation immédiate, C3).
+
+    Déclenché par l'admin après purge/dépréciation. Best-effort : 404 si absent.
+    """
+    _files_admin_guard(request)
+    if settings.binaries_mode != "local":
+        return JSONResponse({"ok": True, "removed": False, "reason": "non-local mode"})
+    full = _safe_path_join(settings.local_binaries_dir, path)
+    if not os.path.isfile(full):
+        return JSONResponse({"ok": True, "removed": False}, status_code=404)
+    try:
+        os.remove(full)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "removed": True, "path": path})
+
+
+@app.post("/api/files/evict")
+def files_evict(request: Request):
+    """Éviction (C2) des binaires cachés localement sans artifact vivant en base.
+
+    Self-healing : borne le cache et rattrape les invalidations ratées. À appeler
+    périodiquement (cron/ops) ou après une purge de masse. No-op hors mode local.
+    """
+    _files_admin_guard(request)
+    if settings.binaries_mode != "local":
+        return JSONResponse({"ok": True, "removed": 0, "reason": "non-local mode"})
+    live: set[str] = set()
+    db_url = _db_url_bootstrap() or _db_url()
+    if psycopg2 and db_url:
+        try:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute("SELECT s3_path FROM artifacts WHERE s3_path IS NOT NULL")
+                live = {r[0] for r in cur.fetchall() if r[0]}
+            conn.close()
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    from app.services import binaries as _binaries_svc
+    removed = _binaries_svc.evict_orphan_cache(live)
+    return JSONResponse({"ok": True, "removed": removed})
 
 
 @app.get("/binaries/{path:path}")

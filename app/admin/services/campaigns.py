@@ -19,6 +19,10 @@ def list_campaigns(cur, *, status: str = None, limit: int = 50,
     cur.execute(f"""
         SELECT c.id, c.name, c.description, c.type, c.status, c.urgency,
                c.created_at, c.updated_at, c.deadline_at, c.created_by,
+               -- Sans ces deux champs, la liste montre deux campagnes « actives »
+               -- sur le même plugin sans dire laquelle l'emporte : la précédence
+               -- (bras ciblé > général, puis priority) resterait illisible.
+               COALESCE(c.is_experiment, false) AS is_experiment, c.priority,
                co.name AS cohort_name,
                a.version AS artifact_version, a.device_type,
                ra.version AS rollback_version
@@ -95,37 +99,80 @@ def get_campaign_events(cur, campaign_id: int, limit: int = 20) -> list[dict]:
     return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
+def autocomplete_superseded(cur, *, plugin_id, is_experiment: bool,
+                            target_cohort_id, exclude_id: int = None,
+                            campaign_type: str = "plugin_update") -> None:
+    """Auto-complète UNIQUEMENT la campagne que la nouvelle remplace, pour permettre
+    la coexistence des branches d'expérimentation.
+
+    **Implémentation unique de cette règle** : tous les chemins qui activent une
+    campagne l'appellent (création admin, création API, deploy plugin, transitions
+    manuelles activate/resume). Ne pas réécrire l'UPDATE ailleurs — la précédence
+    des campagnes doit rester modifiable en un seul endroit.
+
+    Portée, par classe (COALESCE(is_experiment,false)) et même plugin :
+      - release GÉNÉRALE (is_experiment=false) → supersede TOUTES les campagnes
+        non-expé actives du plugin (rollout + canaries), quelle que soit la cohorte,
+        + nettoyage legacy (plugin_id IS NULL). Conserve la sémantique historique
+        « une nouvelle release remplace les précédentes » et ne touche JAMAIS une expé.
+      - EXPÉRIENCE (is_experiment=true) → ne complète que l'expé active
+        même-plugin/même-cohorte (re-déploiement d'un bras) ; les autres bras,
+        le rollout général et les expés d'autres cohortes sont intacts.
+    """
+    cur.execute("""
+        UPDATE campaigns SET status = 'completed', updated_at = NOW()
+        WHERE status IN ('active','paused') AND type = %(type)s
+          AND COALESCE(is_experiment, false) = %(is_exp)s
+          AND (%(is_exp)s = false OR target_cohort_id IS NOT DISTINCT FROM %(cohort)s)
+          AND (plugin_id = %(pid)s OR (%(is_exp)s = false AND plugin_id IS NULL))
+          AND (%(exclude)s::int IS NULL OR id <> %(exclude)s)
+    """, {"type": campaign_type, "is_exp": is_experiment, "cohort": target_cohort_id,
+          "pid": plugin_id, "exclude": exclude_id})
+
+
 def create_campaign(cur, *, name: str, description: str = "", type: str = "plugin_update",
                     artifact_id: int = None, rollback_artifact_id: int = None,
                     target_cohort_id: int = None, urgency: str = "normal",
                     deadline_at: str = None, status: str = "draft",
                     rollout_config: dict = None,
                     created_by: str = None,
-                    plugin_id: int = None) -> int:
-    # Auto-complete older active campaigns of the same type to avoid conflicts.
-    # Only the most recent active campaign is served to clients.
+                    plugin_id: int = None,
+                    is_experiment: bool = False, priority: int = 0) -> int:
+    # Auto-complete only the campaign this one supersedes (scoped), so experiment
+    # arms and the general rollout can coexist. See autocomplete_superseded.
     if status == "active":
-        cur.execute("""
-            UPDATE campaigns SET status = 'completed', updated_at = NOW()
-            WHERE status = 'active' AND type = %s
-              AND (%s IS NULL OR plugin_id = %s OR plugin_id IS NULL)
-        """, (type, plugin_id, plugin_id))
+        autocomplete_superseded(cur, plugin_id=plugin_id, is_experiment=is_experiment,
+                                target_cohort_id=target_cohort_id)
     cur.execute("""
         INSERT INTO campaigns (name, description, type, artifact_id,
                               rollback_artifact_id, target_cohort_id,
                               urgency, deadline_at, status, rollout_config, created_by,
-                              plugin_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              plugin_id, is_experiment, priority)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """, (name, description, type, artifact_id, rollback_artifact_id,
           target_cohort_id, urgency, deadline_at or None, status,
           json.dumps(rollout_config) if rollout_config else None,
-          created_by, plugin_id))
+          created_by, plugin_id, is_experiment, priority))
     return cur.fetchone()[0]
 
 
 def update_campaign_status(cur, campaign_id: int, new_status: str) -> bool:
-    """Update campaign status. Returns True if updated."""
+    """Update campaign status. Returns True if updated.
+
+    À l'activation, applique l'auto-complétion scopée (les transitions manuelles
+    activate/resume ne passent pas par create_campaign) : sinon activer un rollout
+    général via draft→active laisserait 2 gagnants généraux non déterministes.
+    """
+    if new_status == "active":
+        cur.execute("""
+            SELECT plugin_id, COALESCE(is_experiment, false), target_cohort_id
+            FROM campaigns WHERE id = %s AND type = 'plugin_update'
+        """, (campaign_id,))
+        row = cur.fetchone()
+        if row:
+            autocomplete_superseded(cur, plugin_id=row[0], is_experiment=row[1],
+                                    target_cohort_id=row[2], exclude_id=campaign_id)
     cur.execute("""
         UPDATE campaigns SET status = %s, updated_at = NOW()
         WHERE id = %s

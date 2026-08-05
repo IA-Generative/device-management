@@ -107,6 +107,14 @@
   <div class="dm-metric-tile">
     <div style="font-size:1.5rem;font-weight:bold;">{{ stats.active }}</div>
     <div style="font-size:0.875rem;color:#666;">Installations actives</div>
+    {# N'apparait QUE s'il y a effectivement cohabitation : un parc homogene n'a
+       rien a signaler, et une ligne toujours affichee cesse d'etre lue. #}
+    {% if stats.distinct_versions and stats.distinct_versions > 1 %}
+    <div style="font-size:0.8rem;color:#b26a00;margin-top:0.25rem;"
+         title="Nombre de versions distinctes installees sur les appareils actifs">
+      sur {{ stats.distinct_versions }} versions en circulation
+    </div>
+    {% endif %}
   </div>
   <div class="dm-metric-tile">
     <div style="font-size:1.5rem;font-weight:bold;">{{ versions|selectattr('status','eq','published')|list|length }}</div>
@@ -224,6 +232,21 @@
           </div>
         </div>
 
+        {# Branche experimentale (pull opt-in) — renseigner pour un prototype #}
+        <div class="dm-form-row">
+          <label class="dm-label">Tag experimental (optionnel)</label>
+          <input type="text" name="tag" class="dm-input" placeholder="ex: exp-nouveau-resume">
+          <p class="dm-help" style="font-size:0.8rem;color:#666;margin:0.25rem 0 0;">
+            Pour une branche martyre/prototype : utilise le bouton
+            « Publier comme experimentale » (Etape 3). La version n'est PAS servie
+            comme stable ; elle est accessible via <code>/catalog/&lt;slug&gt;?exp=&lt;tag&gt;</code>.
+          </p>
+        </div>
+        <div class="dm-form-row">
+          <label class="dm-label">Questions testees (une par ligne)</label>
+          <textarea name="hypotheses" class="dm-input" rows="3" placeholder="Le nouveau resume est-il plus rapide ?&#10;Reduit-il les erreurs de mise en forme ?"></textarea>
+        </div>
+
         <div class="dm-form-actions">
           <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvGoStep(1)">Retour</button>
           <button type="button" class="dm-btn dm-btn--primary dm-btn--sm" onclick="nvGoStep(3)">Suivant — Deployer</button>
@@ -328,6 +351,7 @@
         <div class="dm-form-actions">
           <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvGoStep(2)">Retour</button>
           <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvSubmit('publish_only')">Publier sans deployer</button>
+          <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvSubmit('experimental')" title="Version martyre/prototype : publiee en 'experimental', accessible par ?exp=<tag>, sans campagne">Publier comme experimentale</button>
           <button type="button" class="dm-btn dm-btn--primary" id="nv-btn-deploy" onclick="nvSubmit('deploy')">
             Publier et deployer
           </button>
@@ -344,12 +368,24 @@
     <tbody>
       {% for v in versions %}
       <tr>
-        <td><strong>{{ v.version }}</strong></td>
+        <td>
+          <strong>{{ v.version }}</strong>
+          {# Le tag distingue deux branches parallèles : sans lui, deux versions
+             experimentales sont indiscernables autrement que par leur numero. #}
+          {% if v.tag %}
+          <span class="dm-badge dm-badge--neutral" style="margin-left:0.35rem;"
+                title="{% if v.hypotheses %}{{ v.hypotheses | join(' · ') }}{% else %}Branche d'experimentation{% endif %}">{{ v.tag }}</span>
+          {% endif %}
+        </td>
         <td>
           {% if v.status == 'published' %}<span class="dm-badge dm-badge--success">Publie</span>
           {% elif v.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
           {% elif v.status == 'deprecated' %}<span class="dm-badge dm-badge--warning">Obsolete</span>
-          {% elif v.status == 'yanked' %}<span class="dm-badge dm-badge--error">Retire</span>{% endif %}
+          {% elif v.status == 'yanked' %}<span class="dm-badge dm-badge--error">Retire</span>
+          {% elif v.status == 'experimental' %}<span class="dm-badge dm-badge--info">Experimental</span>
+          {# Repli : un statut inconnu doit rester VISIBLE. Sans ce else, la 0.9.14
+             a affiche une cellule vide pour 'experimental' pendant deux versions. #}
+          {% else %}<span class="dm-badge dm-badge--neutral">{{ v.status }}</span>{% endif %}
         </td>
         <td>{{ v.distribution_mode }}</td>
         <td>{{ v.published_at.strftime('%d/%m/%Y') if v.published_at else v.created_at.strftime('%d/%m/%Y') }}</td>

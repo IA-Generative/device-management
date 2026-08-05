@@ -47,6 +47,33 @@
         <option value="{{ c.id }}">{{ c.name }} ({{ c.type }}, {{ c.member_count }} membres)</option>
         {% endfor %}
       </select>
+      <p class="dm-help" style="font-size: 0.85rem; color: #666; margin-top: 0.35rem;">
+        Une campagne d'expérimentation requiert une cohorte <strong>manuelle</strong>
+        (ou email_pattern / groupe Keycloak) — pas <em>percentage</em>, qui se recouvre.
+      </p>
+    </div>
+  </fieldset>
+
+  <!-- Step 2b: Expérimentation (coexistence par cohorte) -->
+  <fieldset style="border: 1px solid #e5e5e5; border-radius: 4px; padding: 1.5rem; margin-bottom: 1.5rem;">
+    <legend style="font-weight: 600; padding: 0 0.5rem;">Experimentation (optionnel)</legend>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label">
+          <input type="checkbox" name="is_experiment" value="true"> Campagne d'experimentation
+        </label>
+        <p class="dm-help" style="font-size: 0.85rem; color: #666; margin: 0;">
+          Coexiste avec le rollout general (non auto-completee par lui) et sert sa
+          version cible en mode « pin » (deploie meme les builds suffixees, ex. 1.6.0-rc1).
+        </p>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label">Priorite</label>
+        <input class="dm-input" name="priority" type="number" value="0" step="1">
+        <p class="dm-help" style="font-size: 0.85rem; color: #666; margin: 0;">
+          Departage si un device matche plusieurs campagnes actives (plus haut = gagne).
+        </p>
+      </div>
     </div>
   </fieldset>
 

@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS queue_job_dead_letters (
     last_error TEXT
 );
 
+-- move_to_dead_letter() fait ON CONFLICT (job_id) : sans cette contrainte,
+-- Postgres refuse la requête (InvalidColumnReference), l'exception remonte la
+-- boucle du worker et la TUE. Un amont OTLP injoignable suffisait alors à
+-- arrêter définitivement le traitement de TOUTE la file — télémétrie comme
+-- enrôlements — jusqu'au redémarrage du conteneur.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_job_dead_letters_job_id
+    ON queue_job_dead_letters (job_id);
+
 -- ═══════════════════════════════════════════════════════════════
 -- CATALOGUE : plugins, versions, aliases, env overrides
 -- ═══════════════════════════════════════════════════════════════
@@ -212,14 +220,22 @@ CREATE TABLE IF NOT EXISTS plugin_versions (
     min_host_version VARCHAR(50),
     max_host_version VARCHAR(50),
     status VARCHAR(20) DEFAULT 'draft'
-        CHECK (status IN ('draft','published','deprecated','yanked')),
+        CHECK (status IN ('draft','published','deprecated','yanked','experimental')),
     distribution_mode VARCHAR(20) DEFAULT 'managed'
         CHECK (distribution_mode IN ('managed','download_link','store','manual')),
+    -- Ligne de version : NULL = main/stable (servie par défaut) ; sinon
+    -- identifiant de branche (RC, prototype) qui sert de tag d'URL au catalogue.
+    -- Une version 'experimental' n'est jamais servie comme « latest main » : elle
+    -- n'est atteignable que par version/tag explicite (pull opt-in).
+    tag VARCHAR(80),
+    hypotheses JSONB,   -- list[str] : questions clés testées par cette version
     published_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now(),
     UNIQUE (plugin_id, version)
 );
 CREATE INDEX IF NOT EXISTS idx_pv_plugin ON plugin_versions(plugin_id);
+CREATE INDEX IF NOT EXISTS idx_pv_experimental
+    ON plugin_versions(plugin_id, tag) WHERE status = 'experimental';
 
 -- Lien 1:N version → artefacts : une release peut porter plusieurs binaires
 -- (ex. .crx Chromium + .xpi Gecko) × cibles, désambiguïsés par platform_variant
@@ -292,10 +308,18 @@ CREATE TABLE IF NOT EXISTS campaigns (
     urgency VARCHAR(10) DEFAULT 'normal' CHECK (urgency IN ('low','normal','critical')),
     deadline_at TIMESTAMPTZ,
     created_by VARCHAR(255),
+    -- Campagne d'expérimentation : coexiste avec le rollout général (non
+    -- auto-complétée par lui) et sert sa version cible en mode « pin » (contourne
+    -- la comparaison de versions, pour les builds suffixées). priority départage
+    -- le cas où un device matche plusieurs campagnes actives.
+    is_experiment BOOLEAN NOT NULL DEFAULT false,
+    priority INT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_camp_plugin ON campaigns(plugin_id, environment);
+CREATE INDEX IF NOT EXISTS idx_camp_experiment
+    ON campaigns(plugin_id) WHERE is_experiment = true AND status = 'active';
 
 CREATE TABLE IF NOT EXISTS campaign_device_status (
     campaign_id INT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,

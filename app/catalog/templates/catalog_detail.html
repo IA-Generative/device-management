@@ -113,6 +113,43 @@
           Lors du premier lancement, connectez-vous avec votre compte pour activer les mises a jour.
         </p>
       </div>
+
+      {# ── Versions expérimentales (pull opt-in, révélées par ?exp=<tag>) ── #}
+      {% if experiments %}
+      <div style="margin-bottom:2rem;">
+        <h2>Versions experimentales</h2>
+        <p class="fr-text--sm">
+          Branches en test — chacune repond a des questions precises. A installer
+          manuellement pour tester ; ce ne sont pas les versions stables.
+        </p>
+        {# Le testeur doit voir de QUOI il devie, et comment y revenir : sans ce
+           repere, une branche ressemble a la version courante du plugin. #}
+        <p class="fr-text--sm">
+          {% if plugin.latest_version %}
+          Version stable actuelle : <strong>v{{ plugin.latest_version }}</strong> —
+          {% endif %}
+          <a href="/catalog/{{ plugin.slug }}">revenir a la fiche sans branche</a>
+        </p>
+        {% for exp in experiments %}
+        <div class="fr-callout fr-callout--brown-caramel" style="margin-bottom:1rem;">
+          <p class="fr-callout__title">v{{ exp.version }}{% if exp.tag %} &middot; {{ exp.tag }}{% endif %}</p>
+          {% if exp.release_notes %}
+          <p class="fr-callout__text">{{ exp.release_notes }}</p>
+          {% endif %}
+          {% if exp.hypotheses %}
+          <p class="fr-text--sm" style="margin-bottom:0.25rem;"><strong>Questions testees :</strong></p>
+          <ul>
+            {% for q in exp.hypotheses %}<li>{{ q }}</li>{% endfor %}
+          </ul>
+          {% endif %}
+          <a href="/catalog/{{ plugin.slug }}/download/{{ plugin.slug }}-{{ exp.version }}{% if file_ext %}.{{ file_ext }}{% endif %}"
+             class="fr-btn fr-btn--secondary fr-mt-1w">
+            Telecharger cette version (test)
+          </a>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
     </div>
 
     <div class="fr-col-12 fr-col-md-4">

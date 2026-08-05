@@ -137,10 +137,17 @@ VALUES (
 
 ### 3.1 Campagne de mise à jour plugin
 
+> **Scoping par plugin (0.9.13+)** : une campagne n'est servie qu'aux devices du
+> plugin qu'elle cible — via `plugin_id` si renseigné, sinon via le
+> `device_type` de l'artifact. Avant 0.9.13, la campagne active la plus récente
+> fuyait vers TOUS les devices (issue #14 : un plugin LibreOffice recevait la
+> version Matisse). Toujours renseigner `plugin_id` à la création manuelle ;
+> le deploy via l'admin le fait automatiquement.
+
 ```sql
 INSERT INTO campaigns (
     name, description, type, status,
-    target_cohort_id, artifact_id, rollback_artifact_id,
+    plugin_id, target_cohort_id, artifact_id, rollback_artifact_id,
     urgency, deadline_at,
     created_by
 ) VALUES (
@@ -148,6 +155,7 @@ INSERT INTO campaigns (
     'Déploiement version 2.0.0 sur cohorte canary initiale',
     'plugin_update',
     'draft',                      -- toujours créer en draft !
+    <plugin_id_mirai_libreoffice>, -- scope la campagne au bon plugin
     <cohort_id_canary>,
     <artifact_id_2_0_0>,
     <artifact_id_1_9_0>,          -- artifact de rollback
@@ -167,6 +175,53 @@ VALUES ('calc_assistant', 'Assistant IA dans Calc', true);
 
 INSERT INTO feature_flag_overrides (feature_id, cohort_id, value, min_plugin_version)
 VALUES (<flag_id>, <cohort_all_id>, false, NULL);
+```
+
+### 3.3 Campagne d'expérimentation — tester une future version sur une cohorte (0.9.14+)
+
+> **Coexistence.** Une campagne `is_experiment = true` **coexiste** avec le rollout
+> général : créer/activer l'une ne complète PAS l'autre. On peut donc pousser une
+> future version main (RC) à une cohorte de testeurs pendant que le stable continue
+> de tourner. Utiliser une cohorte **manuelle / email_pattern / groupe Keycloak** —
+> **pas `percentage`** (deux cohortes % se recouvrent au lieu de partitionner).
+
+```sql
+-- RC 1.6.0-rc1 servie à la cohorte de testeurs, en parallèle du rollout stable.
+INSERT INTO campaigns (
+    name, type, status, plugin_id, artifact_id, target_cohort_id,
+    is_experiment, priority, urgency, created_by
+) VALUES (
+    'Mirai LO 1.6.0-rc1 — testeurs', 'plugin_update', 'active',
+    <plugin_id>, <artifact_id_1_6_0_rc1>, <cohort_id_testeurs>,
+    true,          -- exempte de l'auto-complétion + mode PIN
+    10,            -- priority : départage si un device matche plusieurs campagnes
+    'normal', 'admin@example.com'
+);
+```
+
+Comportement à connaître :
+
+- **Mode PIN.** Une campagne d'expérimentation sert sa version cible dès que le device
+  n'y est pas déjà, **sans exiger cible > courante**. Indispensable pour les versions
+  suffixées (`1.6.0-rc1`) que la comparaison numérique réduirait sinon à `(0,)` → aucun
+  update. Corollaire : le client DOIT renvoyer la version cible **exacte** (suffixe
+  inclus) dans `X-Plugin-Version`, sinon il se met à jour à chaque poll.
+- **URL épinglée.** L'`artifact_url` d'un bras d'expé pointe la route versionnée
+  `/catalog/<slug>/download/<slug>-<version>.<ext>` (et non `…/download`, qui résout
+  `status='published'`, donc la main). Un bras dont l'artefact n'a pas d'extension
+  reconnue retombe sur `/binaries/<s3_path>`. Les campagnes générales, elles, gardent
+  l'URL catalogue générique : c'est bien la dernière publiée qu'elles servent.
+- **Précédence.** Un device qui matche plusieurs campagnes actives résout dans l'ordre :
+  bras ciblé (cohorte) > rollout général non ciblé, puis `priority` décroissante, puis
+  `created_at`. Un device **hors** cohorte d'expé ne voit que le rollout général (témoin).
+- **Portée de l'auto-complétion.** Une nouvelle **release générale** supersede toutes les
+  campagnes non-expé du plugin (comme avant) mais laisse les expés. Une nouvelle **expé**
+  ne remplace que l'expé active du **même plugin + même cohorte** (re-déploiement d'un bras).
+
+```sql
+-- Terminer un bras d'expérimentation (revient au stable pour cette cohorte)
+UPDATE campaigns SET status = 'completed'
+WHERE id = <campaign_exp_id> AND is_experiment = true;
 ```
 
 ---
@@ -358,7 +413,95 @@ UPDATE feature_flags SET default_value = true WHERE id = <flag_id>;
 
 ---
 
-## 9. Diagnostics rapides
+## 9. Versions expérimentales au catalogue (pull) & purge du cache binaire (0.9.14+)
+
+Deux besoins distincts du multi-versions :
+
+- **Push cohortes** (RC / future main) → campagne `is_experiment` (§3.3), auto-update.
+- **Pull catalogue** (versions martyres / prototypes d'une branche) → téléchargement
+  **manuel opt-in** depuis le catalogue, décrit ici.
+
+### 9.1 Publier une version expérimentale
+
+Depuis l'admin **Catalogue → onglet Versions → wizard** : renseigner un **Tag
+expérimental** (ex. `exp-resume`) + les **Questions testées** (une par ligne), puis
+**« Publier comme expérimentale »**. La version est créée en `status='experimental'` :
+servable par version/tag précis mais **jamais** comme « latest main » (fail-safe — toutes
+les requêtes « dernière publiée » filtrent `status='published'`). Aucune campagne n'est
+créée (pas de push).
+
+Modèle : `plugin_versions.tag` (NULL = ligne main ; sinon branche), `hypotheses` (JSONB,
+les questions clés). Promouvoir une expé en main = repasser `published` + retirer le tag.
+
+> **En promouvant, dépréciez l'ancienne.** Repasser une expé en `published` sans passer la
+> précédente en `deprecated` laisse **deux versions publiées** pour le même plugin. Le code
+> résout désormais « dernière version » par `published_at` partout (0.9.15), donc les
+> endpoints restent cohérents — mais deux `published` simultanées restent une anomalie de
+> données : le wizard d'upload, lui, déprécie automatiquement.
+>
+> ```sql
+> UPDATE plugin_versions SET status = 'deprecated'
+> WHERE plugin_id = <id> AND status = 'published' AND version <> '<nouvelle>';
+> ```
+
+### 9.2 Distribuer / accéder
+
+- **Page catalogue** : `GET /catalog/<slug>?exp=<tag>` révèle la section « Versions
+  expérimentales » (titre + version + questions + bouton de téléchargement). **Sans le
+  tag, la section est invisible** au grand public → partager le lien `?exp=<tag>` aux
+  testeurs.
+- **Téléchargement direct** : `GET /catalog/<slug>/download?tag=<tag>` sert la dernière
+  version de la branche taguée ; `…/download` (sans tag) sert toujours la main.
+- **API JSON (0.9.15+)** : `GET /catalog/api/plugins/<slug>?exp=<tag>` renvoie la clé
+  `experiments` — versions de la branche, `tag`, `hypotheses`, URL de téléchargement
+  versionnée. Même barrière que la page HTML. **Sans `?exp=`, la clé n'existe pas** : la
+  réponse par défaut est identique à celle d'avant 0.9.15, rien ne trahit l'existence
+  d'une branche. Sert à outiller les testeurs (script d'installation, tableau de bord)
+  sans gratter le HTML.
+
+  ```bash
+  curl -s "https://<host>/catalog/api/plugins/<slug>?exp=<tag>" | jq '.experiments'
+  ```
+
+### 9.3 Lire la cohabitation — où voir quoi (0.9.15+)
+
+Créer la cohabitation ne suffit pas : il faut pouvoir la relire. Voici où chaque
+information se trouve.
+
+| Où | Ce qu'on y lit |
+|---|---|
+| Admin → Catalogue → *Versions* | Une ligne par version, badge **Experimental** et **tag** de la branche à côté du numéro (survol du tag = questions testées). C'est la vue « quelles versions existent ». |
+| Admin → **Campagnes** | Badge **Expe** et colonne **Priorité**. C'est la vue « laquelle gagne » : bras ciblé > rollout général, puis `priority` décroissante. |
+| Admin → Catalogue → *Installations* | Une version par appareil, et sous la tuile « Installations actives » : « sur N versions en circulation » — **affiché seulement si N > 1**, donc exactement quand il y a cohabitation. C'est la vue « qui est sur quoi ». |
+| Catalogue public `?exp=<tag>` | La branche, ses questions, la version stable en regard et un lien de retour. **Sans le tag : rien.** |
+| API `?exp=<tag>` | Idem en JSON (cf. §9.2). |
+
+> Une version au statut inconnu s'affiche désormais avec son statut brut plutôt qu'une
+> case vide : la 0.9.14 avait ajouté `experimental` en base sans l'ajouter à l'affichage,
+> et les versions expérimentales apparaissaient **sans statut** pendant deux versions.
+
+### 9.4 Purge / invalidation du cache binaire
+
+En mode `local`, chaque pod de serving met le binaire **en cache disque** (pull-on-miss
+depuis l'admin). Quand une version est **purgée / dépréciée**, le binaire est invalidé :
+
+- **À la source (automatique).** La purge (`/admin/catalog/<id>/versions/purge` et
+  `…/deployments/purge`) supprime désormais le fichier des artefacts orphelins (PVC admin
+  en local, `delete_object` en S3) **avant** de supprimer la ligne → plus de re-pull ni de
+  raw-serve d'une version supprimée.
+- **Éviction des pods (self-healing).** `POST /api/files/evict` (token admin) balaie le
+  cache local et supprime les binaires sans artifact vivant en base — à appeler après une
+  purge de masse ou en cron. `DELETE /api/files/<path>` évince un fichier précis
+  immédiatement. No-op hors mode `local`.
+
+```bash
+# Éviction des orphelins sur un pod de serving
+curl -X POST -H "x-admin-token: $DM_QUEUE_ADMIN_TOKEN" https://<host>/api/files/evict
+```
+
+---
+
+## 10. Diagnostics rapides
 
 ### Plugin ne reçoit pas l'update
 
@@ -411,7 +554,7 @@ WHERE ff.name = '<flag_name>';
 
 ---
 
-## 10. Contacts et escalade
+## 11. Contacts et escalade
 
 | Situation | Contact |
 |---|---|

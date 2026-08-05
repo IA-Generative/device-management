@@ -26,6 +26,42 @@ jobs:
       - name: Semgrep (SAST)
         run: semgrep --config auto app || true       # report-only initially
       - name: Pytest (unit)
-        # Les tests `integration` (Postgres/Keycloak/serveur/navigateur live)
-        # ne tournent pas sur le runner CI sans infra — lancés à la demande.
+        # Les tests `integration` nécessitant Keycloak, un navigateur ou un
+        # serveur live ne tournent pas ici. Ceux qui n'ont besoin que d'un
+        # Postgres sont couverts par le job `integration-db` ci-dessous.
         run: pytest -m "not integration"
+
+  # Les règles métier des campagnes (coexistence, précédence, contraintes de
+  # schéma) sont du SQL : mockées, elles ne seraient vérifiées que comme des
+  # chaînes de caractères. Ce job les exécute contre un vrai PostgreSQL.
+  integration-db:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bootstrap
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Pytest (intégration Postgres)
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bootstrap
+        # Liste explicite : les autres fichiers `integration` réclament Keycloak,
+        # un navigateur ou un serveur déployé, indisponibles sur le runner.
+        run: |
+          pytest -m integration \
+            tests/test_experiment_campaigns_pg.py \
+            tests/test_plugin_installations_fk.py
