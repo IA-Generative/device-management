@@ -1195,6 +1195,8 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
     except zipfile.BadZipFile:
         pass
 
+    source = "package" if version else "filename"
+
     # Fallback: extract from filename
     if not version:
         m = re.search(r'(\d+\.\d+(?:\.\d+)*)', filename)
@@ -1273,7 +1275,7 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
 
     return JSONResponse({
         "version": version or "",
-        "source": "package" if version else "filename",
+        "source": source,
         "device_type": device_type,
         "valid": len(errors) == 0,
         "is_valid_zip": is_valid_zip,
