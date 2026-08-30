@@ -13,6 +13,10 @@ services:
     environment:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://server.com}
       DM_APP_ENV: ${DM_APP_ENV:-dev}
+      # Local dev only: auto-creates the 'dev' role/'bootstrap' database/
+      # schema at startup so `docker compose up` works with zero manual DB
+      # setup. Production defaults this off — see app/settings.py.
+      DM_DB_AUTO_BOOTSTRAP: ${DM_DB_AUTO_BOOTSTRAP:-true}
       DM_CONFIG_ENABLED: ${DM_CONFIG_ENABLED:-true}
       DM_CONFIG_PROFILE: ${DM_CONFIG_PROFILE:-prod}
       DM_ENROLL_URL: ${DM_ENROLL_URL:-/enroll}
@@ -130,6 +134,7 @@ services:
     environment:
       DM_RUNTIME_MODE: llm
       DM_APP_ENV: ${DM_APP_ENV:-dev}
+      DM_DB_AUTO_BOOTSTRAP: ${DM_DB_AUTO_BOOTSTRAP:-true}
       DM_ALLOW_ORIGINS: ${DM_ALLOW_ORIGINS:-*}
       DM_RELAY_ENABLED: "true"
       DM_RELAY_SECRET_PEPPER: ${DM_RELAY_SECRET_PEPPER:-change-me-relay-secret-pepper}

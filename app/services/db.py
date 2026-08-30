@@ -43,11 +43,16 @@ def db_url() -> str | None:
 
 
 def db_url_bootstrap() -> str | None:
-    """Resolve the bootstrap database URL."""
-    base = db_url()
-    if not base:
-        return None
-    return _with_db(base, "bootstrap")
+    """Resolve the application database URL.
+
+    Historically this force-rewrote the DSN's path to the literal database
+    name "bootstrap", discarding whatever name DATABASE_URL actually
+    specified. That silently broke any deployment naming its database
+    something else (the app kept connecting to a database named
+    "bootstrap" regardless), which is why an admin-privileged auto-create
+    fallback existed for it. Now just uses DATABASE_URL as given.
+    """
+    return db_url()
 
 
 def get_pool():
