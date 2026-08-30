@@ -51,7 +51,7 @@
 La doc est désormais structurée **par audience** (2026-06-02) ; l'ancien dossier `docs/adr/`
 fourre-tout a été dissous :
 - `docs/architecture/` — ADR (architecte) : `adr-0001-vue-densemble.md`, `adr-product-architecture.md`, `adr-dgx-deployment.md`.
-- `docs/plugin-developer/` — `consumer-readme.md`, `packaging-guide.md`, `plugin-dm-protocol-update-features.md`, `plugin-integration-2-4-5.md`, `config.default.example.json`, `mirai-integration-README.md` (+ snippet).
+- `docs/plugin-developer/` — `README.md` (parcours guidé), `consumer-readme.md`, `plugin-dm-protocol-update-features.md` (le contrat), `packaging-guide.md`, `config.default.example.json`, `mirai-integration-README.md` (+ snippet). *(2026-07-30 : `plugin-integration-2-4-5.md` retiré — redondant avec `consumer-readme.md`, dont il reprenait config/télémétrie/PKCE avec un préfixe de déploiement `/bootstrap` codé en dur ; son contenu propre — rotation du jeton de télémétrie, politique d'événements pré-login — a été fusionné dans `consumer-readme.md` §4.)*
 - `docs/security/` — `audit-remediation-report.md`.
 - `docs/operations/` — `developer-readme.md`, `mode-operatoire-campagnes.md`, `test-cahier.md`, `debug-campaign-not-serving.md`.
 - `docs/dgx/` et `docs/prompts/` sont des artefacts internes : **gitignorés** (hors dépôt public).
