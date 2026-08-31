@@ -131,6 +131,18 @@ def _apply_platform_defaults(template: dict) -> dict:
     return template
 
 
+def _read_dm_manifest(zf) -> dict | None:
+    """Parse dm-manifest.json from an open ZIP (any depth); None if absent or invalid."""
+    for name in zf.namelist():
+        if name.rsplit("/", 1)[-1].lower() in ("dm-manifest.json", "dm_manifest.json"):
+            try:
+                parsed = json.loads(zf.read(name).decode("utf-8", errors="replace"))
+            except Exception:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def _strip_dm_metadata_from_zip(data: bytes) -> bytes:
     """Remove dm-config.json and dm-manifest.json from a ZIP archive (OXT/XPI/CRX) before storage."""
     import zipfile
@@ -1137,6 +1149,7 @@ DEVICE_TYPES = [
     {"id": "chrome", "label": "Chrome / Chromium", "ext": ".crx"},
     {"id": "edge", "label": "Microsoft Edge", "ext": ".crx"},
 ]
+_DEVICE_TYPE_ALIASES = {"thunderbird": "matisse"}
 
 
 @router.get("/deploy", response_class=HTMLResponse)
@@ -1168,14 +1181,22 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
 
     data = await binary.read()
     version = None
+    dm_manifest = None
     filename = binary.filename or ""
 
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             names = zf.namelist()
+            dm_manifest = _read_dm_manifest(zf)
+
+            # dm-manifest.json — changelog[0].version (primary source)
+            if dm_manifest:
+                cl = dm_manifest.get("changelog")
+                if isinstance(cl, list) and cl and isinstance(cl[0], dict):
+                    version = cl[0].get("version") or None
 
             # .xpi / .crx — manifest.json
-            if "manifest.json" in names:
+            if not version and "manifest.json" in names:
                 manifest = json.loads(zf.read("manifest.json"))
                 version = manifest.get("version")
 
@@ -1194,6 +1215,8 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
                     version = m.group(1)
     except zipfile.BadZipFile:
         pass
+
+    source = "package" if version else "filename"
 
     # Fallback: extract from filename
     if not version:
@@ -1230,13 +1253,19 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
     if not version and not errors:
         warnings.append("Version non detectee dans le package — saisie manuelle requise")
 
-    # Detect device type + extract dm-manifest.json release notes
+    # Device type: dm-manifest.json declaration first, package heuristics as fallback
     device_type = None
     release_notes = ""
 
-    if ext == "oxt":
+    if dm_manifest:
+        declared = dm_manifest.get("device_type")
+        declared = _DEVICE_TYPE_ALIASES.get(declared, declared)
+        if declared in {d["id"] for d in DEVICE_TYPES}:
+            device_type = declared
+
+    if device_type is None and ext == "oxt":
         device_type = "libreoffice"
-    elif ext in ("xpi", "crx"):
+    elif device_type is None and ext in ("xpi", "crx"):
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as zf2:
                 if "manifest.json" in zf2.namelist():
@@ -1258,22 +1287,15 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
             device_type = "firefox" if ext == "xpi" else "chrome"
 
     # Extract release notes from dm-manifest.json for the detected version
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as zf3:
-            for zname in zf3.namelist():
-                if zname.rsplit("/", 1)[-1].lower() in ("dm-manifest.json", "dm_manifest.json"):
-                    dm_m = json.loads(zf3.read(zname).decode("utf-8", errors="replace"))
-                    for entry in dm_m.get("changelog", []):
-                        if entry.get("version") == version:
-                            release_notes = "\n".join(f"- {c}" for c in entry.get("changes", []))
-                            break
-                    break
-    except Exception:
-        pass
+    if dm_manifest:
+        for entry in dm_manifest.get("changelog") or []:
+            if isinstance(entry, dict) and entry.get("version") == version:
+                release_notes = "\n".join(f"- {c}" for c in entry.get("changes", []))
+                break
 
     return JSONResponse({
         "version": version or "",
-        "source": "package" if version else "filename",
+        "source": source,
         "device_type": device_type,
         "valid": len(errors) == 0,
         "is_valid_zip": is_valid_zip,
