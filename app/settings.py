@@ -155,8 +155,14 @@ class Settings(BaseSettings):
     parc_export_secret: str = Field(
         default_factory=lambda: _env_default("PARC_EXPORT_SECRET", default="")
     )
-    parc_export_enabled: bool = Field(default=False)      # runtime-éditable (debug)
-    parc_export_intervalle_s: int = Field(default=300)    # runtime-éditable (debug)
+    # runtime-éditables depuis la page debug (DM_PARC_EXPORT_* prime, nom nu du
+    # contrat accepté en repli, comme les clés télémétrie).
+    parc_export_enabled: bool = Field(
+        default_factory=lambda: _env_default("PARC_EXPORT_ENABLED", default="false")
+    )
+    parc_export_intervalle_s: int = Field(
+        default_factory=lambda: _env_default("PARC_EXPORT_INTERVALLE_S", default="300")
+    )
     parc_instance_label: str = Field(
         default_factory=lambda: _env_default("PARC_INSTANCE_LABEL", default="dm-x")
     )
