@@ -147,6 +147,23 @@ class Settings(BaseSettings):
     auth_leeway_seconds: int = Field(default=30)
     auth_jwks_cache_ttl_seconds: int = Field(default=600)
 
+    # Export parc → bus de la bêta (agrégats d'usage des plugins, expurgés à la
+    # source). URL vide = export non configuré (le job ne fait rien).
+    parc_export_url: str = Field(
+        default_factory=lambda: _env_default("PARC_EXPORT_URL", default="")
+    )
+    parc_export_secret: str = Field(
+        default_factory=lambda: _env_default("PARC_EXPORT_SECRET", default="")
+    )
+    parc_export_enabled: bool = Field(default=False)      # runtime-éditable (debug)
+    parc_export_intervalle_s: int = Field(default=300)    # runtime-éditable (debug)
+    parc_instance_label: str = Field(
+        default_factory=lambda: _env_default("PARC_INSTANCE_LABEL", default="dm-x")
+    )
+    # Rétention de la télémétrie brute locale (patron PURGE_AFTER_DAYS de
+    # app/llm/traffic.py) : purge opportuniste des lignes plus vieilles que N jours.
+    telemetry_retention_days: int = Field(default=30)
+
     # Deploy environments (JSON list or comma-separated names)
     # Each env: name, label, strategy (patch_all | progressive | choice), confirm_name (bool)
     deploy_environments_json: str = Field(default='[{"name":"dev","label":"Dev","strategy":"patch_all","confirm_name":false},{"name":"int","label":"Integration","strategy":"patch_all","confirm_name":false},{"name":"beta","label":"Beta","strategy":"choice","confirm_name":false},{"name":"preview","label":"Preview","strategy":"choice","confirm_name":false},{"name":"prod","label":"Production","strategy":"progressive","confirm_name":true}]')

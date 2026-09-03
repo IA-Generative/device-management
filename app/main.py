@@ -2229,6 +2229,28 @@ def _otlp_attr_value(value: dict | None):
     return ""
 
 
+# Rétention de device_telemetry_events : purge opportuniste à l'écriture,
+# au plus toutes les 6 h par pod (patron PURGE_AFTER_DAYS de app/llm/traffic.py).
+_TELEMETRY_PURGE_EVERY_SECONDS = 6 * 3600
+_telemetry_last_purge = 0.0
+
+
+def _maybe_purge_telemetry_events(cur) -> None:
+    global _telemetry_last_purge
+    now = time.time()
+    if now - _telemetry_last_purge < _TELEMETRY_PURGE_EVERY_SECONDS:
+        return
+    _telemetry_last_purge = now
+    try:
+        days = max(1, int(settings.telemetry_retention_days or 30))
+        cur.execute(
+            "DELETE FROM device_telemetry_events WHERE created_at < now() - (%s || ' days')::interval",
+            (str(days),),
+        )
+    except Exception:
+        logger.debug("telemetry retention purge failed", exc_info=True)
+
+
 def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
     """Parse OTLP JSON payload and insert spans into device_telemetry_events."""
     dsn = _db_url_bootstrap() or _db_url()
@@ -2262,6 +2284,7 @@ def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
                     "INSERT INTO device_telemetry_events (client_uuid, email, span_name, span_ts, attributes, plugin_version) VALUES (%s, %s, %s, %s, %s::jsonb, %s)",
                     rows,
                 )
+                _maybe_purge_telemetry_events(cur)
             conn.commit()
         finally:
             conn.close()
@@ -2276,6 +2299,13 @@ def _process_queue_job(job: QueueJob) -> None:
         content_type = str(payload.get("content_type") or "application/json")
         user_agent = str(payload.get("user_agent") or "").strip() or None
         client_uuid = str(payload.get("client_uuid") or "").strip()
+        # Persistance locale D'ABORD, découplée de l'amont : un collecteur OTLP
+        # en panne ne doit plus priver le DM de ses propres événements (export
+        # parc, activité device). Idempotence : au premier passage seulement
+        # (attempts=1 au claim) — un retry après échec du forward ne réinsère
+        # pas les mêmes spans.
+        if int(job.attempts or 1) <= 1:
+            _persist_telemetry_spans(body, client_uuid)
         response = _forward_telemetry_to_upstream(
             body,
             content_type=content_type,
@@ -2283,8 +2313,9 @@ def _process_queue_job(job: QueueJob) -> None:
         )
         status = int(getattr(response, "status_code", 500) or 500)
         if status < 200 or status >= 300:
+            # L'échec du forward reste une erreur de job (retry/backoff), mais
+            # APRÈS la persistance locale.
             raise RuntimeError(f"telemetry upstream returned status={status}")
-        _persist_telemetry_spans(body, client_uuid)
         return
     if job.topic == "enroll.process":
         payload = job.payload if isinstance(job.payload, dict) else {}
@@ -4595,6 +4626,16 @@ def catalog_download(slug: str, tag: str | None = None):
                 raise HTTPException(404, "Aucune version disponible")
             version = vrow[0]
             ext = _DEVICE_TYPE_EXT.get(device_type, "bin")
+            # Compteur de téléchargements (export parc) — best-effort AVANT le
+            # 302 : un échec d'insert ne doit jamais casser le téléchargement.
+            try:
+                cur.execute(
+                    "INSERT INTO download_events (plugin_slug, version_tag, via) "
+                    "VALUES (%s, %s, 'catalog')",
+                    (slug, version),
+                )
+            except Exception:
+                logger.debug("download_events insert failed (best-effort)", exc_info=True)
             return RedirectResponse(
                 f"/catalog/{slug}/download/{slug}-{version}.{ext}",
                 status_code=302,
@@ -5353,6 +5394,38 @@ def _shutdown_embedded_queue_worker() -> None:
         _embedded_worker_thread.join(timeout=5)
     _embedded_worker_thread = None
     _embedded_worker_stop = None
+
+
+# ---- Export parc (agrégats d'usage → bus de la bêta) ------------------------
+_parc_export_stop: threading.Event | None = None
+_parc_export_thread: threading.Thread | None = None
+
+
+@app.on_event("startup")
+def _startup_parc_export() -> None:
+    """Boucle de fond de l'export parc — tous les rôles FastAPI. Le cycle
+    lui-même se garde (flag runtime, verrou consultatif, garde « trop tôt ») :
+    plusieurs pods peuvent porter la boucle sans jamais doubler un envoi."""
+    global _parc_export_stop, _parc_export_thread
+    if psycopg2 is None or not _db_url_bootstrap():
+        return
+    if _parc_export_thread and _parc_export_thread.is_alive():
+        return
+    from .services import parc_export as _parc_export
+    _parc_export_stop = threading.Event()
+    _parc_export_thread = _parc_export.demarrer_fond(_parc_export_stop)
+    logger.info("Parc export background loop started.")
+
+
+@app.on_event("shutdown")
+def _shutdown_parc_export() -> None:
+    global _parc_export_stop, _parc_export_thread
+    if _parc_export_stop:
+        _parc_export_stop.set()
+    if _parc_export_thread and _parc_export_thread.is_alive():
+        _parc_export_thread.join(timeout=3)
+    _parc_export_stop = None
+    _parc_export_thread = None
 
 
 # ---- Runtime config sync (all FastAPI roles: api / admin / all) -------------

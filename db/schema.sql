@@ -461,6 +461,84 @@ CREATE TABLE IF NOT EXISTS device_telemetry_events (
 CREATE INDEX IF NOT EXISTS idx_dte ON device_telemetry_events(client_uuid, span_ts DESC);
 
 -- ═══════════════════════════════════════════════════════════════
+-- EXPORT PARC → bus de la bêta (agrégats d'usage, expurgés à la source)
+-- ═══════════════════════════════════════════════════════════════
+
+-- Compteur de téléchargements du catalogue : une ligne par 302 servi par
+-- /catalog/{slug}/download (best-effort — un échec d'insert ne casse jamais le
+-- téléchargement). Alimente telechargements_cumules de l'export parc.
+CREATE TABLE IF NOT EXISTS download_events (
+    id BIGSERIAL PRIMARY KEY,
+    plugin_slug VARCHAR(100) NOT NULL,
+    version_tag VARCHAR(80) NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    via TEXT CHECK (via IN ('catalog','alias'))
+);
+CREATE INDEX IF NOT EXISTS idx_de_plugin_version ON download_events(plugin_slug, version_tag);
+
+-- Agrégats d'usage locaux (une ligne par jour × plugin × version × fonction),
+-- mis à jour INCRÉMENTALEMENT par curseur sur device_telemetry_events.id —
+-- jamais de re-scan complet. Valeurs ABSOLUES pour le jour. seq = marqueur du
+-- dernier delta où la ligne a changé (sélection delta : seq > dernier acquitté).
+CREATE TABLE IF NOT EXISTS parc_agregat (
+    jour DATE NOT NULL,
+    plugin VARCHAR(50) NOT NULL,
+    version VARCHAR(50) NOT NULL,
+    fonction VARCHAR(50) NOT NULL,
+    appels INT NOT NULL DEFAULT 0,
+    postes INT NOT NULL DEFAULT 0,
+    erreurs INT NOT NULL DEFAULT 0,
+    seq BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (jour, plugin, version, fonction)
+);
+CREATE INDEX IF NOT EXISTS idx_parc_agregat_seq ON parc_agregat(seq);
+
+-- État des lignes « versions » exportées (miroir local de ce que le bus
+-- connaît) : permet de ne mettre dans un delta que les lignes MODIFIÉES, et de
+-- calculer l'empreinte de TOUT l'état de la fenêtre. jour = jour de rattachement
+-- (les installations sont rattachées au jour courant ; les jours passés restent
+-- figés tels qu'exportés).
+CREATE TABLE IF NOT EXISTS parc_version_etat (
+    jour DATE NOT NULL,
+    plugin VARCHAR(50) NOT NULL,
+    version VARCHAR(50) NOT NULL,
+    canal VARCHAR(20) NOT NULL,
+    publiee_le DATE,
+    installations INT NOT NULL DEFAULT 0,
+    installations_recentes INT NOT NULL DEFAULT 0,
+    telechargements_cumules INT NOT NULL DEFAULT 0,
+    seq BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (jour, plugin, version)
+);
+
+-- État de l'export (ligne unique) : curseur d'agrégation, seq acquitté,
+-- dernier envoi. dernier_jour = jour UTC du dernier envoi ACQUITTÉ — sert à
+-- détecter la clôture de journée (premier cycle après minuit UTC → instantané).
+CREATE TABLE IF NOT EXISTS parc_export_etat (
+    id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    curseur_dte BIGINT NOT NULL DEFAULT 0,
+    seq BIGINT NOT NULL DEFAULT 0,
+    dernier_envoi TIMESTAMPTZ,
+    dernier_code INT,
+    resyncs INT NOT NULL DEFAULT 0,
+    dernier_jour DATE
+);
+INSERT INTO parc_export_etat (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+-- Journal des cycles d'export (débogage admin) : petite table bornée (~50
+-- lignes, taillée à chaque écriture) plutôt qu'un état en mémoire process —
+-- visible de tous les pods et survit aux redémarrages.
+CREATE TABLE IF NOT EXISTS parc_export_journal (
+    id BIGSERIAL PRIMARY KEY,
+    heure TIMESTAMPTZ NOT NULL DEFAULT now(),
+    type VARCHAR(20) NOT NULL,
+    seq BIGINT,
+    lignes INT NOT NULL DEFAULT 0,
+    code INT,
+    duree_ms INT
+);
+
+-- ═══════════════════════════════════════════════════════════════
 -- AUDIT
 -- ═══════════════════════════════════════════════════════════════
 
