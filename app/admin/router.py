@@ -3850,14 +3850,47 @@ async def debug_page(request: Request):
         "grafana_url": os.getenv("DM_TELEMETRY_GRAFANA_URL", ""),
     }
 
+    # Export parc → suivi-beta (état + journal des cycles, best-effort)
+    from app.services import parc_export as parc_export_svc
+    parc_export_info = parc_export_svc.etat_pour_debug()
+
     return templates.TemplateResponse(request, "debug.html", {
         "request": request, "checks": checks, "config_vars": config_vars,
         "db_stats": db_stats, "system_info": system_info,
         "telemetry_info": telemetry_info,
+        "parc_export": parc_export_info,
         "editable_config": rcfg.effective_view(),
         "config_editing_enabled": rcfg.editing_enabled(),
         "config_secrets_encryption": secrets_encryption_available(),
     })
+
+
+@router.post("/parc-export/run")
+@require_admin
+async def parc_export_run(request: Request):
+    """« Exporter maintenant » : force un cycle d'export parc (tracé en audit)."""
+    if not _verify_csrf(request):
+        raise HTTPException(403, "CSRF token invalid")
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services import parc_export as parc_export_svc
+    resultat = await run_in_threadpool(parc_export_svc.executer_cycle, force=True)
+    actor = getattr(request.state, "admin_session", {})
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                audit_log(cur, actor=actor, action="parc_export.run",
+                          resource_type="parc_export", resource_id="manual",
+                          payload=resultat,
+                          ip=request.client.host if request.client else None)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("audit parc_export.run failed")
+    return JSONResponse({"ok": resultat.get("statut") in ("envoye", "resynchronise"),
+                         **resultat})
 
 
 # ─── Runtime config overrides (editable from the debug page) ────────────────

@@ -129,6 +129,106 @@
   </tbody>
 </table>
 
+<h3 style="font-size:1rem;margin-top:1.5rem;margin-bottom:0.75rem;">Export parc → suivi-beta</h3>
+{% set pe = parc_export %}
+{% set pe_etat = pe.etat %}
+{% set pe_ok = pe.actif and pe.configure and pe_etat and pe_etat.dernier_code == 200 %}
+<div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+  {% if pe_ok %}
+  <span style="color:#18753C;">&#9679;</span>
+  <span style="font-size:0.9rem;">
+    Synchro OK — dernier battement acquitté (200) {{ timeago(pe_etat.dernier_envoi) }}
+    · delta n°&nbsp;{{ pe_etat.seq }} · {{ pe.echecs_24h }} échec{{ 's' if pe.echecs_24h > 1 else '' }} 24&nbsp;h
+  </span>
+  {% elif not pe.actif %}
+  <span style="color:#B34000;">&#9679;</span>
+  <span style="font-size:0.9rem;color:#B34000;">Export désactivé
+    {%- if pe_etat and pe_etat.dernier_envoi %} — dernier envoi {{ timeago(pe_etat.dernier_envoi) }} (code {{ pe_etat.dernier_code }}){% endif %}</span>
+  {% elif not pe.configure %}
+  <span style="color:#929292;">&#9679;</span>
+  <span style="font-size:0.9rem;color:#666;">Non configuré (PARC_EXPORT_URL vide)</span>
+  {% elif not pe_etat or pe_etat.dernier_envoi is none %}
+  <span style="color:#B34000;">&#9679;</span>
+  <span style="font-size:0.9rem;color:#B34000;">Aucun envoi encore effectué</span>
+  {% else %}
+  <span style="color:#B34000;">&#9679;</span>
+  <span style="font-size:0.9rem;color:#B34000;">
+    Dernier envoi {{ timeago(pe_etat.dernier_envoi) }} — code {{ pe_etat.dernier_code }}
+    · delta n°&nbsp;{{ pe_etat.seq }} · {{ pe.echecs_24h }} échec{{ 's' if pe.echecs_24h > 1 else '' }} 24&nbsp;h
+    · {{ pe_etat.resyncs }} resync{{ 's' if pe_etat.resyncs > 1 else '' }}
+  </span>
+  {% endif %}
+  <span class="dm-badge dm-badge--neutral" title="PARC_INSTANCE_LABEL">{{ pe.instance }}</span>
+  <span class="dm-badge dm-badge--neutral" title="PARC_EXPORT_INTERVALLE_S">
+    {%- if pe.intervalle_s % 60 == 0 %}toutes les {{ pe.intervalle_s // 60 }} min{% else %}toutes les {{ pe.intervalle_s }} s{% endif -%}
+  </span>
+  <span style="flex:1;"></span>
+  <button type="button" id="pe-run" class="dm-btn dm-btn--sm dm-btn--secondary"{% if not pe.configure %} disabled{% endif %}>Exporter maintenant</button>
+  {% if config_editing_enabled %}
+  <button type="button" id="pe-toggle" class="dm-btn dm-btn--sm {{ 'dm-btn--ghost' if pe.actif else 'dm-btn--primary' }}" data-actif="{{ '1' if pe.actif else '0' }}">
+    {{ "Désactiver l'export" if pe.actif else "Réactiver l'export" }}
+  </button>
+  {% endif %}
+</div>
+<p class="dm-hint" style="margin-top:0.35rem;">Désactiver l'export : suivi-beta lèvera son alerte de silence sous 11 minutes — c'est attendu.</p>
+<details style="margin-top:0.5rem;"{% if not pe_ok %} open{% endif %}>
+  <summary style="cursor:pointer;font-size:0.85rem;color:#666;">Journal des cycles (10 derniers — persistés en table parc_export_journal)</summary>
+  <table class="dm-table-compact" style="margin-top:0.5rem;">
+    <thead><tr><th>Heure</th><th>Type</th><th>Seq</th><th>Lignes</th><th>Code réponse</th><th>Durée</th></tr></thead>
+    <tbody>
+      {% for c in pe.journal %}
+      <tr>
+        <td>{{ c.heure.strftime('%d/%m %H:%M:%S') if c.heure else '—' }}</td>
+        <td>{{ c.type }}</td>
+        <td>{{ c.seq }}</td>
+        <td>{{ c.lignes }}</td>
+        <td>
+          {% if c.code == 200 %}<span style="color:#18753C;">200</span>
+          {% elif c.code == 0 %}<span style="color:#CE0500;" title="amont injoignable">réseau</span>
+          {% elif c.code == -1 %}<span style="color:#CE0500;" title="payload hors bornes, non envoyé">bornes</span>
+          {% else %}<span style="color:#CE0500;">{{ c.code }}</span>{% endif %}
+        </td>
+        <td>{{ c.duree_ms }}&nbsp;ms</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="color:#666;">Aucun cycle enregistré.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</details>
+<script>
+(function () {
+  function csrf() { return (document.cookie.match(/(?:^|;\s*)dm_csrf_token=([^;]+)/) || [])[1] || ''; }
+  var run = document.getElementById('pe-run');
+  if (run) run.addEventListener('click', function () {
+    run.disabled = true;
+    fetch('/admin/parc-export/run', {
+      method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf() }
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      alert(d.ok ? ('Export effectué (statut ' + d.statut + (d.code ? ', code ' + d.code : '') + ').')
+                 : ('Export non abouti : ' + (d.statut || 'erreur') + (d.code !== undefined ? ' (code ' + d.code + ')' : '')));
+      location.reload();
+    }).catch(function (e) { alert('Erreur : ' + e.message); run.disabled = false; });
+  });
+  var tog = document.getElementById('pe-toggle');
+  if (tog) tog.addEventListener('click', function () {
+    var actif = tog.dataset.actif === '1';
+    if (actif && !confirm("Désactiver l'export parc ? suivi-beta lèvera son alerte de silence sous 11 minutes — c'est attendu.")) return;
+    tog.disabled = true;
+    // Bascule via la surcharge runtime éditable (même mécanisme et même audit
+    // que le tableau « Configuration éditable » ci-dessus).
+    fetch('/admin/api/config/DM_PARC_EXPORT_ENABLED', {
+      method: 'PUT', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() },
+      body: JSON.stringify({ value: !actif })
+    }).then(function (r) {
+      if (r.ok) location.reload();
+      else r.text().then(function (t) { var m = 'Erreur ' + r.status; try { m = JSON.parse(t).detail || m; } catch (x) {} alert(m); tog.disabled = false; });
+    }).catch(function (e) { alert('Erreur : ' + e.message); tog.disabled = false; });
+  });
+})();
+</script>
+
 <h3 style="font-size:1rem;margin-top:1.5rem;margin-bottom:0.75rem;">Base de donnees</h3>
 <table class="dm-table-compact">
   <thead><tr><th>Table</th><th>Lignes</th></tr></thead>
