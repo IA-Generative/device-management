@@ -231,7 +231,13 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         "sub": claims.get("sub"),
         "email": claims.get("email"),
         "name": claims.get("name", claims.get("preferred_username")),
-        "id_token": tokens["id_token"],
+        # PAS d'id_token ici : le cookie de session doit rester LOIN des 4096 octets.
+        # Un JWT Keycloak du realm mirai dépasse aisément 2-3 Ko ; embarqué puis signé
+        # puis base64, le cookie crevait le plafond et le navigateur le JETAIT en
+        # silence — callback 302, /admin/ 307, boucle infinie (vu sur int le
+        # 2026-09-04 ; même mécanique que l'incident mesreunions du 2026-08-28).
+        # Le logout se replie déjà sur client_id + post_logout_redirect_uri quand
+        # la session ne porte pas de hint (cf. la route logout ci-dessous).
         "exp": int(time.time()) + SESSION_TTL,
     }
     resp = RedirectResponse("/admin/", status_code=302)
