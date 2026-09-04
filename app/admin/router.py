@@ -154,6 +154,11 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
     import urllib.request
 
     stored_state = request.cookies.get("dm_oidc_state")
+    if stored_state is None:
+        # Pas de cookie du tout : parcours entamé ailleurs (autre onglet, session
+        # nettoyée, redémarrage). Un 400 sec laissait l'admin devant
+        # {"detail":"Invalid state"} sans issue — on relance le parcours.
+        return RedirectResponse("/admin/")
     if state != stored_state:
         raise HTTPException(400, "Invalid state")
 

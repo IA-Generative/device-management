@@ -441,7 +441,17 @@
       }).catch(function (err) { alert('Erreur : ' + err.message); e.target.disabled = false; });
   });
   loadProp();
-  setInterval(loadProp, 5000);
+  // Le poll s'arrête de lui-même à la première 401 : une session expirée ne
+  // doit plus marteler l'API (ni, avant le correctif d'auth, écraser le cookie
+  // d'état OIDC d'un login en cours toutes les 5 secondes).
+  var propTimer = setInterval(loadProp, 5000);
+  var _fetch = window.fetch;
+  window.fetch = function () {
+    return _fetch.apply(this, arguments).then(function (r) {
+      if (r.status === 401) { clearInterval(propTimer); }
+      return r;
+    });
+  };
 })();
 </script>
 {% endblock %}
