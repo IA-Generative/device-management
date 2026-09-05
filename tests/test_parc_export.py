@@ -54,9 +54,17 @@ class FauxBase:
         self.etat = {"curseur_dte": 0, "seq": 0, "dernier_envoi": None,
                      "dernier_code": None, "resyncs": 0, "dernier_jour": None}
         self.journal = []             # (heure, type, seq, lignes, code, duree_ms)
+        self.plugins = {}             # slug -> id (catalogue du site)
+        self.aliases = {}             # alias -> slug (plugin_aliases)
         self.catalogue_versions = {}  # slug -> [(version, status, published_date, maturity)]
         self.installations = {}       # slug -> [(version, n30, n7)]
         self.telechargements = {}     # slug -> [(version, count)]
+
+
+def _slugs_des_ids(db: "FauxBase", ids) -> list[str]:
+    """Traduit une liste d'ids de plugins en slugs (les fixtures sont par slug)."""
+    voulus = set(ids or [])
+    return [sl for sl, i in db.plugins.items() if i in voulus]
 
 
 class FauxCurseur:
@@ -114,12 +122,22 @@ class FauxCurseur:
                 db.agregat[cle][1] = len(postes)
         elif s.startswith("UPDATE parc_export_etat SET curseur_dte"):
             db.etat["curseur_dte"] = int(p[0])
+        elif s.startswith("SELECT p.id, p.slug FROM plugins p"):
+            # Résolution par slug OU alias, sur la LISTE de candidats.
+            cibles = set(p[0] or ())
+            slugs = [sl for sl in db.plugins if sl in cibles]
+            slugs += [sl for al, sl in db.aliases.items()
+                      if al in cibles and sl in db.plugins and sl not in slugs]
+            self._rows = [(db.plugins[sl], sl) for sl in slugs]
         elif s.startswith("SELECT pv.version"):
-            self._rows = list(db.catalogue_versions.get(p[0], []))
+            self._rows = [l for sl in _slugs_des_ids(db, p[0])
+                          for l in db.catalogue_versions.get(sl, [])]
         elif s.startswith("SELECT COALESCE(pi.installed_version"):
-            self._rows = list(db.installations.get(p[0], []))
+            self._rows = [l for sl in _slugs_des_ids(db, p[0])
+                          for l in db.installations.get(sl, [])]
         elif s.startswith("SELECT version_tag"):
-            self._rows = list(db.telechargements.get(p[0], []))
+            self._rows = [l for sl in list(p[0])
+                          for l in db.telechargements.get(sl, [])]
         elif s.startswith("SELECT plugin, version, canal"):
             jour = p[0]
             self._rows = [
@@ -307,6 +325,8 @@ def _base_avec_fixtures() -> FauxBase:
         # Hors fenêtre : ignoré (le curseur avance quand même).
         _evenement(7, UUID_A, "SummarizeSelection", AUJOURDHUI - timedelta(days=5)),
     ]
+    db.plugins = {"mirai-libreoffice": 1, "mirai-matisse": 2}
+    db.aliases = {}
     db.catalogue_versions = {
         "mirai-libreoffice": [("0.2.1", "published", date(2026, 8, 15), "release")],
         "mirai-matisse": [],
@@ -742,3 +762,76 @@ def test_telechargement_catalogue_insere_download_events():
             assert cur.inserts == []       # échec avalé, téléchargement intact
         else:
             assert cur.inserts == [("mirai-libreoffice", "9.9.9")]
+
+
+# ── Résolution du plugin : nom d'export ET slug, par slug OU alias ────────────
+# Relevé du DGX le 2026-09-05 : le catalogue porte « matisse » comme SLUG, et
+# « mirai-matisse » n'existe NULLE PART — ni slug, ni alias. Chercher le seul slug
+# canonique rendait un ensemble vide, et _versions_courantes faisait un `continue`
+# SILENCIEUX : 6 versions et 90 installations sur 120 jamais exportées.
+
+
+def _base_dgx() -> FauxBase:
+    """Le catalogue réel du DGX : matisse est un slug, libreoffice est un alias."""
+    db = _base_avec_fixtures()
+    db.plugins = {"mirai-libreoffice": 1, "matisse": 2}
+    db.aliases = {"libreoffice": "mirai-libreoffice", "matisse": "matisse"}
+    db.catalogue_versions = {
+        "mirai-libreoffice": [("0.2.1", "published", date(2026, 8, 15), "release")],
+        "matisse": [("0.13.1", "published", date(2026, 8, 20), "release")],
+    }
+    db.installations = {"mirai-libreoffice": [("0.2.1", 12, 5)],
+                        "matisse": [("0.13.1", 90, 42)]}
+    db.telechargements = {"mirai-libreoffice": [("0.2.1", 40)],
+                          "matisse": [("0.13.1", 77)]}
+    return db
+
+
+def test_plugin_resolu_par_nom_export_est_exporte():
+    """Sur le catalogue du DGX, les deux plugins sortent — par des chemins différents.
+
+    « matisse » se résout comme slug direct, « libreoffice » par son alias vers
+    mirai-libreoffice. Aucun des deux ne passe par le slug canonique du mapping.
+    """
+    db = _base_dgx()
+    with FauxConnexion(db).cursor() as cur:
+        lignes = pe._versions_courantes(cur, AUJOURDHUI)
+
+    assert ("matisse", "0.13.1") in lignes, "matisse perdu alors qu'un alias le résout"
+    ligne = lignes[("matisse", "0.13.1")]
+    assert ligne["installations"] == 90
+    assert ligne["installations_recentes"] == 42
+    assert ligne["telechargements_cumules"] == 77
+    # Le nom exporté reste le nom NEUTRE du contrat, jamais le slug du site.
+    assert all(nom in ("libreoffice", "matisse") for nom, _ in lignes)
+
+
+def test_plugin_introuvable_est_journalise_et_compte(caplog):
+    """Un plugin du contrat qui ne se résout pas doit se VOIR, pas se déduire."""
+    db = _base_avec_fixtures()
+    db.plugins = {"mirai-libreoffice": 1}   # ni « matisse » ni « mirai-matisse »
+    db.aliases = {}
+    pe.PLUGINS_NON_RESOLUS.clear()
+
+    with caplog.at_level("WARNING"):
+        with FauxConnexion(db).cursor() as cur:
+            lignes = pe._versions_courantes(cur, AUJOURDHUI)
+
+    assert pe.PLUGINS_NON_RESOLUS.get("matisse") == 1
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("matisse" in m and "mirai-matisse" in m and "PAS export" in m
+               for m in messages), \
+        f"le log doit nommer les DEUX candidats essayés, vu : {messages}"
+    assert not any(nom == "matisse" for nom, _ in lignes)
+    # Et l'écran de debug la remonte, c'est là que l'exploitant la verra.
+    assert pe.PLUGINS_NON_RESOLUS == {"matisse": 1}
+    pe.PLUGINS_NON_RESOLUS.clear()
+
+
+def test_plugin_resolu_sans_version_reste_silencieux():
+    """Catalogue créé mais rien de publié : cas légitime, aucun avertissement."""
+    db = _base_avec_fixtures()          # mirai-matisse existe, catalogue vide
+    pe.PLUGINS_NON_RESOLUS.clear()
+    with FauxConnexion(db).cursor() as cur:
+        pe._versions_courantes(cur, AUJOURDHUI)
+    assert pe.PLUGINS_NON_RESOLUS == {}
