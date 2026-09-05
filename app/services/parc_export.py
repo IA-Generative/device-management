@@ -369,19 +369,71 @@ def _canal(status: str, maturity: str) -> str:
     return "retire"
 
 
+# Plugins que l'export n'a pas su résoudre, par nom d'export → nombre de cycles.
+# Remonté par etat_pour_debug() : une disparition doit se VOIR, pas se déduire.
+PLUGINS_NON_RESOLUS: dict[str, int] = {}
+
+
+def _resoudre_plugin(cur, nom_export: str, slug_canonique: str) -> tuple[list[int], list[str]]:
+    """Résout un plugin du contrat par slug OU alias, sur DEUX candidats.
+
+    L'erreur d'origine n'était pas le mécanisme de résolution mais CE QU'ON
+    RÉSOLVAIT : ``PLUGINS_EXPORTES`` code un slug canonique *présumé*, et cette
+    présomption peut être fausse. Sur le DGX (relevé du 2026-09-05), le catalogue
+    porte ``matisse`` comme slug et ``mirai-matisse`` n'existe **nulle part** —
+    ni slug, ni alias. Chercher le seul slug canonique y perdait le plugin
+    ENTIER, en silence : 6 versions et 90 installations sur 120 jamais exportées.
+
+    On essaie donc les deux candidats — le **nom d'export** et le slug canonique —
+    chacun par slug OU par alias, comme le fait déjà ``app/main.py`` pour les
+    devices. Sur ce même DGX, ``libreoffice`` tombe par alias sur
+    ``mirai-libreoffice`` et ``matisse`` est un slug direct : aucun cas particulier
+    n'a besoin d'être codé en dur, ni maintenant ni au prochain plugin renommé.
+
+    Rend (ids de plugins, slugs réels) : les ids servent aux jointures, les slugs
+    à ``download_events``, qui porte une colonne dénormalisée.
+    """
+    candidats = list(dict.fromkeys([nom_export, slug_canonique]))
+    cur.execute(
+        """
+        SELECT p.id, p.slug
+        FROM plugins p
+        WHERE p.status <> 'removed'
+          AND (p.slug = ANY(%s)
+               OR p.id IN (SELECT plugin_id FROM plugin_aliases WHERE alias = ANY(%s)))
+        """, (candidats, candidats))
+    lignes = cur.fetchall()
+    return [int(i) for (i, _) in lignes], [str(sl) for (_, sl) in lignes]
+
+
 def _versions_courantes(cur, aujourdhui: date) -> dict[tuple, dict]:
     """Lignes « versions » recalculées (jour = jour courant), par (plugin, version)."""
     lignes: dict[tuple, dict] = {}
     for nom_export, slug in PLUGINS_EXPORTES.items():
+        ids, slugs_reels = _resoudre_plugin(cur, nom_export, slug)
+        if not ids:
+            # Un plugin du contrat qui ne se résout pas est une PERTE DE DONNÉES,
+            # pas un cas normal : on le dit, et on le compte pour /admin/debug.
+            PLUGINS_NON_RESOLUS[nom_export] = PLUGINS_NON_RESOLUS.get(nom_export, 0) + 1
+            # Nommer les DEUX candidats : c'est l'écart entre eux qui est la panne.
+            logger.warning(
+                "parc export: plugin « %s » introuvable — ni « %s » ni « %s » ne "
+                "correspond à un slug ou un alias du catalogue ; il n'est PAS "
+                "exporté ; %d cycle(s) dans cet état",
+                nom_export, nom_export, slug, PLUGINS_NON_RESOLUS[nom_export])
+            continue
+        PLUGINS_NON_RESOLUS.pop(nom_export, None)
         cur.execute(
             """
             SELECT pv.version, pv.status, pv.published_at::date, p.maturity
             FROM plugin_versions pv JOIN plugins p ON p.id = pv.plugin_id
-            WHERE p.slug = %s AND p.status <> 'removed'
+            WHERE pv.plugin_id = ANY(%s)
               AND pv.status IN ('published', 'deprecated', 'yanked')
-            """, (slug,))
+            """, (ids,))
         versions = {str(v): (s, pub, m) for (v, s, pub, m) in cur.fetchall()}
         if not versions:
+            # Plugin résolu mais aucune version publiable : cas légitime (catalogue
+            # créé, rien encore publié). Silencieux à dessein.
             continue
         cur.execute(
             """
@@ -390,15 +442,16 @@ def _versions_courantes(cur, aujourdhui: date) -> dict[tuple, dict]:
                        WHERE pi.last_seen_at >= now() - interval '30 days'),
                    COUNT(DISTINCT pi.client_uuid) FILTER (
                        WHERE pi.last_seen_at >= now() - interval '7 days')
-            FROM plugin_installations pi JOIN plugins p ON p.id = pi.plugin_id
-            WHERE p.slug = %s AND pi.status <> 'uninstalled'
+            FROM plugin_installations pi
+            WHERE pi.plugin_id = ANY(%s) AND pi.status <> 'uninstalled'
               AND NOT (pi.client_uuid = ANY(%s))
             GROUP BY 1
-            """, (slug, list(CLIENT_UUID_SENTINELLES)))
+            """, (ids, list(CLIENT_UUID_SENTINELLES)))
         installations = {str(v): (int(n30), int(n7)) for (v, n30, n7) in cur.fetchall()}
         cur.execute(
-            "SELECT version_tag, COUNT(*) FROM download_events WHERE plugin_slug = %s GROUP BY 1",
-            (slug,))
+            "SELECT version_tag, COUNT(*) FROM download_events "
+            "WHERE plugin_slug = ANY(%s) GROUP BY 1",
+            (slugs_reels,))
         telechargements = {str(v): int(n) for (v, n) in cur.fetchall()}
         for version, (status, publiee_le, maturity) in versions.items():
             n30, n7 = installations.get(version, (0, 0))
@@ -700,6 +753,9 @@ def etat_pour_debug() -> dict:
         "etat": None,
         "journal": [],
         "echecs_24h": 0,
+        # Plugins du contrat que l'export ne résout pas : chacun est un pan du
+        # parc qui ne sort pas. Vide = tout le catalogue est couvert.
+        "plugins_non_resolus": dict(PLUGINS_NON_RESOLUS),
     }
     conn = None
     try:

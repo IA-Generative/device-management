@@ -21,9 +21,18 @@ logger = logging.getLogger("dm-parc-mapping")
 # Sentinelles : jamais comptées comme « poste » (télémétrie anonyme / défaut).
 CLIENT_UUID_SENTINELLES = ("00000000-0000-0000-0000-000000000000", "telemetry-open")
 
-# Plugins exportés : nom d'export → slug DM. Le mapping des noms est CÔTÉ DM,
-# le bus ne connaît que les noms d'export (l'alias catalogue `matisse` pointe
-# déjà sur mirai-matisse, voir plugin_aliases).
+# Plugins exportés : nom d'export → slug DM canonique ATTENDU. Le mapping des
+# noms est CÔTÉ DM, le bus ne connaît que les noms d'export.
+#
+# Le slug de droite est une ATTENTE, pas une vérité : un site peut porter le
+# plugin sous un autre slug. _resoudre_plugin() (parc_export.py) essaie donc les
+# DEUX clés — le nom d'export et ce slug — chacune par slug ou par alias de
+# catalogue. Relevé du DGX le 2026-09-05 : le catalogue y porte « matisse » comme
+# slug et « mirai-matisse » n'existe nulle part ; chercher le seul slug canonique
+# y perdait 6 versions et 90 installations sur 120, en silence.
+#
+# Ne PAS ajouter ici les variantes d'un site : c'est un contrat partagé, et la
+# résolution s'en charge.
 PLUGINS_EXPORTES: dict[str, str] = {
     "libreoffice": "mirai-libreoffice",
     "matisse": "mirai-matisse",
