@@ -61,7 +61,7 @@ class FauxBase:
         self.telechargements = {}     # slug -> [(version, count)]
 
 
-def _slugs_des_ids(db: "FauxBase", ids) -> list[str]:
+def _slugs_des_ids(db: FauxBase, ids) -> list[str]:
     """Traduit une liste d'ids de plugins en slugs (les fixtures sont par slug)."""
     voulus = set(ids or [])
     return [sl for sl, i in db.plugins.items() if i in voulus]
