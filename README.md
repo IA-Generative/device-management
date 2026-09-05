@@ -209,6 +209,7 @@ publication ; (2) la **distribution par plaque** selon la topologie et la charge
 |---|---|
 | **Catalogue de plugins** | Une vitrine (publique et admin) listant les extensions disponibles, leurs versions et leur maturité. |
 | **Déploiement progressif** | Pousser une mise à jour par paliers (5 % → 25 % → 100 %) avec suivi, plutôt qu'à tout le monde d'un coup. |
+| **Branches d'expérimentation** | Faire tourner une version d'essai sur un groupe restreint pendant que le reste du parc reste sur la version stable — et comparer. |
 | **Configuration centralisée** | Chaque extension récupère ses réglages depuis le serveur, adaptés à l'environnement (test/prod…). |
 | **Contrôle d'accès** | Ouvert à tous, sur liste d'attente, ou réservé à un groupe (via le SSO Keycloak). |
 | **Assistance par IA** | Un modèle de langage (LLM) génère les fiches catalogue, classe les plugins, suggère du contenu à partir du README. |
@@ -255,12 +256,52 @@ vérifie, dans l'ordre :
 | `immediate` | 100 % des postes ciblés tout de suite |
 | `canary` | Montée progressive par paliers temporisés, avec possibilité de stopper en cours |
 
-> Une **seule campagne active à la fois** par type : publier une nouvelle version clôt
-> automatiquement la précédente. Les rollbacks (revenir en arrière) se font en publiant une
-> campagne qui cible une version antérieure.
+> **Un seul rollout général à la fois** : publier une nouvelle version clôt automatiquement la
+> campagne générale précédente. Les rollbacks (revenir en arrière) se font en publiant une
+> campagne qui cible une version antérieure. Depuis la 0.9.14, ce rollout **coexiste** avec les
+> branches d'expérimentation décrites ci-dessous : elles ne se suppriment pas l'une l'autre.
 
 Détails techniques (endpoints, tables, stratégies) : voir [Déploiement progressif](#déploiement-progressif)
 plus bas et `docs/plugin-developer/plugin-dm-protocol-update-features.md`.
+
+## Branches d'expérimentation
+
+Le déploiement progressif répond à « comment livrer sans casser ». Les branches
+d'expérimentation répondent à une autre question : **« cette version est-elle meilleure ? »**.
+Elles permettent de faire tourner **plusieurs versions en parallèle** sur des groupes distincts,
+et de comparer — au lieu de basculer tout le parc et d'espérer.
+
+**Deux façons d'y accéder**, selon qui décide :
+
+| | Le serveur pousse (*push*) | Le testeur retire (*pull*) |
+|---|---|---|
+| **Pour qui** | une cohorte désignée par l'admin | quelqu'un à qui on a donné un lien |
+| **Comment** | une campagne marquée « expérimentation », ciblant la cohorte | un lien portant un `tag` : `/catalog/{plugin}?exp=<tag>` |
+| **Effet sur le poste** | mise à jour automatique vers la version d'essai | téléchargement manuel |
+| **Bon pour** | mesurer sur un panel stable | essai ponctuel, repro de bug, poste de dev |
+
+**Ce qui rend la cohabitation possible :**
+
+- **Une campagne ciblée l'emporte sur le rollout général.** Un poste de la cohorte d'essai reçoit
+  la version d'essai ; tous les autres restent sur le stable. Aucune des deux campagnes ne clôt
+  l'autre — l'auto-complétion ne joue qu'à l'intérieur de sa propre classe.
+- **La version d'essai est épinglée.** Le poste reçoit un lien vers *cette version précise*, pas
+  vers « la dernière ». Sans cela il téléchargerait le stable sous l'étiquette de l'essai.
+- **Les libellés non standard sont acceptés** (`1.6.0-rc1`, `1.6.0-test3`) : en mode
+  expérimentation, le serveur sert la cible dès que le poste n'y est pas déjà, sans exiger
+  qu'elle soit « supérieure ». C'est aussi ce qui permet de **ramener** une cohorte en arrière.
+- **Rien ne fuit vers le grand public.** Une version d'essai (`experimental`) n'apparaît ni dans
+  le catalogue, ni dans l'API, ni dans les téléchargements par défaut. Il faut connaître le `tag`.
+  C'est une barrière de discrétion, **pas un contrôle d'accès** : ne l'utilisez pas pour
+  distribuer ce qui ne doit pas être téléchargeable.
+- **Chaque branche déclare ses hypothèses** — ce qu'elle cherche à valider — visibles par les
+  testeurs sur la fiche taguée et dans l'API.
+
+Le tableau de bord d'administration signale **combien de versions circulent réellement** sur le
+parc : c'est le garde-fou contre l'expérimentation oubliée qui laisse une cohorte figée.
+
+Mode opératoire complet : [`docs/operations/mode-operatoire-campagnes.md`](docs/operations/mode-operatoire-campagnes.md).
+Décision et justification : [`docs/architecture/adr-0004-branches-experimentation.md`](docs/architecture/adr-0004-branches-experimentation.md).
 
 ## Plateformes supportées
 
@@ -347,6 +388,18 @@ externe affiche les plugins :
 - `/catalog/{slug}/download` : téléchargement direct de la dernière version
 - `/catalog/api/plugins` · `/catalog/api/plugins/{slug}` · `/catalog/api/docs` : API JSON + Swagger
 
+Les **versions expérimentales** (branches d'essai) sont invisibles ici par défaut. Elles ne
+sortent que si l'appelant connaît le `tag` de la branche :
+
+- `/catalog/{slug}?exp=<tag>` : la fiche, plus la section « Versions expérimentales » du `tag`
+- `/catalog/{slug}/download?tag=<tag>` : dernière version de cette branche
+- `/catalog/{slug}/download/{slug}-{version}.{ext}` : une version précise (essai ou stable)
+- `/catalog/api/plugins/{slug}?exp=<tag>` : le JSON habituel **plus** une clé `experiments`
+  (version, tag, hypothèses testées, notes, lien de téléchargement)
+
+Sans `?exp=`, la réponse de l'API est identique à ce qu'elle était : rien ne trahit l'existence
+d'une branche.
+
 ### Onboarding d'un plugin (découplage cluster / catalogue)
 
 Le déploiement se fait en **2 temps** : (1) déployer le cluster DM une fois (générique,
@@ -386,6 +439,10 @@ catalogue → keycloak → scrub des secrets).
 **Télémétrie** — `GET /telemetry/token` (Bearer court), `POST /telemetry/v1/traces`.
 
 **Binaires** — `GET /binaries/{path}` (S3 presign ou proxy).
+
+**Fichiers (interne, token `X-Admin-Token`)** — `GET /api/files` (inventaire du cache local),
+`DELETE /api/files/{path}` (invalidation ciblée), `POST /api/files/evict` (éviction des
+orphelins). Réservé aux appels admin → API ; sans objet hors mode de stockage `local`.
 
 **Santé** — `GET /healthz` (dépendances), `GET /livez` (liveness).
 
@@ -541,9 +598,28 @@ uploader le fichier (analyse IA), (2) définir la cible (tous, groupe, pourcenta
 En CI/CD, tout passe par `POST /api/plugins/{slug}/deploy` (artifact upsert, version
 publiée, anciennes dépréciées, campagne activée — en une requête).
 
+**Expérimentations** : une campagne peut être marquée « expérimentation ». Elle cible une cohorte,
+**coexiste** avec le rollout général (une campagne ciblée l'emporte pour les postes concernés) et
+épingle le lien de téléchargement sur sa version exacte. Voir
+[Branches d'expérimentation](#branches-dexpérimentation) et
+[`docs/architecture/adr-0004-branches-experimentation.md`](docs/architecture/adr-0004-branches-experimentation.md).
+
 **Distribution des binaires (pull-on-miss)** : le pod *admin* a un stockage persistant et
 détient les binaires uploadés ; les pods *API* (sans volume partagé) tirent le binaire au
 premier téléchargement et le cachent localement. Les icônes sont stockées en base (data URL).
+
+**Invalidation du cache binaire** (0.9.14) — indispensable dès qu'on republie un même numéro de
+version, ce que fait constamment une branche d'essai : sans elle, les pods API resserviraient
+l'ancien binaire sous le nouveau libellé, et le checksum ne correspondrait plus.
+
+| Mécanisme | Rôle |
+|---|---|
+| `DELETE /api/files/{path}` | invalidation ciblée d'un fichier caché sur un pod API (token `X-Admin-Token`) |
+| `POST /api/files/evict` | éviction des orphelins : tout fichier caché qui ne correspond plus à un artefact vivant |
+| Suppression du binaire source | `delete_binary()` — best-effort et idempotent, en local (PVC) comme en S3 |
+
+L'éviction des orphelins est **auto-réparatrice** : elle borne la taille du cache et rattrape un
+pod qui aurait manqué une invalidation ciblée (redémarrage, partition réseau).
 
 ## Validation
 

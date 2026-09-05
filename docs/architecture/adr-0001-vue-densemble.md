@@ -226,6 +226,13 @@ quand une campagne active cible une version supérieure à `X-Plugin-Version`. L
 avancement via `POST /update/status`. Détail : [adr-product-architecture §2.8](adr-product-architecture.md)
 et le guide [plugin-developer/plugin-dm-protocol-update-features](../plugin-developer/plugin-dm-protocol-update-features.md).
 
+Depuis la 0.9.14, plusieurs campagnes **coexistent** sur un même plugin : un rollout général et N
+bras d'expérimentation ciblant chacun une cohorte. Une seule est servie par device — la sélection
+est scopée au plugin demandeur puis ordonnée (`ciblée` > `générale`, puis `priority`, puis
+`created_at`). Un bras d'expérimentation sert sa cible en mode **PIN** : `cible ≠ courante` au lieu
+de `cible > courante`, avec une URL d'artefact épinglée sur la version exacte. Décision :
+[adr-0004](adr-0004-branches-experimentation.md).
+
 ### 3.3 Distribution de binaires
 Trois modes (`local`, `presign` S3, `proxy`) avec **pull-on-miss** : les pods API sans PVC tirent le
 binaire depuis le pod admin au premier accès. Détail : [adr-product-architecture §2.9](adr-product-architecture.md).
