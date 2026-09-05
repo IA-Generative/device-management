@@ -166,6 +166,11 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
     import urllib.request
 
     stored_state = request.cookies.get("dm_oidc_state")
+    if stored_state is None:
+        # Pas de cookie du tout : parcours entamé ailleurs (autre onglet, session
+        # nettoyée, redémarrage). Un 400 sec laissait l'admin devant
+        # {"detail":"Invalid state"} sans issue — on relance le parcours.
+        return RedirectResponse("/admin/")
     if state != stored_state:
         raise HTTPException(400, "Invalid state")
 
@@ -238,7 +243,13 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         "sub": claims.get("sub"),
         "email": claims.get("email"),
         "name": claims.get("name", claims.get("preferred_username")),
-        "id_token": tokens["id_token"],
+        # PAS d'id_token ici : le cookie de session doit rester LOIN des 4096 octets.
+        # Un JWT Keycloak du realm mirai dépasse aisément 2-3 Ko ; embarqué puis signé
+        # puis base64, le cookie crevait le plafond et le navigateur le JETAIT en
+        # silence — callback 302, /admin/ 307, boucle infinie (vu sur int le
+        # 2026-09-04 ; même mécanique que l'incident mesreunions du 2026-08-28).
+        # Le logout se replie déjà sur client_id + post_logout_redirect_uri quand
+        # la session ne porte pas de hint (cf. la route logout ci-dessous).
         "exp": int(time.time()) + SESSION_TTL,
     }
     resp = RedirectResponse("/admin/", status_code=302)
@@ -3872,14 +3883,47 @@ async def debug_page(request: Request):
         "grafana_url": os.getenv("DM_TELEMETRY_GRAFANA_URL", ""),
     }
 
+    # Export parc → suivi-beta (état + journal des cycles, best-effort)
+    from app.services import parc_export as parc_export_svc
+    parc_export_info = parc_export_svc.etat_pour_debug()
+
     return templates.TemplateResponse(request, "debug.html", {
         "request": request, "checks": checks, "config_vars": config_vars,
         "db_stats": db_stats, "system_info": system_info,
         "telemetry_info": telemetry_info,
+        "parc_export": parc_export_info,
         "editable_config": rcfg.effective_view(),
         "config_editing_enabled": rcfg.editing_enabled(),
         "config_secrets_encryption": secrets_encryption_available(),
     })
+
+
+@router.post("/parc-export/run")
+@require_admin
+async def parc_export_run(request: Request):
+    """« Exporter maintenant » : force un cycle d'export parc (tracé en audit)."""
+    if not _verify_csrf(request):
+        raise HTTPException(403, "CSRF token invalid")
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services import parc_export as parc_export_svc
+    resultat = await run_in_threadpool(parc_export_svc.executer_cycle, force=True)
+    actor = getattr(request.state, "admin_session", {})
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                audit_log(cur, actor=actor, action="parc_export.run",
+                          resource_type="parc_export", resource_id="manual",
+                          payload=resultat,
+                          ip=request.client.host if request.client else None)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("audit parc_export.run failed")
+    return JSONResponse({"ok": resultat.get("statut") in ("envoye", "resynchronise"),
+                         **resultat})
 
 
 # ─── Runtime config overrides (editable from the debug page) ────────────────
