@@ -130,14 +130,14 @@ class FauxCurseur:
                       if al in cibles and sl in db.plugins and sl not in slugs]
             self._rows = [(db.plugins[sl], sl) for sl in slugs]
         elif s.startswith("SELECT pv.version"):
-            self._rows = [l for sl in _slugs_des_ids(db, p[0])
-                          for l in db.catalogue_versions.get(sl, [])]
+            self._rows = [ligne for sl in _slugs_des_ids(db, p[0])
+                          for ligne in db.catalogue_versions.get(sl, [])]
         elif s.startswith("SELECT COALESCE(pi.installed_version"):
-            self._rows = [l for sl in _slugs_des_ids(db, p[0])
-                          for l in db.installations.get(sl, [])]
+            self._rows = [ligne for sl in _slugs_des_ids(db, p[0])
+                          for ligne in db.installations.get(sl, [])]
         elif s.startswith("SELECT version_tag"):
-            self._rows = [l for sl in list(p[0])
-                          for l in db.telechargements.get(sl, [])]
+            self._rows = [ligne for sl in list(p[0])
+                          for ligne in db.telechargements.get(sl, [])]
         elif s.startswith("SELECT plugin, version, canal"):
             jour = p[0]
             self._rows = [
