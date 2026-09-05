@@ -5286,6 +5286,20 @@ def _startup_db_init() -> None:
     # Fire-and-forget startup check: useful diagnostics without blocking pod startup.
     _start_s3_connectivity_check_non_blocking()
 
+    if not settings.db_auto_bootstrap:
+        # Production default: the database (and its extensions) is expected
+        # to already exist, provisioned by ops/DBA out-of-band (or by the
+        # CNPG operator's own bootstrap, if used) — this app only populates
+        # it via the Alembic migration Job, not by creating a role/database/
+        # schema for itself using admin-privileged credentials on every pod
+        # boot. Set DM_DB_AUTO_BOOTSTRAP=true to restore the old zero-config
+        # local/dev behavior below.
+        logger.info(
+            "DM_DB_AUTO_BOOTSTRAP is false (default): skipping automatic "
+            "role/database/schema creation at startup."
+        )
+        return
+
     if psycopg2 is None:
         logger.warning("psycopg2 not installed; skipping DB bootstrap/schema init")
         return

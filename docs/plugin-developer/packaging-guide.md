@@ -198,15 +198,16 @@ Quand un fichier est uploadé dans DM, le système détecte automatiquement :
 
 | Priorité | Source | Méthode |
 |----------|--------|---------|
-| 1 | `manifest.json` | Champ `version` (WebExtension) |
-| 2 | `description.xml` | `<version value="...">` (OXT LibreOffice) |
-| 3 | `dm-manifest.json` | Première entrée du `changelog` |
+| 1 | `dm-manifest.json` | Première entrée du `changelog` |
+| 2 | `manifest.json` | Champ `version` (WebExtension) |
+| 3 | `description.xml` | `<version value="...">` (OXT LibreOffice) |
 | 4 | Nom du fichier | Regex `(\d+\.\d+(?:\.\d+)*)` |
 
 ### Type de plugin
 
 | Extension | Condition | `device_type` |
 |-----------|-----------|---------------|
+| toutes | `device_type` declare dans `dm-manifest.json` (`thunderbird` = `matisse`) | valeur declaree, prioritaire sur les regles ci-dessous |
 | `.oxt` | — | `libreoffice` |
 | `.xpi` | `browser_specific_settings.thunderbird` dans manifest | `matisse` |
 | `.xpi` | `browser_specific_settings.gecko` ou par défaut | `firefox` |

@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     app_env: str = Field(default="dev")
     enroll_url: str = Field(default="/enroll")
 
+    # Startup DB bootstrap (role/database/schema auto-creation via an admin
+    # DSN — see _startup_db_init in main.py). OFF by default: production is
+    # expected to be handed an already-existing database (created and
+    # granted by ops/DBA out-of-band) that only the Alembic migration Job
+    # populates, not something every replica creates for itself on boot.
+    # Enable for local/dev convenience only (docker-compose sets this true).
+    db_auto_bootstrap: bool = Field(default=False)
+
     # Local storage for enroll payloads
     enroll_dir: str = Field(default="/data/enroll")
     store_enroll_locally: bool = Field(default=True)
