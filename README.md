@@ -617,9 +617,13 @@ l'ancien binaire sous le nouveau libellé, et le checksum ne correspondrait plus
 | `DELETE /api/files/{path}` | invalidation ciblée d'un fichier caché sur un pod API (token `X-Admin-Token`) |
 | `POST /api/files/evict` | éviction des orphelins : tout fichier caché qui ne correspond plus à un artefact vivant |
 | Suppression du binaire source | `delete_binary()` — best-effort et idempotent, en local (PVC) comme en S3 |
+| Vérification au service (#5) | le pod compare son cache à `artifacts.checksum` avant de servir ; évince et re-pull en cas de divergence |
 
 L'éviction des orphelins est **auto-réparatrice** : elle borne la taille du cache et rattrape un
-pod qui aurait manqué une invalidation ciblée (redémarrage, partition réseau).
+pod qui aurait manqué une invalidation ciblée (redémarrage, partition réseau). Elle ne couvre
+**pas** le ré-upload d'un même numéro : `s3_path` ne change pas, la ligne `artifacts` reste
+vivante, et le blob périmé n'est donc pas orphelin (issue #5). C'est la vérification au service
+qui traite ce cas, pod par pod, sans invalidation à propager entre répliques.
 
 ## Validation
 

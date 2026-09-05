@@ -302,7 +302,9 @@ def test_serve_plugin_download_version_filter_allows_experimental():
     cur = _make_recording_cursor({
         "FROM plugins WHERE slug": [(7, "libreoffice")],
         "AND pv.version = %s": [("0.9.14-exp", "managed", None, 123)],
-        "FROM artifacts WHERE id": [("/data/content/binaries/x.oxt",)],
+        # (s3_path, checksum) — la requête ramène aussi le checksum depuis
+        # la vérification du cache disque au service (issue #5).
+        "FROM artifacts WHERE id": [("/data/content/binaries/x.oxt", None)],
     })
     mod.psycopg2.connect = MagicMock(return_value=_download_conn(cur))
     from fastapi import HTTPException

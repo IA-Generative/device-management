@@ -323,10 +323,19 @@ nouveau libelle, et la verification de checksum cote plugin echouerait.
 | `DELETE /api/files/{path}` | ciblee, un pod | appel admin → API, en-tete `X-Admin-Token` |
 | `POST /api/files/evict` | tous les orphelins d'un pod | supprime tout fichier cache ne correspondant plus a un artefact vivant |
 | `delete_binary(s3_path)` | source | best-effort et idempotent ; `os.remove` en local, `delete_object` en S3 |
+| verification au service (#5) | le pod qui sert | compare le cache a `artifacts.checksum` avant de servir ; evince et re-pull si divergence |
 
 L'eviction des orphelins est **auto-reparatrice** : elle borne la taille du cache et rattrape un
 pod qui aurait manque une invalidation ciblee (redemarrage, partition reseau). Elle est sans objet
 hors mode `local`, ou le contenu est adresse par le stockage objet.
+
+**Ce que l'eviction des orphelins ne couvre pas (issue #5)** : republier le meme numero de version
+laisse `s3_path` inchange et la ligne `artifacts` vivante — le blob perime n'est pas orphelin, et
+`POST /api/files/evict` ne le supprime pas. C'est precisement le cas des branches d'experimentation
+decrit plus haut. La verification au service le couvre : chaque pod compare le checksum du fichier
+cache a celui de la base avant de servir, evince et re-pull en cas de divergence, et refuse de
+servir (404) si la divergence persiste. Elle n'exige aucune coordination entre repliques — c'est ce
+qui l'a fait preferer a une invalidation distribuee a l'upload.
 
 **Justification** :
 - Pas besoin de NFS partage (complexe en K8s multi-node)

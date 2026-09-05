@@ -66,6 +66,12 @@ Corollaire du cycle de vie des versions : purge/dépréciation supprime le binai
 source** (PVC admin / S3) pour couper re-pull et raw-serve ; `POST /api/files/evict`
 (self-healing) et `DELETE /api/files/<path>` évincent les caches locaux des pods.
 
+Ces mécanismes ne couvrent pas le **ré-upload d'un même numéro de version** — le geste
+courant d'une branche d'expérimentation : `s3_path` ne change pas, la ligne `artifacts`
+reste vivante, et le blob périmé n'est donc pas orphelin (issue **#5**). C'est la
+vérification du checksum **au moment de servir** qui le couvre : chaque pod compare son
+cache à `artifacts.checksum`, évince et re-pull en cas de divergence.
+
 ## Alternatives écartées
 
 - **Booléen `is_experimental` orthogonal au statut** (pull) : imposait d'ajouter
