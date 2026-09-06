@@ -230,3 +230,37 @@ def test_file_checksum_memoise_par_chemin_mtime_taille(tmp_path):
 
 def test_file_checksum_none_si_fichier_absent(tmp_path):
     assert m._file_checksum(str(tmp_path / "absent.oxt")) is None
+
+
+def test_serve_variant_by_filename_transmet_le_checksum(monkeypatch):
+    """Le second appelant — l'artefact de VARIANTE — doit ramener le checksum et
+    le passer au service. Sa requête ne sélectionnait que `s3_path` : sans ce
+    test, un retour à l'ancienne forme casserait la vérification en silence,
+    puisque le paramètre est optionnel et qu'aucune erreur ne serait levée."""
+
+    class FauxCurseur:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchall(self):
+            return [
+                ("/data/content/binaries/chrome/1.0.0_autre.crx", "sha256:" + "a" * 64),
+                ("/data/content/binaries/chrome/1.0.0_cible.crx", "sha256:" + "b" * 64),
+            ]
+
+    curseur = FauxCurseur()
+    monkeypatch.setattr(m, "_with_bootstrap_cursor", lambda fn: fn(curseur))
+    monkeypatch.setattr(m, "_resolve_device", lambda slug, cur: (slug, "chrome", 7, "slug"))
+
+    vus = []
+    monkeypatch.setattr(m, "_serve_binary_path",
+                        lambda path, filename, checksum=None: vus.append((path, filename, checksum)))
+
+    m._serve_variant_by_filename("iassistant-direct-browser", "1.0.0_cible.crx")
+
+    assert "a.checksum" in curseur.sql, "la requête doit ramener le checksum de l'artefact"
+    assert vus == [("/data/content/binaries/chrome/1.0.0_cible.crx",
+                    "1.0.0_cible.crx", "sha256:" + "b" * 64)]
