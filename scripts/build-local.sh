@@ -11,6 +11,7 @@ echo "Image: $IMAGE_NAME:$TAG"
 
 docker build \
   -t "$IMAGE_NAME:$TAG" \
+  --build-arg DM_IMAGE_TAG="$TAG" \
   -f "$ROOT_DIR/deploy/docker/Dockerfile" \
   "$ROOT_DIR"
 
