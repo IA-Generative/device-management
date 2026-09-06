@@ -47,9 +47,18 @@ def main():
 
         directive = cfg.get("update") or cfg.get("updateDirective") or cfg.get("update_directive")
         if not directive:
-            keys = [k for k in cfg if "update" in k.lower()]
-            print(f"   aucune directive de mise à jour (clés vues : {keys or 'aucune'})\n")
-            verdicts.append((slug, "SANS_DIRECTIVE", ""))
+            # Pas de campagne active → aucun checksum promis. On mesure quand même
+            # le téléchargement : un 404 apparu entre deux passages signale un
+            # cache divergent que le pod refuse désormais de servir.
+            try:
+                blob, status, final = get(f"{BASE}/catalog/{slug}/download", raw=True)
+                print(f"   pas de campagne active — téléchargement direct : HTTP {status}, "
+                      f"{len(blob)} o → sha256:{hashlib.sha256(blob).hexdigest()}")
+                print(f"   URL finale     : {final}\n")
+                verdicts.append((slug, "SANS_CAMPAGNE", f"{len(blob)}o"))
+            except Exception as exc:
+                print(f"   pas de campagne active — téléchargement → {type(exc).__name__}: {exc}\n")
+                verdicts.append((slug, "DOWNLOAD_KO", str(exc)))
             continue
 
         attendu = directive.get("checksum") or ""
