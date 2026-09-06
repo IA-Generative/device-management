@@ -64,6 +64,7 @@ if [ "$NO_PUSH" = "--no-push" ]; then
     --builder "$BUILDER_NAME" \
     --platform "$PLATFORMS" \
     -t "$IMAGE:$TAG" \
+    --build-arg DM_IMAGE_TAG="$TAG" \
     -f "$ROOT_DIR/deploy/docker/Dockerfile" \
     "$ROOT_DIR"
   echo "Built (not pushed). Use without --no-push to push."
@@ -72,6 +73,7 @@ else
     --builder "$BUILDER_NAME" \
     --platform "$PLATFORMS" \
     -t "$IMAGE:$TAG" \
+    --build-arg DM_IMAGE_TAG="$TAG" \
     -t "$IMAGE:latest" \
     -f "$ROOT_DIR/deploy/docker/Dockerfile" \
     --push \
