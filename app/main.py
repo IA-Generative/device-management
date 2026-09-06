@@ -4543,10 +4543,10 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None):
             filename = f"{slug}-{version}.{ext}"
 
             if dist_mode == "managed" and artifact_id:
-                cur.execute("SELECT s3_path FROM artifacts WHERE id = %s", (artifact_id,))
+                cur.execute("SELECT s3_path, checksum FROM artifacts WHERE id = %s", (artifact_id,))
                 arow = cur.fetchone()
                 if arow and arow[0]:
-                    served = _serve_binary_path(arow[0], filename)
+                    served = _serve_binary_path(arow[0], filename, arow[1])
                     if served is not None:
                         return served
                 raise HTTPException(404, "Fichier binaire introuvable")
@@ -4743,9 +4743,120 @@ def _with_bootstrap_cursor(fn):
             conn.close()
 
 
-def _serve_binary_path(s3_path: str, filename: str):
+# ─── Vérification du cache disque au service (issue #5) ──────────────────
+# `s3_path` est indexé par NUMÉRO DE VERSION : republier le même numéro met à
+# jour `artifacts.checksum` — que /config annonce — sans toucher au blob caché
+# sur chaque pod API. Le pod sert alors l'ancien binaire, le client rejette en
+# « checksum mismatch » et boucle. On vérifie donc au moment de servir : chaque
+# pod se répare seul, au premier téléchargement qui suit le ré-upload, sans
+# aucune invalidation distribuée à coordonner.
+#
+# Mémoïsation du hash par (chemin, mtime_ns, taille) : tant que le fichier n'a
+# pas bougé sur disque, son hash n'a pas bougé non plus — hacher 5 Mo à chaque
+# téléchargement serait inutilement cher. Un dictionnaire de processus suffit :
+# il se vide au redémarrage, ce qui est le comportement voulu (le cache disque
+# du pod est reconstruit au même moment). Pas de cache partagé, pas d'index sur
+# disque : ce serait un état de plus à maintenir pour gagner des millisecondes.
+# La table `artifacts` ne stocke pas la taille du binaire : le garde-fou « la
+# taille d'abord » n'est pas disponible sans migration, la mémoïsation porte
+# donc seule le coût.
+_BINARY_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+_BINARY_HASH_LOCK = threading.Lock()
+_BINARY_HASH_CACHE_MAX = 512
+
+
+def _normalize_checksum(value: str | None) -> str | None:
+    """« sha256:<hex> » ou « <hex> » → « sha256:<hex> » minuscule.
+
+    Renvoie None pour tout ce qui n'est pas un sha256 reconnaissable (colonne
+    NULL, ancien format exotique) : on ne peut pas comparer, donc on ne
+    prétendra pas qu'il y a divergence.
+    """
+    if not value:
+        return None
+    candidate = str(value).strip().lower()
+    if candidate.startswith("sha256:"):
+        candidate = candidate[len("sha256:"):]
+    if len(candidate) != 64 or any(c not in "0123456789abcdef" for c in candidate):
+        return None
+    return f"sha256:{candidate}"
+
+
+def _file_checksum(path: str) -> str | None:
+    """« sha256:<hex> » du fichier local, mémoïsé par (chemin, mtime, taille).
+
+    None si le fichier est illisible ou absent."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_mtime_ns, st.st_size)
+    with _BINARY_HASH_LOCK:
+        cached = _BINARY_HASH_CACHE.get(key)
+    if cached:
+        return cached
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    value = "sha256:" + digest.hexdigest()
+    with _BINARY_HASH_LOCK:
+        if len(_BINARY_HASH_CACHE) >= _BINARY_HASH_CACHE_MAX:
+            _BINARY_HASH_CACHE.clear()
+        _BINARY_HASH_CACHE[key] = value
+    return value
+
+
+def _local_cache_is_serveable(s3_path: str, checksum_attendu: str | None) -> bool:
+    """Le binaire caché correspond-il au checksum en base ? Répare sinon.
+
+    True s'il peut être servi (concordant, ou checksum inconnu — on ne casse
+    pas un téléchargement qui marche au prétexte qu'on ne peut pas le
+    vérifier). False si la divergence persiste après éviction et re-pull : le
+    point d'appel rendra un 404, échec franc préférable à une boucle de
+    « checksum mismatch » côté client.
+    """
+    attendu = _normalize_checksum(checksum_attendu)
+    if not attendu:
+        logger.debug("serve_binary: aucun checksum exploitable pour %s — servi sans vérification", s3_path)
+        return True
+
+    sur_disque = _file_checksum(s3_path)
+    if sur_disque == attendu:
+        return True
+
+    logger.warning("serve_binary: cache périmé pour %s (attendu %s, sur disque %s) — éviction et re-pull",
+                   s3_path, attendu, sur_disque)
+    try:
+        os.remove(s3_path)
+    except OSError as exc:
+        logger.warning("serve_binary: éviction impossible de %s : %s", s3_path, exc)
+    try:
+        _pull_binary_from_admin(s3_path)
+    except Exception as exc:
+        logger.warning("serve_binary: re-pull de %s échoué : %s", s3_path, exc)
+
+    obtenu = _file_checksum(s3_path)
+    if obtenu == attendu:
+        logger.info("serve_binary: cache réparé pour %s", s3_path)
+        return True
+    logger.error("serve_binary: divergence persistante pour %s (attendu %s, obtenu %s) — rien n'est servi",
+                 s3_path, attendu, obtenu)
+    return False
+
+
+def _serve_binary_path(s3_path: str, filename: str, checksum_attendu: str | None = None):
     """Sert un binaire — depuis le disque (pull-on-miss) en mode local, sinon
-    directement depuis S3 (présignée ou proxy), sans jamais toucher le disque."""
+    directement depuis S3 (présignée ou proxy), sans jamais toucher le disque.
+
+    `checksum_attendu` (colonne `artifacts.checksum`, nullable) est optionnel :
+    fourni, le cache disque est vérifié avant d'être servi (cf. issue #5) ;
+    absent, le comportement est celui d'avant. Sans effet hors mode local, où
+    aucun cache disque n'existe.
+    """
     if not s3_path:
         return None
 
@@ -4756,6 +4867,8 @@ def _serve_binary_path(s3_path: str, filename: str):
             except Exception:
                 pass
         if os.path.isfile(s3_path):
+            if not _local_cache_is_serveable(s3_path, checksum_attendu):
+                return None
             return FileResponse(s3_path, filename=filename,
                                 media_type="application/octet-stream",
                                 headers={"Content-Disposition": f'attachment; filename="{filename}"'})
@@ -4794,15 +4907,15 @@ def _serve_variant_by_filename(slug: str, filename: str):
         if not pid:
             return None
         cur.execute("""
-            SELECT a.s3_path
+            SELECT a.s3_path, a.checksum
             FROM plugin_version_artifacts pva
             JOIN artifacts a ON a.id = pva.artifact_id
             JOIN plugin_versions pv ON pv.id = pva.plugin_version_id
             WHERE pv.plugin_id = %s
         """, (pid,))
-        for (s3_path,) in cur.fetchall():
+        for s3_path, checksum in cur.fetchall():
             if s3_path and os.path.basename(s3_path) == filename:
-                return _serve_binary_path(s3_path, filename)
+                return _serve_binary_path(s3_path, filename, checksum)
         return None
     try:
         return _with_bootstrap_cursor(_q)
