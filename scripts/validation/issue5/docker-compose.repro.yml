@@ -1,0 +1,64 @@
+# Reproduction issue #5 — cache binaire non invalidé au ré-upload.
+# Topologie fidèle à la production : un pod ADMIN qui porte le PVC (là où
+# l'upload écrit), un pod API avec son PROPRE cache disque (pull-on-miss).
+# Le compose du dépôt n'a qu'un seul conteneur : l'upload y écrase le cache
+# qu'il sert, et le bug ne peut pas s'y manifester.
+name: dm-issue5
+
+x-dm-env: &dm-env
+  DM_APP_ENV: dev
+  DM_DB_AUTO_BOOTSTRAP: "true"
+  DM_BINARIES_MODE: local
+  DM_QUEUE_ENABLED: "false"
+  DM_CONFIG_ENABLED: "true"
+  DM_METRICS_ENABLED: "false"
+  DM_QUEUE_ADMIN_TOKEN: repro-admin-token
+  DM_ADMIN_INTERNAL_URL: http://admin:3001
+  DM_LOCAL_BINARIES_DIR: /data/content/binaries
+  DATABASE_URL: postgresql://dev:dev@db:5432/bootstrap
+  DATABASE_ADMIN_URL: postgresql://dev:dev@db:5432/bootstrap
+  ADMIN_SESSION_SECRET: repro-dev-only
+  PUBLIC_BASE_URL: http://localhost:18089
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: bootstrap
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+      LANG: C
+      LC_ALL: C
+    ports: ["15432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev -d bootstrap"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  admin:
+    build:
+      context: /Users/etiquet/Documents/GitHub/device-management
+      dockerfile: deploy/docker/Dockerfile
+    image: dm-issue5:local
+    environment:
+      <<: *dm-env
+      DM_RUNTIME_MODE: all
+    volumes:
+      - ./data-admin:/data
+    ports: ["18091:3001"]
+    depends_on:
+      db: {condition: service_healthy}
+
+  api:
+    image: dm-issue5:local
+    environment:
+      <<: *dm-env
+      DM_RUNTIME_MODE: api
+    volumes:
+      - ./data-api:/data
+    ports: ["18089:3001"]
+    depends_on:
+      db: {condition: service_healthy}
+      admin: {condition: service_started}

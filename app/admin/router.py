@@ -131,6 +131,18 @@ def _apply_platform_defaults(template: dict) -> dict:
     return template
 
 
+def _read_dm_manifest(zf) -> dict | None:
+    """Parse dm-manifest.json from an open ZIP (any depth); None if absent or invalid."""
+    for name in zf.namelist():
+        if name.rsplit("/", 1)[-1].lower() in ("dm-manifest.json", "dm_manifest.json"):
+            try:
+                parsed = json.loads(zf.read(name).decode("utf-8", errors="replace"))
+            except Exception:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def _strip_dm_metadata_from_zip(data: bytes) -> bytes:
     """Remove dm-config.json and dm-manifest.json from a ZIP archive (OXT/XPI/CRX) before storage."""
     import zipfile
@@ -154,6 +166,11 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
     import urllib.request
 
     stored_state = request.cookies.get("dm_oidc_state")
+    if stored_state is None:
+        # Pas de cookie du tout : parcours entamé ailleurs (autre onglet, session
+        # nettoyée, redémarrage). Un 400 sec laissait l'admin devant
+        # {"detail":"Invalid state"} sans issue — on relance le parcours.
+        return RedirectResponse("/admin/")
     if state != stored_state:
         raise HTTPException(400, "Invalid state")
 
@@ -226,7 +243,13 @@ async def oidc_callback(request: Request, code: str = "", state: str = ""):
         "sub": claims.get("sub"),
         "email": claims.get("email"),
         "name": claims.get("name", claims.get("preferred_username")),
-        "id_token": tokens["id_token"],
+        # PAS d'id_token ici : le cookie de session doit rester LOIN des 4096 octets.
+        # Un JWT Keycloak du realm mirai dépasse aisément 2-3 Ko ; embarqué puis signé
+        # puis base64, le cookie crevait le plafond et le navigateur le JETAIT en
+        # silence — callback 302, /admin/ 307, boucle infinie (vu sur int le
+        # 2026-09-04 ; même mécanique que l'incident mesreunions du 2026-08-28).
+        # Le logout se replie déjà sur client_id + post_logout_redirect_uri quand
+        # la session ne porte pas de hint (cf. la route logout ci-dessous).
         "exp": int(time.time()) + SESSION_TTL,
     }
     resp = RedirectResponse("/admin/", status_code=302)
@@ -1137,6 +1160,7 @@ DEVICE_TYPES = [
     {"id": "chrome", "label": "Chrome / Chromium", "ext": ".crx"},
     {"id": "edge", "label": "Microsoft Edge", "ext": ".crx"},
 ]
+_DEVICE_TYPE_ALIASES = {"thunderbird": "matisse"}
 
 
 @router.get("/deploy", response_class=HTMLResponse)
@@ -1168,14 +1192,22 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
 
     data = await binary.read()
     version = None
+    dm_manifest = None
     filename = binary.filename or ""
 
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             names = zf.namelist()
+            dm_manifest = _read_dm_manifest(zf)
+
+            # dm-manifest.json — changelog[0].version (primary source)
+            if dm_manifest:
+                cl = dm_manifest.get("changelog")
+                if isinstance(cl, list) and cl and isinstance(cl[0], dict):
+                    version = cl[0].get("version") or None
 
             # .xpi / .crx — manifest.json
-            if "manifest.json" in names:
+            if not version and "manifest.json" in names:
                 manifest = json.loads(zf.read("manifest.json"))
                 version = manifest.get("version")
 
@@ -1194,6 +1226,8 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
                     version = m.group(1)
     except zipfile.BadZipFile:
         pass
+
+    source = "package" if version else "filename"
 
     # Fallback: extract from filename
     if not version:
@@ -1230,13 +1264,19 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
     if not version and not errors:
         warnings.append("Version non detectee dans le package — saisie manuelle requise")
 
-    # Detect device type + extract dm-manifest.json release notes
+    # Device type: dm-manifest.json declaration first, package heuristics as fallback
     device_type = None
     release_notes = ""
 
-    if ext == "oxt":
+    if dm_manifest:
+        declared = dm_manifest.get("device_type")
+        declared = _DEVICE_TYPE_ALIASES.get(declared, declared)
+        if declared in {d["id"] for d in DEVICE_TYPES}:
+            device_type = declared
+
+    if device_type is None and ext == "oxt":
         device_type = "libreoffice"
-    elif ext in ("xpi", "crx"):
+    elif device_type is None and ext in ("xpi", "crx"):
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as zf2:
                 if "manifest.json" in zf2.namelist():
@@ -1258,22 +1298,15 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
             device_type = "firefox" if ext == "xpi" else "chrome"
 
     # Extract release notes from dm-manifest.json for the detected version
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as zf3:
-            for zname in zf3.namelist():
-                if zname.rsplit("/", 1)[-1].lower() in ("dm-manifest.json", "dm_manifest.json"):
-                    dm_m = json.loads(zf3.read(zname).decode("utf-8", errors="replace"))
-                    for entry in dm_m.get("changelog", []):
-                        if entry.get("version") == version:
-                            release_notes = "\n".join(f"- {c}" for c in entry.get("changes", []))
-                            break
-                    break
-    except Exception:
-        pass
+    if dm_manifest:
+        for entry in dm_manifest.get("changelog") or []:
+            if isinstance(entry, dict) and entry.get("version") == version:
+                release_notes = "\n".join(f"- {c}" for c in entry.get("changes", []))
+                break
 
     return JSONResponse({
         "version": version or "",
-        "source": "package" if version else "filename",
+        "source": source,
         "device_type": device_type,
         "valid": len(errors) == 0,
         "is_valid_zip": is_valid_zip,
@@ -3850,14 +3883,47 @@ async def debug_page(request: Request):
         "grafana_url": os.getenv("DM_TELEMETRY_GRAFANA_URL", ""),
     }
 
+    # Export parc → suivi-beta (état + journal des cycles, best-effort)
+    from app.services import parc_export as parc_export_svc
+    parc_export_info = parc_export_svc.etat_pour_debug()
+
     return templates.TemplateResponse(request, "debug.html", {
         "request": request, "checks": checks, "config_vars": config_vars,
         "db_stats": db_stats, "system_info": system_info,
         "telemetry_info": telemetry_info,
+        "parc_export": parc_export_info,
         "editable_config": rcfg.effective_view(),
         "config_editing_enabled": rcfg.editing_enabled(),
         "config_secrets_encryption": secrets_encryption_available(),
     })
+
+
+@router.post("/parc-export/run")
+@require_admin
+async def parc_export_run(request: Request):
+    """« Exporter maintenant » : force un cycle d'export parc (tracé en audit)."""
+    if not _verify_csrf(request):
+        raise HTTPException(403, "CSRF token invalid")
+    from starlette.concurrency import run_in_threadpool
+
+    from app.services import parc_export as parc_export_svc
+    resultat = await run_in_threadpool(parc_export_svc.executer_cycle, force=True)
+    actor = getattr(request.state, "admin_session", {})
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                audit_log(cur, actor=actor, action="parc_export.run",
+                          resource_type="parc_export", resource_id="manual",
+                          payload=resultat,
+                          ip=request.client.host if request.client else None)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("audit parc_export.run failed")
+    return JSONResponse({"ok": resultat.get("statut") in ("envoye", "resynchronise"),
+                         **resultat})
 
 
 # ─── Runtime config overrides (editable from the debug page) ────────────────

@@ -2229,6 +2229,28 @@ def _otlp_attr_value(value: dict | None):
     return ""
 
 
+# Rétention de device_telemetry_events : purge opportuniste à l'écriture,
+# au plus toutes les 6 h par pod (patron PURGE_AFTER_DAYS de app/llm/traffic.py).
+_TELEMETRY_PURGE_EVERY_SECONDS = 6 * 3600
+_telemetry_last_purge = 0.0
+
+
+def _maybe_purge_telemetry_events(cur) -> None:
+    global _telemetry_last_purge
+    now = time.time()
+    if now - _telemetry_last_purge < _TELEMETRY_PURGE_EVERY_SECONDS:
+        return
+    _telemetry_last_purge = now
+    try:
+        days = max(1, int(settings.telemetry_retention_days or 30))
+        cur.execute(
+            "DELETE FROM device_telemetry_events WHERE created_at < now() - (%s || ' days')::interval",
+            (str(days),),
+        )
+    except Exception:
+        logger.debug("telemetry retention purge failed", exc_info=True)
+
+
 def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
     """Parse OTLP JSON payload and insert spans into device_telemetry_events."""
     dsn = _db_url_bootstrap() or _db_url()
@@ -2262,6 +2284,7 @@ def _persist_telemetry_spans(body: bytes, client_uuid: str) -> None:
                     "INSERT INTO device_telemetry_events (client_uuid, email, span_name, span_ts, attributes, plugin_version) VALUES (%s, %s, %s, %s, %s::jsonb, %s)",
                     rows,
                 )
+                _maybe_purge_telemetry_events(cur)
             conn.commit()
         finally:
             conn.close()
@@ -2276,6 +2299,13 @@ def _process_queue_job(job: QueueJob) -> None:
         content_type = str(payload.get("content_type") or "application/json")
         user_agent = str(payload.get("user_agent") or "").strip() or None
         client_uuid = str(payload.get("client_uuid") or "").strip()
+        # Persistance locale D'ABORD, découplée de l'amont : un collecteur OTLP
+        # en panne ne doit plus priver le DM de ses propres événements (export
+        # parc, activité device). Idempotence : au premier passage seulement
+        # (attempts=1 au claim) — un retry après échec du forward ne réinsère
+        # pas les mêmes spans.
+        if int(job.attempts or 1) <= 1:
+            _persist_telemetry_spans(body, client_uuid)
         response = _forward_telemetry_to_upstream(
             body,
             content_type=content_type,
@@ -2283,8 +2313,9 @@ def _process_queue_job(job: QueueJob) -> None:
         )
         status = int(getattr(response, "status_code", 500) or 500)
         if status < 200 or status >= 300:
+            # L'échec du forward reste une erreur de job (retry/backoff), mais
+            # APRÈS la persistance locale.
             raise RuntimeError(f"telemetry upstream returned status={status}")
-        _persist_telemetry_spans(body, client_uuid)
         return
     if job.topic == "enroll.process":
         payload = job.payload if isinstance(job.payload, dict) else {}
@@ -4512,10 +4543,10 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None):
             filename = f"{slug}-{version}.{ext}"
 
             if dist_mode == "managed" and artifact_id:
-                cur.execute("SELECT s3_path FROM artifacts WHERE id = %s", (artifact_id,))
+                cur.execute("SELECT s3_path, checksum FROM artifacts WHERE id = %s", (artifact_id,))
                 arow = cur.fetchone()
                 if arow and arow[0]:
-                    served = _serve_binary_path(arow[0], filename)
+                    served = _serve_binary_path(arow[0], filename, arow[1])
                     if served is not None:
                         return served
                 raise HTTPException(404, "Fichier binaire introuvable")
@@ -4595,6 +4626,16 @@ def catalog_download(slug: str, tag: str | None = None):
                 raise HTTPException(404, "Aucune version disponible")
             version = vrow[0]
             ext = _DEVICE_TYPE_EXT.get(device_type, "bin")
+            # Compteur de téléchargements (export parc) — best-effort AVANT le
+            # 302 : un échec d'insert ne doit jamais casser le téléchargement.
+            try:
+                cur.execute(
+                    "INSERT INTO download_events (plugin_slug, version_tag, via) "
+                    "VALUES (%s, %s, 'catalog')",
+                    (slug, version),
+                )
+            except Exception:
+                logger.debug("download_events insert failed (best-effort)", exc_info=True)
             return RedirectResponse(
                 f"/catalog/{slug}/download/{slug}-{version}.{ext}",
                 status_code=302,
@@ -4702,9 +4743,120 @@ def _with_bootstrap_cursor(fn):
             conn.close()
 
 
-def _serve_binary_path(s3_path: str, filename: str):
+# ─── Vérification du cache disque au service (issue #5) ──────────────────
+# `s3_path` est indexé par NUMÉRO DE VERSION : republier le même numéro met à
+# jour `artifacts.checksum` — que /config annonce — sans toucher au blob caché
+# sur chaque pod API. Le pod sert alors l'ancien binaire, le client rejette en
+# « checksum mismatch » et boucle. On vérifie donc au moment de servir : chaque
+# pod se répare seul, au premier téléchargement qui suit le ré-upload, sans
+# aucune invalidation distribuée à coordonner.
+#
+# Mémoïsation du hash par (chemin, mtime_ns, taille) : tant que le fichier n'a
+# pas bougé sur disque, son hash n'a pas bougé non plus — hacher 5 Mo à chaque
+# téléchargement serait inutilement cher. Un dictionnaire de processus suffit :
+# il se vide au redémarrage, ce qui est le comportement voulu (le cache disque
+# du pod est reconstruit au même moment). Pas de cache partagé, pas d'index sur
+# disque : ce serait un état de plus à maintenir pour gagner des millisecondes.
+# La table `artifacts` ne stocke pas la taille du binaire : le garde-fou « la
+# taille d'abord » n'est pas disponible sans migration, la mémoïsation porte
+# donc seule le coût.
+_BINARY_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+_BINARY_HASH_LOCK = threading.Lock()
+_BINARY_HASH_CACHE_MAX = 512
+
+
+def _normalize_checksum(value: str | None) -> str | None:
+    """« sha256:<hex> » ou « <hex> » → « sha256:<hex> » minuscule.
+
+    Renvoie None pour tout ce qui n'est pas un sha256 reconnaissable (colonne
+    NULL, ancien format exotique) : on ne peut pas comparer, donc on ne
+    prétendra pas qu'il y a divergence.
+    """
+    if not value:
+        return None
+    candidate = str(value).strip().lower()
+    if candidate.startswith("sha256:"):
+        candidate = candidate[len("sha256:"):]
+    if len(candidate) != 64 or any(c not in "0123456789abcdef" for c in candidate):
+        return None
+    return f"sha256:{candidate}"
+
+
+def _file_checksum(path: str) -> str | None:
+    """« sha256:<hex> » du fichier local, mémoïsé par (chemin, mtime, taille).
+
+    None si le fichier est illisible ou absent."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_mtime_ns, st.st_size)
+    with _BINARY_HASH_LOCK:
+        cached = _BINARY_HASH_CACHE.get(key)
+    if cached:
+        return cached
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    value = "sha256:" + digest.hexdigest()
+    with _BINARY_HASH_LOCK:
+        if len(_BINARY_HASH_CACHE) >= _BINARY_HASH_CACHE_MAX:
+            _BINARY_HASH_CACHE.clear()
+        _BINARY_HASH_CACHE[key] = value
+    return value
+
+
+def _local_cache_is_serveable(s3_path: str, checksum_attendu: str | None) -> bool:
+    """Le binaire caché correspond-il au checksum en base ? Répare sinon.
+
+    True s'il peut être servi (concordant, ou checksum inconnu — on ne casse
+    pas un téléchargement qui marche au prétexte qu'on ne peut pas le
+    vérifier). False si la divergence persiste après éviction et re-pull : le
+    point d'appel rendra un 404, échec franc préférable à une boucle de
+    « checksum mismatch » côté client.
+    """
+    attendu = _normalize_checksum(checksum_attendu)
+    if not attendu:
+        logger.debug("serve_binary: aucun checksum exploitable pour %s — servi sans vérification", s3_path)
+        return True
+
+    sur_disque = _file_checksum(s3_path)
+    if sur_disque == attendu:
+        return True
+
+    logger.warning("serve_binary: cache périmé pour %s (attendu %s, sur disque %s) — éviction et re-pull",
+                   s3_path, attendu, sur_disque)
+    try:
+        os.remove(s3_path)
+    except OSError as exc:
+        logger.warning("serve_binary: éviction impossible de %s : %s", s3_path, exc)
+    try:
+        _pull_binary_from_admin(s3_path)
+    except Exception as exc:
+        logger.warning("serve_binary: re-pull de %s échoué : %s", s3_path, exc)
+
+    obtenu = _file_checksum(s3_path)
+    if obtenu == attendu:
+        logger.info("serve_binary: cache réparé pour %s", s3_path)
+        return True
+    logger.error("serve_binary: divergence persistante pour %s (attendu %s, obtenu %s) — rien n'est servi",
+                 s3_path, attendu, obtenu)
+    return False
+
+
+def _serve_binary_path(s3_path: str, filename: str, checksum_attendu: str | None = None):
     """Sert un binaire — depuis le disque (pull-on-miss) en mode local, sinon
-    directement depuis S3 (présignée ou proxy), sans jamais toucher le disque."""
+    directement depuis S3 (présignée ou proxy), sans jamais toucher le disque.
+
+    `checksum_attendu` (colonne `artifacts.checksum`, nullable) est optionnel :
+    fourni, le cache disque est vérifié avant d'être servi (cf. issue #5) ;
+    absent, le comportement est celui d'avant. Sans effet hors mode local, où
+    aucun cache disque n'existe.
+    """
     if not s3_path:
         return None
 
@@ -4715,6 +4867,8 @@ def _serve_binary_path(s3_path: str, filename: str):
             except Exception:
                 pass
         if os.path.isfile(s3_path):
+            if not _local_cache_is_serveable(s3_path, checksum_attendu):
+                return None
             return FileResponse(s3_path, filename=filename,
                                 media_type="application/octet-stream",
                                 headers={"Content-Disposition": f'attachment; filename="{filename}"'})
@@ -4753,15 +4907,15 @@ def _serve_variant_by_filename(slug: str, filename: str):
         if not pid:
             return None
         cur.execute("""
-            SELECT a.s3_path
+            SELECT a.s3_path, a.checksum
             FROM plugin_version_artifacts pva
             JOIN artifacts a ON a.id = pva.artifact_id
             JOIN plugin_versions pv ON pv.id = pva.plugin_version_id
             WHERE pv.plugin_id = %s
         """, (pid,))
-        for (s3_path,) in cur.fetchall():
+        for s3_path, checksum in cur.fetchall():
             if s3_path and os.path.basename(s3_path) == filename:
-                return _serve_binary_path(s3_path, filename)
+                return _serve_binary_path(s3_path, filename, checksum)
         return None
     try:
         return _with_bootstrap_cursor(_q)
@@ -5043,6 +5197,44 @@ def files_evict(request: Request):
     return JSONResponse({"ok": True, "removed": removed})
 
 
+def _artifact_checksum_for_rel_path(rel_path: str) -> str | None:
+    """Checksum de l'artefact désigné par le chemin RELATIF de la route /binaries/.
+
+    `artifacts.s3_path` stocke un chemin absolu en mode local et une clé préfixée
+    en mode S3, alors que l'URL porte le chemin relatif — d'où la liste de formes
+    candidates (l'inverse de `binaries_svc.route_rel_path`).
+
+    None si aucun artefact ne correspond, si la colonne est nulle, ou si la base
+    est injoignable : on sert alors comme avant plutôt que de casser un
+    téléchargement qui marche faute de pouvoir le vérifier.
+    """
+    rel = (rel_path or "").strip().lstrip("/")
+    if not rel:
+        return None
+    candidats = [
+        _safe_path_join(settings.local_binaries_dir, rel),
+        f"/data/content/binaries/{rel}",
+        f"/data/binaries/{rel}",
+        f"{S3_BINARIES_PREFIX.rstrip('/')}/{rel}",
+        rel,
+    ]
+
+    def _q(cur):
+        cur.execute(
+            "SELECT checksum FROM artifacts "
+            "WHERE s3_path = ANY(%s) AND checksum IS NOT NULL LIMIT 1",
+            (candidats,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+    try:
+        return _with_bootstrap_cursor(_q)
+    except Exception:
+        logger.debug("get_binary: checksum introuvable pour %s — servi sans vérification", rel)
+        return None
+
+
 @app.get("/binaries/{path:path}")
 def get_binary(path: str):
     try:
@@ -5061,6 +5253,12 @@ def get_binary(path: str):
         local_path = _safe_path_join(settings.local_binaries_dir, path)
         if not os.path.isfile(local_path):
             raise HTTPException(status_code=404, detail="Local binary not found.")
+        # Seconde porte du même défaut (issue #5) : cette route sert le cache
+        # disque SANS passer par _serve_binary_path. Elle n'est pas décorative —
+        # _build_update_directive y envoie le plugin dès que le slug n'est pas
+        # résolu ou que l'extension de l'artefact est inconnue de /catalog.
+        if not _local_cache_is_serveable(local_path, _artifact_checksum_for_rel_path(path)):
+            raise HTTPException(status_code=404, detail="Local binary failed checksum verification.")
         return FileResponse(local_path, media_type="application/octet-stream")
 
     if not settings.s3_bucket:
@@ -5286,6 +5484,20 @@ def _startup_db_init() -> None:
     # Fire-and-forget startup check: useful diagnostics without blocking pod startup.
     _start_s3_connectivity_check_non_blocking()
 
+    if not settings.db_auto_bootstrap:
+        # Production default: the database (and its extensions) is expected
+        # to already exist, provisioned by ops/DBA out-of-band (or by the
+        # CNPG operator's own bootstrap, if used) — this app only populates
+        # it via the Alembic migration Job, not by creating a role/database/
+        # schema for itself using admin-privileged credentials on every pod
+        # boot. Set DM_DB_AUTO_BOOTSTRAP=true to restore the old zero-config
+        # local/dev behavior below.
+        logger.info(
+            "DM_DB_AUTO_BOOTSTRAP is false (default): skipping automatic "
+            "role/database/schema creation at startup."
+        )
+        return
+
     if psycopg2 is None:
         logger.warning("psycopg2 not installed; skipping DB bootstrap/schema init")
         return
@@ -5353,6 +5565,38 @@ def _shutdown_embedded_queue_worker() -> None:
         _embedded_worker_thread.join(timeout=5)
     _embedded_worker_thread = None
     _embedded_worker_stop = None
+
+
+# ---- Export parc (agrégats d'usage → bus de la bêta) ------------------------
+_parc_export_stop: threading.Event | None = None
+_parc_export_thread: threading.Thread | None = None
+
+
+@app.on_event("startup")
+def _startup_parc_export() -> None:
+    """Boucle de fond de l'export parc — tous les rôles FastAPI. Le cycle
+    lui-même se garde (flag runtime, verrou consultatif, garde « trop tôt ») :
+    plusieurs pods peuvent porter la boucle sans jamais doubler un envoi."""
+    global _parc_export_stop, _parc_export_thread
+    if psycopg2 is None or not _db_url_bootstrap():
+        return
+    if _parc_export_thread and _parc_export_thread.is_alive():
+        return
+    from .services import parc_export as _parc_export
+    _parc_export_stop = threading.Event()
+    _parc_export_thread = _parc_export.demarrer_fond(_parc_export_stop)
+    logger.info("Parc export background loop started.")
+
+
+@app.on_event("shutdown")
+def _shutdown_parc_export() -> None:
+    global _parc_export_stop, _parc_export_thread
+    if _parc_export_stop:
+        _parc_export_stop.set()
+    if _parc_export_thread and _parc_export_thread.is_alive():
+        _parc_export_thread.join(timeout=3)
+    _parc_export_stop = None
+    _parc_export_thread = None
 
 
 # ---- Runtime config sync (all FastAPI roles: api / admin / all) -------------

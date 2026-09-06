@@ -140,6 +140,15 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
     "DM_TELEMETRY_REQUIRE_TOKEN": _spec(
         "DM_TELEMETRY_REQUIRE_TOKEN", "Token télémétrie requis", "Télémétrie", "bool", True,
         settings_field="telemetry_require_token"),
+    # ── Export parc (bus de la bêta) ──
+    "DM_PARC_EXPORT_ENABLED": _spec(
+        "DM_PARC_EXPORT_ENABLED",
+        "Export parc actif (⚠ désactiver = suivi-beta lèvera son alerte de silence)",
+        "Export parc", "bool", True, settings_field="parc_export_enabled"),
+    "DM_PARC_EXPORT_INTERVALLE_S": _spec(
+        "DM_PARC_EXPORT_INTERVALLE_S", "Cadence de l'export parc (s)",
+        "Export parc", "int", True, settings_field="parc_export_intervalle_s",
+        min=60, max=3600),
     # ── Relais ──
     "DM_RELAY_PROXY_SHARED_TOKEN": _spec(
         "DM_RELAY_PROXY_SHARED_TOKEN", "Token partagé relais (⚠ synchroniser avec relay-assistant)",

@@ -1,25 +1,31 @@
 # Guide de packaging des plugins pour Device Management
 
-> Ce document explique comment preparer un plugin pour qu'il soit automatiquement detecte et enregistre dans le catalogue Device Management (DM).
+> **Étape 3 du parcours développeur** ([README](README.md)) : préparer une archive que DM sait
+> détecter, décrire et publier automatiquement. Ce que ces fichiers changent pour le *protocole*
+> est traité au § 2 bis du [contrat d'interface](plugin-dm-protocol-update-features.md).
 
 ---
 
 ## Principe
 
-Chaque plugin est distribue sous forme d'archive ZIP (renommee selon la plateforme : .oxt, .xpi, .crx). DM detecte automatiquement les metadonnees du plugin a partir de deux fichiers optionnels places **a la racine** de l'archive :
+Chaque plugin est distribué sous forme d'archive ZIP (renommée selon la plateforme : .oxt, .xpi, .crx). DM détecte automatiquement les métadonnées du plugin à partir de deux fichiers optionnels placés **a la racine** de l'archive :
 
-| Fichier | Role | Obligatoire |
+> **Ces deux fichiers ne partent jamais sur les postes.** À la publication, DM les extrait, en
+> ingère le contenu, puis **reconstruit l'archive sans eux** avant de la stocker. Le `checksum`
+> distribué porte donc sur l'archive *après* retrait : il ne correspondra pas à l'empreinte du
+> paquet que vous avez construit. Ce retrait n'opère que sur les fichiers placés **a la racine** —
+> un `dm-*.json` imbriqué serait lu, mais publié dans le binaire.
+
+| Fichier | Rôle | Obligatoire |
 |---------|------|-------------|
-| `dm-manifest.json` | Fiche catalogue (nom, description, changelog, features) | Recommande |
-| `dm-config.json` | Template de configuration par environnement | Recommande |
-
-Ces fichiers sont **retires automatiquement** du binaire distribue aux utilisateurs finaux — ils ne servent qu'a DM lors de l'upload.
+| `dm-manifest.json` | Fiche catalogue (nom, description, changelog, features) | Recommandé |
+| `dm-config.json` | Template de configuration par environnement | Recommandé |
 
 ---
 
 ## dm-manifest.json — Fiche catalogue
 
-Ce fichier decrit le plugin pour le catalogue. Tous les champs sont optionnels sauf `slug` et `name`.
+Ce fichier décrit le plugin pour le catalogue. Tous les champs sont optionnels sauf `slug` et `name`.
 
 ```json
 {
@@ -66,37 +72,37 @@ Ce fichier decrit le plugin pour le catalogue. Tous les champs sont optionnels s
 | Champ | Type | Description |
 |-------|------|-------------|
 | `slug` | string | Identifiant unique du plugin (minuscules, tirets). Ex: `mirai-libreoffice` |
-| `name` | string | Nom affiche dans le catalogue |
+| `name` | string | Nom affiché dans le catalogue |
 | `description` | string | Description longue |
 | `intent` | string | Proposition de valeur courte (1-2 phrases) |
 | `device_type` | string | `libreoffice`, `matisse`, `firefox`, `chrome`, `edge` |
 | `category` | string | `productivity`, `security`, `communication`, `tools` |
-| `publisher` | string | Editeur / equipe |
+| `publisher` | string | Éditeur / équipe |
 | `visibility` | string | `public`, `internal`, `hidden` |
 | `homepage_url` | string | URL du projet |
 | `support_email` | string | Email de support |
-| `icon_url` | string | Chemin relatif vers l'icone dans l'archive (ex: `assets/logo.png`) |
+| `icon_url` | string | Chemin relatif vers l'icône dans l'archive (ex: `assets/logo.png`) |
 | `doc_url` | string | URL de la documentation |
 | `license` | string | Licence (SPDX) |
-| `key_features` | array | Liste de fonctionnalites cles (affichees comme tags) |
-| `changelog` | array | Historique des versions (la plus recente en premier) |
+| `key_features` | array | Liste de fonctionnalités clés (affichées comme tags) |
+| `changelog` | array | Historique des versions (la plus récente en premier) |
 
-### Icone
+### Icône
 
-L'icone doit etre un PNG (recommande 128x128 ou 256x256). DM la cherche dans cet ordre :
+L'icône doit être un PNG (recommandé 128x128 ou 256x256). DM la cherche dans cet ordre :
 
-1. Le chemin indique dans `dm-manifest.json` → `icon_url` (ex: `assets/logo.png`)
+1. Le chemin indiqué dans `dm-manifest.json` → `icon_url` (ex: `assets/logo.png`)
 2. `assets/logo.png`
 3. `icons/icon128.png`
 4. `icons/icon48.png`
 
-L'icone est stockee en base (data URL base64) — pas de fichier sur disque.
+L'icône est stockée en base (data URL base64) — pas de fichier sur disque.
 
 ---
 
 ## dm-config.json — Template de configuration
 
-Ce fichier definit la configuration servie aux plugins par DM. Il est structure en sections : une section `default` + une section par environnement.
+Ce fichier définit la configuration servie aux plugins par DM. Il est structuré en sections : une section `default` + une section par environnement.
 
 ```json
 {
@@ -108,7 +114,11 @@ Ce fichier definit la configuration servie aux plugins par DM. Il est structure 
     "telemetrylogJson": true,
     "telemetryAuthorizationType": "Bearer",
     "authHeaderName": "Authorization",
-    "authHeaderPrefix": "Bearer "
+    "authHeaderPrefix": "Bearer ",
+    "featureToggles": {
+      "composePromptPanel": true,
+      "search": true
+    }
   },
   "local": {
     "_description": "Dev autonome, sans DM, sans Keycloak",
@@ -137,14 +147,32 @@ Ce fichier definit la configuration servie aux plugins par DM. Il est structure 
 }
 ```
 
-### Regles
+### Règles
 
-- `default` : valeurs communes a tous les profils
+- `default` : valeurs communes à tous les profils
 - `local` : mode autonome sans DM (dev sur le poste)
-- `dev`, `int`, `prod` : overrides par environnement (merges avec `default`)
-- `${{VAR}}` : placeholders substitues par le serveur DM au runtime
-- Les champs `_description` sont informatifs et retires de la config servie
-- Les sections serveur (`dev`, `int`, `prod`) sont **auto-completees** par DM avec les placeholders si vous ne les fournissez pas
+- `dev`, `int`, `prod` : overrides par environnement (fusionnés avec `default`)
+- `${{VAR}}` : placeholders substitués par le serveur DM au runtime
+- Les champs `_description` sont informatifs et retirés de la config servie
+- Les sections serveur (`dev`, `int`, `prod`) sont **auto-complétées** par DM avec les placeholders si vous ne les fournissez pas
+
+### `featureToggles` — les défauts des feature flags
+
+`featureToggles` est **l'autorité des valeurs par défaut** des feature flags : ni le catalogue DM
+ni l'IHM d'administration ne les remplacent. L'administrateur ne pose que des **overrides de
+cohorte** par-dessus ; pour changer un défaut, il faut republier le paquet.
+
+Trois règles spécifiques :
+
+- **Deep-merge**, contrairement au reste de la section : `featureToggles` de `default` et du profil
+  sont fusionnés clé par clé. Un profil qui surcharge un flag n'efface pas les autres.
+- À chaque publication, DM **réconcilie son catalogue de flags** avec l'union des clés
+  `featureToggles` de tous les profils (`default` inclus).
+- Un flag retiré du gabarit est marqué **orphelin** (`deprecated`) : il cesse d'être diffusé, mais
+  n'est jamais supprimé automatiquement.
+
+Résolution complète côté serveur et contrat de consommation côté plugin :
+[plugin-dm-protocol-update-features.md](plugin-dm-protocol-update-features.md) § 4.4.
 
 ### Placeholders disponibles
 
@@ -152,45 +180,43 @@ Ce fichier definit la configuration servie aux plugins par DM. Il est structure 
 |-------------|-----------------|-------------|
 | `${{LLM_BASE_URL}}` | `LLM_BASE_URL` | Endpoint LLM |
 | `${{LLM_API_TOKEN}}` | `LLM_API_TOKEN` | Token API LLM (secret, scrubbed sans relay) |
-| `${{DEFAULT_MODEL_NAME}}` | `DEFAULT_MODEL_NAME` | Modele LLM par defaut |
+| `${{DEFAULT_MODEL_NAME}}` | `DEFAULT_MODEL_NAME` | Modèle LLM par défaut |
 | `${{KEYCLOAK_ISSUER_URL}}` | `KEYCLOAK_ISSUER_URL` | URL issuer Keycloak |
 | `${{KEYCLOAK_REALM}}` | `KEYCLOAK_REALM` | Realm Keycloak |
 | `${{KEYCLOAK_CLIENT_ID}}` | `KEYCLOAK_CLIENT_ID` | Client ID Keycloak |
 | `${{KEYCLOAK_REDIRECT_URI}}` | `KEYCLOAK_REDIRECT_URI` | URI de redirect OAuth |
-| `${{KEYCLOAK_ALLOWED_REDIRECT_URI}}` | `KEYCLOAK_ALLOWED_REDIRECT_URI` | URI de redirect autorisee |
+| `${{KEYCLOAK_ALLOWED_REDIRECT_URI}}` | `KEYCLOAK_ALLOWED_REDIRECT_URI` | URI de redirect autorisée |
 | `${{PUBLIC_BASE_URL}}` | `PUBLIC_BASE_URL` | URL publique de DM |
 
 ---
 
-## Detection automatique
+## Détection automatique
 
-Quand un fichier est uploade dans DM, le systeme detecte automatiquement :
+Quand un fichier est uploadé dans DM, le système détecte automatiquement :
 
 ### Version
 
-| Priorite | Source | Methode |
+| Priorité | Source | Méthode |
 |----------|--------|---------|
-| 1 | `manifest.json` | Champ `version` (WebExtension) |
-| 2 | `description.xml` | `<version value="...">` (OXT LibreOffice) |
-| 3 | `dm-manifest.json` | Premiere entree du `changelog` |
+| 1 | `dm-manifest.json` | Première entrée du `changelog` |
+| 2 | `manifest.json` | Champ `version` (WebExtension) |
+| 3 | `description.xml` | `<version value="...">` (OXT LibreOffice) |
 | 4 | Nom du fichier | Regex `(\d+\.\d+(?:\.\d+)*)` |
 
 ### Type de plugin
 
 | Extension | Condition | `device_type` |
 |-----------|-----------|---------------|
+| toutes | `device_type` declare dans `dm-manifest.json` (`thunderbird` = `matisse`) | valeur declaree, prioritaire sur les regles ci-dessous |
 | `.oxt` | — | `libreoffice` |
 | `.xpi` | `browser_specific_settings.thunderbird` dans manifest | `matisse` |
-| `.xpi` | `browser_specific_settings.gecko` ou par defaut | `firefox` |
+| `.xpi` | `browser_specific_settings.gecko` ou par défaut | `firefox` |
 | `.crx` | — | `chrome` |
 | `.crx` | `manifest_version: 3` sans gecko | `chrome` ou `edge` |
 
-### Icone
+### Icône
 
-Recherchee dans l'archive :
-1. Chemin `icon_url` du `dm-manifest.json`
-2. `assets/logo.png`
-3. `icons/icon128.png`, `icons/icon48.png`
+Voir [Icône](#icône) sous `dm-manifest.json` — même ordre de recherche.
 
 ---
 
@@ -431,11 +457,11 @@ zip -r ../dist/mon-plugin.xpi . -x "*.DS_Store" "node_modules/*"
 
 ---
 
-### Edge (.crx, identique a Chrome)
+### Edge (.crx, identique à Chrome)
 
-Edge utilise le meme format que Chrome (Manifest V3). Le packaging est identique.
+Edge utilise le même format que Chrome (Manifest V3). Le packaging est identique.
 
-La seule difference : pour la distribution via le Edge Add-ons Store, soumettre sur [partner.microsoft.com/dashboard/microsoftedge](https://partner.microsoft.com/dashboard/microsoftedge).
+La seule différence : pour la distribution via le Edge Add-ons Store, soumettre sur [partner.microsoft.com/dashboard/microsoftedge](https://partner.microsoft.com/dashboard/microsoftedge).
 
 Pour la distribution via DM, le `.crx` ou `.zip` est identique au format Chrome.
 
@@ -446,12 +472,12 @@ Pour la distribution via DM, le `.crx` ou `.zip` est identique au format Chrome.
 ### Via l'admin UI
 
 1. Aller dans `/admin/catalog/new`
-2. Selectionner le fichier (.oxt, .xpi, .crx)
-3. DM analyse le package : detecte version, type, extrait dm-manifest.json, dm-config.json, icone
-4. Verifier et completer la fiche
-5. Valider — le plugin est cree avec la version publiee
+2. Sélectionner le fichier (.oxt, .xpi, .crx)
+3. DM analyse le package : détecte version, type, extrait dm-manifest.json, dm-config.json, icône
+4. Vérifier et compléter la fiche
+5. Valider — le plugin est créé avec la version publiée
 
-### Via le script de deploiement
+### Via le script de déploiement
 
 ```bash
 export DM_ADMIN_TOKEN="votre-token"
@@ -472,9 +498,9 @@ export DM_ADMIN_TOKEN="votre-token"
 
 ---
 
-## Verification
+## Vérification
 
-Apres upload, verifier :
+Après upload, vérifier :
 
 ```bash
 # Fiche catalogue

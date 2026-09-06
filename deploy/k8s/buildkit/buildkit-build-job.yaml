@@ -48,6 +48,8 @@ spec:
             - "--opt=context=__GIT_CONTEXT__"
             - "--opt=filename=__DOCKERFILE__"
             - "--opt=platform=__PLATFORMS__"
+            # Sans cet argument, l'image naîtrait avec DM_APP_VERSION=dev (cf. Dockerfile).
+            - "--opt=build-arg:DM_IMAGE_TAG=__TAG__"
             - "--opt=label:org.opencontainers.image.revision=__GIT_SHA__"
             - "--opt=label:org.opencontainers.image.version=__TAG__"
             - "--output=type=image,name=__DESTINATIONS__,push=true"

@@ -42,8 +42,6 @@ spec:
               value: "llm"
             - name: DM_PORT
               value: "3001"
-            - name: DM_APP_VERSION
-              value: "0.9.0"
             - name: DM_CONFIG_ENABLED
               value: "false"
             - name: DM_STORE_ENROLL_LOCALLY

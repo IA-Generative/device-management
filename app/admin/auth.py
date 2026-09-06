@@ -27,7 +27,7 @@ import urllib.request
 from functools import wraps
 
 from fastapi import HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.resilience import retry_transient
 
@@ -256,6 +256,18 @@ def require_admin(func):
                     csrf = _generate_csrf_token()
                     result.set_cookie(CSRF_COOKIE, csrf, samesite="lax", max_age=SESSION_TTL)
                 return result
+
+            # API/XHR calls NEVER get the login redirect: the debug page polls
+            # /admin/api/* every 5 s, and each redirect used to mint a FRESH
+            # dm_oidc_state cookie — racing (and breaking) any interactive login
+            # in flight ("Invalid state" for everyone with a stale tab open,
+            # seen on int 2026-09-04). An expired API call is a plain 401, no
+            # cookies touched; the page decides what to do with it.
+            accepte = request.headers.get("accept", "")
+            if (request.url.path.startswith("/admin/api")
+                    or request.headers.get("x-requested-with")
+                    or ("application/json" in accepte and "text/html" not in accepte)):
+                return JSONResponse({"detail": "session expirée"}, status_code=401)
 
             # Redirect to OIDC login
             cfg = _get_oidc_config()

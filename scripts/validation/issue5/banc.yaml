@@ -1,0 +1,133 @@
+# Banc d'essai issue #5 — namespace dédié dm-issue5-test sur brave-bassi.
+# Topologie de PRODUCTION : un pod admin porteur de son disque (où l'upload
+# écrit) et un pod API avec son PROPRE disque de cache (pull-on-miss). Deux
+# PVC distincts : c'est ce qui rend le défaut observable.
+# Jamais dans le namespace bootstrap — c'est la plateforme d'intégration.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: admin-cache, namespace: dm-issue5-test}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: sbs-default
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: api-cache, namespace: dm-issue5-test}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: sbs-default
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: postgres, namespace: dm-issue5-test}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata: {labels: {app: postgres}}
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16
+        env:
+        - {name: POSTGRES_DB,       value: bootstrap}
+        - {name: POSTGRES_USER,     value: dev}
+        - {name: POSTGRES_PASSWORD, value: dev}
+        - {name: PGDATA,            value: /var/lib/postgresql/data/pgdata}
+        ports: [{containerPort: 5432}]
+        resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "1", memory: 512Mi}}
+        volumeMounts: [{name: pgdata, mountPath: /var/lib/postgresql/data}]
+      volumes: [{name: pgdata, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: postgres, namespace: dm-issue5-test}
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432, targetPort: 5432}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: dm-admin, namespace: dm-issue5-test}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: dm-admin}}
+  strategy: {type: Recreate}
+  template:
+    metadata: {labels: {app: dm-admin}}
+    spec:
+      securityContext: {runAsNonRoot: true, fsGroup: 10001}
+      containers:
+      - name: dm
+        image: __IMAGE__
+        env:
+        - {name: DM_RUNTIME_MODE,       value: "all"}
+        - {name: DM_APP_ENV,            value: "dev"}
+        - {name: DM_BINARIES_MODE,      value: "local"}
+        - {name: DM_LOCAL_BINARIES_DIR, value: "/data/content/binaries"}
+        - {name: DM_DB_AUTO_BOOTSTRAP,  value: "true"}
+        - {name: DM_QUEUE_ENABLED,      value: "false"}
+        - {name: DM_METRICS_ENABLED,    value: "false"}
+        - {name: DM_CONFIG_ENABLED,     value: "true"}
+        - {name: DM_QUEUE_ADMIN_TOKEN,  value: "__TOKEN__"}
+        - {name: DM_ADMIN_INTERNAL_URL, value: "http://dm-admin"}
+        - {name: ADMIN_SESSION_SECRET,  value: "__TOKEN__"}
+        - {name: DM_RELAY_SECRET_PEPPER, value: "__TOKEN__"}
+        - {name: PUBLIC_BASE_URL,       value: "http://dm-api"}
+        - {name: DATABASE_URL,          value: "postgresql://dev:dev@postgres:5432/bootstrap"}
+        - {name: DATABASE_ADMIN_URL,    value: "postgresql://dev:dev@postgres:5432/bootstrap"}
+        ports: [{containerPort: 3001}]
+        resources: {requests: {cpu: 200m, memory: 384Mi}, limits: {cpu: "1", memory: 768Mi}}
+        volumeMounts: [{name: cache, mountPath: /data/content/binaries}]
+      volumes: [{name: cache, persistentVolumeClaim: {claimName: admin-cache}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dm-admin, namespace: dm-issue5-test}
+spec:
+  selector: {app: dm-admin}
+  ports: [{port: 80, targetPort: 3001}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: dm-api, namespace: dm-issue5-test}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: dm-api}}
+  strategy: {type: Recreate}
+  template:
+    metadata: {labels: {app: dm-api}}
+    spec:
+      securityContext: {runAsNonRoot: true, fsGroup: 10001}
+      containers:
+      - name: dm
+        image: __IMAGE__
+        env:
+        - {name: DM_RUNTIME_MODE,       value: "api"}
+        - {name: DM_APP_ENV,            value: "dev"}
+        - {name: DM_BINARIES_MODE,      value: "local"}
+        - {name: DM_LOCAL_BINARIES_DIR, value: "/data/content/binaries"}
+        - {name: DM_DB_AUTO_BOOTSTRAP,  value: "false"}
+        - {name: DM_QUEUE_ENABLED,      value: "false"}
+        - {name: DM_METRICS_ENABLED,    value: "false"}
+        - {name: DM_CONFIG_ENABLED,     value: "true"}
+        - {name: DM_QUEUE_ADMIN_TOKEN,  value: "__TOKEN__"}
+        - {name: DM_ADMIN_INTERNAL_URL, value: "http://dm-admin"}
+        - {name: ADMIN_SESSION_SECRET,  value: "__TOKEN__"}
+        - {name: DM_RELAY_SECRET_PEPPER, value: "__TOKEN__"}
+        - {name: PUBLIC_BASE_URL,       value: "http://dm-api"}
+        - {name: DATABASE_URL,          value: "postgresql://dev:dev@postgres:5432/bootstrap"}
+        - {name: DATABASE_ADMIN_URL,    value: "postgresql://dev:dev@postgres:5432/bootstrap"}
+        ports: [{containerPort: 3001}]
+        resources: {requests: {cpu: 200m, memory: 384Mi}, limits: {cpu: "1", memory: 768Mi}}
+        volumeMounts: [{name: cache, mountPath: /data/content/binaries}]
+      volumes: [{name: cache, persistentVolumeClaim: {claimName: api-cache}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dm-api, namespace: dm-issue5-test}
+spec:
+  selector: {app: dm-api}
+  ports: [{port: 80, targetPort: 3001}]

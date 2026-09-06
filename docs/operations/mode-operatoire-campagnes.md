@@ -499,6 +499,21 @@ depuis l'admin). Quand une version est **purgée / dépréciée**, le binaire es
 curl -X POST -H "x-admin-token: $DM_QUEUE_ADMIN_TOKEN" https://<host>/api/files/evict
 ```
 
+> **Ré-upload d'un même numéro de version : `evict` ne règle PAS ce cas.** `s3_path` est
+> indexé par numéro de version. Republier le même numéro met à jour `artifacts.checksum`
+> — celui que `/config` annonce — sans changer `s3_path` : la ligne `artifacts` reste
+> vivante, le blob périmé n'est donc **pas orphelin** et survit à `POST /api/files/evict`
+> (qui répond `removed: 0`). Le contournement « appeler evict après un ré-upload » est
+> faux pour ce cas.
+>
+> Ce n'est plus nécessaire : depuis le correctif de l'issue **#5**, le pod compare le
+> checksum du fichier caché à `artifacts.checksum` **au moment de servir**, et se répare
+> seul (éviction locale + re-pull) au premier téléchargement qui suit le ré-upload —
+> chaque pod indépendamment, sans invalidation à propager. Si le re-pull ne corrige pas
+> la divergence, le pod rend un **404** plutôt qu'un binaire faux : dans les logs,
+> `serve_binary: divergence persistante` pointe une source (PVC admin / S3) elle-même
+> périmée.
+
 ---
 
 ## 10. Diagnostics rapides

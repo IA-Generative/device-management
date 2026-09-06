@@ -265,18 +265,39 @@ Draft → Active → (Paused) → Completed | Rolled Back
 - Le ciblage par cohorte permet les beta tests internes
 - La campagne est un objet de premiere classe avec son propre cycle de vie
 
+**Mise a jour 0.9.13 → 0.9.15 — cohabitation de campagnes.** Le modele « une seule campagne
+active » a ete leve : plusieurs campagnes coexistent desormais sur un meme plugin (un rollout
+general + N bras d'experimentation). Voir [adr-0004-branches-experimentation.md](adr-0004-branches-experimentation.md)
+pour la decision complete. Trois mecanismes la rendent deterministe :
+
+| Mecanisme | Version | Effet |
+|---|---|---|
+| Scoping par plugin | 0.9.13 | seules les campagnes du plugin du device demandeur sont candidates (issue #14 : un poste LibreOffice recevait la version Matisse) |
+| Precedence explicite | 0.9.14 | `campagne ciblee` > `campagne generale`, puis `priority`, puis `created_at` — une seule gagne, toujours la meme |
+| Auto-completion scopee par classe | 0.9.14 | une release generale ne clot que les campagnes generales ; une experimentation ne clot que le bras de sa propre cohorte |
+
+Le mode **PIN** des campagnes d'experimentation assouplit deliberement la comparaison de versions
+(`cible ≠ courante` au lieu de `cible > courante`) et epingle l'URL d'artefact sur la version
+exacte de la campagne — sans quoi le device recevrait le binaire stable sous l'etiquette de
+l'essai (0.9.15). Contrat client detaille : `../plugin-developer/plugin-dm-protocol-update-features.md` §4.3 bis.
+
 **Critique** :
 - Pas de rollback automatique si X% des devices echouent
-- Pas de prevention des campagnes en double pour le meme plugin
-- La comparaison de versions est textuelle (pas de semver parsing)
 - Le device doit reporter son status (`/update/status`) — si le plugin ne le fait pas, la campagne reste bloquee
 - Pas de deadline automatique sur les campagnes (elles restent actives indefiniment)
+- La cohabitation deplace le risque : une experimentation oubliee laisse une cohorte figee sur une
+  version d'essai. Attenuation en place (0.9.15) — le tableau de bord signale le nombre de
+  versions reellement en circulation sur le parc ; il n'y a pas d'expiration automatique.
+- La comparaison de versions reste textuelle hors mode PIN (pas de parsing semver, pas de ranges)
 
 **Amelioration proposee** :
 - Ajouter un seuil de rollback automatique (`rollback_on_failure_threshold: 10%`)
 - Parser les versions en semver pour permettre les ranges (`>=2.0.0, <3.0.0`)
-- Ajouter une deadline aux campagnes (auto-complete apres N jours)
-- Constraint SQL pour empecher 2 campagnes actives sur le meme plugin
+- Ajouter une deadline aux campagnes (auto-complete apres N jours), en priorite sur les experimentations
+
+> **Non-objectif assume** : la contrainte SQL « une seule campagne active par plugin », proposee
+> dans les versions anterieures de cet ADR, est abandonnee — elle interdirait la cohabitation
+> recherchee. Le determinisme est obtenu par l'ordre de selection, pas par l'unicite.
 
 ---
 
@@ -291,6 +312,30 @@ Draft → Active → (Paused) → Completed | Rolled Back
 | `proxy` | Stream depuis S3 via le pod | Fallback si presign non supporte |
 
 **Pull-on-miss** : les pods API (4 replicas) n'ont pas de PVC propre. A la premiere demande d'un binaire, le pod le tire depuis le pod admin (qui a le PVC) via HTTP interne.
+
+**Invalidation du cache (0.9.14)** : le pull-on-miss suppose qu'un chemin de binaire designe un
+contenu immuable. Les branches d'experimentation cassent cette hypothese — on republie couramment
+le meme numero de version. Sans invalidation, un pod API resservirait l'ancien binaire sous le
+nouveau libelle, et la verification de checksum cote plugin echouerait.
+
+| Mecanisme | Portee | Note |
+|---|---|---|
+| `DELETE /api/files/{path}` | ciblee, un pod | appel admin → API, en-tete `X-Admin-Token` |
+| `POST /api/files/evict` | tous les orphelins d'un pod | supprime tout fichier cache ne correspondant plus a un artefact vivant |
+| `delete_binary(s3_path)` | source | best-effort et idempotent ; `os.remove` en local, `delete_object` en S3 |
+| verification au service (#5) | le pod qui sert | compare le cache a `artifacts.checksum` avant de servir ; evince et re-pull si divergence |
+
+L'eviction des orphelins est **auto-reparatrice** : elle borne la taille du cache et rattrape un
+pod qui aurait manque une invalidation ciblee (redemarrage, partition reseau). Elle est sans objet
+hors mode `local`, ou le contenu est adresse par le stockage objet.
+
+**Ce que l'eviction des orphelins ne couvre pas (issue #5)** : republier le meme numero de version
+laisse `s3_path` inchange et la ligne `artifacts` vivante — le blob perime n'est pas orphelin, et
+`POST /api/files/evict` ne le supprime pas. C'est precisement le cas des branches d'experimentation
+decrit plus haut. La verification au service le couvre : chaque pod compare le checksum du fichier
+cache a celui de la base avant de servir, evince et re-pull en cas de divergence, et refuse de
+servir (404) si la divergence persiste. Elle n'exige aucune coordination entre repliques — c'est ce
+qui l'a fait preferer a une invalidation distribuee a l'upload.
 
 **Justification** :
 - Pas besoin de NFS partage (complexe en K8s multi-node)

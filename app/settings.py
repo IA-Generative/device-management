@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     app_env: str = Field(default="dev")
     enroll_url: str = Field(default="/enroll")
 
+    # Startup DB bootstrap (role/database/schema auto-creation via an admin
+    # DSN — see _startup_db_init in main.py). OFF by default: production is
+    # expected to be handed an already-existing database (created and
+    # granted by ops/DBA out-of-band) that only the Alembic migration Job
+    # populates, not something every replica creates for itself on boot.
+    # Enable for local/dev convenience only (docker-compose sets this true).
+    db_auto_bootstrap: bool = Field(default=False)
+
     # Local storage for enroll payloads
     enroll_dir: str = Field(default="/data/enroll")
     store_enroll_locally: bool = Field(default=True)
@@ -146,6 +154,29 @@ class Settings(BaseSettings):
     auth_allowed_algorithms_csv: str = Field(default="RS256")
     auth_leeway_seconds: int = Field(default=30)
     auth_jwks_cache_ttl_seconds: int = Field(default=600)
+
+    # Export parc → bus de la bêta (agrégats d'usage des plugins, expurgés à la
+    # source). URL vide = export non configuré (le job ne fait rien).
+    parc_export_url: str = Field(
+        default_factory=lambda: _env_default("PARC_EXPORT_URL", default="")
+    )
+    parc_export_secret: str = Field(
+        default_factory=lambda: _env_default("PARC_EXPORT_SECRET", default="")
+    )
+    # runtime-éditables depuis la page debug (DM_PARC_EXPORT_* prime, nom nu du
+    # contrat accepté en repli, comme les clés télémétrie).
+    parc_export_enabled: bool = Field(
+        default_factory=lambda: _env_default("PARC_EXPORT_ENABLED", default="false")
+    )
+    parc_export_intervalle_s: int = Field(
+        default_factory=lambda: _env_default("PARC_EXPORT_INTERVALLE_S", default="300")
+    )
+    parc_instance_label: str = Field(
+        default_factory=lambda: _env_default("PARC_INSTANCE_LABEL", default="dm-x")
+    )
+    # Rétention de la télémétrie brute locale (patron PURGE_AFTER_DAYS de
+    # app/llm/traffic.py) : purge opportuniste des lignes plus vieilles que N jours.
+    telemetry_retention_days: int = Field(default=30)
 
     # Deploy environments (JSON list or comma-separated names)
     # Each env: name, label, strategy (patch_all | progressive | choice), confirm_name (bool)

@@ -15,6 +15,14 @@ COPY db/schema.sql /app/db/schema.sql
 COPY alembic /app/alembic
 COPY alembic.ini /app/alembic.ini
 
+# Version : l'image se DÉCLARE elle-même. Passée au build
+# (--build-arg DM_IMAGE_TAG=<tag>), elle ne peut plus diverger du tag déployé —
+# contrairement à une valeur tenue à la main dans les manifestes, qui est restée
+# à 0.9.15 pendant quatre versions sans que rien ne le signale. Un opérateur peut
+# toujours l'écraser par la variable d'environnement s'il en a besoin.
+ARG DM_IMAGE_TAG=dev
+ENV DM_APP_VERSION=${DM_IMAGE_TAG}
+
 # Defaults
 ENV DM_ENROLL_DIR=/data/enroll \
     DM_STORE_ENROLL_LOCALLY=true \

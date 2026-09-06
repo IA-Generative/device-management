@@ -131,12 +131,18 @@ def get_device_connections(cur, client_uuid: str, limit: int = 20) -> list[dict]
 
 
 def get_device_activity(cur, client_uuid: str, limit: int = 50) -> list[dict]:
-    """Get recent telemetry events for a device."""
+    """Get recent telemetry events for a device.
+
+    NB : la colonne de réception s'appelle `created_at` (il n'y a jamais eu de
+    `received_at` dans device_telemetry_events) — l'alias garde l'API du
+    template inchangée.
+    """
     cur.execute("""
-        SELECT span_name, span_ts, attributes, plugin_version, received_at
+        SELECT span_name, span_ts, attributes, plugin_version,
+               created_at AS received_at
         FROM device_telemetry_events
         WHERE client_uuid = %s
-        ORDER BY received_at DESC
+        ORDER BY created_at DESC
         LIMIT %s
     """, (client_uuid, limit))
     cols = [d[0] for d in cur.description]
