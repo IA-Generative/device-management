@@ -264,3 +264,73 @@ def test_serve_variant_by_filename_transmet_le_checksum(monkeypatch):
     assert "a.checksum" in curseur.sql, "la requête doit ramener le checksum de l'artefact"
     assert vus == [("/data/content/binaries/chrome/1.0.0_cible.crx",
                     "1.0.0_cible.crx", "sha256:" + "b" * 64)]
+
+
+# ─── issue #5, seconde porte : GET /binaries/{path} servait le cache disque
+# sans passer par _serve_binary_path — donc sans aucune vérification. Ce n'est
+# pas une route décorative : _build_update_directive y envoie le plugin dès que
+# le slug n'est pas résolu ou que l'extension de l'artefact est inconnue de
+# /catalog (cf. _artifact_url / _pinned_artifact_url).
+
+def _client_binaries(monkeypatch, tmp_path, contenu, checksum_en_base):
+    monkeypatch.setattr(m.settings, "local_binaries_dir", str(tmp_path))
+    m.settings.binaries_mode = "local"
+    cible = tmp_path / "libreoffice" / "1.0.0_x.oxt"
+    cible.parent.mkdir(parents=True, exist_ok=True)
+    cible.write_bytes(contenu)
+    monkeypatch.setattr(m, "_artifact_checksum_for_rel_path", lambda rel: checksum_en_base)
+    return TestClient(m.app), cible
+
+
+def test_binaries_route_sert_un_cache_conforme(monkeypatch, tmp_path):
+    data = b"binaire-conforme"
+    client, _ = _client_binaries(monkeypatch, tmp_path, data, _sha256(data))
+    monkeypatch.setattr(m, "_pull_binary_from_admin",
+                        lambda p: pytest.fail("aucun pull quand le cache est conforme"))
+
+    res = client.get("/binaries/libreoffice/1.0.0_x.oxt")
+
+    assert res.status_code == 200
+    assert res.content == data
+
+
+def test_binaries_route_repare_un_cache_perime(monkeypatch, tmp_path):
+    neuf = b"binaire-B-republie"
+    client, cible = _client_binaries(monkeypatch, tmp_path, b"binaire-A-perime", _sha256(neuf))
+
+    def _pull(path):
+        with open(path, "wb") as f:
+            f.write(neuf)
+        return True
+
+    monkeypatch.setattr(m, "_pull_binary_from_admin", _pull)
+
+    res = client.get("/binaries/libreoffice/1.0.0_x.oxt")
+
+    assert res.status_code == 200
+    assert res.content == neuf
+    assert cible.read_bytes() == neuf
+
+
+def test_binaries_route_refuse_de_servir_si_la_divergence_persiste(monkeypatch, tmp_path):
+    client, _ = _client_binaries(monkeypatch, tmp_path, b"binaire-A-perime", _sha256(b"attendu"))
+    monkeypatch.setattr(m, "_pull_binary_from_admin", lambda p: False)
+
+    res = client.get("/binaries/libreoffice/1.0.0_x.oxt")
+
+    assert res.status_code == 404
+
+
+def test_binaries_route_sert_quand_aucun_checksum_n_est_connu(monkeypatch, tmp_path):
+    """Aucun artefact en base, ou colonne nulle, ou base injoignable : on sert
+    comme avant. Un téléchargement qui marche ne se casse pas au prétexte qu'on
+    ne peut pas le vérifier."""
+    data = b"vieil-artefact-sans-checksum"
+    client, _ = _client_binaries(monkeypatch, tmp_path, data, None)
+    monkeypatch.setattr(m, "_pull_binary_from_admin",
+                        lambda p: pytest.fail("aucun pull sans checksum connu"))
+
+    res = client.get("/binaries/libreoffice/1.0.0_x.oxt")
+
+    assert res.status_code == 200
+    assert res.content == data

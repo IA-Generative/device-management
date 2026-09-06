@@ -5197,6 +5197,44 @@ def files_evict(request: Request):
     return JSONResponse({"ok": True, "removed": removed})
 
 
+def _artifact_checksum_for_rel_path(rel_path: str) -> str | None:
+    """Checksum de l'artefact désigné par le chemin RELATIF de la route /binaries/.
+
+    `artifacts.s3_path` stocke un chemin absolu en mode local et une clé préfixée
+    en mode S3, alors que l'URL porte le chemin relatif — d'où la liste de formes
+    candidates (l'inverse de `binaries_svc.route_rel_path`).
+
+    None si aucun artefact ne correspond, si la colonne est nulle, ou si la base
+    est injoignable : on sert alors comme avant plutôt que de casser un
+    téléchargement qui marche faute de pouvoir le vérifier.
+    """
+    rel = (rel_path or "").strip().lstrip("/")
+    if not rel:
+        return None
+    candidats = [
+        _safe_path_join(settings.local_binaries_dir, rel),
+        f"/data/content/binaries/{rel}",
+        f"/data/binaries/{rel}",
+        f"{S3_BINARIES_PREFIX.rstrip('/')}/{rel}",
+        rel,
+    ]
+
+    def _q(cur):
+        cur.execute(
+            "SELECT checksum FROM artifacts "
+            "WHERE s3_path = ANY(%s) AND checksum IS NOT NULL LIMIT 1",
+            (candidats,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+    try:
+        return _with_bootstrap_cursor(_q)
+    except Exception:
+        logger.debug("get_binary: checksum introuvable pour %s — servi sans vérification", rel)
+        return None
+
+
 @app.get("/binaries/{path:path}")
 def get_binary(path: str):
     try:
@@ -5215,6 +5253,12 @@ def get_binary(path: str):
         local_path = _safe_path_join(settings.local_binaries_dir, path)
         if not os.path.isfile(local_path):
             raise HTTPException(status_code=404, detail="Local binary not found.")
+        # Seconde porte du même défaut (issue #5) : cette route sert le cache
+        # disque SANS passer par _serve_binary_path. Elle n'est pas décorative —
+        # _build_update_directive y envoie le plugin dès que le slug n'est pas
+        # résolu ou que l'extension de l'artefact est inconnue de /catalog.
+        if not _local_cache_is_serveable(local_path, _artifact_checksum_for_rel_path(path)):
+            raise HTTPException(status_code=404, detail="Local binary failed checksum verification.")
         return FileResponse(local_path, media_type="application/octet-stream")
 
     if not settings.s3_bucket:
