@@ -147,6 +147,32 @@
 
 {# Tab: Versions #}
 <div id="tab-versions" class="dm-tabs__panel {% if tab == 'versions' %}dm-tabs__panel--active{% endif %}">
+
+  {% if plugin.device_type in ('firefox', 'matisse') %}
+  <div style="background:#F5F5FE;border:1px solid #cacafb;border-radius:8px;padding:1rem;margin-bottom:1.25rem;">
+    <div style="font-weight:600;margin-bottom:0.5rem;">
+      🦊 URL de mise à jour automatique (Firefox)
+    </div>
+    <p style="font-size:0.875rem;color:#3a3a3a;margin:0 0 0.5rem 0;">
+      Ajoutez cette URL dans le champ
+      <code style="background:#e8e8ff;padding:1px 5px;border-radius:3px;">browser_specific_settings.gecko.update_url</code>
+      de votre <code style="background:#e8e8ff;padding:1px 5px;border-radius:3px;">manifest.json</code> pour activer
+      la mise à jour automatique dans Firefox.
+    </p>
+    {% set _ff_update_url = (public_base_url or '') + '/catalog/' + plugin.slug + '/updates.json' %}
+    <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+      <code id="ff-update-url"
+            style="background:#fff;border:1px solid #cacafb;border-radius:4px;padding:0.4rem 0.75rem;font-size:0.875rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ _ff_update_url }}</code>
+      <button class="dm-btn dm-btn--secondary dm-btn--sm"
+              onclick="(function(btn){navigator.clipboard.writeText(document.getElementById('ff-update-url').textContent).then(function(){btn.textContent='Copié ✓';setTimeout(function(){btn.textContent='Copier';},2000);});})(this)">Copier</button>
+    </div>
+    <p style="font-size:0.8rem;color:#666;margin:0.5rem 0 0 0;">
+      Exemple <code style="font-size:0.8em;">manifest.json</code> :
+      <code style="font-size:0.8em;">"browser_specific_settings": {"gecko": {"id": "{{ plugin.gecko_id or (plugin.slug + '@device-management') }}", "update_url": "{{ _ff_update_url }}"}}</code>
+    </p>
+  </div>
+  {% endif %}
+
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
     <h3 style="margin:0;">Versions</h3>
     <div style="display:flex;gap:0.5rem;">

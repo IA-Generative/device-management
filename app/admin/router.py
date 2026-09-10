@@ -2258,6 +2258,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             "cohorts": cohort_list,
             "deployments": deployments,
             "tab": tab, "timeago": timeago,
+            "public_base_url": (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/"),
         })
     finally:
         conn.close()

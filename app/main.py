@@ -4713,6 +4713,85 @@ def catalog_updates_xml(request: Request, slug: str):
             conn.close()
 
 
+@app.get("/catalog/{slug}/updates.json")
+def catalog_updates_json(request: Request, slug: str):
+    """Firefox/Gecko Mozilla addon update manifest (no authentication required).
+
+    Extensions set ``"update_url"`` in their ``manifest.json`` (or
+    ``browser_specific_settings.gecko.update_url``) to this endpoint.
+    Firefox polls it periodically and auto-updates when a newer version is
+    available.  The format follows the specification at
+    https://extensionworkshop.com/documentation/manage/updating-your-extension/
+
+    The endpoint is intentionally public — Firefox fetches it without any user
+    context, so no cohort or user identification is possible here.
+    """
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        raise HTTPException(404, "Plugin not found")
+    conn = None
+    pool_ctx = _pooled_conn()
+    try:
+        if pool_ctx is not None:
+            conn = pool_ctx.__enter__()
+        else:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.id, p.slug, p.gecko_id
+                FROM plugins p WHERE p.slug = %s AND p.status = 'active'
+            """, (slug,))
+            prow = cur.fetchone()
+            if not prow:
+                raise HTTPException(404, "Plugin not found")
+            plugin_id, canonical_slug, gecko_id = prow
+
+            cur.execute("""
+                SELECT pv.version, a.s3_path, a.checksum
+                FROM plugin_versions pv
+                LEFT JOIN artifacts a ON a.id = pv.artifact_id
+                WHERE pv.plugin_id = %s AND pv.status = 'published'
+                ORDER BY pv.published_at DESC NULLS LAST
+                LIMIT 1
+            """, (plugin_id,))
+            vrow = cur.fetchone()
+            if not vrow:
+                raise HTTPException(404, "No published version found")
+            version, s3_path, checksum = vrow
+
+            # Use PUBLIC_BASE_URL env var (set by the operator) for absolute URLs,
+            # consistent with other update manifest endpoints (/updates/{slug}/…).
+            base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+            if not base:
+                base = str(request.base_url).rstrip("/")
+            filename = os.path.basename(s3_path) if s3_path else f"{canonical_slug}-{version}.xpi"
+            update_link = f"{base}/catalog/{canonical_slug}/download/{filename}"
+
+            # gecko_id is the addon's `browser_specific_settings.gecko.id` value.
+            # Fall back to slug when not configured.
+            addon_id = gecko_id or canonical_slug
+
+            update_entry: dict = {"version": version, "update_link": update_link}
+            norm = _normalize_checksum(checksum)
+            if norm:
+                update_entry["update_hash"] = norm
+
+            payload = {
+                "addons": {
+                    addon_id: {
+                        "updates": [update_entry]
+                    }
+                }
+            }
+            return JSONResponse(payload)
+    finally:
+        if pool_ctx is not None:
+            pool_ctx.__exit__(None, None, None)
+        elif conn is not None:
+            conn.close()
+
+
 # ─── Auto-update multi-format / multi-cible (DM-4) ────────────────────────
 # Le DM GÉNÈRE les manifests (le producteur fournit version/changelog/binaire via
 # le pipeline catalogue). .xml = gupdate (Chromium: Chrome/Edge/Brave/Opera),
