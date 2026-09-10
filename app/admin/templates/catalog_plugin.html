@@ -164,7 +164,7 @@
       <code id="ff-update-url"
             style="background:#fff;border:1px solid #cacafb;border-radius:4px;padding:0.4rem 0.75rem;font-size:0.875rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ _ff_update_url }}</code>
       <button class="dm-btn dm-btn--secondary dm-btn--sm"
-              onclick="navigator.clipboard.writeText(document.getElementById('ff-update-url').textContent).then(function(){this.textContent='Copié ✓';setTimeout(function(){document.querySelector('[onclick*=ff-update-url]').textContent='Copier';},2000);}.bind(this))">Copier</button>
+              onclick="(function(btn){navigator.clipboard.writeText(document.getElementById('ff-update-url').textContent).then(function(){btn.textContent='Copié ✓';setTimeout(function(){btn.textContent='Copier';},2000);});})(this)">Copier</button>
     </div>
     <p style="font-size:0.8rem;color:#666;margin:0.5rem 0 0 0;">
       Exemple <code style="font-size:0.8em;">manifest.json</code> :

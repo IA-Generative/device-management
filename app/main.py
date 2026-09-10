@@ -4744,7 +4744,7 @@ def catalog_updates_json(request: Request, slug: str):
             """, (slug,))
             prow = cur.fetchone()
             if not prow:
-                raise HTTPException(404, "Plugin introuvable")
+                raise HTTPException(404, "Plugin not found")
             plugin_id, canonical_slug, gecko_id = prow
 
             cur.execute("""
@@ -4757,13 +4757,14 @@ def catalog_updates_json(request: Request, slug: str):
             """, (plugin_id,))
             vrow = cur.fetchone()
             if not vrow:
-                raise HTTPException(404, "Aucune version publiee")
+                raise HTTPException(404, "No published version found")
             version, s3_path, checksum = vrow
 
-            # Build absolute download URL
-            base = str(request.base_url).rstrip("/")
-            if base.startswith("http://") and "localhost" not in base:
-                base = "https://" + base[len("http://"):]
+            # Use PUBLIC_BASE_URL env var (set by the operator) for absolute URLs,
+            # consistent with other update manifest endpoints (/updates/{slug}/…).
+            base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
+            if not base:
+                base = str(request.base_url).rstrip("/")
             filename = os.path.basename(s3_path) if s3_path else f"{canonical_slug}-{version}.xpi"
             update_link = f"{base}/catalog/{canonical_slug}/download/{filename}"
 
