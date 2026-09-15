@@ -101,7 +101,6 @@ def create_communication(cur, *, type: str, title: str, body: str,
                          priority: str = "normal",
                          target_plugin_id: int = None,
                          target_cohort_id: int = None,
-                         target_bundle_id: int = None,
                          min_plugin_version: str = "",
                          max_plugin_version: str = "",
                          starts_at: str = None, expires_at: str = None,
@@ -114,14 +113,13 @@ def create_communication(cur, *, type: str, title: str, body: str,
     cur.execute("""
         INSERT INTO communications
             (type, title, body, priority, target_plugin_id, target_cohort_id,
-             target_bundle_id, min_plugin_version, max_plugin_version,
+             min_plugin_version, max_plugin_version,
              starts_at, expires_at, survey_question, survey_choices,
              survey_allow_multiple, survey_allow_comment, status, created_by)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
     """, (type, title, body, priority,
           target_plugin_id or None, target_cohort_id or None,
-          target_bundle_id or None,
           min_plugin_version or None, max_plugin_version or None,
           starts_at or None, expires_at or None,
           survey_question or None,
