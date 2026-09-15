@@ -101,7 +101,6 @@ def create_communication(cur, *, type: str, title: str, body: str,
                          priority: str = "normal",
                          target_plugin_id: int = None,
                          target_cohort_id: int = None,
-                         target_bundle_id: int = None,
                          min_plugin_version: str = "",
                          max_plugin_version: str = "",
                          starts_at: str = None, expires_at: str = None,
@@ -114,14 +113,13 @@ def create_communication(cur, *, type: str, title: str, body: str,
     cur.execute("""
         INSERT INTO communications
             (type, title, body, priority, target_plugin_id, target_cohort_id,
-             target_bundle_id, min_plugin_version, max_plugin_version,
+             min_plugin_version, max_plugin_version,
              starts_at, expires_at, survey_question, survey_choices,
              survey_allow_multiple, survey_allow_comment, status, created_by)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
     """, (type, title, body, priority,
           target_plugin_id or None, target_cohort_id or None,
-          target_bundle_id or None,
           min_plugin_version or None, max_plugin_version or None,
           starts_at or None, expires_at or None,
           survey_question or None,
@@ -139,12 +137,46 @@ def update_communication_status(cur, comm_id: int, new_status: str) -> bool:
     return cur.fetchone() is not None
 
 
-def get_active_communications(cur, *, plugin_slug: str = None,
-                              client_uuid: str = None) -> list[dict]:
-    """Get active, non-expired communications for config endpoint."""
+_ACTIVE_LIMIT = 10
+
+
+def _version_tuple(v: str) -> tuple:
+    """Version -> tuple d'entiers comparable (miroir de main._parse_version_tuple,
+    non importable ici sans cycle)."""
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except Exception:
+        return (0,)
+
+
+def _within_version_bounds(plugin_version: str, min_pv, max_pv) -> bool:
+    """Bornes inclusives ; borne posee et version inconnue -> exclu (fail-safe,
+    meme semantique que le gating des feature flags)."""
+    if not min_pv and not max_pv:
+        return True
+    if not plugin_version:
+        return False
+    pv = _version_tuple(plugin_version)
+    if min_pv and pv < _version_tuple(min_pv):
+        return False
+    if max_pv and pv > _version_tuple(max_pv):
+        return False
+    return True
+
+
+def get_active_communications(cur, *, plugin_slug: str, client_uuid: str,
+                              device_cohort_ids: list[int],
+                              plugin_version: str) -> list[dict]:
+    """Communications a servir au poste dans GET /config.
+
+    SQL : statut actif, fenetre temporelle, plugin (global ou ce slug), cohorte
+    (globale ou l'une des cohortes du poste), aucun ack du poste. Python : plage
+    de versions puis plafond. Projection vers le contrat consommateur :
+    id/type/title/body/priority, plus les champs de sondage pour `survey` seul.
+    """
     cur.execute("""
         SELECT c.id, c.type, c.title, c.body, c.priority,
-               c.starts_at, c.expires_at,
+               c.min_plugin_version, c.max_plugin_version,
                c.survey_question, c.survey_choices,
                c.survey_allow_multiple, c.survey_allow_comment
         FROM communications c
@@ -153,6 +185,7 @@ def get_active_communications(cur, *, plugin_slug: str = None,
           AND (c.starts_at IS NULL OR c.starts_at <= NOW())
           AND (c.expires_at IS NULL OR c.expires_at > NOW())
           AND (p.slug IS NULL OR p.slug = %s OR c.target_plugin_id IS NULL)
+          AND (c.target_cohort_id IS NULL OR c.target_cohort_id = ANY(%s::int[]))
           AND NOT EXISTS (
               SELECT 1 FROM communication_acks ca
               WHERE ca.communication_id = c.id AND ca.client_uuid = %s
@@ -161,10 +194,31 @@ def get_active_communications(cur, *, plugin_slug: str = None,
             CASE c.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
                             WHEN 'normal' THEN 2 ELSE 3 END,
             c.starts_at DESC
-        LIMIT 10
-    """, (plugin_slug or "", client_uuid or ""))
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
+    """, (plugin_slug or "", list(device_cohort_ids or []), client_uuid or ""))
+    out: list[dict] = []
+    for row in cur.fetchall():
+        comm_id, ctype, title, body, priority, min_pv, max_pv, sq, sc, sam, sac = row
+        if not _within_version_bounds(plugin_version, min_pv, max_pv):
+            continue
+        item = {"id": comm_id, "type": ctype, "title": title, "body": body, "priority": priority}
+        if ctype == "survey":
+            if isinstance(sc, str):
+                sc = json.loads(sc)
+            item.update({
+                "survey_question": sq,
+                "survey_choices": sc or [],
+                "survey_allow_multiple": bool(sam),
+                "survey_allow_comment": bool(sac),
+            })
+        out.append(item)
+        if len(out) == _ACTIVE_LIMIT:
+            break
+    return out
+
+
+def communication_exists(cur, comm_id: int) -> bool:
+    cur.execute("SELECT 1 FROM communications WHERE id = %s", (comm_id,))
+    return cur.fetchone() is not None
 
 
 def ack_communication(cur, comm_id: int, client_uuid: str):

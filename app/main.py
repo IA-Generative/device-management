@@ -49,6 +49,7 @@ if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.enviro
 from . import observability as _observability
 from . import resilience as _resilience
 from . import runtime_config
+from .admin.services import communications as _comms_svc
 from .postgres_queue import PostgresQueue, QueueJob
 from .s3 import s3_client
 from .services import health as _health
@@ -1212,6 +1213,29 @@ def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version:
         flags[flag_name] = flags.get(flag_name, True) and override_val
 
     return flags
+
+
+def _resolve_communications(cur, *, plugin_slug: str, client_uuid: str,
+                            device_cohort_ids: list[int], plugin_version: str) -> list[dict]:
+    """Communications actives à servir au poste (cf. admin.services.communications).
+
+    Rien sans `X-Client-UUID` : les acks du poste ne peuvent pas être exclus,
+    et la réponse anonyme peut être mise en cache — aucune donnée par poste
+    n'y entre. Dégradation en `[]` si les tables n'existent pas encore (même
+    contrat que les flags).
+    """
+    if not client_uuid:
+        return []
+    try:
+        return _comms_svc.get_active_communications(
+            cur,
+            plugin_slug=plugin_slug,
+            client_uuid=client_uuid,
+            device_cohort_ids=device_cohort_ids,
+            plugin_version=plugin_version,
+        )
+    except Exception:
+        return []
 
 
 def _resolve_forced_flags(cur, *, plugin_version: str, plugin_slug: str = "") -> dict:
@@ -2932,6 +2956,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     update_directive: dict | None = None
     flags: dict = {}
     forced_flags: dict = {}
+    communications: list = []
 
     enrich_ctx = _pooled_conn()
     if enrich_ctx is not None:
@@ -2955,6 +2980,13 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                         cur,
                         plugin_version=plugin_version,
                         plugin_slug=device_name or "",
+                    )
+                    communications = _resolve_communications(
+                        cur,
+                        plugin_slug=device_name or "",
+                        client_uuid=client_uuid,
+                        device_cohort_ids=device_cohort_ids,
+                        plugin_version=plugin_version,
                     )
                     campaign = _resolve_active_campaign(
                         cur,
@@ -2983,6 +3015,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         except Exception:
             update_directive = None
             flags = {}
+            communications = []
     elif psycopg2 is not None:
         # Fallback: raw connection if pool unavailable
         db_url = _db_url_bootstrap() or _db_url()
@@ -3009,6 +3042,13 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                             cur,
                             plugin_version=plugin_version,
                             plugin_slug=device_name or "",
+                        )
+                        communications = _resolve_communications(
+                            cur,
+                            plugin_slug=device_name or "",
+                            client_uuid=client_uuid,
+                            device_cohort_ids=device_cohort_ids,
+                            plugin_version=plugin_version,
                         )
                         campaign = _resolve_active_campaign(
                             cur,
@@ -3040,6 +3080,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                 update_directive = None
                 flags = {}
                 forced_flags = {}
+                communications = []
 
     # ---- Step 10: Build final EnrichedConfigResponse
     inner_config = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
@@ -3071,6 +3112,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         "config": inner_config,
         "update": update_directive,
         "features": features_resolved,
+        "communications": communications,
     }
 
     # P2: Cache the response only for generic requests (no enrichment headers,
@@ -3494,6 +3536,68 @@ async def report_update_status(request: Request):
     )
 
     return JSONResponse({"ok": True, "status": status})
+
+
+def _ack_communication_sync(*, comm_id: int, client_uuid: str) -> str:
+    """Partie bloquante (DB) de /communications/{id}/ack — exécutée en threadpool.
+
+    Retourne "ok", "unknown" (id inconnu) ou "db_error". L'erreur base n'est
+    PAS avalée en succès : le plugin garde une boîte d'envoi d'acks et doit
+    distinguer « le DM a statué » (2xx/4xx) de « réessayer » (5xx).
+    """
+    db_url = _db_url()
+    if not db_url:
+        return "db_error"
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                if not _comms_svc.communication_exists(cur, comm_id):
+                    return "unknown"
+                _comms_svc.ack_communication(cur, comm_id, client_uuid)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"communications/ack DB error: {e}")
+        return "db_error"
+    return "ok"
+
+
+@app.post("/communications/{comm_id}/ack")
+async def ack_communication_endpoint(comm_id: int, request: Request):
+    """Le poste acquitte une communication : GET /config ne la lui sert plus.
+
+    Même modèle d'authentification que /update/status : credentials relay
+    exigés quand le relay est activé, et le client_uuid revendiqué doit être
+    celui du client relay authentifié. Corps JSON optionnel.
+    """
+    relay_meta: dict | str | None = None
+    if settings.relay_enabled:
+        ok, relay_meta = await run_in_threadpool(_relay_auth_from_request, request)
+        if not ok:
+            return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    claimed = str(body.get("client_uuid") or request.headers.get("X-Client-UUID") or "").strip()
+    authed = str(relay_meta.get("client_uuid") or "") if isinstance(relay_meta, dict) else ""
+    if authed and claimed and claimed != authed:
+        return JSONResponse({"ok": False, "error": "client_uuid mismatch"}, status_code=403)
+    client_uuid = authed or claimed
+    if not client_uuid:
+        return JSONResponse({"ok": False, "error": "client_uuid required"}, status_code=400)
+
+    outcome = await run_in_threadpool(_ack_communication_sync, comm_id=comm_id, client_uuid=client_uuid)
+    if outcome == "unknown":
+        return JSONResponse({"ok": False, "error": "unknown communication"}, status_code=404)
+    if outcome == "db_error":
+        return JSONResponse({"ok": False, "error": "database unavailable"}, status_code=503)
+    return JSONResponse({"ok": True})
 
 
 # ── Campaign REST API ───────────────────────────────────────────────────
