@@ -113,3 +113,72 @@ def test_get_active_caps_at_ten_after_version_filtering():
     rows = [_row(id=i, min_pv="9.0.0") for i in range(3)] + [_row(id=10 + i) for i in range(12)]
     out = _active(_CapturingCur(rows), plugin_version="1.0.0")
     assert [c["id"] for c in out] == list(range(10, 20))
+
+
+# ---------------------------------------------------------------------------
+# GET /config — exposition au poste identifié (harnais de test_enriched_config)
+# ---------------------------------------------------------------------------
+
+from fastapi.testclient import TestClient  # noqa: E402
+from test_enriched_config import _install_db_mock, _load_module  # noqa: E402
+
+_COMM_ROW = _row(id=42, title="Nouvelle version", body="La 0.18 est là.", priority="high")
+_HEADERS = {"X-Client-UUID": "uuid-42", "X-Plugin-Version": "0.18.0"}
+
+
+def _config_with_rows(rows, headers):
+    mod = _load_module()
+    patcher = _install_db_mock(mod, {"FROM communications c": rows, "cohorts": [], "feature_flags": [], "campaigns": []})
+    try:
+        res = TestClient(mod.app).get("/config/config.json?profile=prod", headers=headers)
+    finally:
+        patcher.stop()
+    assert res.status_code == 200
+    return res.json()
+
+
+def test_config_exposes_communications_to_identified_client():
+    body = _config_with_rows([_COMM_ROW], _HEADERS)
+    assert body["communications"] == [{
+        "id": 42, "type": "announcement", "title": "Nouvelle version",
+        "body": "La 0.18 est là.", "priority": "high",
+    }]
+
+
+def test_config_without_client_uuid_serves_no_communications():
+    """Sans X-Client-UUID les acks ne peuvent pas être exclus : rien par poste
+    ne doit sortir, même si des annonces actives existent."""
+    body = _config_with_rows([_COMM_ROW], {"X-Plugin-Version": "0.18.0"})
+    assert body["communications"] == []
+
+
+def test_config_db_down_degrades_to_empty_communications():
+    mod = _load_module()
+    patcher = _install_db_mock(mod, None)
+    try:
+        res = TestClient(mod.app).get("/config/config.json?profile=prod", headers=_HEADERS)
+    finally:
+        patcher.stop()
+    assert res.status_code == 200
+    assert res.json()["communications"] == []
+
+
+def test_resolve_communications_skips_query_without_client_uuid():
+    mod = _load_module()
+    cur = _CapturingCur(rows=[_COMM_ROW])
+    out = mod._resolve_communications(cur, plugin_slug="matisse", client_uuid="",
+                                      device_cohort_ids=[], plugin_version="0.18.0")
+    assert out == []
+    assert cur.calls == []
+
+
+def test_resolve_communications_swallows_db_errors():
+    mod = _load_module()
+
+    class _Boom(_CapturingCur):
+        def execute(self, sql, params=None):
+            raise RuntimeError("relation communications does not exist")
+
+    out = mod._resolve_communications(_Boom(), plugin_slug="matisse", client_uuid="u",
+                                      device_cohort_ids=[], plugin_version="0.18.0")
+    assert out == []

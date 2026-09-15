@@ -49,6 +49,7 @@ if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.enviro
 from . import observability as _observability
 from . import resilience as _resilience
 from . import runtime_config
+from .admin.services import communications as _comms_svc
 from .postgres_queue import PostgresQueue, QueueJob
 from .s3 import s3_client
 from .services import health as _health
@@ -1212,6 +1213,29 @@ def _resolve_feature_flags(cur, *, device_cohort_ids: list[int], plugin_version:
         flags[flag_name] = flags.get(flag_name, True) and override_val
 
     return flags
+
+
+def _resolve_communications(cur, *, plugin_slug: str, client_uuid: str,
+                            device_cohort_ids: list[int], plugin_version: str) -> list[dict]:
+    """Communications actives à servir au poste (cf. admin.services.communications).
+
+    Rien sans `X-Client-UUID` : les acks du poste ne peuvent pas être exclus,
+    et la réponse anonyme peut être mise en cache — aucune donnée par poste
+    n'y entre. Dégradation en `[]` si les tables n'existent pas encore (même
+    contrat que les flags).
+    """
+    if not client_uuid:
+        return []
+    try:
+        return _comms_svc.get_active_communications(
+            cur,
+            plugin_slug=plugin_slug,
+            client_uuid=client_uuid,
+            device_cohort_ids=device_cohort_ids,
+            plugin_version=plugin_version,
+        )
+    except Exception:
+        return []
 
 
 def _resolve_forced_flags(cur, *, plugin_version: str, plugin_slug: str = "") -> dict:
@@ -2932,6 +2956,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     update_directive: dict | None = None
     flags: dict = {}
     forced_flags: dict = {}
+    communications: list = []
 
     enrich_ctx = _pooled_conn()
     if enrich_ctx is not None:
@@ -2955,6 +2980,13 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                         cur,
                         plugin_version=plugin_version,
                         plugin_slug=device_name or "",
+                    )
+                    communications = _resolve_communications(
+                        cur,
+                        plugin_slug=device_name or "",
+                        client_uuid=client_uuid,
+                        device_cohort_ids=device_cohort_ids,
+                        plugin_version=plugin_version,
                     )
                     campaign = _resolve_active_campaign(
                         cur,
@@ -2983,6 +3015,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         except Exception:
             update_directive = None
             flags = {}
+            communications = []
     elif psycopg2 is not None:
         # Fallback: raw connection if pool unavailable
         db_url = _db_url_bootstrap() or _db_url()
@@ -3009,6 +3042,13 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                             cur,
                             plugin_version=plugin_version,
                             plugin_slug=device_name or "",
+                        )
+                        communications = _resolve_communications(
+                            cur,
+                            plugin_slug=device_name or "",
+                            client_uuid=client_uuid,
+                            device_cohort_ids=device_cohort_ids,
+                            plugin_version=plugin_version,
                         )
                         campaign = _resolve_active_campaign(
                             cur,
@@ -3040,6 +3080,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
                 update_directive = None
                 flags = {}
                 forced_flags = {}
+                communications = []
 
     # ---- Step 10: Build final EnrichedConfigResponse
     inner_config = cfg.get("config") if isinstance(cfg.get("config"), dict) else cfg
@@ -3071,6 +3112,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         "config": inner_config,
         "update": update_directive,
         "features": features_resolved,
+        "communications": communications,
     }
 
     # P2: Cache the response only for generic requests (no enrichment headers,
