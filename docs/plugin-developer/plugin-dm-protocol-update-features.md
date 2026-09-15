@@ -308,7 +308,8 @@ EnrichedConfigResponse
   },
   "config": { },
   "update": null,
-  "features": { }
+  "features": { },
+  "communications": []
 }
 ```
 

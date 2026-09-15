@@ -236,7 +236,10 @@ Le plugin doit verifier le checksum avant d'installer.
 
 ### 7) Communications
 
-Le serveur peut inclure des messages pour l'utilisateur :
+`GET /config/{device}/config.json` porte un champ racine `communications` : les annonces
+actives a afficher a l'utilisateur de CE poste. Toujours present, `[]` quand il n'y a rien
+a montrer.
+
 ```json
 {
   "communications": [
@@ -244,15 +247,55 @@ Le serveur peut inclure des messages pour l'utilisateur :
       "id": 42,
       "type": "announcement",
       "title": "Nouvelle version disponible",
-      "body": "La v2.1 corrige le freeze au demarrage.",
-      "priority": "normal"
+      "body": "La **0.18** corrige le freeze au demarrage.",
+      "priority": "high"
     }
   ]
 }
 ```
 
-Pour acquitter (ne plus afficher) : `POST /communications/42/ack`
-Pour repondre a un sondage : `POST /communications/43/survey/respond`
+| Champ | Valeurs |
+|---|---|
+| `type` | `announcement`, `alert`, `changelog`, `survey` |
+| `priority` | `critical`, `high`, `normal`, `low` — ordre de tri de la liste |
+| `body` | Markdown |
+
+Un `survey` porte en plus `survey_question`, `survey_choices` (liste), `survey_allow_multiple`
+et `survey_allow_comment`. La route de reponse aux sondages n'existe pas encore : ignorez ce
+type tant qu'elle n'est pas documentee ici.
+
+**Identite requise.** La liste est calculee pour le poste identifie par `X-Client-UUID`
+(deja envoye avec `/config`, avant meme l'enrollment) : sans cet en-tete, `communications`
+vaut `[]`. Le serveur applique le ciblage defini par l'admin (plugin, cohorte, plage de
+versions via `X-Plugin-Version`, fenetre de dates) et exclut ce que le poste a deja acquitte.
+Dix elements au plus, les plus prioritaires d'abord.
+
+#### Acquitter
+
+```
+POST /communications/42/ack
+X-Relay-Client: abc123...
+X-Relay-Key: xyz789...
+Content-Type: application/json
+
+{ "client_uuid": "b9bdf6ad-..." }
+```
+
+Une communication acquittee n'est plus servie a ce poste. Le corps est optionnel : avec les
+credentials relay, l'identite retenue est celle du client relay, et `client_uuid` (corps ou
+en-tete `X-Client-UUID`) ne sert qu'a detecter une incoherence.
+
+| Reponse | Sens | Cote plugin |
+|---|---|---|
+| `200 {"ok": true}` | acquitte (idempotent) | oublier l'ack |
+| `400` `client_uuid required` | aucune identite (relay desactive, ni corps ni en-tete) | corriger l'appel |
+| `401` | credentials relay absents, invalides ou expires | reessayer apres re-enrollment |
+| `403` `client_uuid mismatch` | `client_uuid` different du client relay | corriger l'appel |
+| `404` `unknown communication` | id inconnu (supprimee cote admin) | oublier l'ack |
+| `503` `database unavailable` | base indisponible | reessayer plus tard |
+
+Regle pour une boite d'envoi d'acks : retirer l'entree sur 2xx et sur tout 4xx sauf 401 ;
+la garder sur 401, 5xx et erreur reseau.
 
 ## Keycloak : Authorization Code + PKCE
 
