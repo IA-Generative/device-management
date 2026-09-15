@@ -216,6 +216,11 @@ def get_active_communications(cur, *, plugin_slug: str, client_uuid: str,
     return out
 
 
+def communication_exists(cur, comm_id: int) -> bool:
+    cur.execute("SELECT 1 FROM communications WHERE id = %s", (comm_id,))
+    return cur.fetchone() is not None
+
+
 def ack_communication(cur, comm_id: int, client_uuid: str):
     cur.execute("""
         INSERT INTO communication_acks (communication_id, client_uuid)

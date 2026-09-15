@@ -3538,6 +3538,68 @@ async def report_update_status(request: Request):
     return JSONResponse({"ok": True, "status": status})
 
 
+def _ack_communication_sync(*, comm_id: int, client_uuid: str) -> str:
+    """Partie bloquante (DB) de /communications/{id}/ack — exécutée en threadpool.
+
+    Retourne "ok", "unknown" (id inconnu) ou "db_error". L'erreur base n'est
+    PAS avalée en succès : le plugin garde une boîte d'envoi d'acks et doit
+    distinguer « le DM a statué » (2xx/4xx) de « réessayer » (5xx).
+    """
+    db_url = _db_url()
+    if not db_url:
+        return "db_error"
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                if not _comms_svc.communication_exists(cur, comm_id):
+                    return "unknown"
+                _comms_svc.ack_communication(cur, comm_id, client_uuid)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"communications/ack DB error: {e}")
+        return "db_error"
+    return "ok"
+
+
+@app.post("/communications/{comm_id}/ack")
+async def ack_communication_endpoint(comm_id: int, request: Request):
+    """Le poste acquitte une communication : GET /config ne la lui sert plus.
+
+    Même modèle d'authentification que /update/status : credentials relay
+    exigés quand le relay est activé, et le client_uuid revendiqué doit être
+    celui du client relay authentifié. Corps JSON optionnel.
+    """
+    relay_meta: dict | str | None = None
+    if settings.relay_enabled:
+        ok, relay_meta = await run_in_threadpool(_relay_auth_from_request, request)
+        if not ok:
+            return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    claimed = str(body.get("client_uuid") or request.headers.get("X-Client-UUID") or "").strip()
+    authed = str(relay_meta.get("client_uuid") or "") if isinstance(relay_meta, dict) else ""
+    if authed and claimed and claimed != authed:
+        return JSONResponse({"ok": False, "error": "client_uuid mismatch"}, status_code=403)
+    client_uuid = authed or claimed
+    if not client_uuid:
+        return JSONResponse({"ok": False, "error": "client_uuid required"}, status_code=400)
+
+    outcome = await run_in_threadpool(_ack_communication_sync, comm_id=comm_id, client_uuid=client_uuid)
+    if outcome == "unknown":
+        return JSONResponse({"ok": False, "error": "unknown communication"}, status_code=404)
+    if outcome == "db_error":
+        return JSONResponse({"ok": False, "error": "database unavailable"}, status_code=503)
+    return JSONResponse({"ok": True})
+
+
 # ── Campaign REST API ───────────────────────────────────────────────────
 
 

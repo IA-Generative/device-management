@@ -182,3 +182,70 @@ def test_resolve_communications_swallows_db_errors():
     out = mod._resolve_communications(_Boom(), plugin_slug="matisse", client_uuid="u",
                                       device_cohort_ids=[], plugin_version="0.18.0")
     assert out == []
+
+
+# ---------------------------------------------------------------------------
+# POST /communications/{id}/ack
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch  # noqa: E402
+
+_EXISTS = {"FROM communications WHERE id": [(1,)]}
+
+
+def test_communication_exists_helper():
+    assert comms_svc.communication_exists(_CapturingCur(one=(1,)), 42) is True
+    cur = _CapturingCur(one=None)
+    assert comms_svc.communication_exists(cur, 42) is False
+    assert cur.last_params == (42,)
+
+
+def _ack(rows, comm_id=42, json=None, headers=None):
+    mod = _load_module()
+    patcher = _install_db_mock(mod, rows)
+    try:
+        res = TestClient(mod.app).post(f"/communications/{comm_id}/ack", json=json, headers=headers or {})
+        cur = mod.psycopg2.connect.return_value.cursor.return_value if rows is not None else None
+    finally:
+        patcher.stop()
+    return res, cur
+
+
+def _insert_calls(cur):
+    return [c.args for c in cur.execute.call_args_list if "INSERT INTO communication_acks" in c.args[0]]
+
+
+def test_ack_records_the_client_from_the_body():
+    res, cur = _ack(_EXISTS, json={"client_uuid": "uuid-1"})
+    assert res.status_code == 200 and res.json() == {"ok": True}
+    assert [args[1] for args in _insert_calls(cur)] == [(42, "uuid-1")]
+
+
+def test_ack_accepts_the_client_from_the_header_without_body():
+    res, cur = _ack(_EXISTS, headers={"X-Client-UUID": "uuid-2"})
+    assert res.status_code == 200
+    assert [args[1] for args in _insert_calls(cur)] == [(42, "uuid-2")]
+
+
+def test_ack_unknown_communication_is_404_and_writes_nothing():
+    res, cur = _ack({}, json={"client_uuid": "uuid-1"})
+    assert res.status_code == 404
+    assert _insert_calls(cur) == []
+
+
+def test_ack_without_identity_is_400():
+    res, cur = _ack(_EXISTS)
+    assert res.status_code == 400
+    assert _insert_calls(cur) == []
+
+
+def test_ack_db_down_is_503_so_the_plugin_retries():
+    res, _ = _ack(None, json={"client_uuid": "uuid-1"})
+    assert res.status_code == 503
+
+
+def test_ack_requires_relay_credentials_when_relay_enabled():
+    mod = _load_module()
+    with patch.object(mod.settings, "relay_enabled", True):
+        res = TestClient(mod.app).post("/communications/42/ack", json={"client_uuid": "uuid-1"})
+    assert res.status_code == 401
