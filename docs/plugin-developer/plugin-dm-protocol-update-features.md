@@ -815,6 +815,51 @@ même version `experimental` — c'est le même binaire.
 
 ---
 
+## 6 ter. Feed natif LibreOffice — `GET /catalog/{slug}/update.xml`
+
+Réservé aux plugins `device_type = libreoffice`. LibreOffice sait vérifier et
+installer lui-même les mises à jour d'une extension dont le `description.xml`
+déclare un bloc `<update-information>` : le bouton « Vérifier les mises à jour »
+du Gestionnaire des extensions, et le déclenchement programmatique
+(`com.sun.star.deployment.ui.PackageManagerDialog`, `trigger("SHOW_UPDATE_DIALOG")`)
+interrogent ce feed, téléchargent l'OXT et l'installent dans le processus soffice.
+
+**Format servi** (namespace obligatoire) :
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<description xmlns="http://openoffice.org/extensions/update/2006"
+             xmlns:xlink="http://www.w3.org/1999/xlink">
+  <identifier value="fr.gouv.interieur.mirai"/>
+  <version value="0.0.1.0.32"/>
+  <update-download>
+    <src xlink:href="https://<dm>/catalog/mirai-libreoffice/download/mirai-libreoffice-0.0.1.0.32.oxt"/>
+  </update-download>
+</description>
+```
+
+| Élément | Source |
+|---|---|
+| `identifier` | `plugins.extension_id` — **à renseigner sur la fiche plugin** avec l'identifiant du `description.xml` de l'OXT ; vide → 404 |
+| `version` | dernière `plugin_versions.status = 'published'` ; les versions expérimentales ou taguées ne sont jamais annoncées |
+| `src` | URL versionnée de l'OXT, bâtie sur `PUBLIC_BASE_URL` |
+
+**Ce que ce feed n'est pas.** Il est public et anonyme : LibreOffice le lit avec sa
+propre pile HTTP, sans relay-headers ni `X-Client-UUID`. Le DM ne peut donc ni
+cibler une cohorte ni appliquer un palier canary sur cette route ; tout poste qui
+interroge un DM voit la même version. Le ciblage reste porté par la directive
+`update` de `/config` (§ 4.3) : côté plugin, la route native n'est empruntée que si
+la version annoncée par le feed est exactement `target_version`. Ne pas confondre
+avec `/catalog/{slug}/updates.xml` (manifeste Chromium `gupdate`) ni
+`/updates/{slug}/{target}.json` (manifeste Gecko).
+
+**Sémantique de `/update/status` (§ 8)** : `deferred` = artefact stagé ou dialogue
+natif ouvert, installation à suivre ; il est enregistré `notified`, pas `failed`.
+`installed` n'est rapporté par le plugin qu'une fois la nouvelle version réellement
+active, au redémarrage suivant.
+
+---
+
 ## 7. Flux de mise à jour dans le plugin
 
 ```mermaid
