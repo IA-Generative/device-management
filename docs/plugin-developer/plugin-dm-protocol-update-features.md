@@ -841,7 +841,7 @@ interrogent ce feed, téléchargent l'OXT et l'installent dans le processus soff
 | Élément | Source |
 |---|---|
 | `identifier` | `plugins.extension_id` — **à renseigner sur la fiche plugin** avec l'identifiant du `description.xml` de l'OXT ; vide → 404 |
-| `version` | dernière `plugin_versions.status = 'published'` ; les versions expérimentales ou taguées ne sont jamais annoncées |
+| `version` | dernière `plugin_versions.status = 'published'` — exactement la version que `/catalog/{slug}/download` sert sans `?tag=` ; une version encore `experimental` n'est jamais annoncée |
 | `src` | URL versionnée de l'OXT, bâtie sur `PUBLIC_BASE_URL` |
 
 **Ce que ce feed n'est pas.** Il est public et anonyme : LibreOffice le lit avec sa
@@ -853,10 +853,18 @@ la version annoncée par le feed est exactement `target_version`. Ne pas confond
 avec `/catalog/{slug}/updates.xml` (manifeste Chromium `gupdate`) ni
 `/updates/{slug}/{target}.json` (manifeste Gecko).
 
-**Sémantique de `/update/status` (§ 8)** : `deferred` = artefact stagé ou dialogue
+**Retrait et ordre des opérations.** Le feed étant anonyme, mettre une campagne en
+pause ou l'abandonner ne retire *pas* une version annoncée : le seul levier est de
+sortir la version de `status = 'published'` (dépublier ou déprécier), la requête
+cesse alors de la sélectionner. Réciproquement, dès qu'une version est `published`,
+tout poste dont l'OXT installé porte le bloc `<update-information>` peut la tirer par
+le bouton « Vérifier les mises à jour », indépendamment des paliers de campagne :
+publier, puis lancer la campagne ; dépublier pour retirer.
+
+**Sémantique de `/update/status` (annexe, « 4. Installation et compte rendu »)** : `deferred` = artefact stagé ou dialogue
 natif ouvert, installation à suivre ; il est enregistré `notified`, pas `failed`.
 `installed` n'est rapporté par le plugin qu'une fois la nouvelle version réellement
-active, au redémarrage suivant.
+active, au redémarrage suivant. Le statut `notified` regroupe donc deux situations, « directive servie, aucun compte rendu » et « poste ayant rapporté `deferred` » ; `updated_at` et `version_after` permettent de les distinguer, et un poste qui n'a jamais redémarré reste `notified` sans jamais passer en échec.
 
 ---
 

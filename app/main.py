@@ -4727,9 +4727,10 @@ def catalog_libreoffice_update_xml(request: Request, slug: str):
     Public et anonyme : LibreOffice l'interroge avec sa propre pile HTTP, sans
     relay-headers ni UUID client — pas de cohorte ni de canary ici, le ciblage
     reste porté par la directive `update` de /config. Annonce la dernière
-    version `published` (jamais une version expérimentale/taguée) avec l'URL
-    versionnée de l'OXT. L'identifiant OXT est `plugins.extension_id`.
-    Ne pas confondre avec /catalog/{slug}/updates.xml, le manifeste Chromium.
+    version `published` — celle que /catalog/{slug}/download sert sans ?tag=,
+    jamais une version encore experimental — avec l'URL versionnée de l'OXT.
+    L'identifiant OXT est `plugins.extension_id`. Ne pas confondre avec
+    /catalog/{slug}/updates.xml, le manifeste Chromium.
     """
     def _q(cur):
         cur.execute(
