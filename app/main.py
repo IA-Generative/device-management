@@ -18,6 +18,7 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import urlparse
+from xml.sax.saxutils import quoteattr
 
 import boto3
 import httpx
@@ -4711,6 +4712,84 @@ def catalog_updates_xml(request: Request, slug: str):
             pool_ctx.__exit__(None, None, None)
         elif conn is not None:
             conn.close()
+
+
+_LO_UPDATE_NS = "http://openoffice.org/extensions/update/2006"
+
+
+@app.get("/catalog/{slug}/update.xml")
+def catalog_libreoffice_update_xml(request: Request, slug: str):
+    """Feed natif LibreOffice (<update-information>) pour un plugin `.oxt`.
+
+    Public et anonyme : LibreOffice l'interroge avec sa propre pile HTTP, sans
+    relay-headers ni UUID client — pas de cohorte ni de canary ici, le ciblage
+    reste porté par la directive `update` de /config. Annonce la dernière
+    version `published` (jamais une version expérimentale/taguée) avec l'URL
+    versionnée de l'OXT. L'identifiant OXT est `plugins.extension_id`.
+    Ne pas confondre avec /catalog/{slug}/updates.xml, le manifeste Chromium.
+    """
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        raise HTTPException(404, "Plugin introuvable")
+    conn = None
+    pool_ctx = _pooled_conn()
+    try:
+        if pool_ctx is not None:
+            conn = pool_ctx.__enter__()
+        else:
+            conn = psycopg2.connect(db_url)
+            conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, device_type, extension_id FROM plugins WHERE slug = %s AND status = 'active'",
+                (slug,),
+            )
+            prow = cur.fetchone()
+            if not prow or prow[1] != "libreoffice":
+                raise HTTPException(404, "Plugin LibreOffice introuvable")
+            plugin_id, _device_type, extension_id = prow
+            if not extension_id:
+                logger.warning(
+                    "update.xml: plugins.extension_id vide pour %s — renseigner l'identifiant OXT "
+                    "sur la fiche plugin (ex. fr.gouv.interieur.mirai)", slug)
+                raise HTTPException(404, "Identifiant d'extension non renseigné")
+            cur.execute("""
+                SELECT pv.version FROM plugin_versions pv
+                WHERE pv.plugin_id = %s AND pv.status = 'published'
+                ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
+            """, (plugin_id,))
+            vrow = cur.fetchone()
+            if not vrow:
+                raise HTTPException(404, "Aucune version publiée")
+            version = str(vrow[0])
+    finally:
+        if pool_ctx is not None:
+            pool_ctx.__exit__(None, None, None)
+        elif conn is not None:
+            conn.close()
+
+    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        base = str(request.base_url).rstrip("/")
+        if base.startswith("http://") and "localhost" not in base:
+            base = "https://" + base[len("http://"):]
+    download = f"{base}/catalog/{slug}/download/{slug}-{version}.oxt"
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<description xmlns="{_LO_UPDATE_NS}"\n'
+        '             xmlns:xlink="http://www.w3.org/1999/xlink">\n'
+        f"  <identifier value={quoteattr(str(extension_id))}/>\n"
+        f"  <version value={quoteattr(version)}/>\n"
+        "  <update-download>\n"
+        f"    <src xlink:href={quoteattr(download)}/>\n"
+        "  </update-download>\n"
+        "</description>\n"
+    )
+    return Response(
+        content=xml,
+        media_type="text/xml; charset=utf-8",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 # ─── Auto-update multi-format / multi-cible (DM-4) ────────────────────────
