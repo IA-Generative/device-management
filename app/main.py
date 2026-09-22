@@ -3430,8 +3430,11 @@ def _update_campaign_device_status_sync(
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
         with conn.cursor() as cur:
-            # Map plugin status to DB enum
-            db_status = "updated" if status == "installed" else "failed"
+            # Map plugin status to DB enum. « deferred » = artefact stagé ou
+            # dialogue natif montré, installation à suivre après redémarrage :
+            # ce n'est pas un échec (le plugin rapporte « installed » à la
+            # réconciliation) — le compter en failed faussait failure_rate.
+            db_status = {"installed": "updated", "deferred": "notified"}.get(status, "failed")
             cur.execute(
                 """
                 INSERT INTO campaign_device_status

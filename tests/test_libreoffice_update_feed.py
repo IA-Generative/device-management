@@ -197,3 +197,35 @@ def test_update_xml_404_when_extension_id_missing():
         "FROM plugin_versions pv": [VERSION_ROW],
     })
     assert res.status_code == 404
+
+
+# ── /update/status : « deferred » n'est pas un échec ─────────────────────
+# Le plugin (>= fix/MAJ) rapporte « deferred » au staging ou à l'ouverture du
+# dialogue natif, puis « installed » à la réconciliation après redémarrage.
+# Compter « deferred » en failed gonflait failure_rate entre les deux phases.
+
+def _status_param(mod, status: str) -> str:
+    patcher, cur = _install_db_mock(mod, {})
+    try:
+        mod._update_campaign_device_status_sync(
+            campaign_id=42, client_uuid="uuid-1", status=status,
+            version_before="0.0.1.0.31", version_after="0.0.1.0.32", error_detail="",
+        )
+    finally:
+        patcher.stop()
+    inserts = [params for sql, params in cur.calls if "INSERT INTO campaign_device_status" in sql]
+    assert inserts, "aucun upsert de statut exécuté"
+    return inserts[-1][2]
+
+
+def test_update_status_deferred_maps_to_notified():
+    mod = _load_module()
+    assert _status_param(mod, "deferred") == "notified"
+
+
+def test_update_status_installed_and_failures_unchanged():
+    mod = _load_module()
+    assert _status_param(mod, "installed") == "updated"
+    assert _status_param(mod, "failed") == "failed"
+    assert _status_param(mod, "checksum_error") == "failed"
+    assert _status_param(mod, "download_error") == "failed"
