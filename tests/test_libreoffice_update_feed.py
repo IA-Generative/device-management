@@ -20,6 +20,7 @@ from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
+from starlette.routing import Match
 
 from app.admin.services import catalog as catalog_svc
 
@@ -130,6 +131,16 @@ def _version_rows(rows):
 # version, distribution_mode, artifact_id, download_url
 UNSERVABLE_ROW = ("0.0.1.0.33", "managed", None, None)
 SERVABLE_ROW = ("0.0.1.0.32", "managed", 12, None)
+
+
+def _first_matching_endpoint(mod, path: str) -> str | None:
+    """Nom du handler que le routeur atteindrait pour un GET sur `path`."""
+    scope = {"type": "http", "method": "GET", "path": path, "root_path": "", "headers": []}
+    for route in mod.app.router.routes:
+        match, _child_scope = route.matches(scope)
+        if match == Match.FULL:
+            return route.endpoint.__name__
+    return None
 
 
 def _get(mod, rows: dict, public_base: str | None = "https://dm.example/bootstrap"):
@@ -264,6 +275,60 @@ def test_update_xml_404_when_extension_id_missing():
         "FROM plugin_versions pv": [VERSION_ROW],
     })
     assert res.status_code == 404
+
+
+# ── Sûreté : échappement, réversibilité de l'URL, ordre des routes ───────
+
+def test_update_xml_escapes_hostile_attribute_values():
+    """quoteattr est le seul rempart entre une valeur en base et un attribut
+    XML : une version ou un identifiant contenant `"`, `&` ou `<` doit ressortir
+    intact du re-parsing, pas casser le document ni injecter d'attribut."""
+    hostile_id = 'fr.gouv"><script>&x'
+    hostile_version = '1.0"&<evil'
+    mod = _load_module()
+    res, _cur = _get(mod, {
+        "extension_id FROM plugins": [(7, "libreoffice", hostile_id)],
+        "FROM plugin_versions pv": [(hostile_version,)],
+    })
+    assert res.status_code == 200, res.text
+    root = ET.fromstring(res.content)
+    assert root.find("u:identifier", NS).get("value") == hostile_id
+    assert root.find("u:version", NS).get("value") == hostile_version
+    href = root.find("u:update-download/u:src", NS).get(f"{{{NS_XLINK}}}href")
+    assert href.endswith(f"/mirai-libreoffice-{hostile_version}.oxt")
+
+
+def test_announced_filename_reparses_to_the_same_version():
+    """Le nom de fichier annoncé doit être celui que /catalog/{slug}/download/
+    {filename} sait redécouper : les deux conventions (extension du device_type,
+    préfixe `{slug}-`) doivent rester asservies l'une à l'autre."""
+    mod = _load_module()
+    res, _cur = _get(mod, {
+        "extension_id FROM plugins": [PLUGIN_ROW],
+        "FROM plugin_versions pv": [VERSION_ROW],
+    })
+    href = ET.fromstring(res.content).find("u:update-download/u:src", NS).get(f"{{{NS_XLINK}}}href")
+    filename = href.rsplit("/", 1)[-1]
+    assert filename.endswith("." + mod._DEVICE_TYPE_EXT["libreoffice"])
+
+    with patch.object(mod, "_serve_variant_by_filename", return_value=None), \
+         patch.object(mod, "_serve_plugin_download") as served:
+        mod.catalog_download_file("mirai-libreoffice", filename)
+    assert served.call_args.kwargs["version_filter"] == VERSION_ROW[0]
+
+
+def test_catalog_routes_do_not_shadow_each_other():
+    """L'absence d'ombrage tient à l'ordre de déclaration : un futur
+    /catalog/{slug}/{quelque_chose} déclaré avant update.xml rendrait le feed
+    inatteignable sans qu'aucun test ne le signale."""
+    mod = _load_module()
+    expected = {
+        "/catalog/x/updates.xml": "catalog_updates_xml",
+        "/catalog/x/update.xml": "catalog_libreoffice_update_xml",
+        "/catalog/x": "catalog_detail",
+    }
+    for path, endpoint in expected.items():
+        assert _first_matching_endpoint(mod, path) == endpoint, path
 
 
 # ── /update/status : « deferred » n'est pas un échec ─────────────────────
