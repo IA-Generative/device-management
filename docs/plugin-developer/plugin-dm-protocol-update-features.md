@@ -842,7 +842,7 @@ interrogent ce feed, téléchargent l'OXT et l'installent dans le processus soff
 |---|---|
 | `identifier` | `plugins.extension_id` — champ **« Identifiant d'extension (LibreOffice) »**, onglet *Éditer* de la fiche plugin dans l'admin, à renseigner avec l'identifiant du `description.xml` de l'OXT ; vide → 404 |
 | `version` | dernière `plugin_versions.status = 'published'` **dont le binaire est servable** (artefact présent en mode `managed`, `download_url` en mode `download_link`/`store`) : une version publiée avant l'upload de son artefact est sautée au profit de la précédente, plutôt qu'annoncée pour un téléchargement en 404. Une version encore `experimental` n'est jamais annoncée |
-| `src` | URL versionnée de l'OXT, bâtie sur `PUBLIC_BASE_URL` |
+| `src` | URL versionnée de l'OXT, bâtie sur `PUBLIC_BASE_URL`. Variable vide → repli sur l'URL de base de la requête, donc sur l'en-tête `Host` du client, promue de `http` en `https` hors `localhost`, avec un avertissement dans les logs : définir `PUBLIC_BASE_URL` sur tout déploiement exposé |
 
 **Ce que ce feed n'est pas.** Il est public et anonyme : LibreOffice le lit avec sa
 propre pile HTTP, sans relay-headers ni `X-Client-UUID`. Le DM ne peut donc ni

@@ -11,6 +11,7 @@ Les interactions DB sont mockées (même approche que test_enriched_config.py).
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import sys
 import types
@@ -190,6 +191,19 @@ def test_update_xml_falls_back_to_request_base_url_in_https():
     href = src.get(f"{{{NS_XLINK}}}href")
     assert href.startswith("https://testserver/"), href   # http → https, sauf localhost
     assert href.endswith("/catalog/mirai-libreoffice/download/mirai-libreoffice-0.0.1.0.32.oxt")
+
+
+def test_update_xml_warns_when_public_base_url_is_empty(caplog):
+    """Le repli sur request.base_url reflète l'en-tête Host du client, et
+    l'application n'installe pas de TrustedHostMiddleware : on le trace."""
+    mod = _load_module()
+    with caplog.at_level(logging.WARNING, logger="device-management"):
+        res, _cur = _get(mod, {
+            "extension_id FROM plugins": [PLUGIN_ROW],
+            "FROM plugin_versions pv": [VERSION_ROW],
+        }, public_base=None)
+    assert res.status_code == 200, res.text
+    assert any("PUBLIC_BASE_URL" in r.getMessage() for r in caplog.records), caplog.text
 
 
 def test_update_xml_404_unknown_slug():

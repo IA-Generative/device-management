@@ -4768,9 +4768,15 @@ def catalog_libreoffice_update_xml(request: Request, slug: str):
 
     base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if not base:
+        # Repli : l'URL de téléchargement est alors dérivée de l'en-tête Host
+        # du client, que rien ne valide (pas de TrustedHostMiddleware). Sur un
+        # feed qui dit à LibreOffice OÙ prendre l'OXT à installer, ça se trace.
         base = str(request.base_url).rstrip("/")
         if base.startswith("http://") and "localhost" not in base:
             base = "https://" + base[len("http://"):]
+        logger.warning(
+            "update.xml: PUBLIC_BASE_URL vide — URL de téléchargement dérivée de l'en-tête "
+            "Host (%s) ; définir PUBLIC_BASE_URL sur ce déploiement", base)
     download = f"{base}/catalog/{slug}/download/{slug}-{version}.oxt"
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
