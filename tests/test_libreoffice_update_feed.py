@@ -73,7 +73,7 @@ def _make_cursor_mock(cursor_rows_by_query: dict) -> MagicMock:
         sql = _last_sql[0]
         for fragment, rows in cursor_rows_by_query.items():
             if fragment in sql:
-                return list(rows)
+                return list(rows(sql)) if callable(rows) else list(rows)
         return []
 
     def _fetchone():
@@ -106,6 +106,29 @@ def _install_db_mock(mod, cursor_rows_by_query: dict):
 
 PLUGIN_ROW = (7, "libreoffice", "fr.gouv.interieur.mirai")   # id, device_type, extension_id
 VERSION_ROW = ("0.0.1.0.32",)
+
+
+def _servable(dist_mode, artifact_id, download_url) -> bool:
+    """Mêmes conditions que _serve_plugin_download : hors de celles-ci, le
+    téléchargement répond 404 quoi qu'annonce le feed."""
+    return ((dist_mode == "managed" and artifact_id is not None)
+            or (dist_mode in ("download_link", "store") and download_url is not None))
+
+
+def _version_rows(rows):
+    """Faux plugin_versions publiés, du plus récemment publié au plus ancien.
+    La servabilité n'est appliquée que si la requête la DEMANDE : un feed qui
+    ne filtre pas voit donc aussi les versions dont le binaire est absent."""
+    def _query(sql):
+        asks_servable = "artifact_id" in sql and "download_url" in sql
+        return [(version,) for version, dist_mode, artifact_id, download_url in rows
+                if asks_servable is False or _servable(dist_mode, artifact_id, download_url)]
+    return _query
+
+
+# version, distribution_mode, artifact_id, download_url
+UNSERVABLE_ROW = ("0.0.1.0.33", "managed", None, None)
+SERVABLE_ROW = ("0.0.1.0.32", "managed", 12, None)
 
 
 def _get(mod, rows: dict, public_base: str | None = "https://dm.example/bootstrap"):
@@ -191,6 +214,31 @@ def test_update_xml_404_without_published_version():
         "FROM plugin_versions pv": [],
     })
     assert res.status_code == 404
+
+
+def test_update_xml_404_when_latest_published_is_not_servable():
+    """Une version passée en `published` avant l'upload de son artefact (ou dont
+    l'artefact a disparu) ne doit PAS être annoncée : chaque poste la tirerait
+    en boucle pour un 404 au téléchargement."""
+    mod = _load_module()
+    res, _cur = _get(mod, {
+        "extension_id FROM plugins": [PLUGIN_ROW],
+        "FROM plugin_versions pv": _version_rows([UNSERVABLE_ROW]),
+    })
+    assert res.status_code == 404
+
+
+def test_update_xml_announces_latest_servable_published_version():
+    """Plus récente non servable, précédente servable → c'est la précédente qui
+    est annoncée, pas un 404."""
+    mod = _load_module()
+    res, _cur = _get(mod, {
+        "extension_id FROM plugins": [PLUGIN_ROW],
+        "FROM plugin_versions pv": _version_rows([UNSERVABLE_ROW, SERVABLE_ROW]),
+    })
+    assert res.status_code == 200, res.text
+    root = ET.fromstring(res.content)
+    assert root.find("u:version", NS).get("value") == "0.0.1.0.32"
 
 
 def test_update_xml_404_when_extension_id_missing():

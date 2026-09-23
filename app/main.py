@@ -4727,8 +4727,8 @@ def catalog_libreoffice_update_xml(request: Request, slug: str):
     Public et anonyme : LibreOffice l'interroge avec sa propre pile HTTP, sans
     relay-headers ni UUID client — pas de cohorte ni de canary ici, le ciblage
     reste porté par la directive `update` de /config. Annonce la dernière
-    version `published` — celle que /catalog/{slug}/download sert sans ?tag=,
-    jamais une version encore experimental — avec l'URL versionnée de l'OXT.
+    version `published` dont le binaire est réellement servable — jamais une
+    version encore experimental — avec l'URL versionnée de l'OXT.
     L'identifiant OXT est `plugins.extension_id`. Ne pas confondre avec
     /catalog/{slug}/updates.xml, le manifeste Chromium.
     """
@@ -4746,9 +4746,17 @@ def catalog_libreoffice_update_xml(request: Request, slug: str):
                 "update.xml: plugins.extension_id vide pour %s — renseigner l'identifiant OXT "
                 "sur la fiche plugin (ex. fr.gouv.interieur.mirai)", slug)
             raise HTTPException(404, "Identifiant d'extension non renseigné")
+        # Dernière version publiée SERVABLE : les conditions sont celles que
+        # _serve_plugin_download sait honorer. Annoncer une version dont le
+        # binaire est absent (publiée avant l'upload de son artefact, artefact
+        # supprimé) ferait échouer l'installation sur tout le parc, en boucle
+        # et sans que le DM le voie — la route est anonyme.
         cur.execute("""
             SELECT pv.version FROM plugin_versions pv
             WHERE pv.plugin_id = %s AND pv.status = 'published'
+              AND ((pv.distribution_mode = 'managed' AND pv.artifact_id IS NOT NULL)
+                   OR (pv.distribution_mode IN ('download_link','store')
+                       AND pv.download_url IS NOT NULL))
             ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
         """, (plugin_id,))
         vrow = cur.fetchone()
