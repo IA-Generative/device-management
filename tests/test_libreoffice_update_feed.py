@@ -281,7 +281,7 @@ def test_update_xml_404_when_extension_id_missing(mod):
 # ── Sûreté : échappement, réversibilité de l'URL, ordre des routes ───────
 
 def test_update_xml_escapes_hostile_attribute_values(mod):
-    """quoteattr est le seul rempart entre une valeur en base et un attribut
+    """L'échappement des attributs est le seul rempart entre une valeur en base et un attribut
     XML : une version ou un identifiant contenant `"`, `&` ou `<` doit ressortir
     intact du re-parsing, pas casser le document ni injecter d'attribut."""
     hostile_id = 'fr.gouv"><script>&x'

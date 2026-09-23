@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
@@ -18,7 +19,6 @@ from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import urlparse
-from xml.sax.saxutils import quoteattr
 
 import boto3
 import httpx
@@ -4720,6 +4720,12 @@ def catalog_updates_xml(request: Request, slug: str):
 _LO_UPDATE_NS = "http://openoffice.org/extensions/update/2006"
 
 
+def _xml_attr(value) -> str:
+    """Valeur d'attribut XML entre guillemets : html.escape couvre & < > " '
+    (références de caractères valides en XML), sans passer par xml.sax."""
+    return '"' + html.escape(str(value), quote=True) + '"'
+
+
 @app.get("/catalog/{slug}/update.xml")
 def catalog_libreoffice_update_xml(request: Request, slug: str):
     """Feed natif LibreOffice (<update-information>) pour un plugin `.oxt`.
@@ -4782,10 +4788,10 @@ def catalog_libreoffice_update_xml(request: Request, slug: str):
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         f'<description xmlns="{_LO_UPDATE_NS}"\n'
         '             xmlns:xlink="http://www.w3.org/1999/xlink">\n'
-        f"  <identifier value={quoteattr(str(extension_id))}/>\n"
-        f"  <version value={quoteattr(version)}/>\n"
+        f"  <identifier value={_xml_attr(extension_id)}/>\n"
+        f"  <version value={_xml_attr(version)}/>\n"
         "  <update-download>\n"
-        f"    <src xlink:href={quoteattr(download)}/>\n"
+        f"    <src xlink:href={_xml_attr(download)}/>\n"
         "  </update-download>\n"
         "</description>\n"
     )
