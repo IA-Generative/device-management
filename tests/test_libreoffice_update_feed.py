@@ -20,6 +20,8 @@ from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
+from app.admin.services import catalog as catalog_svc
+
 NS_UPDATE = "http://openoffice.org/extensions/update/2006"
 NS_XLINK = "http://www.w3.org/1999/xlink"
 NS = {"u": NS_UPDATE}
@@ -232,3 +234,22 @@ def test_update_status_installed_and_failures_unchanged():
     assert _status_param(mod, "failed") == "failed"
     assert _status_param(mod, "checksum_error") == "failed"
     assert _status_param(mod, "download_error") == "failed"
+
+
+# ── Fiche plugin : extension_id renseignable depuis l'admin ──────────────
+# Sans chemin d'écriture, la colonne reste NULL sur un déploiement neuf et le
+# feed répond 404 indéfiniment — échec silencieux côté LibreOffice.
+
+def test_update_plugin_accepts_extension_id():
+    cur = MagicMock()
+    cur.fetchone.return_value = (7,)
+    assert catalog_svc.update_plugin(cur, 7, extension_id="fr.gouv.interieur.mirai") is True
+    sql, params = cur.execute.call_args[0]
+    assert "extension_id = %s" in sql
+    assert params[0] == "fr.gouv.interieur.mirai"
+
+
+def test_update_plugin_still_rejects_unknown_column():
+    cur = MagicMock()
+    assert catalog_svc.update_plugin(cur, 7, slug="autre") is False
+    cur.execute.assert_not_called()

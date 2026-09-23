@@ -960,6 +960,10 @@ async function nvSubmit(action) {
       <input type="email" name="support_email" class="dm-input" value="{{ plugin.support_email or '' }}">
     </div>
     <div class="dm-form-row">
+      <label class="dm-label">Identifiant d'extension (LibreOffice, ex. fr.gouv.interieur.mirai)</label>
+      <input type="text" name="extension_id" class="dm-input" value="{{ plugin.extension_id or '' }}">
+    </div>
+    <div class="dm-form-row">
       <label class="dm-label">Changelog (markdown)</label>
       <textarea name="changelog" class="dm-input" rows="10">{{ plugin.changelog or '' }}</textarea>
     </div>

@@ -91,7 +91,7 @@ def create_plugin(cur, *, slug: str, name: str, description: str = "",
 def update_plugin(cur, plugin_id: int, **fields) -> bool:
     allowed = {"name", "description", "intent", "key_features", "changelog",
                "category", "icon_url", "icon_path", "homepage_url", "support_email",
-               "doc_url", "license",
+               "doc_url", "license", "extension_id",
                "publisher", "visibility", "status", "config_template"}
     sets, params = [], []
     for k, v in fields.items():

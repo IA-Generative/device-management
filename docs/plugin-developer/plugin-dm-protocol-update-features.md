@@ -840,7 +840,7 @@ interrogent ce feed, téléchargent l'OXT et l'installent dans le processus soff
 
 | Élément | Source |
 |---|---|
-| `identifier` | `plugins.extension_id` — **à renseigner sur la fiche plugin** avec l'identifiant du `description.xml` de l'OXT ; vide → 404 |
+| `identifier` | `plugins.extension_id` — champ **« Identifiant d'extension (LibreOffice) »**, onglet *Éditer* de la fiche plugin dans l'admin, à renseigner avec l'identifiant du `description.xml` de l'OXT ; vide → 404 |
 | `version` | dernière `plugin_versions.status = 'published'` — exactement la version que `/catalog/{slug}/download` sert sans `?tag=` ; une version encore `experimental` n'est jamais annoncée |
 | `src` | URL versionnée de l'OXT, bâtie sur `PUBLIC_BASE_URL` |
 

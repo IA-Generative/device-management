@@ -2272,6 +2272,7 @@ async def catalog_plugin_edit(request: Request, plugin_id: int,
                               category: str = Form("productivity"),
                               homepage_url: str = Form(""),
                               support_email: str = Form(""),
+                              extension_id: str = Form(""),
                               publisher: str = Form("DNUM"),
                               visibility: str = Form("public")):
     features = [f.strip() for f in key_features.split(",") if f.strip()] if key_features else []
@@ -2282,7 +2283,9 @@ async def catalog_plugin_edit(request: Request, plugin_id: int,
                                       name=name, description=description, intent=intent,
                                       key_features=features, changelog=changelog,
                                       category=category, homepage_url=homepage_url,
-                                      support_email=support_email, publisher=publisher,
+                                      support_email=support_email,
+                                      extension_id=extension_id.strip() or None,
+                                      publisher=publisher,
                                       visibility=visibility)
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="plugin.update",
