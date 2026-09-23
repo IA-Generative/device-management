@@ -15,6 +15,7 @@ import os
 import sys
 import types
 import xml.etree.ElementTree as ET
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -86,7 +87,8 @@ def _make_cursor_mock(cursor_rows_by_query: dict) -> MagicMock:
 
 
 def _install_db_mock(mod, cursor_rows_by_query: dict):
-    """Patch mod.psycopg2.connect → conn mock ; renvoie (patcher, cursor)."""
+    """Patch mod.psycopg2.connect → conn mock et neutralise le pool (sinon une
+    base locale sur :5432 répondrait à la place du mock) ; renvoie (patches, cursor)."""
     cur = _make_cursor_mock(cursor_rows_by_query)
     conn = MagicMock()
     conn.autocommit = True
@@ -94,9 +96,10 @@ def _install_db_mock(mod, cursor_rows_by_query: dict):
     conn.__enter__ = lambda s: s
     conn.__exit__ = MagicMock(return_value=False)
     conn.close = MagicMock()
-    patcher = patch.object(mod.psycopg2, "connect", return_value=conn)
-    patcher.start()
-    return patcher, cur
+    patches = ExitStack()
+    patches.enter_context(patch.object(mod.psycopg2, "connect", return_value=conn))
+    patches.enter_context(patch.object(mod, "_pooled_conn", return_value=None))
+    return patches, cur
 
 
 PLUGIN_ROW = (7, "libreoffice", "fr.gouv.interieur.mirai")   # id, device_type, extension_id
@@ -104,7 +107,7 @@ VERSION_ROW = ("0.0.1.0.32",)
 
 
 def _get(mod, rows: dict, public_base: str | None = "https://dm.example/bootstrap"):
-    patcher, cur = _install_db_mock(mod, rows)
+    patches, cur = _install_db_mock(mod, rows)
     try:
         if public_base is None:
             os.environ.pop("PUBLIC_BASE_URL", None)
@@ -113,7 +116,7 @@ def _get(mod, rows: dict, public_base: str | None = "https://dm.example/bootstra
         client = TestClient(mod.app)
         return client.get("/catalog/mirai-libreoffice/update.xml"), cur
     finally:
-        patcher.stop()
+        patches.close()
         os.environ.pop("PUBLIC_BASE_URL", None)
 
 
@@ -205,14 +208,14 @@ def test_update_xml_404_when_extension_id_missing():
 # Compter « deferred » en failed gonflait failure_rate entre les deux phases.
 
 def _status_param(mod, status: str) -> str:
-    patcher, cur = _install_db_mock(mod, {})
+    patches, cur = _install_db_mock(mod, {})
     try:
         mod._update_campaign_device_status_sync(
             campaign_id=42, client_uuid="uuid-1", status=status,
             version_before="0.0.1.0.31", version_after="0.0.1.0.32", error_detail="",
         )
     finally:
-        patcher.stop()
+        patches.close()
     inserts = [params for sql, params in cur.calls if "INSERT INTO campaign_device_status" in sql]
     assert inserts, "aucun upsert de statut exécuté"
     return inserts[-1][2]
