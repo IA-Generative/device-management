@@ -4,9 +4,10 @@ Le plugin LibreOffice embarque, cuit au build, une liste d'URL de feed
 `<bootstrap>/catalog/mirai-libreoffice/update.xml`. LibreOffice l'interroge
 ANONYMEMENT avec sa propre pile HTTP : ni relay-headers, ni UUID client, donc
 ni cohorte ni canary ici — le ciblage reste porté par la directive `update`
-de /config. Le feed annonce la dernière version `published`.
+de /config. Le feed annonce la dernière version `published` servable.
 
-Les interactions DB sont mockées (même approche que test_enriched_config.py).
+Les interactions DB sont mockées ; environnement et faux psycopg2 sont posés
+par la fixture `mod`, qui les défait à la fin de chaque test.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ import xml.etree.ElementTree as ET
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 from starlette.routing import Match
 
@@ -29,35 +31,44 @@ NS_XLINK = "http://www.w3.org/1999/xlink"
 NS = {"u": NS_UPDATE}
 
 
-def _setup_env() -> None:
-    os.environ["DM_STORE_ENROLL_LOCALLY"] = "false"
-    os.environ["DM_STORE_ENROLL_S3"] = "false"
-    os.environ["DM_CONFIG_ENABLED"] = "true"
-    os.environ["DM_CONFIG_PROFILE"] = "prod"
-    os.environ["DM_RELAY_ENABLED"] = "false"
-    os.environ["DM_AUTH_VERIFY_ACCESS_TOKEN"] = "false"
-    os.environ["DM_TELEMETRY_ENABLED"] = "true"
-    os.environ["DM_RELAY_REQUIRE_KEY_FOR_SECRETS"] = "false"
-    os.environ["DATABASE_URL"] = "postgresql://dev:dev@localhost:5432/bootstrap"
+_TEST_ENV = {
+    "DM_STORE_ENROLL_LOCALLY": "false",
+    "DM_STORE_ENROLL_S3": "false",
+    "DM_CONFIG_ENABLED": "true",
+    "DM_CONFIG_PROFILE": "prod",
+    "DM_RELAY_ENABLED": "false",
+    "DM_AUTH_VERIFY_ACCESS_TOKEN": "false",
+    "DM_TELEMETRY_ENABLED": "true",
+    "DM_RELAY_REQUIRE_KEY_FOR_SECRETS": "false",
+    "DATABASE_URL": "postgresql://dev:dev@localhost:5432/bootstrap",
+}
 
 
-def _load_module():
-    _setup_env()
+@pytest.fixture
+def mod(monkeypatch):
+    """`app.main` rechargé sous un environnement de test et un faux psycopg2.
+
+    Tout passe par ``monkeypatch`` : les variables d'environnement comme
+    l'entrée ``sys.modules["psycopg2"]`` sont défaites à la fin du test, là où
+    la version précédente les laissait en place pour la suite de la session.
+    """
+    for key, value in _TEST_ENV.items():
+        monkeypatch.setenv(key, value)
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     if root not in sys.path:
         sys.path.insert(0, root)
-    sys.modules.pop("app.main", None)
-    sys.modules.pop("app.settings", None)
+    monkeypatch.delitem(sys.modules, "app.main", raising=False)
+    monkeypatch.delitem(sys.modules, "app.settings", raising=False)
 
     fake_psycopg2 = types.ModuleType("psycopg2")
     fake_psycopg2.connect = MagicMock()
     fake_psycopg2.Error = Exception
-    sys.modules["psycopg2"] = fake_psycopg2
+    monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
 
-    mod = importlib.import_module("app.main")
-    importlib.reload(mod)
-    mod.psycopg2 = fake_psycopg2
-    return mod
+    main = importlib.import_module("app.main")
+    importlib.reload(main)
+    main.psycopg2 = fake_psycopg2
+    return main
 
 
 def _make_cursor_mock(cursor_rows_by_query: dict) -> MagicMock:
@@ -157,8 +168,7 @@ def _get(mod, rows: dict, public_base: str | None = "https://dm.example/bootstra
         os.environ.pop("PUBLIC_BASE_URL", None)
 
 
-def test_update_xml_announces_latest_published_version():
-    mod = _load_module()
+def test_update_xml_announces_latest_published_version(mod):
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [PLUGIN_ROW],
         "FROM plugin_versions pv": [VERSION_ROW],
@@ -177,10 +187,9 @@ def test_update_xml_announces_latest_published_version():
     )
 
 
-def test_update_xml_only_queries_published_versions():
+def test_update_xml_only_queries_published_versions(mod):
     """Les versions expérimentales/taguées ne sont jamais annoncées : la requête
     filtre sur status = 'published' (comme /catalog/{slug}/download sans tag)."""
-    mod = _load_module()
     _res, cur = _get(mod, {
         "extension_id FROM plugins": [PLUGIN_ROW],
         "FROM plugin_versions pv": [VERSION_ROW],
@@ -191,8 +200,7 @@ def test_update_xml_only_queries_published_versions():
     assert "tag" not in version_sql[-1]
 
 
-def test_update_xml_falls_back_to_request_base_url_in_https():
-    mod = _load_module()
+def test_update_xml_falls_back_to_request_base_url_in_https(mod):
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [PLUGIN_ROW],
         "FROM plugin_versions pv": [VERSION_ROW],
@@ -204,10 +212,9 @@ def test_update_xml_falls_back_to_request_base_url_in_https():
     assert href.endswith("/catalog/mirai-libreoffice/download/mirai-libreoffice-0.0.1.0.32.oxt")
 
 
-def test_update_xml_warns_when_public_base_url_is_empty(caplog):
+def test_update_xml_warns_when_public_base_url_is_empty(mod, caplog):
     """Le repli sur request.base_url reflète l'en-tête Host du client, et
     l'application n'installe pas de TrustedHostMiddleware : on le trace."""
-    mod = _load_module()
     with caplog.at_level(logging.WARNING, logger="device-management"):
         res, _cur = _get(mod, {
             "extension_id FROM plugins": [PLUGIN_ROW],
@@ -217,14 +224,12 @@ def test_update_xml_warns_when_public_base_url_is_empty(caplog):
     assert any("PUBLIC_BASE_URL" in r.getMessage() for r in caplog.records), caplog.text
 
 
-def test_update_xml_404_unknown_slug():
-    mod = _load_module()
+def test_update_xml_404_unknown_slug(mod):
     res, _cur = _get(mod, {"extension_id FROM plugins": []})
     assert res.status_code == 404
 
 
-def test_update_xml_404_for_non_libreoffice_plugin():
-    mod = _load_module()
+def test_update_xml_404_for_non_libreoffice_plugin(mod):
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [(8, "firefox", "matisse@interieur.gouv.fr")],
         "FROM plugin_versions pv": [VERSION_ROW],
@@ -232,8 +237,7 @@ def test_update_xml_404_for_non_libreoffice_plugin():
     assert res.status_code == 404
 
 
-def test_update_xml_404_without_published_version():
-    mod = _load_module()
+def test_update_xml_404_without_published_version(mod):
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [PLUGIN_ROW],
         "FROM plugin_versions pv": [],
@@ -241,11 +245,10 @@ def test_update_xml_404_without_published_version():
     assert res.status_code == 404
 
 
-def test_update_xml_404_when_latest_published_is_not_servable():
+def test_update_xml_404_when_latest_published_is_not_servable(mod):
     """Une version passée en `published` avant l'upload de son artefact (ou dont
     l'artefact a disparu) ne doit PAS être annoncée : chaque poste la tirerait
     en boucle pour un 404 au téléchargement."""
-    mod = _load_module()
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [PLUGIN_ROW],
         "FROM plugin_versions pv": _version_rows([UNSERVABLE_ROW]),
@@ -253,10 +256,9 @@ def test_update_xml_404_when_latest_published_is_not_servable():
     assert res.status_code == 404
 
 
-def test_update_xml_announces_latest_servable_published_version():
+def test_update_xml_announces_latest_servable_published_version(mod):
     """Plus récente non servable, précédente servable → c'est la précédente qui
     est annoncée, pas un 404."""
-    mod = _load_module()
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [PLUGIN_ROW],
         "FROM plugin_versions pv": _version_rows([UNSERVABLE_ROW, SERVABLE_ROW]),
@@ -266,10 +268,9 @@ def test_update_xml_announces_latest_servable_published_version():
     assert root.find("u:version", NS).get("value") == "0.0.1.0.32"
 
 
-def test_update_xml_404_when_extension_id_missing():
+def test_update_xml_404_when_extension_id_missing(mod):
     """Sans identifiant OXT sur la fiche plugin, LibreOffice ignorerait le feed :
     on répond 404 (et un avertissement en log) plutôt qu'un feed inutilisable."""
-    mod = _load_module()
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [(7, "libreoffice", None)],
         "FROM plugin_versions pv": [VERSION_ROW],
@@ -279,13 +280,12 @@ def test_update_xml_404_when_extension_id_missing():
 
 # ── Sûreté : échappement, réversibilité de l'URL, ordre des routes ───────
 
-def test_update_xml_escapes_hostile_attribute_values():
+def test_update_xml_escapes_hostile_attribute_values(mod):
     """quoteattr est le seul rempart entre une valeur en base et un attribut
     XML : une version ou un identifiant contenant `"`, `&` ou `<` doit ressortir
     intact du re-parsing, pas casser le document ni injecter d'attribut."""
     hostile_id = 'fr.gouv"><script>&x'
     hostile_version = '1.0"&<evil'
-    mod = _load_module()
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [(7, "libreoffice", hostile_id)],
         "FROM plugin_versions pv": [(hostile_version,)],
@@ -298,11 +298,10 @@ def test_update_xml_escapes_hostile_attribute_values():
     assert href.endswith(f"/mirai-libreoffice-{hostile_version}.oxt")
 
 
-def test_announced_filename_reparses_to_the_same_version():
+def test_announced_filename_reparses_to_the_same_version(mod):
     """Le nom de fichier annoncé doit être celui que /catalog/{slug}/download/
     {filename} sait redécouper : les deux conventions (extension du device_type,
     préfixe `{slug}-`) doivent rester asservies l'une à l'autre."""
-    mod = _load_module()
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [PLUGIN_ROW],
         "FROM plugin_versions pv": [VERSION_ROW],
@@ -317,11 +316,10 @@ def test_announced_filename_reparses_to_the_same_version():
     assert served.call_args.kwargs["version_filter"] == VERSION_ROW[0]
 
 
-def test_catalog_routes_do_not_shadow_each_other():
+def test_catalog_routes_do_not_shadow_each_other(mod):
     """L'absence d'ombrage tient à l'ordre de déclaration : un futur
     /catalog/{slug}/{quelque_chose} déclaré avant update.xml rendrait le feed
     inatteignable sans qu'aucun test ne le signale."""
-    mod = _load_module()
     expected = {
         "/catalog/x/updates.xml": "catalog_updates_xml",
         "/catalog/x/update.xml": "catalog_libreoffice_update_xml",
@@ -350,13 +348,11 @@ def _status_param(mod, status: str) -> str:
     return inserts[-1][2]
 
 
-def test_update_status_deferred_maps_to_notified():
-    mod = _load_module()
+def test_update_status_deferred_maps_to_notified(mod):
     assert _status_param(mod, "deferred") == "notified"
 
 
-def test_update_status_installed_and_failures_unchanged():
-    mod = _load_module()
+def test_update_status_installed_and_failures_unchanged(mod):
     assert _status_param(mod, "installed") == "updated"
     assert _status_param(mod, "failed") == "failed"
     assert _status_param(mod, "checksum_error") == "failed"
