@@ -98,6 +98,17 @@ def test_get_active_version_gating_is_inclusive_and_fail_safe():
     assert ids("") == [3]               # version inconnue : toute borne exclut
 
 
+def test_version_gating_excludes_unparsable_versions_and_bounds():
+    """Une pre-release n'est pas comparable : elle passe sans borne, et toute
+    borne posee l'exclut (min comme max). Une borne malformee exclut aussi."""
+    within = comms_svc._within_version_bounds
+    assert within("1.6.0-rc1", None, None) is True
+    assert within("1.6.0-rc1", None, "1.0.0") is False
+    assert within("1.6.0-rc1", "1.0.0", None) is False
+    assert within("1.2.0", "1.x", None) is False
+    assert within("1.2.0", None, "2.x") is False
+
+
 def test_get_active_projection_announcement_and_survey():
     rows = [_row(id=1), _row(id=2, type="survey", sq="Q ?", sc='["a", "b"]', sam=True, sac=False)]
     out = _active(_CapturingCur(rows))
@@ -193,11 +204,15 @@ from unittest.mock import patch  # noqa: E402
 _EXISTS = {"FROM communications WHERE id": [(1,)]}
 
 
-def test_communication_exists_helper():
-    assert comms_svc.communication_exists(_CapturingCur(one=(1,)), 42) is True
+def test_communication_ackable_helper():
+    assert comms_svc.communication_ackable(_CapturingCur(one=(1,)), 42) is True
     cur = _CapturingCur(one=None)
-    assert comms_svc.communication_exists(cur, 42) is False
+    assert comms_svc.communication_ackable(cur, 42) is False
     assert cur.last_params == (42,)
+    # Un brouillon ou une communication future n'a jamais ete servie : un ack
+    # enregistre d'avance la masquerait a sa publication.
+    assert "status <> 'draft'" in cur.last_sql
+    assert "starts_at <= NOW()" in cur.last_sql
 
 
 def _ack(rows, comm_id=42, json=None, headers=None):
@@ -249,3 +264,32 @@ def test_ack_requires_relay_credentials_when_relay_enabled():
     with patch.object(mod.settings, "relay_enabled", True):
         res = TestClient(mod.app).post("/communications/42/ack", json={"client_uuid": "uuid-1"})
     assert res.status_code == 401
+
+
+def _ack_as_relay_client(relay_uuid, **kwargs):
+    mod = _load_module()
+    with patch.object(mod.settings, "relay_enabled", True), \
+         patch.object(mod, "_relay_auth_from_request", lambda _req: (True, {"client_uuid": relay_uuid})):
+        patcher = _install_db_mock(mod, _EXISTS)
+        try:
+            res = TestClient(mod.app).post("/communications/42/ack", **kwargs)
+            cur = mod.psycopg2.connect.return_value.cursor.return_value
+        finally:
+            patcher.stop()
+    return res, cur
+
+
+def test_ack_refuses_a_claimed_uuid_other_than_the_relay_client():
+    """Garde anti-IDOR : un poste authentifie ne peut pas acquitter pour un autre."""
+    res, cur = _ack_as_relay_client("uuid-relay", json={"client_uuid": "uuid-other"})
+    assert res.status_code == 403 and res.json()["error"] == "client_uuid mismatch"
+    assert _insert_calls(cur) == []
+    res, cur = _ack_as_relay_client("uuid-relay", headers={"X-Client-UUID": "uuid-other"})
+    assert res.status_code == 403
+    assert _insert_calls(cur) == []
+
+
+def test_ack_records_the_relay_client_when_nothing_is_claimed():
+    res, cur = _ack_as_relay_client("uuid-relay")
+    assert res.status_code == 200
+    assert [args[1] for args in _insert_calls(cur)] == [(42, "uuid-relay")]

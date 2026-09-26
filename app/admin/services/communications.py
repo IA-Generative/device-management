@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from ...services.versions import try_parse_version_tuple
+
 
 def list_communications(cur, *, type: str = None, status: str = None,
                         plugin_id: int = None,
@@ -140,27 +142,24 @@ def update_communication_status(cur, comm_id: int, new_status: str) -> bool:
 _ACTIVE_LIMIT = 10
 
 
-def _version_tuple(v: str) -> tuple:
-    """Version -> tuple d'entiers comparable (miroir de main._parse_version_tuple,
-    non importable ici sans cycle)."""
-    try:
-        return tuple(int(x) for x in str(v).split("."))
-    except Exception:
-        return (0,)
-
-
 def _within_version_bounds(plugin_version: str, min_pv, max_pv) -> bool:
-    """Bornes inclusives ; borne posee et version inconnue -> exclu (fail-safe,
-    meme semantique que le gating des feature flags)."""
+    """Bornes inclusives. Borne posee et version inconnue ou non parsable
+    (ex. « 1.6.0-rc1 ») -> exclu ; borne elle-meme non parsable -> exclu aussi.
+    Fail-safe sur les deux bornes, la ou le gating des flags ramene une version
+    non parsable a (0,) et laisse donc passer une borne max."""
     if not min_pv and not max_pv:
         return True
-    if not plugin_version:
+    pv = try_parse_version_tuple(plugin_version) if plugin_version else None
+    if pv is None:
         return False
-    pv = _version_tuple(plugin_version)
-    if min_pv and pv < _version_tuple(min_pv):
-        return False
-    if max_pv and pv > _version_tuple(max_pv):
-        return False
+    if min_pv:
+        lo = try_parse_version_tuple(min_pv)
+        if lo is None or pv < lo:
+            return False
+    if max_pv:
+        hi = try_parse_version_tuple(max_pv)
+        if hi is None or pv > hi:
+            return False
     return True
 
 
@@ -216,8 +215,18 @@ def get_active_communications(cur, *, plugin_slug: str, client_uuid: str,
     return out
 
 
-def communication_exists(cur, comm_id: int) -> bool:
-    cur.execute("SELECT 1 FROM communications WHERE id = %s", (comm_id,))
+def communication_ackable(cur, comm_id: int) -> bool:
+    """Vrai si la communication a pu etre servie : ni brouillon, ni future.
+
+    Un ack sur une communication paused/completed/expired reste accepte (le
+    poste a pu l'afficher avant le changement de statut) ; sur un brouillon il
+    serait enregistre d'avance et masquerait l'annonce a sa publication.
+    """
+    cur.execute("""
+        SELECT 1 FROM communications WHERE id = %s
+          AND status <> 'draft'
+          AND (starts_at IS NULL OR starts_at <= NOW())
+    """, (comm_id,))
     return cur.fetchone() is not None
 
 
