@@ -7,7 +7,9 @@ ni cohorte ni canary ici — le ciblage reste porté par la directive `update`
 de /config. Le feed annonce la dernière version `published` servable.
 
 Les interactions DB sont mockées ; environnement et faux psycopg2 sont posés
-par la fixture `mod`, qui les défait à la fin de chaque test.
+par la fixture `mod`, qui les défait à la fin de chaque test. La sélection SQL
+de la version servable est jugée par un vrai Postgres dans
+test_libreoffice_update_feed_pg.py.
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import types
 import xml.etree.ElementTree as ET
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,6 +44,7 @@ _TEST_ENV = {
     "DM_TELEMETRY_ENABLED": "true",
     "DM_RELAY_REQUIRE_KEY_FOR_SECRETS": "false",
     "DATABASE_URL": "postgresql://dev:dev@localhost:5432/bootstrap",
+    "PUBLIC_BASE_URL": "https://dm.example/bootstrap",
 }
 
 
@@ -154,18 +158,15 @@ def _first_matching_endpoint(mod, path: str) -> str | None:
     return None
 
 
-def _get(mod, rows: dict, public_base: str | None = "https://dm.example/bootstrap"):
+def _get(mod, rows: dict, headers: dict | None = None):
+    """PUBLIC_BASE_URL vient de la fixture `mod` (monkeypatch) ; un test qui
+    la veut absente fait lui-même ``monkeypatch.delenv``."""
     patches, cur = _install_db_mock(mod, rows)
     try:
-        if public_base is None:
-            os.environ.pop("PUBLIC_BASE_URL", None)
-        else:
-            os.environ["PUBLIC_BASE_URL"] = public_base
         client = TestClient(mod.app)
-        return client.get("/catalog/mirai-libreoffice/update.xml"), cur
+        return client.get("/catalog/mirai-libreoffice/update.xml", headers=headers or {}), cur
     finally:
         patches.close()
-        os.environ.pop("PUBLIC_BASE_URL", None)
 
 
 def test_update_xml_announces_latest_published_version(mod):
@@ -200,27 +201,31 @@ def test_update_xml_only_queries_published_versions(mod):
     assert "tag" not in version_sql[-1]
 
 
-def test_update_xml_falls_back_to_request_base_url_in_https(mod):
+def test_update_xml_ignores_the_host_header(mod):
+    """L'URL de téléchargement vient de PUBLIC_BASE_URL, jamais de l'en-tête
+    Host du client : sur une route anonyme sans empreinte, un Host forgé
+    dirigerait LibreOffice vers un OXT arbitraire."""
     res, _cur = _get(mod, {
         "extension_id FROM plugins": [PLUGIN_ROW],
         "FROM plugin_versions pv": [VERSION_ROW],
-    }, public_base=None)
+    }, headers={"Host": "evil.example"})
     assert res.status_code == 200, res.text
-    src = ET.fromstring(res.content).find("u:update-download/u:src", NS)
-    href = src.get(f"{{{NS_XLINK}}}href")
-    assert href.startswith("https://testserver/"), href   # http → https, sauf localhost
-    assert href.endswith("/catalog/mirai-libreoffice/download/mirai-libreoffice-0.0.1.0.32.oxt")
+    href = ET.fromstring(res.content).find("u:update-download/u:src", NS).get(f"{{{NS_XLINK}}}href")
+    assert href.startswith("https://dm.example/bootstrap/"), href
+    assert "evil.example" not in res.text
 
 
-def test_update_xml_warns_when_public_base_url_is_empty(mod, caplog):
-    """Le repli sur request.base_url reflète l'en-tête Host du client, et
-    l'application n'installe pas de TrustedHostMiddleware : on le trace."""
+def test_update_xml_503_without_public_base_url(mod, monkeypatch, caplog):
+    """Sans PUBLIC_BASE_URL, refus tracé plutôt qu'une URL dérivée du Host ;
+    LibreOffice lit le 503 comme « pas de mise à jour ». Aucune requête base."""
+    monkeypatch.delenv("PUBLIC_BASE_URL")
     with caplog.at_level(logging.WARNING, logger="device-management"):
-        res, _cur = _get(mod, {
+        res, cur = _get(mod, {
             "extension_id FROM plugins": [PLUGIN_ROW],
             "FROM plugin_versions pv": [VERSION_ROW],
-        }, public_base=None)
-    assert res.status_code == 200, res.text
+        })
+    assert res.status_code == 503
+    assert cur.calls == []
     assert any("PUBLIC_BASE_URL" in r.getMessage() for r in caplog.records), caplog.text
 
 
@@ -295,7 +300,8 @@ def test_update_xml_escapes_hostile_attribute_values(mod):
     assert root.find("u:identifier", NS).get("value") == hostile_id
     assert root.find("u:version", NS).get("value") == hostile_version
     href = root.find("u:update-download/u:src", NS).get(f"{{{NS_XLINK}}}href")
-    assert href.endswith(f"/mirai-libreoffice-{hostile_version}.oxt")
+    # Dans l'URL, la version est encodée : ni `"` ni `<` ni `&` bruts.
+    assert href.endswith(f"/mirai-libreoffice-{quote(hostile_version, safe='')}.oxt")
 
 
 def test_announced_filename_reparses_to_the_same_version(mod):
@@ -376,3 +382,54 @@ def test_update_plugin_still_rejects_unknown_column():
     cur = MagicMock()
     assert catalog_svc.update_plugin(cur, 7, slug="autre") is False
     cur.execute.assert_not_called()
+
+
+# ── Routeur admin : validation et normalisation de extension_id ──────────
+
+def _edit_plugin(extension_id: str):
+    """Appelle le handler POST /admin/catalog/{id}/edit sans la garde de session
+    (``__wrapped__``) ; renvoie les champs passés à update_plugin, ou l'exception."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from app.admin import router as admin_router
+    handler = admin_router.catalog_plugin_edit.__wrapped__
+    request = MagicMock()
+    request.state.admin_session = {"sub": "t"}
+    form = dict(name="Assistant", description="", intent="", key_features="", changelog="",
+                category="productivity", homepage_url="", support_email="",
+                extension_id=extension_id, publisher="DNUM", visibility="public")
+    with patch.object(admin_router, "get_db_connection", return_value=MagicMock()), \
+         patch.object(admin_router.catalog_svc, "update_plugin") as update, \
+         patch.object(admin_router, "audit_log"):
+        try:
+            asyncio.run(handler(request, 7, **form))
+        except HTTPException as exc:
+            return exc, update
+    return update.call_args.kwargs, update
+
+
+def test_admin_edit_blank_extension_id_is_stored_as_null():
+    fields, _update = _edit_plugin("   ")
+    assert fields["extension_id"] is None
+
+
+@pytest.mark.parametrize("good", ["abcdefghijklmnopabcdefghijklmnop", "matisse@interieur.gouv.fr",
+                                  "{8b5c3b4e-1f2a-4c3d-9e8f-0a1b2c3d4e5f}"])
+def test_admin_edit_accepts_existing_id_shapes(good):
+    """Chrome, Gecko : une fiche existante reste éditable."""
+    fields, _update = _edit_plugin(good)
+    assert fields["extension_id"] == good
+
+
+def test_admin_edit_extension_id_is_stripped():
+    fields, _update = _edit_plugin("  fr.gouv.interieur.mirai ")
+    assert fields["extension_id"] == "fr.gouv.interieur.mirai"
+
+
+@pytest.mark.parametrize("bad", ["x" * 65, "fr.gouv mirai", 'fr"><script>'])
+def test_admin_edit_rejects_invalid_extension_id_before_the_db(bad):
+    exc, update = _edit_plugin(bad)
+    assert getattr(exc, "status_code", None) == 400
+    update.assert_not_called()

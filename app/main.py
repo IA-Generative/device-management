@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import boto3
 import httpx
@@ -4822,18 +4822,56 @@ def _xml_attr(value) -> str:
     return '"' + html.escape(str(value), quote=True) + '"'
 
 
+def _latest_servable_oxt_version(cur, plugin_id: int) -> str | None:
+    """Dernière version `published` dont le binaire est servable, ou None.
+
+    Mêmes conditions que _serve_plugin_download, en SQL : `managed` exige un
+    artefact enregistré avec un `s3_path` ; `download_link`/`store` exigent une
+    URL. La présence physique du fichier n'est pas vérifiée ici. Annoncer une
+    version sans binaire (publiée avant la fin de l'upload de son artefact)
+    ferait échouer l'installation sur tout le parc, en boucle et sans que le DM
+    le voie : la route est anonyme.
+    """
+    cur.execute("""
+        SELECT pv.version FROM plugin_versions pv
+        LEFT JOIN artifacts a ON a.id = pv.artifact_id
+        WHERE pv.plugin_id = %s AND pv.status = 'published'
+          AND ((pv.distribution_mode = 'managed'
+                AND a.s3_path IS NOT NULL AND a.s3_path <> '')
+               OR (pv.distribution_mode IN ('download_link','store')
+                   AND pv.download_url IS NOT NULL AND pv.download_url <> ''))
+        ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
+    """, (plugin_id,))
+    row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
 @app.get("/catalog/{slug}/update.xml")
-def catalog_libreoffice_update_xml(request: Request, slug: str):
-    """Feed natif LibreOffice (<update-information>) pour un plugin `.oxt`.
+def catalog_libreoffice_update_xml(slug: str):
+    """Feed de mise à jour natif LibreOffice pour un plugin `.oxt`.
+
+    C'est le document que désigne le bloc <update-information> du
+    description.xml de l'OXT : racine <description> dans le namespace
+    update/2006, avec <identifier>, <version> et <update-download>.
 
     Public et anonyme : LibreOffice l'interroge avec sa propre pile HTTP, sans
     relay-headers ni UUID client — pas de cohorte ni de canary ici, le ciblage
     reste porté par la directive `update` de /config. Annonce la dernière
-    version `published` dont le binaire est réellement servable — jamais une
-    version encore experimental — avec l'URL versionnée de l'OXT.
-    L'identifiant OXT est `plugins.extension_id`. Ne pas confondre avec
-    /catalog/{slug}/updates.xml, le manifeste Chromium.
+    version `published` servable (_latest_servable_oxt_version) avec l'URL
+    versionnée de l'OXT. L'identifiant OXT est `plugins.extension_id`. Ne pas
+    confondre avec /catalog/{slug}/updates.xml, le manifeste Chromium.
+
+    L'URL de téléchargement est bâtie sur PUBLIC_BASE_URL uniquement : sans
+    elle, 503 plutôt qu'une URL dérivée de l'en-tête Host, que rien ne valide,
+    sur une route anonyme qui dit à LibreOffice où prendre l'OXT à installer
+    (sans empreinte à vérifier). LibreOffice lit le 503 comme « pas de mise à
+    jour ».
     """
+    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        logger.warning("update.xml: PUBLIC_BASE_URL vide — feed refusé (503) pour %s", slug)
+        raise HTTPException(503, "PUBLIC_BASE_URL non configurée")
+
     def _q(cur):
         cur.execute(
             "SELECT id, device_type, extension_id FROM plugins WHERE slug = %s AND status = 'active'",
@@ -4848,38 +4886,13 @@ def catalog_libreoffice_update_xml(request: Request, slug: str):
                 "update.xml: plugins.extension_id vide pour %s — renseigner l'identifiant OXT "
                 "sur la fiche plugin (ex. fr.gouv.interieur.mirai)", slug)
             raise HTTPException(404, "Identifiant d'extension non renseigné")
-        # Dernière version publiée SERVABLE : les conditions sont celles que
-        # _serve_plugin_download sait honorer. Annoncer une version dont le
-        # binaire est absent (publiée avant l'upload de son artefact, artefact
-        # supprimé) ferait échouer l'installation sur tout le parc, en boucle
-        # et sans que le DM le voie — la route est anonyme.
-        cur.execute("""
-            SELECT pv.version FROM plugin_versions pv
-            WHERE pv.plugin_id = %s AND pv.status = 'published'
-              AND ((pv.distribution_mode = 'managed' AND pv.artifact_id IS NOT NULL)
-                   OR (pv.distribution_mode IN ('download_link','store')
-                       AND pv.download_url IS NOT NULL))
-            ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
-        """, (plugin_id,))
-        vrow = cur.fetchone()
-        if not vrow:
+        version = _latest_servable_oxt_version(cur, plugin_id)
+        if version is None:
             raise HTTPException(404, "Aucune version publiée")
-        return str(extension_id), str(vrow[0])
+        return str(extension_id), version
 
     extension_id, version = _with_bootstrap_cursor(_q)
-
-    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
-    if not base:
-        # Repli : l'URL de téléchargement est alors dérivée de l'en-tête Host
-        # du client, que rien ne valide (pas de TrustedHostMiddleware). Sur un
-        # feed qui dit à LibreOffice OÙ prendre l'OXT à installer, ça se trace.
-        base = str(request.base_url).rstrip("/")
-        if base.startswith("http://") and "localhost" not in base:
-            base = "https://" + base[len("http://"):]
-        logger.warning(
-            "update.xml: PUBLIC_BASE_URL vide — URL de téléchargement dérivée de l'en-tête "
-            "Host (%s) ; définir PUBLIC_BASE_URL sur ce déploiement", base)
-    download = f"{base}/catalog/{slug}/download/{slug}-{version}.oxt"
+    download = f"{base}/catalog/{slug}/download/{slug}-{quote(version, safe='')}.oxt"
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         f'<description xmlns="{_LO_UPDATE_NS}"\n'

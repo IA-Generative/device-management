@@ -841,9 +841,9 @@ interrogent ce feed, téléchargent l'OXT et l'installent dans le processus soff
 
 | Élément | Source |
 |---|---|
-| `identifier` | `plugins.extension_id` — champ **« Identifiant d'extension (LibreOffice) »**, onglet *Éditer* de la fiche plugin dans l'admin, à renseigner avec l'identifiant du `description.xml` de l'OXT ; vide → 404 |
-| `version` | dernière `plugin_versions.status = 'published'` **dont le binaire est servable** (artefact présent en mode `managed`, `download_url` en mode `download_link`/`store`) : une version publiée avant l'upload de son artefact est sautée au profit de la précédente, plutôt qu'annoncée pour un téléchargement en 404. Une version encore `experimental` n'est jamais annoncée |
-| `src` | URL versionnée de l'OXT, bâtie sur `PUBLIC_BASE_URL`. Variable vide → repli sur l'URL de base de la requête, donc sur l'en-tête `Host` du client, promue de `http` en `https` hors `localhost`, avec un avertissement dans les logs : définir `PUBLIC_BASE_URL` sur tout déploiement exposé |
+| `identifier` | `plugins.extension_id` — champ **« Identifiant OXT »**, onglet *Éditer* de la fiche plugin dans l'admin, à renseigner avec l'identifiant du `description.xml` de l'OXT (64 caractères au plus : lettres, chiffres, `.` `_` `-` `@` `{` `}`) ; vide → 404. La même colonne porte l'`appid` des extensions Chrome/Edge |
+| `version` | dernière `plugin_versions.status = 'published'` **dont le binaire est servable** (artefact enregistré avec un `s3_path` en mode `managed`, `download_url` non vide en mode `download_link`/`store` ; la présence physique du fichier n'est pas vérifiée) : une version publiée avant l'upload de son artefact est sautée au profit de la précédente, plutôt qu'annoncée pour un téléchargement en 404. Une version encore `experimental` n'est jamais annoncée |
+| `src` | URL versionnée de l'OXT (version encodée), bâtie sur `PUBLIC_BASE_URL` **uniquement**. Variable vide → **503** et un avertissement dans les logs, jamais une URL dérivée de l'en-tête `Host` du client : sur cette route anonyme et sans empreinte, un `Host` forgé désignerait l'OXT à installer. LibreOffice lit le 503 comme « pas de mise à jour » |
 
 **Ce que ce feed n'est pas.** Il est public et anonyme : LibreOffice le lit avec sa
 propre pile HTTP, sans relay-headers ni `X-Client-UUID`. Le DM ne peut donc ni
