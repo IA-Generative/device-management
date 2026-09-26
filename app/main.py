@@ -95,6 +95,7 @@ from .services.db import (
 from .services.db import (
     wait_for_db as _svc_wait_for_db,
 )
+from .services.versions import parse_version_tuple as _parse_version_tuple
 from .settings import settings
 
 # Apply persisted runtime-config overrides to os.environ + settings BEFORE the
@@ -1014,17 +1015,6 @@ _KC_GROUP_CACHE_LOCK = threading.Lock()
 
 # ---- Enriched config helpers
 
-def _parse_version_tuple(v: str) -> tuple:
-    """Parse a version string into a tuple of ints for comparison.
-
-    Supports any number of segments (semver 3, or extended 4-5 segments).
-    """
-    try:
-        return tuple(int(x) for x in str(v).split("."))
-    except Exception:
-        return (0,)
-
-
 def _infer_platform_variant(platform_type: str, platform_version: str, manifest_version: int | None) -> str | None:
     """Infer a platform variant string from platform type/version/manifest."""
     if platform_type == "thunderbird":
@@ -1234,7 +1224,8 @@ def _resolve_communications(cur, *, plugin_slug: str, client_uuid: str,
             device_cohort_ids=device_cohort_ids,
             plugin_version=plugin_version,
         )
-    except Exception:
+    except Exception as e:
+        logger.debug(f"communications non résolues pour {plugin_slug}: {e}")
         return []
 
 
@@ -3541,7 +3532,8 @@ async def report_update_status(request: Request):
 def _ack_communication_sync(*, comm_id: int, client_uuid: str) -> str:
     """Partie bloquante (DB) de /communications/{id}/ack — exécutée en threadpool.
 
-    Retourne "ok", "unknown" (id inconnu) ou "db_error". L'erreur base n'est
+    Retourne "ok", "unknown" (id inconnu, ou communication jamais diffusée :
+    brouillon, ou pas encore commencée) ou "db_error". L'erreur base n'est
     PAS avalée en succès : le plugin garde une boîte d'envoi d'acks et doit
     distinguer « le DM a statué » (2xx/4xx) de « réessayer » (5xx).
     """
@@ -3553,7 +3545,7 @@ def _ack_communication_sync(*, comm_id: int, client_uuid: str) -> str:
         conn.autocommit = True
         try:
             with conn.cursor() as cur:
-                if not _comms_svc.communication_exists(cur, comm_id):
+                if not _comms_svc.communication_ackable(cur, comm_id):
                     return "unknown"
                 _comms_svc.ack_communication(cur, comm_id, client_uuid)
         finally:
