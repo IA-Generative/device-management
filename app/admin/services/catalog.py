@@ -157,6 +157,18 @@ def create_version(cur, *, plugin_id: int, version: str, artifact_id: int = None
                    distribution_mode: str = "managed",
                    status: str = "draft",
                    tag: str = "", hypotheses: list = None) -> int:
+    # L'upsert ci-dessous écrase le statut d'une version existante : re-créer la
+    # version générale en brouillon ou en expérimentale rendrait tous les canaux
+    # natifs muets (issue #40). Même garde que update_version_status.
+    if status not in GENERAL_VERSION_STATUSES:
+        cur.execute("""
+            SELECT 1 FROM plugins p JOIN plugin_versions pv ON pv.id = p.general_version_id
+            WHERE p.id = %s AND pv.version = %s
+        """, (plugin_id, version))
+        if cur.fetchone():
+            raise GeneralVersionError(
+                f"La version {version} est la version générale : impossible de la "
+                f"re-créer en « {status} ». Choisissez d'abord une autre version générale.")
     # Deprecate older published versions when publishing a new one. Une version
     # 'experimental' ne déprécie RIEN : elle coexiste avec la main (pull opt-in).
     if status == "published":
@@ -306,8 +318,10 @@ def set_general_version(cur, plugin_id: int, version_id: int | None) -> tuple:
                 f"Une version « {status} » ne peut pas être la version générale.")
         if not servable:
             raise GeneralVersionError("Cette version n'a pas de binaire téléchargeable.")
-    cur.execute("UPDATE plugins SET general_version_id = %s, updated_at = NOW() WHERE id = %s",
-                (version_id, plugin_id))
+    cur.execute("UPDATE plugins SET general_version_id = %s, updated_at = NOW() "
+                "WHERE id = %s RETURNING id", (version_id, plugin_id))
+    if cur.fetchone() is None:
+        raise GeneralVersionError("Plugin introuvable.")
     return (previous["version"] if previous else None), new_label
 
 

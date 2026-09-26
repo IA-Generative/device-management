@@ -281,3 +281,24 @@ def test_the_general_version_cannot_be_withdrawn_but_can_be_deprecated(fixt):
         svc.update_version_status(cur, vid, "yanked", plugin_id=plugin_id)
     assert svc.update_version_status(cur, vid, "deprecated", plugin_id=plugin_id) is True
     assert svc.update_version_status(cur, vid, "published", plugin_id=plugin_id + 100000) is False
+
+
+@pytest.mark.parametrize("status", ["draft", "experimental"])
+def test_recreating_the_general_version_cannot_silence_the_channels(fixt, mod, status):
+    """create_version fait un upsert qui écrase le statut : ré-uploader le numéro
+    de la générale en brouillon ou en expérimentale est refusé."""
+    from app.admin.services import catalog as svc
+    cur, plugin_id, add = fixt
+    vid = add("1.0.0")
+    svc.set_general_version(cur, plugin_id, vid)
+    with pytest.raises(svc.GeneralVersionError):
+        svc.create_version(cur, plugin_id=plugin_id, version="1.0.0", status=status)
+    assert mod._general_version(cur, plugin_id) == "1.0.0"
+
+
+def test_republishing_the_general_version_is_allowed(fixt):
+    from app.admin.services import catalog as svc
+    cur, plugin_id, add = fixt
+    vid = add("1.0.0")
+    svc.set_general_version(cur, plugin_id, vid)
+    assert svc.create_version(cur, plugin_id=plugin_id, version="1.0.0", status="published") == vid

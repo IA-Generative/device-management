@@ -14,17 +14,15 @@ import xml.etree.ElementTree as ET
 from unittest.mock import MagicMock, patch
 
 import pytest
+import test_libreoffice_update_feed as _feed_tests
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from test_libreoffice_update_feed import (  # noqa: F401  (fixture importée)
-    NS,
-    NS_XLINK,
-    PLUGIN_ROW,
-    _install_db_mock,
-    mod,
-)
+from test_libreoffice_update_feed import NS, NS_XLINK, PLUGIN_ROW, _install_db_mock
 
 from app.admin.services import catalog as catalog_svc
+
+# Même fixture que les tests du feed : app.main rechargé sous monkeypatch.
+mod = _feed_tests.mod
 
 SLUG = "mirai-libreoffice"
 
@@ -42,18 +40,25 @@ def _client_get(mod, path, rows=None, headers=None):
 class _Cur:
     """Curseur scripté : chaque execute consomme la réponse suivante."""
 
-    def __init__(self, *answers, fail_first=False):
+    def __init__(self, *answers, fail_first=None):
         self.answers = list(answers)
         self.fail_first = fail_first
         self.calls = []
 
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
-        if self.fail_first and len(self.calls) == 1:
-            raise RuntimeError('column "general_version_id" does not exist')
+        if self.fail_first is not None and len(self.calls) == 1:
+            raise self.fail_first
+
 
     def fetchone(self):
         return self.answers.pop(0) if self.answers else None
+
+
+class _PgError(Exception):
+    def __init__(self, pgcode):
+        super().__init__(f"SQLSTATE {pgcode}")
+        self.pgcode = pgcode
 
 
 def test_resolver_without_general_falls_back_to_latest_published(mod):
@@ -80,8 +85,16 @@ def test_resolver_never_falls_back_when_the_general_is_not_servable(mod):
 
 def test_resolver_tolerates_a_schema_not_yet_migrated(mod):
     """Pods 0.9.20 démarrés avant l'application du schéma : repli, pas de 500."""
-    cur = _Cur(("1.4.0",), fail_first=True)
+    cur = _Cur(("1.4.0",), fail_first=_PgError("42703"))   # undefined_column
     assert mod._general_version(cur, 7) == "1.4.0"
+
+
+def test_resolver_does_not_hide_other_database_errors(mod):
+    """Un timeout ne doit pas faire servir la dernière publiée à la place de
+    la générale : seule la colonne absente justifie le repli."""
+    cur = _Cur(("1.4.0",), fail_first=_PgError("57014"))   # query_canceled
+    with pytest.raises(_PgError):
+        mod._general_version(cur, 7)
 
 
 # ── Feed LibreOffice ─────────────────────────────────────────────────────
@@ -212,10 +225,16 @@ def _svc_cur(rows):
 
 
 def test_set_general_version_records_the_change():
-    cur = _svc_cur([(5, "1.0.0", "published"), ("1.1.0", "published", True)])
+    cur = _svc_cur([(5, "1.0.0", "published"), ("1.1.0", "published", True), (7,)])
     assert catalog_svc.set_general_version(cur, 7, 9) == ("1.0.0", "1.1.0")
     sql, params = cur.execute.call_args[0]
     assert "SET general_version_id = %s" in sql and params == (9, 7)
+
+
+def test_set_general_version_on_an_unknown_plugin_is_refused():
+    cur = _svc_cur([None, None])
+    with pytest.raises(catalog_svc.GeneralVersionError, match="Plugin"):
+        catalog_svc.set_general_version(cur, 999, None)
 
 
 @pytest.mark.parametrize("row,message", [
@@ -233,7 +252,7 @@ def test_set_general_version_refuses_what_cannot_be_served(row, message):
 
 
 def test_clearing_the_general_version_is_allowed():
-    cur = _svc_cur([(5, "1.0.0", "published")])
+    cur = _svc_cur([(5, "1.0.0", "published"), (7,)])
     assert catalog_svc.set_general_version(cur, 7, None) == ("1.0.0", None)
 
 
@@ -315,3 +334,44 @@ def test_status_route_is_scoped_to_the_plugin():
             _call(admin_router.catalog_version_status, 7, 9, status="deprecated")
     assert exc.value.status_code == 404
     audit.assert_not_called()
+
+
+def test_route_rejects_a_non_numeric_version_id():
+    from app.admin import router as admin_router
+    with patch.object(admin_router, "get_db_connection") as conn:
+        with pytest.raises(HTTPException) as exc:
+            _call(admin_router.catalog_plugin_general_version, 7, version_id="abc")
+    assert exc.value.status_code == 400
+    conn.assert_not_called()
+
+
+@pytest.mark.parametrize("status", ["draft", "experimental"])
+def test_recreating_the_general_version_with_a_silent_status_is_refused(status):
+    """L'upsert de create_version écrasait le statut : contournement de la garde."""
+    cur = _svc_cur([(1,)])
+    with pytest.raises(catalog_svc.GeneralVersionError):
+        catalog_svc.create_version(cur, plugin_id=7, version="1.0.0", status=status)
+    assert not any("INSERT INTO plugin_versions" in c.args[0] for c in cur.execute.call_args_list)
+
+
+# ── Pages publiques du catalogue ─────────────────────────────────────────
+
+def test_catalog_page_shows_the_version_the_download_button_serves(mod):
+    """Générale 1.4, 1.5 publiée en canary : la page ne doit pas afficher
+    « Télécharger v1.5 » pour un bouton qui sert 1.4."""
+    plugin_row = {"id": 7, "slug": SLUG, "name": "MIrAI", "device_type": "libreoffice",
+                  "status": "active", "visibility": "public"}
+    with patch.object(mod, "_general_version", return_value="1.4.0"):
+        patches, cur = _install_db_mock(mod, {
+            "SELECT * FROM plugins WHERE slug": [tuple(plugin_row.values())],
+            "AND version = %s": [("1.4.0", "Notes 1.4")],
+            "COUNT(DISTINCT client_uuid)": [(3,)],
+        })
+        cur.description = [(k,) for k in plugin_row]
+        try:
+            res = TestClient(mod.app).get(f"/catalog/{SLUG}")
+        finally:
+            patches.close()
+    assert res.status_code == 200, res.text[:300]
+    assert "v1.4.0" in res.text
+    assert "v1.5" not in res.text

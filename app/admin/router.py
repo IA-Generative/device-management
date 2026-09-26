@@ -2470,7 +2470,10 @@ async def catalog_plugin_general_version(request: Request, plugin_id: int,
                                          version_id: str = Form("")):
     """Pose (ou retire, valeur vide) la version générale du plugin (issue #40) :
     la seule que les canaux natifs annoncent à tout le parc."""
-    target = int(version_id) if version_id.strip() else None
+    try:
+        target = int(version_id) if version_id.strip() else None
+    except ValueError as e:
+        raise HTTPException(400, "Identifiant de version invalide") from e
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:

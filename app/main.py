@@ -50,6 +50,7 @@ if os.getenv("RELOAD", "").lower() == "true" and "DATABASE_URL" not in os.enviro
 from . import observability as _observability
 from . import resilience as _resilience
 from . import runtime_config
+from .admin.services import catalog as _catalog_svc
 from .admin.services import communications as _comms_svc
 from .postgres_queue import PostgresQueue, QueueJob
 from .s3 import s3_client
@@ -3770,8 +3771,15 @@ def _deploy_plugin_db_work(
             """, (plugin_id, version, artifact_id, release_notes))
             version_id = cur.fetchone()[0]
             if make_general:
-                cur.execute("UPDATE plugins SET general_version_id = %s WHERE id = %s",
-                            (version_id, plugin_id))
+                previous_general, _ = _catalog_svc.set_general_version(cur, plugin_id, version_id)
+                try:
+                    from .admin.helpers import audit_log as _audit_log
+                    _audit_log(cur, actor={"sub": "api-token"}, action="plugin.general_version",
+                               resource_type="plugin", resource_id=str(plugin_id),
+                               payload={"from": previous_general, "to": version, "via": "api"},
+                               ip=None)
+                except Exception:
+                    logger.warning("deploy: audit de la version générale impossible", exc_info=True)
 
             # 7. Update config_template + changelog from manifest
             flags_diff = None
@@ -4545,7 +4553,7 @@ def catalog_index(request: Request, category: str | None = None):
             conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
+                SELECT p.id, p.slug, p.name, p.intent, p.device_type, p.category, p.publisher,
                        p.maturity, p.icon_url, p.icon_path, p.key_features,
                        COUNT(DISTINCT pi.client_uuid) FILTER (WHERE pi.status='active') AS install_count,
                        -- « Dernière » au sens de la plus récemment publiée, PAS du plus
@@ -4564,6 +4572,10 @@ def catalog_index(request: Request, category: str | None = None):
             """)
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
+            # La page affiche la version que « Télécharger » sert : la générale
+            # (issue #40), pas la dernière publiée (canary éventuel).
+            for r in rows:
+                r["latest_version"] = _general_version(cur, r["id"])
 
         # Build category list and filter
         all_categories = sorted({r.get("category") or "" for r in rows} - {""})
@@ -4876,6 +4888,11 @@ def _general_version_id(cur, plugin_id: int) -> int | None:
     try:
         cur.execute("SELECT general_version_id FROM plugins WHERE id = %s", (plugin_id,))
     except Exception as exc:
+        # Seule la colonne absente (SQLSTATE 42703) justifie le repli : une
+        # autre erreur (timeout, annulation) ne doit pas faire servir la
+        # dernière publiée à la place de la générale.
+        if getattr(exc, "pgcode", None) != "42703":
+            raise
         if not _general_version_column_warned:
             _general_version_column_warned = True
             logger.warning("version générale illisible (schéma pas à jour ?) : %s", exc)
@@ -5339,12 +5356,16 @@ def catalog_detail(request: Request, slug: str, exp: str | None = None):
             cols = [d[0] for d in cur.description]
             p = dict(zip(cols, row, strict=False))
 
-            cur.execute("""
-                SELECT version, release_notes FROM plugin_versions
-                WHERE plugin_id = %s AND status = 'published'
-                ORDER BY published_at DESC LIMIT 1
-            """, (p["id"],))
-            vrow = cur.fetchone()
+            # Version affichée = celle que « Télécharger » sert : la générale
+            # (issue #40). La dernière publiée peut être un canary.
+            general = _general_version(cur, p["id"])
+            vrow = None
+            if general:
+                cur.execute("""
+                    SELECT version, release_notes FROM plugin_versions
+                    WHERE plugin_id = %s AND version = %s
+                """, (p["id"], general))
+                vrow = cur.fetchone()
 
             cur.execute(
                 "SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations WHERE plugin_id=%s AND status='active'",
