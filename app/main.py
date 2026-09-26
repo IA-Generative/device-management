@@ -3616,6 +3616,9 @@ async def api_plugin_deploy(slug: str, request: Request):
       - strategy (str): "immediate" or "canary" (default: "canary")
       - urgency (str): "low", "normal", "critical" (default: "normal")
       - cohort_id (int, optional): target cohort
+      - general (bool, optional): déclare aussi cette version « générale »
+        (issue #40), la seule annoncée par les canaux natifs. Défaut : non —
+        publier ne diffuse plus à tout le parc.
     """
     if not _verify_admin_token(request):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
@@ -3634,6 +3637,7 @@ async def api_plugin_deploy(slug: str, request: Request):
     strategy = str(form.get("strategy", "canary")).strip()
     urgency = str(form.get("urgency", "normal")).strip()
     cohort_id = form.get("cohort_id")
+    make_general = str(form.get("general", "")).strip().lower() in ("1", "true", "on", "yes")
 
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
@@ -3643,11 +3647,13 @@ async def api_plugin_deploy(slug: str, request: Request):
     # aller-retour dans le threadpool, hors event-loop.
     return await run_in_threadpool(
         _deploy_plugin_db_work, slug, data, orig_filename, version, strategy, urgency, cohort_id, db_url,
+        make_general,
     )
 
 
 def _deploy_plugin_db_work(
     slug: str, data: bytes, orig_filename: str, version: str, strategy: str, urgency: str, cohort_id, db_url: str,
+    make_general: bool = False,
 ):
     """Partie bloquante de POST /api/plugins/{slug}/deploy (DB + zip + persist
     binaire) — exécutée en threadpool par l'endpoint async."""
@@ -3763,6 +3769,9 @@ def _deploy_plugin_db_work(
                 RETURNING id
             """, (plugin_id, version, artifact_id, release_notes))
             version_id = cur.fetchone()[0]
+            if make_general:
+                cur.execute("UPDATE plugins SET general_version_id = %s WHERE id = %s",
+                            (version_id, plugin_id))
 
             # 7. Update config_template + changelog from manifest
             flags_diff = None
@@ -3832,6 +3841,7 @@ def _deploy_plugin_db_work(
             "campaign_id": campaign_id,
             "checksum": checksum,
             "strategy": strategy,
+            "general": make_general,
             "feature_flags": flags_diff,
         }, status_code=201)
     except Exception as e:

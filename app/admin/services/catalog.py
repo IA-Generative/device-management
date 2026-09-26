@@ -225,13 +225,90 @@ def get_version_artifacts(cur, plugin_version_id: int) -> list[dict]:
     return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
 
-def update_version_status(cur, version_id: int, new_status: str) -> bool:
+VERSION_STATUSES = ("draft", "published", "deprecated", "yanked", "experimental")
+
+
+class GeneralVersionError(ValueError):
+    """Opération refusée parce qu'elle viserait ou casserait la version générale."""
+
+
+def update_version_status(cur, version_id: int, new_status: str,
+                          plugin_id: int | None = None) -> bool:
+    """Change le statut d'une version.
+
+    `plugin_id` fourni : la version doit appartenir à ce plugin. La version
+    générale (issue #40) ne peut passer qu'en `published` ou `deprecated` :
+    la retirer (`yanked`) ou la repasser en brouillon rendrait tous les canaux
+    natifs muets — choisir d'abord une autre générale.
+    """
+    if new_status not in VERSION_STATUSES:
+        raise ValueError(f"statut inconnu : {new_status}")
+    if new_status not in GENERAL_VERSION_STATUSES:
+        cur.execute("SELECT 1 FROM plugins WHERE general_version_id = %s", (version_id,))
+        if cur.fetchone():
+            raise GeneralVersionError(
+                "C'est la version générale : choisissez d'abord une autre version générale.")
     extra = ", published_at = NOW()" if new_status == "published" else ""
+    scope = " AND plugin_id = %s" if plugin_id is not None else ""
+    params = (new_status, version_id) + ((plugin_id,) if plugin_id is not None else ())
     cur.execute(f"""
         UPDATE plugin_versions SET status = %s {extra}
-        WHERE id = %s RETURNING id
-    """, (new_status, version_id))
+        WHERE id = %s{scope} RETURNING id
+    """, params)
     return cur.fetchone() is not None
+
+
+# ─── Version générale (issue #40) ─────────────────────────────────────
+# « Publiée » = disponible pour des campagnes ; « générale » = destinée à tout
+# le parc, seule annoncée par les canaux natifs (feed LibreOffice, manifestes
+# Chromium/Gecko). Publier une version ne la rend jamais générale d'office.
+
+GENERAL_VERSION_STATUSES = ("published", "deprecated")
+
+
+def get_general_version(cur, plugin_id: int) -> dict | None:
+    """{id, version, status} de la version générale posée, ou None."""
+    cur.execute("""
+        SELECT pv.id, pv.version, pv.status
+        FROM plugins p JOIN plugin_versions pv ON pv.id = p.general_version_id
+        WHERE p.id = %s
+    """, (plugin_id,))
+    row = cur.fetchone()
+    return {"id": row[0], "version": row[1], "status": row[2]} if row else None
+
+
+def set_general_version(cur, plugin_id: int, version_id: int | None) -> tuple:
+    """Pose (ou retire, `version_id=None`) la version générale.
+
+    Refuse une version d'un autre plugin, dans un statut non diffusable
+    (`draft`, `yanked`, `experimental`) ou sans binaire servable : les canaux
+    natifs l'annonceraient à tout le parc pour un téléchargement en échec.
+    Renvoie (ancienne version, nouvelle version), en libellés.
+    """
+    previous = get_general_version(cur, plugin_id)
+    new_label = None
+    if version_id is not None:
+        cur.execute("""
+            SELECT pv.version, pv.status,
+                   ((pv.distribution_mode = 'managed'
+                     AND a.s3_path IS NOT NULL AND a.s3_path <> '')
+                    OR (pv.distribution_mode IN ('download_link','store')
+                        AND pv.download_url IS NOT NULL AND pv.download_url <> ''))
+            FROM plugin_versions pv LEFT JOIN artifacts a ON a.id = pv.artifact_id
+            WHERE pv.id = %s AND pv.plugin_id = %s
+        """, (version_id, plugin_id))
+        row = cur.fetchone()
+        if not row:
+            raise GeneralVersionError("Version introuvable pour ce plugin.")
+        new_label, status, servable = row
+        if status not in GENERAL_VERSION_STATUSES:
+            raise GeneralVersionError(
+                f"Une version « {status} » ne peut pas être la version générale.")
+        if not servable:
+            raise GeneralVersionError("Cette version n'a pas de binaire téléchargeable.")
+    cur.execute("UPDATE plugins SET general_version_id = %s, updated_at = NOW() WHERE id = %s",
+                (version_id, plugin_id))
+    return (previous["version"] if previous else None), new_label
 
 
 # ─── Installations ────────────────────────────────────────────────────

@@ -2169,6 +2169,12 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             if not plugin:
                 raise HTTPException(404, "Plugin non trouve")
             versions = catalog_svc.list_versions(cur, plugin_id)
+            try:
+                general_version = catalog_svc.get_general_version(cur, plugin_id)
+            except Exception:
+                # Schéma pas encore à jour (colonne absente) : la page reste lisible.
+                conn.rollback()
+                general_version = None
             stats = catalog_svc.get_plugin_stats(cur, plugin_id)
             installations = catalog_svc.list_installations(cur, plugin_id, limit=20)
             artifact_list = artifacts_svc.list_artifacts(cur)
@@ -2248,6 +2254,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                     d["progress_pct"] = 0
         return templates.TemplateResponse(request, "catalog_plugin.html", {
             "request": request, "plugin": plugin, "versions": versions,
+            "general_version": general_version,
             "stats": stats, "installations": installations,
             "artifacts": artifact_list, "features": features,
             "env_overrides": env_overrides, "kc_clients": kc_clients,
@@ -2438,7 +2445,8 @@ async def catalog_version_status(request: Request, plugin_id: int,
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            catalog_svc.update_version_status(cur, version_id, status)
+            if not catalog_svc.update_version_status(cur, version_id, status, plugin_id=plugin_id):
+                raise HTTPException(404, "Version introuvable pour ce plugin")
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action=f"version.{status}",
                       resource_type="plugin_version", resource_id=str(version_id),
@@ -2446,6 +2454,40 @@ async def catalog_version_status(request: Request, plugin_id: int,
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e)) from e
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/general-version")
+@require_admin_or_service_token
+async def catalog_plugin_general_version(request: Request, plugin_id: int,
+                                         version_id: str = Form("")):
+    """Pose (ou retire, valeur vide) la version générale du plugin (issue #40) :
+    la seule que les canaux natifs annoncent à tout le parc."""
+    target = int(version_id) if version_id.strip() else None
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            try:
+                previous, current = catalog_svc.set_general_version(cur, plugin_id, target)
+            except catalog_svc.GeneralVersionError as e:
+                raise HTTPException(400, str(e)) from e
+            actor = getattr(request.state, "admin_session", {})
+            audit_log(cur, actor=actor, action="plugin.general_version",
+                      resource_type="plugin", resource_id=str(plugin_id),
+                      payload={"from": previous, "to": current},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(400, str(e)) from e
@@ -2456,7 +2498,8 @@ async def catalog_version_status(request: Request, plugin_id: int,
 @router.post("/catalog/{plugin_id}/versions/purge")
 @require_admin
 async def catalog_versions_purge(request: Request, plugin_id: int):
-    """Delete all deprecated and yanked versions for a plugin."""
+    """Delete all deprecated and yanked versions for a plugin — sauf la version
+    générale (issue #40), souvent `deprecated` puisque publier déprécie les autres."""
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -2466,13 +2509,15 @@ async def catalog_versions_purge(request: Request, plugin_id: int):
                 WHERE version_id IN (
                     SELECT id FROM plugin_versions
                     WHERE plugin_id = %s AND status IN ('deprecated', 'yanked')
+                      AND id IS DISTINCT FROM (SELECT general_version_id FROM plugins WHERE id = %s)
                 )
-            """, (plugin_id,))
+            """, (plugin_id, plugin_id))
             # Delete old versions
             cur.execute("""
                 DELETE FROM plugin_versions
                 WHERE plugin_id = %s AND status IN ('deprecated', 'yanked')
-            """, (plugin_id,))
+                  AND id IS DISTINCT FROM (SELECT general_version_id FROM plugins WHERE id = %s)
+            """, (plugin_id, plugin_id))
             deleted = cur.rowcount
             # Capture les binaires des artefacts devenus orphelins AVANT de
             # supprimer les lignes (sinon on perd les s3_path) → purge à la source.
@@ -2598,6 +2643,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         action = body.get("action", "deploy")
         tag = body.get("tag", "")
         hypotheses = body.get("hypotheses", "")
+        make_general = body.get("make_general", False)
         upload_id = body.get("upload_id", "")
         if not upload_id:
             raise HTTPException(400, "Missing upload_id in JSON body")
@@ -2623,6 +2669,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         action = form.get("action", "deploy")
         tag = form.get("tag", "")
         hypotheses = form.get("hypotheses", "")
+        make_general = form.get("make_general", "")
         binary = form.get("binary")
         if not binary or not hasattr(binary, "read"):
             raise HTTPException(400, "Missing binary file")
@@ -2715,6 +2762,16 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 status="experimental" if is_experimental else "published",
                 tag=tag, hypotheses=hyp_list,
             )
+
+            # 5a. Version générale (issue #40) : seulement si demandé
+            # explicitement — publier ne diffuse plus aux canaux natifs.
+            if not is_experimental and str(make_general).lower() in ("1", "true", "on", "yes"):
+                prev_general, _ = catalog_svc.set_general_version(cur, plugin_id, vid)
+                audit_log(cur, actor=getattr(request.state, "admin_session", {}),
+                          action="plugin.general_version",
+                          resource_type="plugin", resource_id=str(plugin_id),
+                          payload={"from": prev_general, "to": version, "via": "upload"},
+                          ip=request.client.host if request.client else None)
 
             # 5b. Lien 1:N version→artefacts : enregistre la variante pour les
             # manifests multi-format/multi-cible (no-op si variant vide = legacy).
