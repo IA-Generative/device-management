@@ -1439,23 +1439,19 @@ def _build_update_directive(
                 if device_hash >= current_percent:
                     return None  # Not yet eligible for this rollout stage
 
-    # Prefer catalog download URL (human-friendly, handles redirects)
-    # Fallback to raw binary path if device_name is unknown
-    def _artifact_url(s3_path):
-        if device_name:
-            return f"/catalog/{device_name}/download"
-        return _binaries_route_url(s3_path)
-
     def _pinned_artifact_url(s3_path, version):
-        """URL épinglée sur la version de la campagne (et non « la dernière main »).
+        """URL épinglée sur la version visée par la directive, pour TOUTE
+        directive : update ordinaire, expérimentation et rollback (issue #40).
 
-        ``/catalog/<slug>/download`` sans tag résout ``status = 'published'``, donc
-        la version main : l'utiliser pour un bras d'expérimentation servirait le
-        stable sous l'étiquette de la RC (checksum mismatch, puis re-update à
-        chaque poll). On passe par la route versionnée, dont catalog_download_file
+        ``/catalog/<slug>/download`` sans version sert la version générale, pas
+        la cible de la campagne : le poste recevait un autre binaire que celui
+        annoncé (checksum mismatch côté LibreOffice, installation silencieuse de
+        la mauvaise version côté Matisse, rollback qui retéléchargeait la version
+        défectueuse). On passe par la route versionnée, dont catalog_download_file
         ré-extrait la version en retirant l'extension connue puis le préfixe slug ;
-        si l'extension du binaire n'est pas reconnue par cette route, on retombe
-        sur le chemin brut, qui désigne l'artefact exact dans tous les modes.
+        si l'extension du binaire n'est pas reconnue par cette route, ou si le
+        slug est inconnu, on retombe sur le chemin brut, qui désigne l'artefact
+        exact dans tous les modes.
         """
         ext = os.path.splitext(str(s3_path or ""))[1]
         if device_name and ext in _CATALOG_KNOWN_EXT:
@@ -1486,7 +1482,7 @@ def _build_update_directive(
             "action": "update",
             "current_version": plugin_version,
             "target_version": artifact_version,
-            "artifact_url": _artifact_url(campaign["artifact_s3_path"]),
+            "artifact_url": _pinned_artifact_url(campaign["artifact_s3_path"], artifact_version),
             "checksum": campaign["artifact_checksum"],
             "urgency": campaign["urgency"],
             "changelog_url": campaign["changelog_url"],
@@ -1501,7 +1497,8 @@ def _build_update_directive(
             "action": "rollback",
             "current_version": plugin_version,
             "target_version": campaign["rollback_version"],
-            "artifact_url": _artifact_url(campaign["rollback_s3_path"]),
+            "artifact_url": _pinned_artifact_url(campaign["rollback_s3_path"],
+                                                 campaign["rollback_version"]),
             "checksum": campaign["rollback_checksum"],
             "urgency": campaign["urgency"],
             "changelog_url": campaign["changelog_url"],
@@ -4145,6 +4142,10 @@ def api_public_plugins():
             """)
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
+            # Ce que les canaux natifs annoncent (issue #40) : permet aux sondes
+            # de non-régression de comparer feeds et catalogue ligne à ligne.
+            for r in rows:
+                r["general_version"] = _general_version(cur, r["id"])
 
         maturity_labels = {"dev":"Dev","alpha":"Alpha","beta":"Beta","pre-release":"Pre-release","release":"Stable"}
         plugins = []
@@ -4172,6 +4173,7 @@ def api_public_plugins():
                 "access_mode": p.get("access_mode") or "open",
                 "icon_url": icon or None,
                 "latest_version": p.get("latest_version"),
+                "general_version": p.get("general_version"),
                 "install_count": p.get("install_count") or 0,
                 "key_features": kf,
                 "source_url": p.get("source_url"),
@@ -4219,6 +4221,7 @@ def api_public_plugin_detail(slug: str, exp: str | None = None):
                 ORDER BY published_at DESC LIMIT 1
             """, (p["id"],))
             vrow = cur.fetchone()
+            general_version = _general_version(cur, p["id"])
             cur.execute("SELECT COUNT(DISTINCT client_uuid) FROM plugin_installations WHERE plugin_id=%s AND status='active'", (p["id"],))
             installs = cur.fetchone()[0]
             exp_rows = []
@@ -4254,6 +4257,7 @@ def api_public_plugin_detail(slug: str, exp: str | None = None):
             "access_mode": p.get("access_mode") or "open",
             "icon_url": icon or None,
             "latest_version": vrow[0] if vrow else None,
+            "general_version": general_version,
             "changelog_summary": (vrow[1] or "")[:200] if vrow else "",
             "install_count": installs,
             "key_features": kf, "source_url": p.get("source_url"),
@@ -4596,7 +4600,7 @@ def catalog_index(request: Request, category: str | None = None):
 
 
 def _serve_plugin_download(slug: str, version_filter: str | None = None):
-    """Resolve and serve a plugin binary. version_filter=None → latest published."""
+    """Resolve and serve a plugin binary. version_filter=None → version générale."""
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
         raise HTTPException(404, "Aucune version disponible")
@@ -4615,25 +4619,20 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None):
                 raise HTTPException(404, "Plugin introuvable")
             plugin_id, device_type = prow[0], prow[1]
 
-            if version_filter:
-                # Une version précise est servable si publiée OU expérimentale
-                # (pull opt-in d'un prototype par version/tag). Les versions
-                # 'experimental' restent exclues du défaut (branche else).
-                cur.execute("""
-                    SELECT pv.version, pv.distribution_mode, pv.download_url, pv.artifact_id
-                    FROM plugin_versions pv
-                    WHERE pv.plugin_id = %s AND pv.version = %s
-                      AND pv.status IN ('published','experimental')
-                    LIMIT 1
-                """, (plugin_id, version_filter))
-            else:
-                cur.execute("""
-                    SELECT pv.version, pv.distribution_mode, pv.download_url, pv.artifact_id
-                    FROM plugin_versions pv
-                    WHERE pv.plugin_id = %s AND pv.status = 'published'
-                    ORDER BY pv.published_at DESC NULLS LAST
-                    LIMIT 1
-                """, (plugin_id,))
+            # Une version précise est servable si publiée, expérimentale (pull
+            # opt-in d'un prototype par version/tag) ou dépréciée : publier une
+            # version déprécie les autres, or les liens épinglés des directives
+            # (update, rollback) et la version générale peuvent la viser. Jamais
+            # `draft` ni `yanked`. Sans version : la générale (issue #40).
+            wanted = version_filter or _general_version(cur, plugin_id)
+            if not wanted:
+                raise HTTPException(404, "Aucune version disponible")
+            cur.execute("""
+                SELECT pv.version, pv.distribution_mode, pv.download_url, pv.artifact_id
+                FROM plugin_versions pv
+                WHERE pv.plugin_id = %s AND pv.version = %s AND pv.status = ANY(%s)
+                LIMIT 1
+            """, (plugin_id, wanted, list(_REQUESTABLE_STATUSES)))
             vrow = cur.fetchone()
             if not vrow:
                 raise HTTPException(404, "Aucune version disponible")
@@ -4687,9 +4686,9 @@ def catalog_download_file(slug: str, filename: str):
 def catalog_download(slug: str, tag: str | None = None):
     """Public — redirect to latest version with proper filename.
 
-    Sans ``tag`` : dernière version main (status='published', ce que tout le monde
-    reçoit). Avec ``tag`` : dernière version expérimentale portant ce tag (branche
-    RC / prototype) — pull opt-in. La version exacte reste dans le nom de fichier.
+    Sans ``tag`` : la version générale (issue #40), ce que tout le monde reçoit.
+    Avec ``tag`` : dernière version expérimentale portant ce tag (branche RC /
+    prototype) — pull opt-in. La version exacte reste dans le nom de fichier.
     """
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
@@ -4715,16 +4714,12 @@ def catalog_download(slug: str, tag: str | None = None):
                       AND pv.status IN ('published','experimental')
                     ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
                 """, (plugin_id, tag))
+                vrow = cur.fetchone()
+                version = vrow[0] if vrow else None
             else:
-                cur.execute("""
-                    SELECT pv.version FROM plugin_versions pv
-                    WHERE pv.plugin_id = %s AND pv.status = 'published'
-                    ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
-                """, (plugin_id,))
-            vrow = cur.fetchone()
-            if not vrow:
+                version = _general_version(cur, plugin_id)
+            if not version:
                 raise HTTPException(404, "Aucune version disponible")
-            version = vrow[0]
             ext = _DEVICE_TYPE_EXT.get(device_type, "bin")
             # Compteur de téléchargements (export parc) — best-effort AVANT le
             # 302 : un échec d'insert ne doit jamais casser le téléchargement.
@@ -4777,22 +4772,14 @@ def catalog_updates_xml(request: Request, slug: str):
                 raise HTTPException(404, "Plugin introuvable")
             plugin_id = prow[0]
 
-            cur.execute("""
-                SELECT pv.version, pv.artifact_id
-                FROM plugin_versions pv
-                WHERE pv.plugin_id = %s AND pv.status = 'published'
-                ORDER BY pv.published_at DESC NULLS LAST
-                LIMIT 1
-            """, (plugin_id,))
-            vrow = cur.fetchone()
-            if not vrow:
+            # Version générale (issue #40) : Chrome installe sans demander, la
+            # dernière publiée partirait sur tout le parc.
+            version = _general_version(cur, plugin_id)
+            if not version:
                 raise HTTPException(404, "Aucune version publiee")
-            version, artifact_id = vrow
 
-            # Build absolute codebase URL — Chrome updater downloads .crx from here
-            base = str(request.base_url).rstrip("/")
-            if base.startswith("http://") and "localhost" not in base:
-                base = "https://" + base[len("http://"):]
+            # Codebase absolu sur PUBLIC_BASE_URL (jamais l'en-tête Host).
+            base = _native_public_base("updates.xml", slug)
             codebase = f"{base}/catalog/{slug}/download/{slug}-{version}.crx"
 
             # Read extension ID from artifact manifest if possible,
@@ -4822,32 +4809,126 @@ def _xml_attr(value) -> str:
     return '"' + html.escape(str(value), quote=True) + '"'
 
 
-def _latest_servable_oxt_version(cur, plugin_id: int) -> str | None:
+# ─── Version générale (issue #40) ─────────────────────────────────────────
+# « Publiée » = disponible pour des campagnes ; « générale » = destinée à tout le
+# parc. Tout canal que le logiciel lit SEUL, sans identité du poste (feed
+# LibreOffice, manifestes Chromium et Gecko, téléchargement sans version),
+# n'annonce que la générale : publier une version ne la diffuse plus. Le ciblage
+# (cohortes, canary, expérimentations) passe par la directive de /config, dont
+# les liens sont épinglés sur la version exacte.
+
+# Conditions de _serve_plugin_download, en SQL (alias pv / a) : `managed` exige
+# un artefact enregistré avec un `s3_path` ; `download_link`/`store` une URL. La
+# présence physique du fichier n'est pas vérifiée ici.
+_SERVABLE_PV_SQL = """((pv.distribution_mode = 'managed'
+          AND a.s3_path IS NOT NULL AND a.s3_path <> '')
+         OR (pv.distribution_mode IN ('download_link','store')
+             AND pv.download_url IS NOT NULL AND pv.download_url <> ''))"""
+
+# Statuts sous lesquels une version désignée explicitement reste servie :
+# publier une version déprécie les autres, donc la générale ou la cible d'une
+# campagne peut être `deprecated`. Jamais `draft` ni `yanked` (retirée).
+_PINNABLE_STATUSES = ("published", "deprecated")
+_REQUESTABLE_STATUSES = ("published", "experimental", "deprecated")
+
+# Paramètre ?version= du feed : un libellé de version, rien d'autre.
+_VERSION_PARAM_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,49}")
+
+_general_version_column_warned = False
+
+
+def _latest_servable_version(cur, plugin_id: int) -> str | None:
     """Dernière version `published` dont le binaire est servable, ou None.
 
-    Mêmes conditions que _serve_plugin_download, en SQL : `managed` exige un
-    artefact enregistré avec un `s3_path` ; `download_link`/`store` exigent une
-    URL. La présence physique du fichier n'est pas vérifiée ici. Annoncer une
-    version sans binaire (publiée avant la fin de l'upload de son artefact)
-    ferait échouer l'installation sur tout le parc, en boucle et sans que le DM
-    le voie : la route est anonyme.
+    Annoncer une version sans binaire (publiée avant la fin de l'upload de son
+    artefact) ferait échouer l'installation sur tout le parc, en boucle et sans
+    que le DM le voie : les canaux natifs sont anonymes.
     """
-    cur.execute("""
+    cur.execute(f"""
         SELECT pv.version FROM plugin_versions pv
         LEFT JOIN artifacts a ON a.id = pv.artifact_id
         WHERE pv.plugin_id = %s AND pv.status = 'published'
-          AND ((pv.distribution_mode = 'managed'
-                AND a.s3_path IS NOT NULL AND a.s3_path <> '')
-               OR (pv.distribution_mode IN ('download_link','store')
-                   AND pv.download_url IS NOT NULL AND pv.download_url <> ''))
+          AND {_SERVABLE_PV_SQL}
         ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
     """, (plugin_id,))
     row = cur.fetchone()
     return str(row[0]) if row else None
 
 
+def _general_version_id(cur, plugin_id: int) -> int | None:
+    """plugins.general_version_id, ou None s'il n'est pas posé.
+
+    Tolère la colonne absente (pods 0.9.20 démarrés avant l'application du
+    schéma) : repli sur la dernière publiée, comportement d'avant l'issue #40.
+    Les connexions sont en autocommit, l'erreur n'empoisonne pas la suite.
+    """
+    global _general_version_column_warned
+    try:
+        cur.execute("SELECT general_version_id FROM plugins WHERE id = %s", (plugin_id,))
+    except Exception as exc:
+        if not _general_version_column_warned:
+            _general_version_column_warned = True
+            logger.warning("version générale illisible (schéma pas à jour ?) : %s", exc)
+        return None
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _servable_version(cur, plugin_id: int, version: str, statuses: tuple) -> str | None:
+    """`version` si elle existe pour ce plugin, a l'un des `statuses` et un
+    binaire servable ; sinon None."""
+    cur.execute(f"""
+        SELECT pv.version FROM plugin_versions pv
+        LEFT JOIN artifacts a ON a.id = pv.artifact_id
+        WHERE pv.plugin_id = %s AND pv.version = %s AND pv.status = ANY(%s)
+          AND {_SERVABLE_PV_SQL}
+        LIMIT 1
+    """, (plugin_id, version, list(statuses)))
+    row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
+def _general_version(cur, plugin_id: int) -> str | None:
+    """Version que les canaux natifs annoncent à tout le parc.
+
+    Générale posée : elle seule, si elle reste servable (`published` ou
+    `deprecated`) ; sinon None — jamais de repli qui diffuserait une autre
+    version que celle choisie par l'admin. Non posée : dernière publiée
+    servable.
+    """
+    gid = _general_version_id(cur, plugin_id)
+    if gid is None:
+        return _latest_servable_version(cur, plugin_id)
+    cur.execute(f"""
+        SELECT pv.version FROM plugin_versions pv
+        LEFT JOIN artifacts a ON a.id = pv.artifact_id
+        WHERE pv.id = %s AND pv.plugin_id = %s AND pv.status = ANY(%s)
+          AND {_SERVABLE_PV_SQL}
+    """, (gid, plugin_id, list(_PINNABLE_STATUSES)))
+    row = cur.fetchone()
+    if row:
+        return str(row[0])
+    logger.warning("version générale %s du plugin %s non servable : canaux natifs muets",
+                   gid, plugin_id)
+    return None
+
+
+def _native_public_base(channel: str, slug: str) -> str:
+    """PUBLIC_BASE_URL pour un canal natif, ou 503.
+
+    Jamais d'URL dérivée de l'en-tête Host, que rien ne valide, sur une route
+    anonyme qui dit au logiciel où prendre le binaire à installer. Le logiciel
+    lit le 503 comme « pas de mise à jour ».
+    """
+    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        logger.warning("%s: PUBLIC_BASE_URL vide — canal refusé (503) pour %s", channel, slug)
+        raise HTTPException(503, "PUBLIC_BASE_URL non configurée")
+    return base
+
+
 @app.get("/catalog/{slug}/update.xml")
-def catalog_libreoffice_update_xml(slug: str):
+def catalog_libreoffice_update_xml(slug: str, version: str | None = None):
     """Feed de mise à jour natif LibreOffice pour un plugin `.oxt`.
 
     C'est le document que désigne le bloc <update-information> du
@@ -4856,21 +4937,23 @@ def catalog_libreoffice_update_xml(slug: str):
 
     Public et anonyme : LibreOffice l'interroge avec sa propre pile HTTP, sans
     relay-headers ni UUID client — pas de cohorte ni de canary ici, le ciblage
-    reste porté par la directive `update` de /config. Annonce la dernière
-    version `published` servable (_latest_servable_oxt_version) avec l'URL
-    versionnée de l'OXT. L'identifiant OXT est `plugins.extension_id`. Ne pas
-    confondre avec /catalog/{slug}/updates.xml, le manifeste Chromium.
+    reste porté par la directive `update` de /config. Sans paramètre, annonce
+    la version générale (_general_version, issue #40) avec l'URL versionnée de
+    l'OXT. L'identifiant OXT est `plugins.extension_id`. Ne pas confondre avec
+    /catalog/{slug}/updates.xml, le manifeste Chromium.
 
-    L'URL de téléchargement est bâtie sur PUBLIC_BASE_URL uniquement : sans
-    elle, 503 plutôt qu'une URL dérivée de l'en-tête Host, que rien ne valide,
-    sur une route anonyme qui dit à LibreOffice où prendre l'OXT à installer
-    (sans empreinte à vérifier). LibreOffice lit le 503 comme « pas de mise à
-    jour ».
+    ``?version=X`` : le plugin réécrit l'adresse du feed dans son
+    description.xml avec sa cible (directive de /config) ou sa version
+    installée ; le feed confirme alors exactement X si elle est servable
+    (`published`, `experimental` ou `deprecated`), sinon 404. Chaque poste ne
+    voit ainsi que sa propre cible, ni le clic « Vérifier les mises à jour »
+    ni la vérification hebdomadaire de LibreOffice ne diffusent autre chose.
+
+    URL bâtie sur PUBLIC_BASE_URL uniquement (_native_public_base).
     """
-    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
-    if not base:
-        logger.warning("update.xml: PUBLIC_BASE_URL vide — feed refusé (503) pour %s", slug)
-        raise HTTPException(503, "PUBLIC_BASE_URL non configurée")
+    if version is not None and not _VERSION_PARAM_RE.fullmatch(version):
+        raise HTTPException(400, "Paramètre version invalide")
+    base = _native_public_base("update.xml", slug)
 
     def _q(cur):
         cur.execute(
@@ -4886,19 +4969,22 @@ def catalog_libreoffice_update_xml(slug: str):
                 "update.xml: plugins.extension_id vide pour %s — renseigner l'identifiant OXT "
                 "sur la fiche plugin (ex. fr.gouv.interieur.mirai)", slug)
             raise HTTPException(404, "Identifiant d'extension non renseigné")
-        version = _latest_servable_oxt_version(cur, plugin_id)
-        if version is None:
-            raise HTTPException(404, "Aucune version publiée")
-        return str(extension_id), version
+        if version is not None:
+            announced = _servable_version(cur, plugin_id, version, _REQUESTABLE_STATUSES)
+        else:
+            announced = _general_version(cur, plugin_id)
+        if announced is None:
+            raise HTTPException(404, "Aucune version à annoncer")
+        return str(extension_id), announced
 
-    extension_id, version = _with_bootstrap_cursor(_q)
-    download = f"{base}/catalog/{slug}/download/{slug}-{quote(version, safe='')}.oxt"
+    extension_id, announced = _with_bootstrap_cursor(_q)
+    download = f"{base}/catalog/{slug}/download/{slug}-{quote(announced, safe='')}.oxt"
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         f'<description xmlns="{_LO_UPDATE_NS}"\n'
         '             xmlns:xlink="http://www.w3.org/1999/xlink">\n'
         f"  <identifier value={_xml_attr(extension_id)}/>\n"
-        f"  <version value={_xml_attr(version)}/>\n"
+        f"  <version value={_xml_attr(announced)}/>\n"
         "  <update-download>\n"
         f"    <src xlink:href={_xml_attr(download)}/>\n"
         "  </update-download>\n"
@@ -5122,26 +5208,43 @@ def _serve_variant_by_filename(slug: str, filename: str):
 
 
 def _latest_variant_release(cur, plugin_id: int, variant: str):
-    """(version, filename, extension_id, gecko_id) de la dernière version publiée
-    ayant un artefact pour cette variante ; None si aucune."""
+    """(version, filename, checksum, extension_id, gecko_id) de la version à
+    annoncer pour cette variante ; None si aucune.
+
+    Version générale posée (issue #40) : son artefact pour cette variante, ou
+    rien — jamais une autre version. Non posée : dernière publiée ayant un
+    artefact enregistré pour la variante."""
     cur.execute("SELECT extension_id, gecko_id FROM plugins WHERE id = %s", (plugin_id,))
     meta = cur.fetchone() or (None, None)
-    cur.execute("""
-        SELECT pv.version, a.s3_path
-        FROM plugin_versions pv
-        JOIN plugin_version_artifacts pva ON pva.plugin_version_id = pv.id
-        JOIN artifacts a ON a.id = pva.artifact_id
-        WHERE pv.plugin_id = %s AND pv.status = 'published' AND pva.platform_variant = %s
-        ORDER BY pv.published_at DESC NULLS LAST
-        LIMIT 1
-    """, (plugin_id, variant))
+    gid = _general_version_id(cur, plugin_id)
+    if gid is not None:
+        cur.execute("""
+            SELECT pv.version, a.s3_path, a.checksum
+            FROM plugin_versions pv
+            JOIN plugin_version_artifacts pva ON pva.plugin_version_id = pv.id
+            JOIN artifacts a ON a.id = pva.artifact_id
+            WHERE pv.id = %s AND pv.plugin_id = %s AND pv.status = ANY(%s)
+              AND pva.platform_variant = %s
+              AND a.s3_path IS NOT NULL AND a.s3_path <> ''
+            LIMIT 1
+        """, (gid, plugin_id, list(_PINNABLE_STATUSES), variant))
+    else:
+        cur.execute("""
+            SELECT pv.version, a.s3_path, a.checksum
+            FROM plugin_versions pv
+            JOIN plugin_version_artifacts pva ON pva.plugin_version_id = pv.id
+            JOIN artifacts a ON a.id = pva.artifact_id
+            WHERE pv.plugin_id = %s AND pv.status = 'published' AND pva.platform_variant = %s
+              AND a.s3_path IS NOT NULL AND a.s3_path <> ''
+            ORDER BY pv.published_at DESC NULLS LAST
+            LIMIT 1
+        """, (plugin_id, variant))
     row = cur.fetchone()
     if not row:
         return None
-    version, s3_path = row
-    filename = os.path.basename(s3_path) if s3_path else ""
-    return {"version": version, "filename": filename,
-            "extension_id": meta[0], "gecko_id": meta[1]}
+    version, s3_path, checksum = row
+    return {"version": version, "filename": os.path.basename(s3_path),
+            "checksum": checksum, "extension_id": meta[0], "gecko_id": meta[1]}
 
 
 def _resolve_update_context(slug: str, target: str, ext: str):
@@ -5165,8 +5268,8 @@ def _resolve_update_context(slug: str, target: str, ext: str):
 @app.get("/updates/{slug}/{target}.xml")
 def updates_manifest_xml(request: Request, slug: str, target: str):
     """Manifest gupdate (Chromium: Chrome/Edge/Brave/Opera). appid = Extension ID."""
+    base = _native_public_base("updates/*.xml", slug)
     canonical, rel = _resolve_update_context(slug, target, "xml")
-    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
     appid = rel["extension_id"] or canonical
     codebase = f"{base}/catalog/{canonical}/download/{rel['filename']}"
     xml = (
@@ -5183,19 +5286,17 @@ def updates_manifest_xml(request: Request, slug: str, target: str):
 @app.get("/updates/{slug}/{target}.json")
 def updates_manifest_json(request: Request, slug: str, target: str):
     """Manifest Mozilla addons (Gecko: Firefox/Thunderbird). Clé = gecko id."""
+    base = _native_public_base("updates/*.json", slug)
     canonical, rel = _resolve_update_context(slug, target, "json")
-    base = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
     gecko_id = rel["gecko_id"] or canonical
     update_link = f"{base}/catalog/{canonical}/download/{rel['filename']}"
-    payload = {
-        "addons": {
-            gecko_id: {
-                "updates": [
-                    {"version": rel["version"], "update_link": update_link}
-                ]
-            }
-        }
-    }
+    update = {"version": rel["version"], "update_link": update_link}
+    # Firefox vérifie update_hash avant d'installer (issue #25) : seule garantie
+    # d'intégrité sur un canal qui installe sans rien demander.
+    update_hash = _normalize_checksum(rel.get("checksum"))
+    if update_hash:
+        update["update_hash"] = update_hash
+    payload = {"addons": {gecko_id: {"updates": [update]}}}
     return JSONResponse(payload)
 
 

@@ -11,7 +11,7 @@ import importlib
 import os
 import sys
 import types
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _setup_env() -> None:
@@ -221,14 +221,46 @@ def test_route_rel_path_handles_every_storage_convention():
     assert b.route_rel_path(None) == ""
 
 
-def test_general_campaign_url_unchanged():
-    """Non-régression : hors expé, l'URL catalogue générique reste utilisée
-    (la campagne générale sert justement la dernière version publiée)."""
+def test_general_campaign_url_is_pinned_on_the_campaign_version():
+    """Issue #40 : une campagne ordinaire épingle aussi sa version. L'URL
+    générique /catalog/<slug>/download sert la version générale, pas la cible :
+    le poste recevait un autre binaire que celui annoncé."""
     mod = _load_module()
     camp = _experiment_campaign(is_experiment=False, artifact_version="2.0.0")
     d = mod._build_update_directive(plugin_version="1.0.0", campaign=camp,
                                     client_uuid="u1", device_name="mirai-libreoffice")
-    assert d["artifact_url"] == "/catalog/mirai-libreoffice/download"
+    assert d["artifact_url"] == "/catalog/mirai-libreoffice/download/mirai-libreoffice-2.0.0.oxt"
+    assert d["target_version"] == "2.0.0"
+
+
+def test_rollback_url_is_pinned_on_the_rollback_version():
+    """Issue #40 : le rollback téléchargeait /catalog/<slug>/download, donc la
+    version qu'on cherche justement à retirer tant qu'elle reste publiée."""
+    mod = _load_module()
+    camp = _experiment_campaign(is_experiment=False, artifact_version="2.0.0")
+    camp.update({"rollback_s3_path": "libreoffice/plugin-1.4.0.oxt",
+                 "rollback_version": "1.4.0", "rollback_checksum": "sha256:" + "a" * 64})
+    d = mod._build_update_directive(plugin_version="2.1.0", campaign=camp,
+                                    client_uuid="u1", device_name="mirai-libreoffice")
+    assert d["action"] == "rollback"
+    assert d["target_version"] == "1.4.0"
+    assert d["artifact_url"] == "/catalog/mirai-libreoffice/download/mirai-libreoffice-1.4.0.oxt"
+    assert d["checksum"] == "sha256:" + "a" * 64
+
+
+def test_pinned_url_round_trips_for_update_and_rollback():
+    """Le nom de fichier épinglé doit redonner la version à catalog_download_file."""
+    mod = _load_module()
+    camp = _experiment_campaign(is_experiment=False, artifact_version="2.0.0")
+    camp.update({"rollback_s3_path": "libreoffice/plugin-1.4.0.oxt", "rollback_version": "1.4.0"})
+    for installed, expected in (("1.0.0", "2.0.0"), ("2.1.0", "1.4.0")):
+        d = mod._build_update_directive(plugin_version=installed, campaign=camp,
+                                        client_uuid="u1", device_name="mirai-libreoffice")
+        filename = d["artifact_url"].rsplit("/", 1)[-1]
+        with patch.object(mod, "_serve_variant_by_filename", return_value=None), \
+             patch.object(mod, "_serve_plugin_download") as served:
+            mod.catalog_download_file("mirai-libreoffice", filename)
+        assert served.call_args.kwargs["version_filter"] == expected
 
 
 # ── A1 : auto-complétion scopée ──────────────────────────────────────────
@@ -313,8 +345,16 @@ def test_serve_plugin_download_version_filter_allows_experimental():
     except HTTPException:
         pass  # le binaire mocké n'existe pas sur disque → 404, hors sujet ici
     sql, params = _find_call(cur, "AND pv.version = %s")
-    assert "status IN ('published','experimental')" in sql
-    assert params == (7, "0.9.14-exp")
+    assert "pv.status = ANY(%s)" in sql
+    assert params == (7, "0.9.14-exp", ["published", "experimental", "deprecated"])
+
+
+def test_serve_plugin_download_version_filter_refuses_draft_and_yanked():
+    """Issue #40 : une version épinglée dépréciée reste servie (publier déprécie
+    les autres), une version retirée ou en brouillon jamais."""
+    mod = _load_module()
+    assert set(mod._REQUESTABLE_STATUSES) == {"published", "experimental", "deprecated"}
+    assert "yanked" not in mod._PINNABLE_STATUSES and "draft" not in mod._PINNABLE_STATUSES
 
 
 def test_catalog_download_by_tag_resolves_experimental():
