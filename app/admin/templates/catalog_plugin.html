@@ -960,6 +960,16 @@ async function nvSubmit(action) {
       <input type="email" name="support_email" class="dm-input" value="{{ plugin.support_email or '' }}">
     </div>
     <div class="dm-form-row">
+      {% if plugin.device_type == 'libreoffice' %}
+      <label class="dm-label">Identifiant OXT (ex. fr.gouv.interieur.mirai) — requis par le feed update.xml</label>
+      {% elif plugin.device_type in ('chrome', 'edge') %}
+      <label class="dm-label">ID d'extension Chrome/Edge — appid du manifeste de mise à jour</label>
+      {% else %}
+      <label class="dm-label">Identifiant d'extension</label>
+      {% endif %}
+      <input type="text" name="extension_id" class="dm-input" maxlength="64" pattern="[A-Za-z0-9._@\{\}\-]{1,64}" value="{{ plugin.extension_id or '' }}">
+    </div>
+    <div class="dm-form-row">
       <label class="dm-label">Changelog (markdown)</label>
       <textarea name="changelog" class="dm-input" rows="10">{{ plugin.changelog or '' }}</textarea>
     </div>

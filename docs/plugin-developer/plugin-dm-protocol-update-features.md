@@ -816,6 +816,59 @@ même version `experimental` — c'est le même binaire.
 
 ---
 
+## 6 ter. Feed natif LibreOffice — `GET /catalog/{slug}/update.xml`
+
+Réservé aux plugins `device_type = libreoffice`. LibreOffice sait vérifier et
+installer lui-même les mises à jour d'une extension dont le `description.xml`
+déclare un bloc `<update-information>` : le bouton « Vérifier les mises à jour »
+du Gestionnaire des extensions, et le déclenchement programmatique
+(`com.sun.star.deployment.ui.PackageManagerDialog`, `trigger("SHOW_UPDATE_DIALOG")`)
+interrogent ce feed, téléchargent l'OXT et l'installent dans le processus soffice.
+
+**Format servi** (namespace obligatoire) :
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<description xmlns="http://openoffice.org/extensions/update/2006"
+             xmlns:xlink="http://www.w3.org/1999/xlink">
+  <identifier value="fr.gouv.interieur.mirai"/>
+  <version value="0.0.1.0.32"/>
+  <update-download>
+    <src xlink:href="https://<dm>/catalog/mirai-libreoffice/download/mirai-libreoffice-0.0.1.0.32.oxt"/>
+  </update-download>
+</description>
+```
+
+| Élément | Source |
+|---|---|
+| `identifier` | `plugins.extension_id` — champ **« Identifiant OXT »**, onglet *Éditer* de la fiche plugin dans l'admin, à renseigner avec l'identifiant du `description.xml` de l'OXT (64 caractères au plus : lettres, chiffres, `.` `_` `-` `@` `{` `}`) ; vide → 404. La même colonne porte l'`appid` des extensions Chrome/Edge |
+| `version` | dernière `plugin_versions.status = 'published'` **dont le binaire est servable** (artefact enregistré avec un `s3_path` en mode `managed`, `download_url` non vide en mode `download_link`/`store` ; la présence physique du fichier n'est pas vérifiée) : une version publiée avant l'upload de son artefact est sautée au profit de la précédente, plutôt qu'annoncée pour un téléchargement en 404. Une version encore `experimental` n'est jamais annoncée |
+| `src` | URL versionnée de l'OXT (version encodée), bâtie sur `PUBLIC_BASE_URL` **uniquement**. Variable vide → **503** et un avertissement dans les logs, jamais une URL dérivée de l'en-tête `Host` du client : sur cette route anonyme et sans empreinte, un `Host` forgé désignerait l'OXT à installer. LibreOffice lit le 503 comme « pas de mise à jour » |
+
+**Ce que ce feed n'est pas.** Il est public et anonyme : LibreOffice le lit avec sa
+propre pile HTTP, sans relay-headers ni `X-Client-UUID`. Le DM ne peut donc ni
+cibler une cohorte ni appliquer un palier canary sur cette route ; tout poste qui
+interroge un DM voit la même version. Le ciblage reste porté par la directive
+`update` de `/config` (§ 4.3) : côté plugin, la route native n'est empruntée que si
+la version annoncée par le feed est exactement `target_version`. Ne pas confondre
+avec `/catalog/{slug}/updates.xml` (manifeste Chromium `gupdate`) ni
+`/updates/{slug}/{target}.json` (manifeste Gecko).
+
+**Retrait et ordre des opérations.** Le feed étant anonyme, mettre une campagne en
+pause ou l'abandonner ne retire *pas* une version annoncée : le seul levier est de
+sortir la version de `status = 'published'` (dépublier ou déprécier), la requête
+cesse alors de la sélectionner. Réciproquement, dès qu'une version est `published`,
+tout poste dont l'OXT installé porte le bloc `<update-information>` peut la tirer par
+le bouton « Vérifier les mises à jour », indépendamment des paliers de campagne :
+publier, puis lancer la campagne ; dépublier pour retirer.
+
+**Sémantique de `/update/status` (annexe, « 4. Installation et compte rendu »)** : `deferred` = artefact stagé ou dialogue
+natif ouvert, installation à suivre ; il est enregistré `notified`, pas `failed`.
+`installed` n'est rapporté par le plugin qu'une fois la nouvelle version réellement
+active, au redémarrage suivant. Le statut `notified` regroupe donc deux situations, « directive servie, aucun compte rendu » et « poste ayant rapporté `deferred` » ; `updated_at` et `version_after` permettent de les distinguer, et un poste qui n'a jamais redémarré reste `notified` sans jamais passer en échec.
+
+---
+
 ## 7. Flux de mise à jour dans le plugin
 
 ```mermaid

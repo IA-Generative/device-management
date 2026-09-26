@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
@@ -17,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import boto3
 import httpx
@@ -3462,8 +3463,11 @@ def _update_campaign_device_status_sync(
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
         with conn.cursor() as cur:
-            # Map plugin status to DB enum
-            db_status = "updated" if status == "installed" else "failed"
+            # Map plugin status to DB enum. « deferred » = artefact stagé ou
+            # dialogue natif montré, installation à suivre après redémarrage :
+            # ce n'est pas un échec (le plugin rapporte « installed » à la
+            # réconciliation) — le compter en failed faussait failure_rate.
+            db_status = {"installed": "updated", "deferred": "notified"}.get(status, "failed")
             cur.execute(
                 """
                 INSERT INTO campaign_device_status
@@ -4807,6 +4811,104 @@ def catalog_updates_xml(request: Request, slug: str):
             pool_ctx.__exit__(None, None, None)
         elif conn is not None:
             conn.close()
+
+
+_LO_UPDATE_NS = "http://openoffice.org/extensions/update/2006"
+
+
+def _xml_attr(value) -> str:
+    """Valeur d'attribut XML entre guillemets : html.escape couvre & < > " '
+    (références de caractères valides en XML), sans passer par xml.sax."""
+    return '"' + html.escape(str(value), quote=True) + '"'
+
+
+def _latest_servable_oxt_version(cur, plugin_id: int) -> str | None:
+    """Dernière version `published` dont le binaire est servable, ou None.
+
+    Mêmes conditions que _serve_plugin_download, en SQL : `managed` exige un
+    artefact enregistré avec un `s3_path` ; `download_link`/`store` exigent une
+    URL. La présence physique du fichier n'est pas vérifiée ici. Annoncer une
+    version sans binaire (publiée avant la fin de l'upload de son artefact)
+    ferait échouer l'installation sur tout le parc, en boucle et sans que le DM
+    le voie : la route est anonyme.
+    """
+    cur.execute("""
+        SELECT pv.version FROM plugin_versions pv
+        LEFT JOIN artifacts a ON a.id = pv.artifact_id
+        WHERE pv.plugin_id = %s AND pv.status = 'published'
+          AND ((pv.distribution_mode = 'managed'
+                AND a.s3_path IS NOT NULL AND a.s3_path <> '')
+               OR (pv.distribution_mode IN ('download_link','store')
+                   AND pv.download_url IS NOT NULL AND pv.download_url <> ''))
+        ORDER BY pv.published_at DESC NULLS LAST LIMIT 1
+    """, (plugin_id,))
+    row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
+@app.get("/catalog/{slug}/update.xml")
+def catalog_libreoffice_update_xml(slug: str):
+    """Feed de mise à jour natif LibreOffice pour un plugin `.oxt`.
+
+    C'est le document que désigne le bloc <update-information> du
+    description.xml de l'OXT : racine <description> dans le namespace
+    update/2006, avec <identifier>, <version> et <update-download>.
+
+    Public et anonyme : LibreOffice l'interroge avec sa propre pile HTTP, sans
+    relay-headers ni UUID client — pas de cohorte ni de canary ici, le ciblage
+    reste porté par la directive `update` de /config. Annonce la dernière
+    version `published` servable (_latest_servable_oxt_version) avec l'URL
+    versionnée de l'OXT. L'identifiant OXT est `plugins.extension_id`. Ne pas
+    confondre avec /catalog/{slug}/updates.xml, le manifeste Chromium.
+
+    L'URL de téléchargement est bâtie sur PUBLIC_BASE_URL uniquement : sans
+    elle, 503 plutôt qu'une URL dérivée de l'en-tête Host, que rien ne valide,
+    sur une route anonyme qui dit à LibreOffice où prendre l'OXT à installer
+    (sans empreinte à vérifier). LibreOffice lit le 503 comme « pas de mise à
+    jour ».
+    """
+    base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        logger.warning("update.xml: PUBLIC_BASE_URL vide — feed refusé (503) pour %s", slug)
+        raise HTTPException(503, "PUBLIC_BASE_URL non configurée")
+
+    def _q(cur):
+        cur.execute(
+            "SELECT id, device_type, extension_id FROM plugins WHERE slug = %s AND status = 'active'",
+            (slug,),
+        )
+        prow = cur.fetchone()
+        if not prow or prow[1] != "libreoffice":
+            raise HTTPException(404, "Plugin LibreOffice introuvable")
+        plugin_id, _device_type, extension_id = prow
+        if not extension_id:
+            logger.warning(
+                "update.xml: plugins.extension_id vide pour %s — renseigner l'identifiant OXT "
+                "sur la fiche plugin (ex. fr.gouv.interieur.mirai)", slug)
+            raise HTTPException(404, "Identifiant d'extension non renseigné")
+        version = _latest_servable_oxt_version(cur, plugin_id)
+        if version is None:
+            raise HTTPException(404, "Aucune version publiée")
+        return str(extension_id), version
+
+    extension_id, version = _with_bootstrap_cursor(_q)
+    download = f"{base}/catalog/{slug}/download/{slug}-{quote(version, safe='')}.oxt"
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<description xmlns="{_LO_UPDATE_NS}"\n'
+        '             xmlns:xlink="http://www.w3.org/1999/xlink">\n'
+        f"  <identifier value={_xml_attr(extension_id)}/>\n"
+        f"  <version value={_xml_attr(version)}/>\n"
+        "  <update-download>\n"
+        f"    <src xlink:href={_xml_attr(download)}/>\n"
+        "  </update-download>\n"
+        "</description>\n"
+    )
+    return Response(
+        content=xml,
+        media_type="text/xml; charset=utf-8",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 # ─── Auto-update multi-format / multi-cible (DM-4) ────────────────────────
