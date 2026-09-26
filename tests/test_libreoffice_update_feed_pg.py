@@ -1,7 +1,7 @@
 """Intégration (vrai Postgres) — version annoncée par le feed LibreOffice update.xml.
 
 Pourquoi ce module : la règle « dernière version publiée ET servable » de
-`_latest_servable_oxt_version` est du SQL (jointure artifacts, modes de
+`_latest_servable_version` est du SQL (jointure artifacts, modes de
 distribution, ORDER BY published_at). Les tests de
 test_libreoffice_update_feed.py mockent psycopg2 et réappliquent la règle en
 Python : un filtre affaibli ou un tri supprimé y restaient verts. Ici,
@@ -64,7 +64,7 @@ def _db_url() -> str:
 
 @pytest.fixture(scope="module")
 def latest(_db_url):
-    return _load_main()._latest_servable_oxt_version
+    return _load_main()._latest_servable_version
 
 
 @pytest.fixture

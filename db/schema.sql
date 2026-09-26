@@ -251,6 +251,36 @@ CREATE TABLE IF NOT EXISTS plugin_version_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_pva_version ON plugin_version_artifacts(plugin_version_id);
 
+-- Version générale (issue #40) : « publiée » = disponible pour des campagnes,
+-- « générale » = destinée à tout le parc. Les canaux que le logiciel lit seul
+-- (feed LibreOffice, manifestes Chromium/Gecko, téléchargement sans version)
+-- n'annoncent que la générale ; NULL = repli sur la dernière publiée servable.
+-- Ajoutée ICI (et non dans CREATE TABLE plugins) parce que la FK vise
+-- plugin_versions, créée après, et parce que le déploiement applique ce fichier
+-- par psql sur des bases existantes. Initialisation une seule fois, à l'ajout de
+-- la colonne : une générale remise à NULL par l'admin n'est jamais réécrite.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema() AND table_name = 'plugins'
+      AND column_name = 'general_version_id'
+  ) THEN
+    ALTER TABLE plugins ADD COLUMN general_version_id INT
+      REFERENCES plugin_versions(id) ON DELETE SET NULL;
+    UPDATE plugins p SET general_version_id = (
+      SELECT pv.id FROM plugin_versions pv
+      LEFT JOIN artifacts a ON a.id = pv.artifact_id
+      WHERE pv.plugin_id = p.id AND pv.status = 'published'
+        AND ((pv.distribution_mode = 'managed'
+              AND a.s3_path IS NOT NULL AND a.s3_path <> '')
+             OR (pv.distribution_mode IN ('download_link','store')
+                 AND pv.download_url IS NOT NULL AND pv.download_url <> ''))
+      ORDER BY pv.published_at DESC NULLS LAST, pv.id DESC
+      LIMIT 1
+    );
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS plugin_installations (
     id SERIAL PRIMARY KEY,
     -- CASCADE comme les FK sœurs (plugin_versions/aliases/…) : sans lui, la
