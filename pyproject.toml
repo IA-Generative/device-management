@@ -39,4 +39,5 @@ addopts = "-q"
 pythonpath = ["."]          # rend le package `app` importable (collecte CI)
 markers = [
     "integration: nécessite une infra live (Postgres/Keycloak/serveur/navigateur) ; exclu du gate CI unitaire via `pytest -m 'not integration'`",
+    "int: recette contre une instance déployée (DM_BASE_URL) — tests/int/, lancés à la main ou par dm-upgrade.sh ; toujours aussi marqués integration",
 ]
