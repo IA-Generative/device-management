@@ -237,8 +237,9 @@ Le plugin doit verifier le checksum avant d'installer.
 ### 7) Communications
 
 `GET /config/{device}/config.json` porte un champ racine `communications` : les annonces
-actives a afficher a l'utilisateur de CE poste. Toujours present, `[]` quand il n'y a rien
-a montrer.
+actives a afficher a l'utilisateur de CE poste. Present dans toute configuration servie, `[]`
+quand il n'y a rien a montrer ; absent d'une reponse `meta.access_denied`, qui ne porte pas
+de configuration.
 
 ```json
 {
@@ -267,7 +268,8 @@ type tant qu'elle n'est pas documentee ici.
 **Identite requise.** La liste est calculee pour le poste identifie par `X-Client-UUID`
 (deja envoye avec `/config`, avant meme l'enrollment) : sans cet en-tete, `communications`
 vaut `[]`. Le serveur applique le ciblage defini par l'admin (plugin, cohorte, plage de
-versions via `X-Plugin-Version`, fenetre de dates) et exclut ce que le poste a deja acquitte.
+versions via `X-Plugin-Version` — une version non numerique, ex. `1.6.0-rc1`, est exclue par
+toute borne —, fenetre de dates) et exclut ce que le poste a deja acquitte.
 Dix elements au plus, les plus prioritaires d'abord.
 
 #### Acquitter
@@ -291,7 +293,7 @@ en-tete `X-Client-UUID`) ne sert qu'a detecter une incoherence.
 | `400` `client_uuid required` | aucune identite (relay desactive, ni corps ni en-tete) | corriger l'appel |
 | `401` | credentials relay absents, invalides ou expires | reessayer apres re-enrollment |
 | `403` `client_uuid mismatch` | `client_uuid` different du client relay | corriger l'appel |
-| `404` `unknown communication` | id inconnu (supprimee cote admin) | oublier l'ack |
+| `404` `unknown communication` | id inconnu (supprimee cote admin), ou jamais diffusee (brouillon, pas encore commencee) | oublier l'ack |
 | `503` `database unavailable` | base indisponible | reessayer plus tard |
 
 Regle pour une boite d'envoi d'acks : retirer l'entree sur 2xx et sur tout 4xx sauf 401 ;
