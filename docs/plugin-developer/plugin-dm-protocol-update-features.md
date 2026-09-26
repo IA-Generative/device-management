@@ -842,25 +842,52 @@ interrogent ce feed, téléchargent l'OXT et l'installent dans le processus soff
 | Élément | Source |
 |---|---|
 | `identifier` | `plugins.extension_id` — champ **« Identifiant OXT »**, onglet *Éditer* de la fiche plugin dans l'admin, à renseigner avec l'identifiant du `description.xml` de l'OXT (64 caractères au plus : lettres, chiffres, `.` `_` `-` `@` `{` `}`) ; vide → 404. La même colonne porte l'`appid` des extensions Chrome/Edge |
-| `version` | dernière `plugin_versions.status = 'published'` **dont le binaire est servable** (artefact enregistré avec un `s3_path` en mode `managed`, `download_url` non vide en mode `download_link`/`store` ; la présence physique du fichier n'est pas vérifiée) : une version publiée avant l'upload de son artefact est sautée au profit de la précédente, plutôt qu'annoncée pour un téléchargement en 404. Une version encore `experimental` n'est jamais annoncée |
+| `version` | Sans paramètre : la **version générale** du plugin (voir « Version générale » ci-dessous). Avec `?version=X` : exactement X si elle existe pour ce plugin, en statut `published`, `experimental` ou `deprecated`, avec un binaire servable ; sinon 404. Servable = artefact enregistré avec un `s3_path` en mode `managed`, `download_url` non vide en mode `download_link`/`store` (la présence physique du fichier n'est pas vérifiée). `?version=` mal formé (autre chose qu'un libellé de version de 50 caractères au plus) → 400 |
 | `src` | URL versionnée de l'OXT (version encodée), bâtie sur `PUBLIC_BASE_URL` **uniquement**. Variable vide → **503** et un avertissement dans les logs, jamais une URL dérivée de l'en-tête `Host` du client : sur cette route anonyme et sans empreinte, un `Host` forgé désignerait l'OXT à installer. LibreOffice lit le 503 comme « pas de mise à jour » |
 
 **Ce que ce feed n'est pas.** Il est public et anonyme : LibreOffice le lit avec sa
 propre pile HTTP, sans relay-headers ni `X-Client-UUID`. Le DM ne peut donc ni
 cibler une cohorte ni appliquer un palier canary sur cette route ; tout poste qui
-interroge un DM voit la même version. Le ciblage reste porté par la directive
+interroge l'adresse sans paramètre voit la même version, la générale. Pour que la
+route native suive la cohorte, le plugin réécrit l'adresse du feed dans le
+`description.xml` de son installation (`?version=<cible de la directive>`, ou sa
+version installée sans directive) : chaque poste ne voit alors que sa propre cible. Le ciblage reste porté par la directive
 `update` de `/config` (§ 4.3) : côté plugin, la route native n'est empruntée que si
 la version annoncée par le feed est exactement `target_version`. Ne pas confondre
 avec `/catalog/{slug}/updates.xml` (manifeste Chromium `gupdate`) ni
 `/updates/{slug}/{target}.json` (manifeste Gecko).
 
-**Retrait et ordre des opérations.** Le feed étant anonyme, mettre une campagne en
-pause ou l'abandonner ne retire *pas* une version annoncée : le seul levier est de
-sortir la version de `status = 'published'` (dépublier ou déprécier), la requête
-cesse alors de la sélectionner. Réciproquement, dès qu'une version est `published`,
-tout poste dont l'OXT installé porte le bloc `<update-information>` peut la tirer par
-le bouton « Vérifier les mises à jour », indépendamment des paliers de campagne :
-publier, puis lancer la campagne ; dépublier pour retirer.
+**Version générale (issue #40).** « Publiée » = disponible pour des campagnes ;
+« générale » = destinée à tout le parc. Chaque plugin porte une version générale
+(`plugins.general_version_id`), choisie dans l'admin (onglet *Versions*, bouton
+« Rendre générale », ou case à cocher à l'upload ; champ `general` de
+`/api/plugins/{slug}/deploy`). **Publier une version ne la rend jamais générale.**
+Tous les canaux que le logiciel lit seul l'utilisent : ce feed sans paramètre,
+`/catalog/{slug}/updates.xml`, `/updates/{slug}/{target}.xml|.json` (artefact de la
+variante de la générale) et `/catalog/{slug}/download` sans version.
+
+| Situation | Ce que les canaux annoncent |
+|---|---|
+| Générale posée, `published` ou `deprecated`, binaire servable | cette version |
+| Générale posée mais retirée, en brouillon ou sans binaire | rien (404) — jamais une autre version |
+| Aucune générale posée | repli : dernière `published` servable |
+
+La migration 0.9.20 initialise chaque plugin existant avec sa dernière publiée
+servable : rien ne change pour les postes au déploiement. La générale ne peut être
+ni retirée ni repassée en brouillon (en choisir d'abord une autre), et la purge
+des versions obsolètes l'épargne.
+
+**Ordre des opérations.** Canary ou campagne ciblée : publier **sans** cocher
+« générale », puis lancer la campagne ; la directive de `/config` porte un lien
+épinglé sur la version (update comme rollback), les canaux natifs restent sur
+l'ancienne générale. Généralisation : rendre la version générale. Retrait :
+redéclarer l'ancienne version générale ; les postes déjà passés restent sur la
+nouvelle (aucun canal natif ne propose une version plus ancienne), le retour
+arrière passe par une campagne de rollback.
+
+**Manifestes navigateur.** `/updates/{slug}/{target}.json` (Gecko) porte
+`update_hash` (`sha256:…`) quand l'artefact a une empreinte : Firefox la vérifie
+avant d'installer. Tous les manifestes exigent `PUBLIC_BASE_URL` (503 sinon).
 
 **Sémantique de `/update/status` (annexe, « 4. Installation et compte rendu »)** : `deferred` = artefact stagé ou dialogue
 natif ouvert, installation à suivre ; il est enregistré `notified`, pas `failed`.

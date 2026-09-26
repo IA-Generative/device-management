@@ -52,7 +52,10 @@
       <code style="background:#f0f0f5;padding:1px 6px;border-radius:3px;font-size:0.85em;">{{ plugin.slug }}</code>
       &mdash; {{ plugin.device_type }} &mdash; {{ plugin.category }} &mdash; {{ plugin.publisher }}
       {% set _latest = versions|selectattr('status', 'equalto', 'published')|first %}
-      {% if _latest %}
+      {% if general_version %}
+      &mdash; <strong>v{{ general_version.version }}</strong>
+      <span class="dm-badge dm-badge--success" title="Seule version annoncée à tout le parc par les canaux natifs (feed LibreOffice, manifestes navigateur)">generale</span>
+      {% elif _latest %}
       &mdash; <strong>v{{ _latest.version }}</strong>
       {% elif versions %}
       &mdash; <span style="color:#B34000;">aucune version publiee</span>
@@ -126,6 +129,10 @@
       {{ latest[0].version if latest else '-' }}
     </div>
     <div style="font-size:0.875rem;">Derniere version</div>
+  </div>
+  <div class="dm-metric-tile" title="Seule version annoncée à tout le parc par les canaux natifs. Sans choix explicite : la derniere publiee.">
+    <div style="font-size:1.5rem;font-weight:bold;">{{ general_version.version if general_version else '-' }}</div>
+    <div style="font-size:0.875rem;color:#666;">Version generale{% if not general_version %} (repli : derniere publiee){% endif %}</div>
   </div>
   <div class="dm-metric-tile">
     <div style="font-size:1.5rem;font-weight:bold;">{{ stats.inactive }}</div>
@@ -346,6 +353,15 @@
           <input type="text" id="nv-confirm-input" class="dm-input" placeholder="{{ plugin.name }}" autocomplete="off" style="max-width:400px;">
         </div>
 
+        <div class="dm-form-row">
+          <label style="display:flex;gap:0.5rem;align-items:flex-start;font-size:0.9rem;">
+            <input type="checkbox" name="make_general" id="nv-make-general" value="1">
+            <span>Definir comme <strong>version generale</strong> : elle sera annoncee a tout le parc par les canaux natifs
+            (feed LibreOffice, manifestes Firefox/Chrome). Laisser decoche pour un canary ou une campagne ciblee :
+            publier ne diffuse pas.</span>
+          </label>
+        </div>
+
         <div id="nv-deploy-error" style="display:none;color:#CE0500;font-size:0.85rem;margin-bottom:0.5rem;"></div>
 
         <div class="dm-form-actions">
@@ -370,6 +386,9 @@
       <tr>
         <td>
           <strong>{{ v.version }}</strong>
+          {% if general_version and general_version.id == v.id %}
+          <span class="dm-badge dm-badge--success" style="margin-left:0.35rem;" title="Seule version annoncee a tout le parc par les canaux natifs">generale</span>
+          {% endif %}
           {# Le tag distingue deux branches parallèles : sans lui, deux versions
              experimentales sont indiscernables autrement que par leur numero. #}
           {% if v.tag %}
@@ -397,7 +416,14 @@
             <button class="dm-btn dm-btn--warning dm-btn--sm">Deprecier</button>
           </form>
           {% endif %}
-          {% if v.status in ('published', 'deprecated') %}
+          {% if v.status in ('published', 'deprecated') and not (general_version and general_version.id == v.id) %}
+          <form method="post" action="/admin/catalog/{{ plugin.id }}/general-version" style="display:inline;">
+            <input type="hidden" name="version_id" value="{{ v.id }}">
+            <button class="dm-btn dm-btn--secondary dm-btn--sm"
+                    onclick="return confirm('Annoncer la version {{ v.version }} a tout le parc par les canaux natifs ?')">Rendre generale</button>
+          </form>
+          {% endif %}
+          {% if v.status in ('published', 'deprecated') and not (general_version and general_version.id == v.id) %}
           <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/status" style="display:inline;">
             <input type="hidden" name="status" value="yanked">
             <button class="dm-btn dm-btn--danger dm-btn--sm" onclick="return confirm('Retirer cette version ?')">Retirer</button>
