@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import re
 import time
 import urllib.parse
 import uuid
@@ -2263,6 +2264,12 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
         conn.close()
 
 
+# plugins.extension_id (VARCHAR(64)) : ID Chrome/Edge (32 lettres a-p), identifiant
+# OXT LibreOffice (domaine inversé, ex. fr.gouv.interieur.mirai) ; @ et {} tolérés
+# pour ne pas bloquer l'édition d'une fiche qui porterait un id de forme Gecko.
+_EXTENSION_ID_RE = re.compile(r"[A-Za-z0-9._@{}-]{1,64}")
+
+
 @router.post("/catalog/{plugin_id}/edit")
 @require_admin
 async def catalog_plugin_edit(request: Request, plugin_id: int,
@@ -2276,6 +2283,10 @@ async def catalog_plugin_edit(request: Request, plugin_id: int,
                               publisher: str = Form("DNUM"),
                               visibility: str = Form("public")):
     features = [f.strip() for f in key_features.split(",") if f.strip()] if key_features else []
+    extension_id = extension_id.strip()
+    if extension_id and not _EXTENSION_ID_RE.fullmatch(extension_id):
+        raise HTTPException(400, "Identifiant d'extension invalide : 64 caractères au plus, "
+                                 "lettres, chiffres et . _ - @ { }")
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -2284,7 +2295,7 @@ async def catalog_plugin_edit(request: Request, plugin_id: int,
                                       key_features=features, changelog=changelog,
                                       category=category, homepage_url=homepage_url,
                                       support_email=support_email,
-                                      extension_id=extension_id.strip() or None,
+                                      extension_id=extension_id or None,
                                       publisher=publisher,
                                       visibility=visibility)
             actor = getattr(request.state, "admin_session", {})
