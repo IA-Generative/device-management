@@ -23,6 +23,24 @@ COPY alembic.ini /app/alembic.ini
 ARG DM_IMAGE_TAG=dev
 ENV DM_APP_VERSION=${DM_IMAGE_TAG}
 
+# Convention ADR-0004 MirAI next, alignée sur Dockerflow : l'image porte son journal en
+# /app/version.json, servi sur /__version__ (lu par le noteur du suivi, dans le cluster).
+# Les valeurs viennent de la CI ou des scripts de build (build-args) ; un build de poste
+# donne « dev ». VERSION est aliasée sur DM_IMAGE_TAG : les trois chemins de build qui ne
+# passent que cet argument produisent quand même la bonne version. Posé avant USER : lisible
+# par l'utilisateur non-root.
+ARG VERSION=${DM_IMAGE_TAG}
+ARG COMMIT=
+ARG BUILD=
+ARG CODE_DATE=
+ARG SOURCE=
+COPY scripts/version_json.py CHANGELOG.md* /tmp/version/
+RUN python /tmp/version/version_json.py --version "$VERSION" --commit "$COMMIT" --build "$BUILD" \
+      --code-date "$CODE_DATE" --source "$SOURCE" --changelog /tmp/version/CHANGELOG.md \
+      --out /app/version.json \
+ && chmod 0644 /app/version.json \
+ && rm -rf /tmp/version
+
 # Defaults
 ENV DM_ENROLL_DIR=/data/enroll \
     DM_STORE_ENROLL_LOCALLY=true \

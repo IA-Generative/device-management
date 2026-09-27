@@ -56,6 +56,11 @@ else
   docker buildx use "$BUILDER_NAME"
 fi
 
+# ADR-0004 : l'image porte son journal (/app/version.json, /__version__). VERSION vient de
+# DM_IMAGE_TAG (alias dans le Dockerfile) ; le commit et la date du code, du dépôt.
+COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+CODE_DATE="$(git -C "$ROOT_DIR" log -1 --format=%cI)"
+
 echo "== Build K8S multi-arch ($PLATFORMS) =="
 echo "Image: $IMAGE:$TAG"
 
@@ -65,6 +70,9 @@ if [ "$NO_PUSH" = "--no-push" ]; then
     --platform "$PLATFORMS" \
     -t "$IMAGE:$TAG" \
     --build-arg DM_IMAGE_TAG="$TAG" \
+    --build-arg COMMIT="$COMMIT" \
+    --build-arg CODE_DATE="$CODE_DATE" \
+    --build-arg SOURCE="https://github.com/IA-Generative/device-management" \
     -f "$ROOT_DIR/deploy/docker/Dockerfile" \
     "$ROOT_DIR"
   echo "Built (not pushed). Use without --no-push to push."
@@ -74,6 +82,9 @@ else
     --platform "$PLATFORMS" \
     -t "$IMAGE:$TAG" \
     --build-arg DM_IMAGE_TAG="$TAG" \
+    --build-arg COMMIT="$COMMIT" \
+    --build-arg CODE_DATE="$CODE_DATE" \
+    --build-arg SOURCE="https://github.com/IA-Generative/device-management" \
     -t "$IMAGE:latest" \
     -f "$ROOT_DIR/deploy/docker/Dockerfile" \
     --push \

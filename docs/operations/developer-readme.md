@@ -118,6 +118,25 @@ conn.close()
 | **Telemetrie** | `device_telemetry_events` |
 | **Audit** | `admin_audit_log` |
 
+## Version de l'image — `/__version__`
+
+L'image porte son propre journal de version, écrit au moment où elle se construit
+(convention ADR-0004 de la plateforme MirAI next, format [Dockerflow](https://github.com/mozilla-services/Dockerflow/blob/main/docs/version_object.md)) :
+`/app/version.json` servi sur `GET /__version__` — `source`, `version`, `commit`, `build`,
+`code_date`, `changes`. Sans authentification, hors logs d'accès ; hors image la route
+répond `"version": "dev"`, jamais une erreur.
+
+```bash
+curl -s http://localhost:8089/__version__ | python3 -m json.tool          # l'application
+docker run --rm --entrypoint cat device-management:latest /app/version.json   # l'image
+bash scripts/verif-version.sh --image device-management:latest --tag "$(cat VERSION)"
+```
+
+Les scripts de build (`build-local.sh`, `build-k8s.sh`, `build-incluster.sh`) passent les
+build-args ; `VERSION` est aliasée sur `DM_IMAGE_TAG`. Un nouveau chemin de build doit faire
+pareil, sinon l'image dira `dev`. `changes` reste vide tant que le dépôt n'a pas de
+`CHANGELOG.md` à sections `## [X.Y.Z]`.
+
 ## Build et deploiement
 
 ### Docker local (arm64, rapide)

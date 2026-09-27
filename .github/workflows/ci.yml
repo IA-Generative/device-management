@@ -67,3 +67,27 @@ jobs:
             tests/test_general_version_pg.py \
             tests/test_libreoffice_update_feed_pg.py \
             tests/test_plugin_installations_fk.py
+
+  # ADR-0004 : l'image porte son journal (/app/version.json servi sur /__version__, format
+  # Dockerflow). Ce job construit l'image sans la pousser et vérifie qu'elle dit la même
+  # chose que le dépôt : version = fichier VERSION, commit = SHA construit.
+  image-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construire l'image (amd64, sans push)
+        env:
+          COMMIT: ${{ github.sha }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          BUILD: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          docker build -f deploy/docker/Dockerfile -t dm:ci \
+            --build-arg DM_IMAGE_TAG="$VERSION" --build-arg COMMIT="$COMMIT" \
+            --build-arg BUILD="$BUILD" --build-arg CODE_DATE="$(git log -1 --format=%cI)" \
+            --build-arg SOURCE="$SOURCE" .
+      - name: L'image dit la même chose que le dépôt
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          bash scripts/verif-version.sh --image dm:ci --tag "$(tr -d '[:space:]' < VERSION)" --commit "$COMMIT"
