@@ -2,7 +2,7 @@
 # verif-version.sh — l'image (ou l'application qui tourne) dit-elle bien quelle version elle est ?
 #
 # Convention ADR-0004 MirAI next, format Dockerflow : /app/version.json dans l'image, servi
-# sur GET /__version__. Ce contrôle est le même quel que soit le langage ; c'est ce qu'on
+# sur GET /__version__ (sept clés, dont history = tout le CHANGELOG). Ce contrôle est le même quel que soit le langage ; c'est ce qu'on
 # recopie mal d'un dépôt à l'autre, d'où ce script. Dépendances : jq ; docker (mode --image) ;
 # curl (mode --url). Il ne construit PAS l'image — la commande de build dépend du projet.
 #
@@ -58,11 +58,13 @@ fi
 
 echo "$CONTENU" | jq . >/dev/null 2>&1 || { ecart "le contenu n'est pas du JSON : ${CONTENU:0:120}"; echo "ÉCARTS ($ecarts)"; exit 1; }
 
-# Les six clés : les quatre de Dockerflow, puis les deux extensions de la plateforme.
-for cle in source version commit build code_date changes; do
+# Les sept clés : les quatre de Dockerflow, puis les trois extensions de la plateforme.
+for cle in source version commit build code_date changes history; do
   echo "$CONTENU" | jq -e --arg k "$cle" 'has($k)' >/dev/null || ecart "clé « $cle » absente"
 done
 echo "$CONTENU" | jq -e '.changes | type == "array"' >/dev/null 2>&1 || ecart "« changes » n'est pas une liste"
+echo "$CONTENU" | jq -e '.history | type == "array"' >/dev/null 2>&1 || ecart "« history » n'est pas une liste"
+echo "$CONTENU" | jq -e 'all(.history[]?; has("version") and has("changes"))' >/dev/null 2>&1 || ecart "une entrée de « history » n'a pas version + changes"
 
 version="$(echo "$CONTENU" | jq -r '.version // ""')"
 commit="$(echo "$CONTENU" | jq -r '.commit // ""')"
@@ -71,7 +73,7 @@ commit="$(echo "$CONTENU" | jq -r '.commit // ""')"
 [[ -z "$TAG" && "$version" == "dev" ]] && echo "NOTE : version « dev » — build de poste sans build-args, ou build-args non passés"
 
 if [[ $ecarts -eq 0 ]]; then
-  echo "OK : version=$version commit=${commit:-<vide>} changes=$(echo "$CONTENU" | jq '.changes | length') ligne(s)"
+  echo "OK : version=$version commit=${commit:-<vide>} changes=$(echo "$CONTENU" | jq '.changes | length') ligne(s) history=$(echo "$CONTENU" | jq '.history | length') version(s)"
   exit 0
 fi
 echo "ÉCARTS ($ecarts)"

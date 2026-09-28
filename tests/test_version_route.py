@@ -25,7 +25,7 @@ from app.main import app
 
 RACINE = Path(__file__).resolve().parents[1]
 SCRIPT = RACINE / "scripts" / "version_json.py"
-SIX_CLES = {"source", "version", "commit", "build", "code_date", "changes"}
+SEPT_CLES = {"source", "version", "commit", "build", "code_date", "changes", "history"}
 
 CHANGELOG = """# Changelog
 
@@ -64,8 +64,8 @@ def test_hors_image_la_route_repond_dev(client):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/json")
     corps = r.json()
-    assert set(corps) == SIX_CLES
-    assert corps["version"] == "dev" and corps["changes"] == []
+    assert set(corps) == SEPT_CLES
+    assert corps["version"] == "dev" and corps["changes"] == [] and corps["history"] == []
 
 
 def test_sert_le_fichier_de_l_image_tel_quel(client, tmp_path, monkeypatch):
@@ -114,7 +114,7 @@ def _ecrire(tmp_path, version, changelog=CHANGELOG):
 
 def test_script_ne_garde_que_la_section_de_cette_version(tmp_path):
     v = _ecrire(tmp_path, "0.9.19")
-    assert set(v) == SIX_CLES
+    assert set(v) == SEPT_CLES
     assert v["version"] == "0.9.19" and v["commit"] == "abc1234"
     texte = "\n".join(v["changes"])
     assert "quelle version elle est" in texte
@@ -122,5 +122,26 @@ def test_script_ne_garde_que_la_section_de_cette_version(tmp_path):
 
 
 def test_script_sans_journal_ce_n_est_pas_une_erreur(tmp_path):
-    assert _ecrire(tmp_path, "0.9.19", changelog="")["changes"] == []
+    v = _ecrire(tmp_path, "0.9.19", changelog="")
+    assert v["changes"] == [] and v["history"] == []
     assert _ecrire(tmp_path, "9.9.9")["changes"] == []
+
+
+def test_script_history_garde_tout_le_journal_dans_l_ordre(tmp_path):
+    """Ce qui a été fait avant voyage avec l'image : toutes les sections, la plus récente en tête."""
+    h = _ecrire(tmp_path, "0.9.19")["history"]
+    assert [e["version"] for e in h] == ["0.9.19", "0.9.18"]
+    assert h[0]["date"] == "2026-09-28" and h[1]["date"] == "2026-09-20"
+    assert "ancienne version" in "\n".join(h[1]["changes"])
+
+
+def test_le_changelog_du_depot_est_lisible_par_le_script(tmp_path):
+    """Le CHANGELOG.md reconstitué du dépôt : chaque montée de VERSION y a sa section."""
+    texte = (RACINE / "CHANGELOG.md").read_text(encoding="utf-8")
+    sortie = tmp_path / "version.json"
+    subprocess.run([sys.executable, str(SCRIPT), "--version", (RACINE / "VERSION").read_text().strip(),
+                    "--changelog", str(RACINE / "CHANGELOG.md"), "--out", str(sortie)], check=True)
+    v = json.loads(sortie.read_text(encoding="utf-8"))
+    assert v["changes"], "la version du fichier VERSION doit avoir sa section dans CHANGELOG.md"
+    assert len(v["history"]) == texte.count("\n## [")
+    assert v["history"][0]["version"] == v["version"]

@@ -2,7 +2,7 @@
 
 L'image écrit ce fichier au moment où elle se construit (voir `deploy/docker/Dockerfile` et
 `scripts/version_json.py`) : source, version, commit, build, date du code et changements de cette
-version. Le noteur de la plateforme lit cette route par le Service interne, sans jamais parler à
+version, et `history` : tout le CHANGELOG, section par section. Le noteur de la plateforme lit cette route par le Service interne, sans jamais parler à
 GitHub, pour rédiger la note de version des testeurs.
 
 Hors image (tests, `uvicorn` sur un poste), le fichier manque : on répond « dev », jamais une
@@ -17,7 +17,7 @@ from pathlib import Path
 from fastapi import APIRouter
 
 VERSION_JSON = Path("/app/version.json")
-DEV = {"source": "", "version": "dev", "commit": "", "build": "", "code_date": "", "changes": []}
+DEV = {"source": "", "version": "dev", "commit": "", "build": "", "code_date": "", "changes": [], "history": []}
 
 router = APIRouter()
 

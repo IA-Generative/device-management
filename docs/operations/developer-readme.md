@@ -123,7 +123,8 @@ conn.close()
 L'image porte son propre journal de version, écrit au moment où elle se construit
 (convention ADR-0004 de la plateforme MirAI next, format [Dockerflow](https://github.com/mozilla-services/Dockerflow/blob/main/docs/version_object.md)) :
 `/app/version.json` servi sur `GET /__version__` — `source`, `version`, `commit`, `build`,
-`code_date`, `changes`. Sans authentification, hors logs d'accès ; hors image la route
+`code_date`, `changes` (la section de cette version dans `CHANGELOG.md`) et `history` (tout le
+`CHANGELOG.md`, section par section : ce qui a été fait avant voyage avec l'image). Sans authentification, hors logs d'accès ; hors image la route
 répond `"version": "dev"`, jamais une erreur.
 
 ```bash
@@ -134,8 +135,9 @@ bash scripts/verif-version.sh --image device-management:latest --tag "$(cat VERS
 
 Les scripts de build (`build-local.sh`, `build-k8s.sh`, `build-incluster.sh`) passent les
 build-args ; `VERSION` est aliasée sur `DM_IMAGE_TAG`. Un nouveau chemin de build doit faire
-pareil, sinon l'image dira `dev`. `changes` reste vide tant que le dépôt n'a pas de
-`CHANGELOG.md` à sections `## [X.Y.Z]`.
+pareil, sinon l'image dira `dev`. `CHANGELOG.md` est la mémoire du projet : une section
+`## [X.Y.Z] - date` par version, la plus récente en tête (reconstitué depuis git le 2026-09-28 ;
+release-please le tiendra ensuite). À chaque montée de `VERSION`, ajouter sa section.
 
 ## Build et deploiement
 
