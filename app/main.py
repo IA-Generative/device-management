@@ -170,6 +170,12 @@ if not _TLS_VERIFY:
 
 _RUNTIME_MODE = str(settings.runtime_mode or "api").strip().lower()
 
+# ---- /__version__ (ADR-0004, format Dockerflow) : quel que soit le mode du pod, l'image
+# dit quelle version elle est. Hors de tout bloc conditionnel, donc.
+from .version import router as _version_router  # noqa: E402
+
+app.include_router(_version_router)
+
 # ---- Admin UI router (Jinja2 + HTMX, no external JS build)
 if _RUNTIME_MODE in ("admin", "all"):
     from fastapi.staticfiles import StaticFiles
@@ -212,7 +218,7 @@ async def trace_id_middleware(request: Request, call_next):
 # Les routes du monolithe sont déclarées au niveau module ; en mode llm on ne
 # sert QUE le proxy + sondes + métriques (pod stateless scalable, sans PVC).
 _LLM_MODE_ALLOWED_PREFIXES = (
-    "/llm/", "/livez", "/readyz", "/healthz", "/metrics", "/internal",
+    "/llm/", "/livez", "/readyz", "/healthz", "/metrics", "/internal", "/__version__",
 )
 
 if _RUNTIME_MODE == "llm":
@@ -242,7 +248,7 @@ _CACHE_INVALIDATION_PATH_PREFIXES = (
 
 # Paths exempt from the runtime-config readiness gate (probes, internal, static).
 _CONFIG_GATE_EXEMPT_PREFIXES = (
-    "/healthz", "/livez", "/readyz", "/internal", "/admin/static", "/metrics",
+    "/healthz", "/livez", "/readyz", "/internal", "/admin/static", "/metrics", "/__version__",
 )
 
 

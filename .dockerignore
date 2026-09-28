@@ -6,3 +6,5 @@
 !db
 !alembic
 !alembic.ini
+!scripts/version_json.py
+!CHANGELOG.md

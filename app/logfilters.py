@@ -25,7 +25,8 @@ import time
 from collections.abc import Callable
 
 # Chemins de sonde dont l'access-log est filtré.
-PROBE_PATHS = ("/livez", "/healthz", "/readyz")
+# /__version__ : appelé toutes les 10 min par le noteur de la plateforme (ADR-0004).
+PROBE_PATHS = ("/livez", "/healthz", "/readyz", "/__version__")
 
 # Endpoints à fort polling par l'UI admin : même nuisance que les sondes
 # (plusieurs requêtes/minute en boucle), même traitement. Ex. la table
