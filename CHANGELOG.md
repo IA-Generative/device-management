@@ -200,4 +200,5 @@ Première version suivie par ce journal.
 
 ### Sous le capot
 
-* Décisions d'architecture (réversibilité du fournisseur de modèle, frontières du service) documentées ; guide opérateur du relais ; harnais de développement local ; qualité du code : analyse de sécurité unifiée, corrections de style de code, tests bout en bout des drapeaux.
+* Décisions d'architecture documentées : réversibilité du fournisseur de modèle, frontières du service. Guide opérateur du relais et harnais de développement local.
+* Qualité du code : analyse de sécurité unifiée, corrections de style, tests bout en bout des drapeaux.
