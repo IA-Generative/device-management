@@ -19,6 +19,8 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Ruff (lint)
         run: ruff check .
+      - name: Le CHANGELOG peut être servi à tout le monde (ADR-0004, /__version__)
+        run: python3 scripts/verif-changelog.py CHANGELOG.md
       - name: Bandit (SAST)
         run: bandit -r app -c pyproject.toml
       - name: pip-audit (dependency CVEs)

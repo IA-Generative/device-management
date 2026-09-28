@@ -1,309 +1,203 @@
 # Changelog
 
-Historique reconstitué le 2026-09-28 depuis les commits du dépôt : une section par montée du fichier
-`VERSION`, commits groupés par type. Les versions suivantes seront tenues par release-please.
-Format des titres : `## [X.Y.Z] - date` (lu par `scripts/version_json.py`, servi sur `/__version__`).
+Ce journal dit ce qui change pour les personnes qui utilisent ou exploitent le service, version par
+version, la plus récente en tête. Il est servi tel quel par le service lui-même, sans authentification :
+il ne porte ni détail d'infrastructure ni détail technique fin (ceux-là vivent dans les commits et la
+documentation). Historique reconstitué le 2026-09-28 depuis les commits, puis reformulé ; les versions
+suivantes seront tenues par release-please. Titres au format `## [X.Y.Z] - date`.
 
 ## [0.9.20] - 2026-09-26
 
-_0.9.19 a été publiée depuis une branche de release (#40) ; ses changements sont repris ici._
+La 0.9.19 a été publiée depuis une branche de release ; ses changements sont repris ici.
 
-### Features
+### Nouveautés
 
-* **admin :** choisir la version générale ; tests unitaires et Postgres (#40)
-* **catalog :** version générale par plugin, servie par tous les canaux natifs (#40)
-* **admin :** renseigner extension_id depuis la fiche plugin
-* **catalog :** feed natif LibreOffice /catalog/{slug}/update.xml (#4)
-* **communications :** add the client ack endpoint
-* **config :** expose active communications to the requesting client
-* **communications :** honor cohort and version targeting when resolving active items
+* Chaque extension a désormais une **version générale** : celle que reçoivent tous les postes qui ne sont pas dans une expérimentation. L'administrateur la choisit dans la fiche de l'extension.
+* LibreOffice peut vérifier lui-même s'il existe une mise à jour d'une extension, par son mécanisme natif ; le catalogue lui répond.
+* Les **communications** (annonces, alertes, sondages) parviennent aux extensions installées, qui peuvent en accuser réception. Elles se ciblent par cohorte et par version.
+* La fiche d'une extension permet de renseigner son identifiant d'extension LibreOffice.
 
-### Bug Fixes
+### Corrections
 
-* **catalog :** corrections de la revue qualité de la version générale (#40)
-* **catalog :** update.xml — servabilité jugée par Postgres, plus de repli sur Host
-* **admin :** extension_id validé, libellé selon le type de plugin
-* **communications :** ack refusé sur un brouillon, bornes de version fail-safe
-* **catalog :** échapper les attributs de update.xml sans xml.sax (Bandit B406)
-* **catalog :** tracer le repli de update.xml sur l'en-tête Host
-* **catalog :** update.xml n'annonce qu'une version réellement servable
-* **campaigns :** /update/status compte « deferred » en notified, pas en failed
-* **communications :** drop the phantom target_bundle_id column from the insert
+* Le mécanisme de mise à jour natif de LibreOffice n'annonce qu'une version réellement disponible, et le fait de façon plus sûre.
+* Un accusé de réception n'est plus accepté sur une communication encore en brouillon.
+* Le suivi d'une campagne compte correctement un poste qui a différé sa mise à jour : il n'est plus compté en échec.
+* Diverses corrections issues de la revue de qualité.
 
-### Refactoring
+### Pour les développeurs d'extensions
 
-* **versions :** un seul parseur de version, dans app/services/versions
-* **catalog :** update.xml passe par _with_bootstrap_cursor (plus de boucle de connexion dupliquée)
+* La documentation décrit la version générale, la vérification de mise à jour par LibreOffice, le contrat des communications et le comportement en cas d'accès refusé.
 
-### Documentation
+### Sous le capot
 
-* **plugin-developer :** version générale, update.xml?version=, manifestes (#40)
-* **plugin-developer :** communications absent d'un access_denied ; 404 et pré-releases
-* **catalog :** feed LibreOffice — renvoi corrigé, retrait d'une version, sémantique notified
-* **plugin-developer :** contrat du feed natif LibreOffice et sémantique deferred
-* **plugin-developer :** document the communications contract
-
-### Tests
-
-* **int :** non-régression INT et recette de la version générale (#40)
-* **feed :** fixture `mod` sous monkeypatch au lieu d'un état global
-* **feed :** échappement, réversibilité de l'URL et ordre des routes
-* **feed :** neutraliser le pool de connexions dans les tests du feed LibreOffice
+* Un seul composant lit les numéros de version dans tout le service. Fiabilisation interne, tests supplémentaires.
 
 ## [0.9.18] - 2026-09-06
 
-### Features
+### Nouveautés
 
-* **admin :** read version and device type from dm-manifest.json first
+* À l'import d'une extension, sa version et son type se lisent d'abord dans son manifeste.
 
-### Bug Fixes
+### Corrections
 
-* **build :** la voie in-cluster passe aussi DM_IMAGE_TAG
-* **deploy :** l'image déclare sa version, au lieu d'un littéral tenu à la main
-* **binaries :** GET /binaries/{path} servait le cache sans le vérifier (#5)
-* **catalog :** vérifier le checksum du cache disque avant de servir un binaire (#5)
-* **tests :** UP037 — annotation sans guillemets, FauxBase est défini au-dessus
-* **tests :** E741 — « l » est un nom ambigu, les lignes s'appellent « ligne »
-* **parc :** le catalogue se résout par nom d'export ET slug, et une absence se voit
-* **admin :** keep the id_token OUT of the session cookie
-* **admin :** expired API polls must not mint OIDC state cookies
-* **admin :** report version source correctly in extract-version
-* **db :** make startup role/database/schema auto-creation opt-in, stop hardcoding the DB name
-* corrige les points relevés par le contrôle qualité du lot « lisibilité »
-* **queue :** la mise en lettre morte ne doit plus tuer le worker
-* **telemetry :** lire les attributs OTLP typés à la persistance SQL
+* Le service déclare lui-même sa version : l'écran d'administration n'affiche plus une valeur tenue à la main qui pouvait rester en retard.
+* Un binaire d'extension servi depuis le cache est vérifié avant envoi : un fichier altéré n'est plus distribué.
+* La session d'administration ne conserve plus qu'une référence légère ; un appel expiré ne crée plus de cookies inutiles.
+* L'origine de la version détectée est correctement indiquée à l'import.
+* La création automatique de la base et de ses rôles au démarrage devient optionnelle, à activer explicitement.
+* Un message de télémétrie impossible à traiter est mis de côté sans arrêter le traitement des autres.
+* Les mesures de télémétrie typées sont enregistrées avec leur type.
+* L'export du parc retrouve une extension par son nom d'export comme par son identifiant, et signale une absence.
 
-### Documentation
+### Sous le capot
 
-* rend lisible la cohabitation rollout général / branches d'expérimentation
-
-### Tests
-
-* **binaries :** verrouiller le second appelant, l'artefact de variante
-* **issue5 :** la sonde de concordance mesure aussi les plugins sans campagne
-* **issue5 :** banc de validation — local Docker, Kubernetes, et sonde client
+* Corrections de qualité de code ; tests supplémentaires sur la distribution des binaires et la sonde de concordance du parc.
 
 ## [0.9.17] - 2026-09-04
 
-### Features
+### Nouveautés
 
-* **parc :** les noms nus du contrat (PARC_EXPORT_ENABLED/INTERVALLE_S) acceptés en repli
-* **admin :** section debug « Export parc → suivi-beta » + export manuel
-* **parc :** export des agrégats d'usage vers le bus de la bêta (delta 5 min + instantané)
+* Le service exporte périodiquement des agrégats d'usage du parc (nombre de postes, interactions) vers le tableau de bord de la bêta, avec un export manuel depuis l'écran d'administration.
 
-### Bug Fixes
+### Corrections
 
-* **admin :** l'activité device lisait une colonne received_at qui n'a jamais existé
+* L'activité des appareils s'affiche de nouveau dans l'administration.
 
-### Tests
+### Sous le capot
 
-* **parc :** verrouille le contrat d'export — mapping, empreinte, deltas, rejeu, 409, anti-fuite
+* Le contrat d'export du parc est verrouillé par des tests.
 
 ## [0.9.16] - 2026-08-30
 
-### Features
+### Nouveautés
 
-* **admin :** signaler combien de versions circulent réellement sur le parc
-* **catalogue :** rendre la cohabitation lisible — précédence, page taguée, API
+* Le tableau de bord indique combien de versions différentes circulent réellement sur le parc.
+* Le catalogue explique la cohabitation entre la version générale et les branches d'expérimentation : quelle version l'emporte, et pour qui.
 
-### Bug Fixes
+### Corrections
 
-* corrige les points relevés par le contrôle qualité du lot « lisibilité »
-* **queue :** la mise en lettre morte ne doit plus tuer le worker
-* **telemetry :** lire les attributs OTLP typés à la persistance SQL
-* **catalogue :** statut experimental invisible, et « dernière version » lexicographique
+* Une version marquée expérimentale n'apparaît plus comme la dernière version par erreur de tri.
+* Un message de télémétrie impossible à traiter est mis de côté sans arrêter le traitement des autres.
+* Diverses corrections issues de la revue de qualité.
 
-### Documentation
+### Sous le capot
 
-* **readme :** référence la documentation développeur et retire un lien mort
-* capitalise la lisibilité de la cohabitation (0.9.15)
-
-### Tests
-
-* **e2e :** vérifie que l'API publique dit la même chose que le HTML (section E)
+* Documentation développeur référencée depuis l'accueil ; un test vérifie que l'API et les pages disent la même chose.
 
 ## [0.9.15] - 2026-07-26
 
-### Bug Fixes
+### Corrections
 
-* **ci :** débloque le job qualité — finding Bandit B108 préexistant
-* corrige les défauts relevés par le second contrôle qualité
-* **campaigns :** épingle l'URL du bras d'expérimentation + factorise l'auto-complétion
+* L'adresse d'une branche d'expérimentation est figée à la création ; la saisie assistée est unifiée.
+* Corrections issues du second contrôle de qualité.
 
-### Tests
+### Sous le capot
 
-* **e2e :** ajoute la cohabitation étendue de plusieurs branches (section D)
-
-### Build
-
-* **k8s :** remplace Kaniko par BuildKit rootless
-* **k8s :** fiabilise le job Kaniko (logs et disque déclaré)
-* **k8s :** ajoute une option de build in-cluster avec Kaniko
+* La construction de l'image dans le cluster est fiabilisée et change d'outil.
+* Tests étendus à la cohabitation de plusieurs branches d'expérimentation.
 
 ## [0.9.14] - 2026-07-25
 
-### Features
+### Nouveautés
 
-* **campaigns,catalog :** branches d'expérimentation — multi-versions par cohorte (0.9.14)
-* **deploy :** chart Helm documenté pour device-management (api/admin/worker/telemetry-relay)
-* **docker :** image non-root (uid 10001) + migrations Alembic embarquées
-* **app :** prêt cloud-native — S3 sans PVC, observabilité, résilience, arrêt gracieux
+* **Branches d'expérimentation** : plusieurs versions d'une extension peuvent coexister, chacune destinée à une cohorte de postes.
+* Le service est prêt pour un hébergement infonuagique : stockage des fichiers en objet, observabilité, arrêt propre, et un paquet de déploiement documenté.
+* L'image tourne sans privilèges et embarque ses migrations de base.
 
-### Bug Fixes
+### Corrections
 
-* **campaigns :** scope la campagne d'update au plugin du device demandeur (#14)
-* **config :** lookup config_template déterministe — un doublon sans template ne masque plus le vrai
-* **admin :** 403 générique sur le callback OIDC — ne révèle plus le nom du groupe admin requis
-* **deploy :** runAsUser 70 explicite sur l'init wait-for-postgres — runAsNonRoot vérifie le User de l'image (vide = root kubelet) → CreateContainerConfigError
-
-### Documentation
-
-* **operations :** rattrape les apports 0.9.9→0.9.12 et les merges cloud-native/Helm
+* Une campagne de mise à jour ne s'applique qu'à l'extension du poste qui la demande.
+* La configuration livrée à un poste est choisie de façon déterministe, même en présence de doublons.
+* Un refus d'accès à l'administration ne révèle plus quel groupe est requis.
+* Le déploiement démarre correctement sur les plateformes qui exigent un utilisateur non privilégié.
 
 ## [0.9.12] - 2026-07-14
 
-### Features
+### Nouveautés
 
-* **admin :** histogramme du trafic LLM (chat vs embeddings) sur le dashboard
-* **admin :** version du DM sur le tableau de bord (+ alerte versions mixtes) et modèle d'embedding sur la ligne LLM du debug
+* Le tableau de bord montre l'historique du trafic vers le modèle de langage, et affiche la version du service avec une alerte quand plusieurs versions tournent en même temps.
 
 ## [0.9.11] - 2026-07-14
 
-### Features
+### Nouveautés
 
-* **flags :** feature flag tri-état (transparent / forcé ON / forcé OFF)
+* Un drapeau de fonctionnalité peut être laissé au choix du poste, forcé activé ou forcé désactivé.
 
 ## [0.9.10] - 2026-07-14
 
-### Bug Fixes
+### Corrections
 
-* **db+flags :** FK plugin_installations en ON DELETE CASCADE + réconciliation des flags sur les 2 derniers chemins d'import manqués
+* La suppression d'une extension entraîne celle de ses installations ; les drapeaux sont réconciliés sur tous les chemins d'import.
 
 ## [0.9.9] - 2026-07-14
 
-### Bug Fixes
+### Corrections
 
-* **flags+telemetry :** réconciliation du catalogue sur TOUS les chemins d'import + telemetryEndpoint à la racine de l'origine
+* Le catalogue des drapeaux est réconcilié quel que soit le chemin d'import ; l'adresse de télémétrie remise aux postes est correcte derrière un préfixe d'URL.
 
-### Documentation
+### Sous le capot
 
-* spec fix pérenne telemetryEndpoint (double /bootstrap sur ingress à préfixe)
-* ADR-0002 §5 (frontière validée : embeddings mutualisés, identité cuid) + ADR-0003 (choix modèle embedding) + mode opératoire feature flags + protocole features v2 (§4.4)
+* Décisions d'architecture documentées : frontière du service, choix du modèle de vectorisation, mode opératoire des drapeaux.
 
 ## [0.9.8] - 2026-07-14
 
-### Bug Fixes
+### Corrections
 
-* **audit :** plugin:<id numérique> résolu via le catalogue, plugin:* sans plugin
+* Le journal d'audit résout correctement une extension désignée par son numéro, et gère l'entrée « toutes les extensions ».
 
 ## [0.9.7] - 2026-07-14
 
-### Features
+### Nouveautés
 
-* **audit :** plugin_slug PERSISTÉ dans admin_audit_log — fix long terme
+* Le journal d'audit mémorise durablement l'extension concernée par chaque action.
 
 ## [0.9.6] - 2026-07-14
 
-### Features
+### Nouveautés
 
-* **audit :** colonne Plugin dérivée + filtre autocomplété
+* Le journal d'audit gagne une colonne « Extension » avec un filtre à saisie assistée.
 
 ## [0.9.5] - 2026-07-14
 
-### Features
+### Nouveautés
 
-* **audit :** journal dense — filtres live avec autocomplétion, période, recherche détails, scroll infini
+* Journal d'audit plus dense : filtres instantanés avec saisie assistée, période, recherche dans les détails, défilement continu.
 
 ## [0.9.4] - 2026-07-14
 
-### Features
+### Nouveautés
 
-* **dashboard :** courbes par plugin + légende, tuiles cohérentes (appareils · interactions)
-* **dashboard :** toggle Appareils/Utilisateurs sur le widget Adoption
+* Tableau de bord : courbes par extension avec légende, tuiles cohérentes (appareils et interactions), bascule Appareils / Utilisateurs sur l'adoption.
 
-### Bug Fixes
+### Corrections
 
-* **telemetry :** identité STABLE (cuid) dans le token — fin des pseudo-appareils par jti
-* **installations :** version requise pour le heartbeat — pas d'installation fantôme sans version
+* Chaque poste a une identité stable dans la télémétrie : plus de faux appareils.
+* Une installation n'est enregistrée qu'avec sa version : plus d'installation fantôme.
 
 ## [0.9.3] - 2026-07-14
 
-### Bug Fixes
+### Corrections
 
-* **admin+flags :** installations enfin enregistrées, création de flag scopée plugin+version, /admin/flags/{id} réparé
+* Les installations sont enfin enregistrées ; un drapeau se crée pour une extension et une version données ; la page d'un drapeau fonctionne de nouveau.
 
 ## [0.9.2] - 2026-07-13
 
-### Features
+Première version suivie par ce journal.
 
-* **build :** DM_REGISTRY_OVERRIDE + VERSION 0.9.2 (livraison int)
-* **build :** build-k8s.sh sans argument → tag par défaut = VERSION
-* **flags :** catalogue scopé par plugin + réconciliation à l'import + delete_flag
-* **flags :** résolution serveur des feature flags — deep-merge template + cohortes seules
-* **deploy :** wire EMBD_MODEL_NAME through manifests + docker (RAG embedder)
-* **llm :** embedder via /llm/v1 — /embeddings passthrough + emit embd* in /config
-* **deploy :** câble DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS (optional) sur le pod API — parcours prod-like/WAF via /auth/token
-* **llm :** proxy LLM OpenAI-compatible /llm/v1 + override llmEndpoint (0.9.0)
-* **routing :** / -> /catalog/ + /admin -> /admin/ (proxy-safe)
-* **logs :** filtre aussi /admin/api/config/propagation (polling admin 5s)
-* **logs :** filtre sondes — +/readyz, récap 15 min, fenêtre de grâce au démarrage + nginx access_log off
-* **config :** légende + tooltips des statuts (modifié/redémarrage requis/secret) sur /admin/debug
-* **config :** credentials éditables (Keycloak/relais) + bootstrap pré-import des overrides
-* **config :** reaper auto des pods obsolètes + heartbeat résilient
-* **config :** manifests k8s — Downward API (POD_IP/NODE_NAME), DM_CONFIG_SECRET_KEY, /readyz, version 0.8.0 (Stage 7)
-* **config :** UI page debug — édition inline, diff, reset, recharger, éditeur ordonné, flotte santé (Stage 6)
-* **config :** endpoints admin + endpoint interne + bootstrapUrls (Stage 4+5+8)
-* **config :** câblage synchro runtime + garde de disponibilité (Stage 3+9)
-* **config :** module cœur runtime_config (registre, baseline, résolution, reload, génération, enrôlement, poll+NOTIFY)
-* **config :** helper santé par pod (RAM/load/cpu/requêtes), stdlib pur
-* **config :** schéma des surcharges runtime (config_state, config_overrides, config_pod_state)
-* **config :** chiffrement réversible Fernet pour les secrets de surcharge runtime
+### Nouveautés
 
-### Bug Fixes
+* Les extensions obtiennent leur configuration auprès du service et peuvent la voir évoluer sans redémarrer : écran de configuration en direct (édition, comparaison, retour arrière), santé de chaque instance, secrets chiffrés.
+* Drapeaux de fonctionnalité résolus côté service, par extension et par cohorte.
+* Relais vers le modèle de langage compatible avec l'interface OpenAI, y compris la vectorisation de texte, avec journalisation des erreurs par les extensions.
+* Les pages d'accueil et d'administration se rejoignent depuis la racine du service.
+* Les journaux ne sont plus saturés par les sondes de santé et le rafraîchissement de l'administration.
 
-* **telemetry :** preserve PUBLIC_BASE_URL path prefix in emitted endpoints (DGX /bootstrap 502)
-* **deploy :** mapper RELAY_KEYCLOAK_UPSTREAM sur le pod API (relais token /auth/token répondait 503)
-* **security :** image non-root (uid 10001) + garde-fou runAsNonRoot
-* **deploy :** mapper DM_LLM_TOKEN_SIGNING_KEY sur le pod API (mint llmToken dans /config)
-* **db :** verrou consultatif pg_advisory_lock autour de apply_schema
-* **k8s :** telemetry-relay (image DM) — bloc runtime-config + /readyz (exemple public)
-* **admin :** logout Keycloak — passe client_id (évite 'Missing parameters: id_token_hint')
-* **admin :** corrige 2 NameError latents dans le router
+### Corrections
 
-### Documentation
+* La connexion des extensions par le relais et la déconnexion de l'administration fonctionnent dans toutes les configurations de déploiement.
+* Les adresses remises aux postes respectent le préfixe d'URL du déploiement.
+* L'image tourne sans privilèges ; la base est protégée contre deux démarrages simultanés.
 
-* **llm :** document embeddings passthrough + embd* /config fields (RAG embedder)
-* **adr :** ADR-0002 — réordonnancement pour lecture fluide (principe avant applications)
-* **adr :** ADR-0002 contexte — sécabilité organisationnelle + découplage d'obsolescence
-* **plugin :** §8bis — journalisation fonctionnelle des erreurs du relais LLM par les plugins
-* **adr :** ADR-0002 — schéma des interfaces avec fournisseurs LLM multiples (options futures en légende)
-* **adr :** ADR-0002 frontière 2 — stratégie multifournisseur de LLM (interface ③)
-* **adr :** ADR-0002 frontière 2 — réversibilité du choix technologique + points d'interface
-* **adr :** ADR-0002 §3 — sécabilité érigée en principe d'architecture opposable
-* **llm :** guide opérateur du proxy LLM — rôle des clés, opérations courantes, dépannage
+### Sous le capot
 
-### Tests
-
-* **flags :** matrice E2E Docker réelle — 8 combinaisons + contract test plugin, 23/23 PASS
-* **llm :** fenêtre de quota large dans le test 429 — évite le flake à la frontière des 60s
-* **config :** couvre les 3 nouveaux credentials + one-shot bootstrap_env_overrides
-* **ci :** rend test_queue_load_smoke robuste au runner CI
-* **ci :** skip propre de test_admin_playwright si playwright absent
-* **ci :** rend l'étape Pytest verte (collecte + isolation + integration)
-
-### Maintenance
-
-* **local :** exemple — KEYCLOAK_ISSUER_URL + SSO admin (admin-dm-ui) renseignés
-* **local :** harnais dev local persistant (DM + Tempo/Grafana + relay-assistant)
-* **lint :** Bandit devient la source unique de SAST (retire S de Ruff)
-
-### Style
-
-* **lint :** CI verte — tri imports (I001), déquote annotation (UP037), E402 bootstrap pré-import, nosec B311 jitter
-* **lint :** chaînage d'exceptions + découpe d'instructions → Ruff vert
-* **lint :** applique les corrections Ruff sûres (imports, datetime.UTC, f-strings)
-
-### Autres
-
-* **bandit :** durcit ou justifie les findings → Bandit exit 0
-* Merge pull request #17 from IA-Generative/sec/admin-observability-and-suggest-hardening
+* Décisions d'architecture (réversibilité du fournisseur de modèle, frontières du service) documentées ; guide opérateur du relais ; harnais de développement local ; qualité du code : analyse de sécurité unifiée, corrections de style de code, tests bout en bout des drapeaux.
