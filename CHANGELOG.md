@@ -6,6 +6,15 @@ il ne porte ni détail d'infrastructure ni détail technique fin (ceux-là viven
 documentation). Historique reconstitué le 2026-09-28 depuis les commits, puis reformulé ; les versions
 suivantes seront tenues par release-please. Titres au format `## [X.Y.Z] - date`.
 
+## [0.9.21] - 2026-11-01
+
+### Nouveautés
+
+* Le service sait désormais **reclasser les résultats d'une recherche** par pertinence : la recherche
+  dans les documents du poste remonte d'abord les passages qui répondent le mieux à la question.
+  Une extension n'y a accès qu'une fois connectée.
+* Le service annonce sa **version** et le **journal de ses changements** (ce document), consultables par tous.
+
 ## [0.9.20] - 2026-09-26
 
 La 0.9.19 a été publiée depuis une branche de release ; ses changements sont repris ici.
