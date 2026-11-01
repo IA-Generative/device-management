@@ -93,20 +93,13 @@ spec:
                   name: device-management-secrets
                   key: EMBD_MODEL_NAME
                   optional: true
-            # Reranker (/llm/v1/rerank) : modèle par défaut, et la clé du backend
-            # nommé dans LLM_BACKENDS (token_env) quand le reranker n'est pas chez le
-            # backend par défaut — passerelle MirAI sur Scaleway. Optionnels.
+            # Modèle de reranking par défaut pour /llm/v1/rerank (fallback si le
+            # client n'envoie pas 'model'). Optional : reranker facultatif.
             - name: RERANK_MODEL_NAME
               valueFrom:
                 secretKeyRef:
                   name: device-management-secrets
                   key: RERANK_MODEL_NAME
-                  optional: true
-            - name: LLM_API_TOKEN_MIRAI
-              valueFrom:
-                secretKeyRef:
-                  name: device-management-secrets
-                  key: LLM_API_TOKEN_MIRAI
                   optional: true
             - name: PUBLIC_BASE_URL
               valueFrom:
