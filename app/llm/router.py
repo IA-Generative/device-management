@@ -1,7 +1,8 @@
 """Routes du proxy LLM OpenAI-compatible (/llm/v1) — cœur volontairement minimal.
 
 Le plugin appende lui-même /chat/completions et /models à son llmEndpoint : ces
-deux chemins constituent le contrat. Le cœur d'une requête tient en cinq étapes
+deux chemins constituent le contrat (plus /embeddings pour le RAG et /rerank pour
+le reclassement de la recherche). Le cœur d'une requête tient en cinq étapes
 (auth → pipeline pré → résolution backend → forward → pipeline post/finalize) ;
 tout le reste (quota, guardrails, backends) est enfichable par configuration.
 
@@ -32,6 +33,7 @@ from .proxy import (
     forward_chat_completions,
     forward_embeddings,
     forward_models,
+    forward_rerank,
 )
 from .throttle import ThrottleInterceptor
 
@@ -239,6 +241,59 @@ def build_router(
             return await forward_embeddings(request, ctx, backend, hop_headers, finalize)
         except Exception:
             logger.exception("llm proxy /embeddings failed (trace_id=%s)", ctx.trace_id)
+            finalize(500, "internal_error")
+            return openai_error(500, "Internal proxy error.", err_type="api_error",
+                                code="internal_error")
+
+    @router.post("/rerank")
+    async def llm_rerank(request: Request) -> Response:
+        # Reranking (recherche de l'extension) : même auth/quota/backend que les
+        # embeddings, jamais streamé. Le plugin reçoit rerankEndpoint = llmEndpoint
+        # + /rerank ; le backend est appelé sur /rerank à sa racine (rerank_url).
+        ctx = LlmRequestContext(
+            identity=LlmIdentity("", "", "none"),
+            trace_id=_trace_id(request),
+            route="rerank",
+        )
+        finalize = _make_finalize(ctx)
+        try:
+            try:
+                ctx.identity = await authenticator.resolve(request)
+            except LlmProxyError as exc:
+                finalize(exc.status_code, "auth_failed")
+                return exc.to_response()
+
+            raw = await request.body()
+            if len(raw) > settings.max_body_size_mb * 1024 * 1024:
+                finalize(413, "body_too_large")
+                return openai_error(413, "Request body too large.", code="body_too_large")
+            try:
+                payload = json.loads(raw or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("payload must be a JSON object")
+            except ValueError:
+                finalize(400, "invalid_json")
+                return openai_error(400, "Request body must be a JSON object.",
+                                    code="invalid_json")
+
+            ctx.model = str(payload.get("model") or os.getenv("RERANK_MODEL_NAME", "") or "")
+            if ctx.model and not payload.get("model"):
+                payload["model"] = ctx.model
+            ctx.payload = payload
+
+            pipeline = _build_pipeline()
+            denied = await pipeline.run_before(ctx)
+            if denied is not None:
+                finalize(denied.status_code, "denied")
+                return denied
+
+            backend = _resolve_backend(ctx, finalize)
+            if isinstance(backend, Response):
+                return backend
+
+            return await forward_rerank(request, ctx, backend, hop_headers, finalize)
+        except Exception:
+            logger.exception("llm proxy /rerank failed (trace_id=%s)", ctx.trace_id)
             finalize(500, "internal_error")
             return openai_error(500, "Internal proxy error.", err_type="api_error",
                                 code="internal_error")

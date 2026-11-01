@@ -183,6 +183,40 @@ def test_embedder_model_empty_when_unset():
     assert cfg["embdUrl"] == cfg["llmEndpoint"]  # URL cohérente même sans modèle
 
 
+# ── Reranker : rerankEndpoint/rerankToken dérivés du LLM, comme l'embedder ──
+# Modèle vide = AUCUNE URL : l'extension annonce le reclassement dès que
+# rerankEndpoint est posé.
+
+def test_reranker_through_proxy_with_relay_auth():
+    mod = load_module({"RERANK_MODEL_NAME": "bge-reranker-v2-m3"})
+    client = TestClient(mod.app)
+    relay_headers = enroll(client)
+    cfg = _get_config(client, {**relay_headers, **_ENRICHED})
+    assert cfg["rerankModel"] == "bge-reranker-v2-m3"
+    assert cfg["rerankEndpoint"] == PROXY_PUBLIC_URL + "/rerank"
+    assert cfg["rerankToken"] == cfg["llmToken"]
+    assert cfg["rerankToken"] and cfg["rerankToken"] != BACKEND_TOKEN  # jamais la clé backend
+
+
+def test_reranker_disabled_when_model_unset():
+    mod = load_module()
+    client = TestClient(mod.app)
+    relay_headers = enroll(client)
+    cfg = _get_config(client, {**relay_headers, **_ENRICHED})
+    assert cfg["rerankModel"] == ""
+    assert cfg["rerankEndpoint"] == ""  # pas d'URL → l'extension n'annonce rien
+    assert cfg["rerankToken"] == ""
+
+
+def test_reranker_direct_mode_uses_backend_root_and_scrubs_token():
+    mod = load_module({"FORCE_LLM_ENDPOINT_OVERRIDE": "false",
+                       "RERANK_MODEL_NAME": "bge-reranker-v2-m3"})
+    client = TestClient(mod.app)
+    cfg = _get_config(client)  # anonyme
+    assert cfg["rerankEndpoint"] == "https://backend.test/rerank"  # BACKEND_URL sans /v1
+    assert BACKEND_TOKEN not in str(cfg)  # rerankToken effacé comme llmToken
+
+
 def test_embedder_inherits_base_path_prefix():
     """Non-régression DGX : embdUrl hérite du préfixe /bootstrap via llmEndpoint."""
     mod = load_module({"EMBD_MODEL_NAME": "embedding"})

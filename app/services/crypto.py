@@ -89,6 +89,7 @@ def verify_telemetry_token(token: str, signing_key: str) -> dict | None:
 SECRET_CONFIG_KEYS = {
     "llm_api_tokens",
     "llmToken",
+    "rerankToken",
     "tokenOWUI",
     "telemetryKey",
     "keycloak_client_secret",
