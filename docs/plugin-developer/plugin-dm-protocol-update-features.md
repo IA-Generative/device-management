@@ -351,6 +351,12 @@ clé du backend réel — utilisez `llmEndpoint` / `llmToken` dans tout nouveau 
 (= `EMBD_MODEL_NAME` côté DM, vide = embedder désactivé) est propre à l'embedder. Côté plugin, `embdModel`
 va en pref ; l'URL/token sont réutilisés in-memory depuis le LLM (pas de token périssable en `about:config`).
 
+**API locale (origines autorisées)** — `localApiAllowedOrigins` : CSV des origines web exactes (schéma,
+hôte, port) autorisées à appeler l'API HTTP locale de l'extension, par exemple
+`"https://portail.example,http://localhost:8080"` (= `DM_LOCAL_API_ALLOWED_ORIGINS` côté DM, surchargeable
+par plugin). **Absente** quand le DM n'en a pas : gardez alors votre valeur locale. Ce n'est qu'une liste
+d'origines : elle n'active pas l'API locale, qui reste pilotée par le flag `localApi`.
+
 ### 4.3 Objet `update` — directive de mise à jour
 
 `null` si aucune campagne ne s'applique à ce device.

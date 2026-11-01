@@ -72,6 +72,10 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
         "PUBLIC_BASE_URL", "URL publique (plugins ; login admin = redémarrage)", "Plugins", "str", True),
     "DM_BOOTSTRAP_URLS": _spec(
         "DM_BOOTSTRAP_URLS", "URLs de bootstrap (ordre = priorité)", "Plugins", "list", True),
+    "DM_LOCAL_API_ALLOWED_ORIGINS": _spec(
+        "DM_LOCAL_API_ALLOWED_ORIGINS",
+        "Origines web autorisées sur l'API locale des extensions (vide = non servi)",
+        "Plugins", "list", True),
     # ── Keycloak ──
     "KEYCLOAK_ISSUER_URL": _spec("KEYCLOAK_ISSUER_URL", "Keycloak issuer URL", "Keycloak", "str", False),
     "KEYCLOAK_REALM": _spec("KEYCLOAK_REALM", "Keycloak realm", "Keycloak", "str", False),

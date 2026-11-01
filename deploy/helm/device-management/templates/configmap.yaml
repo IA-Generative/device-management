@@ -22,6 +22,7 @@ data:
   DM_PORT: {{ .Values.config.app.port | quote }}
   DM_TLS_VERIFY: {{ .Values.config.app.tlsVerify | quote }}
   DM_BOOTSTRAP_URLS: {{ .Values.config.app.bootstrapUrls | quote }}
+  DM_LOCAL_API_ALLOWED_ORIGINS: {{ .Values.config.app.localApiAllowedOrigins | quote }}
 
   # -- config.storage --
   DM_STORE_ENROLL_LOCALLY: {{ .Values.config.storage.storeEnrollLocally | quote }}
