@@ -6,6 +6,14 @@ il ne porte ni détail d'infrastructure ni détail technique fin (ceux-là viven
 documentation). Historique reconstitué le 2026-09-28 depuis les commits, puis reformulé ; les versions
 suivantes seront tenues par release-please. Titres au format `## [X.Y.Z] - date`.
 
+## [0.9.22] - 2026-11-01
+
+### Nouveautés
+
+* Le service peut indiquer aux extensions quels sites web ont le droit de dialoguer avec elles sur le
+  poste, par exemple le portail de recherche. Tant qu'il n'indique rien, l'extension garde son propre
+  réglage.
+
 ## [0.9.21] - 2026-11-01
 
 ### Nouveautés
