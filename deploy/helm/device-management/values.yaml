@@ -469,6 +469,10 @@ config:
     # DM_BOOTSTRAP_URLS. Optional, default "". CSV of config-server bootstrap
     # URLs returned to enrolling clients, in priority order.
     bootstrapUrls: ""
+    # DM_LOCAL_API_ALLOWED_ORIGINS. Optional, default "". CSV of the exact web
+    # origins (scheme, host, port) allowed to call the extensions' local API,
+    # served as config.localApiAllowedOrigins. Empty = key not served.
+    localApiAllowedOrigins: ""
 
   # S3-backed storage for enrollment payloads and distributed binaries
   # (default since horizontal scaling requires no RWO PVC on api/worker).

@@ -1921,6 +1921,14 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None,
     if bootstrap_urls:
         config_obj["bootstrapUrls"] = bootstrap_urls
 
+    # API locale des extensions (Matisse) : origines web autorisées à l'appeler, CSV
+    # d'origines exactes (schéma, hôte, port). Vide = clé NON servie : l'extension garde
+    # sa valeur locale, alors qu'un "" la viderait. Une surcharge par plugin
+    # (plugin_env_overrides, appliquée après) l'emporte.
+    local_api_origins = runtime_config.cfg("DM_LOCAL_API_ALLOWED_ORIGINS", as_list=True)
+    if local_api_origins:
+        config_obj["localApiAllowedOrigins"] = ",".join(local_api_origins)
+
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if public_base:
         config_obj["relayAssistantBaseUrl"] = f"{public_base}/relay-assistant"
