@@ -68,6 +68,9 @@ data:
         proxy_ssl_server_name on;
         proxy_ssl_name <MIRAI_API_HOSTNAME>;
         proxy_ssl_verify on;
+        # Profondeur par défaut de nginx : 1, trop courte pour la chaîne feuille →
+        # intermédiaire → racine (« unable to get local issuer certificate », 502).
+        proxy_ssl_verify_depth 3;
         proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
         proxy_set_header Host <MIRAI_API_HOSTNAME>;
         proxy_http_version 1.1;
