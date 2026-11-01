@@ -88,7 +88,7 @@ def load_module(extra_env: dict[str, str] | None = None):
     # Clés hot-reload : repartir propre à chaque chargement.
     for key in ("LLM_QUOTA_REQUESTS_PER_MINUTE", "LLM_QUOTA_WINDOW_SECONDS",
                 "LLM_GUARDRAILS", "LLM_BACKENDS", "FORCE_LLM_ENDPOINT_OVERRIDE",
-                "EMBD_MODEL_NAME", "DM_RUNTIME_MODE"):
+                "EMBD_MODEL_NAME", "RERANK_MODEL_NAME", "DM_RUNTIME_MODE"):
         os.environ.pop(key, None)
     os.environ.pop("DATABASE_URL", None)
     os.environ.pop("DATABASE_ADMIN_URL", None)
@@ -161,6 +161,8 @@ class BackendRecorder:
                 "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}],
                 "usage": {"prompt_tokens": 3, "total_tokens": 3},
             })
+        if path.endswith("/rerank"):
+            return httpx.Response(200, json=[{"index": 1, "score": 0.9}, {"index": 0, "score": 0.1}])
         if path.endswith("/chat/completions"):
             try:
                 payload = json.loads(request.content or b"{}")

@@ -2027,6 +2027,21 @@ def _apply_llm_proxy_overrides(cfg: dict, *, relay_ok: bool, relay_meta: dict | 
     config_obj["embdModel"] = str(runtime_config.cfg("EMBD_MODEL_NAME", "") or "")
     config_obj["embdUrl"] = str(config_obj.get("llmEndpoint") or "")
     config_obj["embdToken"] = str(config_obj.get("llmToken") or "")
+
+    # Reranker (recherche de l'extension) : même logique que l'embedder — URL et
+    # token dérivés du LLM résolu ci-dessus, seule RERANK_MODEL_NAME est propre.
+    # Mode proxy : {llmEndpoint}/rerank, relayé par le DM ; mode direct : /rerank à
+    # la racine du backend (rerank_url). Modèle vide = reranker désactivé, et alors
+    # AUCUNE URL : l'extension annonce le reclassement dès que rerankEndpoint est posé.
+    rerank_model = str(runtime_config.cfg("RERANK_MODEL_NAME", "") or "")
+    rerank_endpoint = ""
+    if rerank_model and config_obj.get("llmEndpoint"):
+        from .llm.proxy import rerank_url  # import différé (pas de cycle)
+        llm_endpoint = str(config_obj["llmEndpoint"]).rstrip("/")
+        rerank_endpoint = f"{llm_endpoint}/rerank" if force else rerank_url(llm_endpoint)
+    config_obj["rerankModel"] = rerank_model
+    config_obj["rerankEndpoint"] = rerank_endpoint
+    config_obj["rerankToken"] = str(config_obj.get("llmToken") or "") if rerank_endpoint else ""
     return cfg
 
 

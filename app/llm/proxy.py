@@ -132,6 +132,47 @@ async def forward_embeddings(
     return _passthrough_response(resp)
 
 
+def rerank_url(base_url: str) -> str:
+    """URL du reranker d'un backend : ``/rerank`` à la RACINE de l'hôte.
+
+    Les rerankers au format TEI (cross-encoder) — dont la passerelle MirAI — servent
+    ``/rerank`` hors du préfixe OpenAI ``/v1`` (``/v1/rerank`` y répond 404). On
+    retire donc un ``/v1`` final de base_url : un même LLM_BASE_URL (``…/v1``) sert
+    chat, embeddings ET reranking, comme sur les sites on-premise.
+    """
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return f"{base}/rerank"
+
+
+async def forward_rerank(
+    request: Request,
+    ctx: LlmRequestContext,
+    backend: Backend,
+    hop_headers: Iterable[str],
+    finalize: FinalizeFn,
+) -> Response:
+    """Reranking : POST non-streamé {query, texts[, model]}, passthrough des scores.
+
+    Même auth/backend que les embeddings ; la clé backend est injectée côté
+    serveur. Le corps de la réponse ([{index, score}]) traverse tel quel.
+    """
+    client = get_async_client()
+    headers = build_outbound_headers(request, ctx, backend, hop_headers)
+    try:
+        resp = await client.post(
+            rerank_url(backend.base_url), json=ctx.payload, headers=headers,
+            timeout=request_timeout(),
+        )
+    except httpx.HTTPError as exc:
+        err = _map_transport_error(exc)
+        finalize(err.status_code, err.code)
+        return err.to_response()
+    finalize(resp.status_code, None if resp.status_code < 400 else "backend_error")
+    return _passthrough_response(resp)
+
+
 async def forward_chat_completions(
     request: Request,
     ctx: LlmRequestContext,

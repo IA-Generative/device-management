@@ -2,6 +2,7 @@
 
 Couvre les critères d'acceptation 1, 2, 5 et 10 du ticket relais LLM.
 """
+import json
 import os
 
 from fastapi.testclient import TestClient
@@ -156,6 +157,50 @@ def test_embeddings_counts_toward_quota():
     assert client.post("/llm/v1/embeddings", json=payload, headers=relay_headers).status_code == 200
     res = client.post("/llm/v1/embeddings", json=payload, headers=relay_headers)
     assert res.status_code == 429  # throttling par utilisateur s'applique aussi aux embeddings
+
+
+# ── Reranking : /llm/v1/rerank → backend /rerank (racine), même auth et quota ──
+
+def test_rerank_requires_credentials():
+    _, client, recorder = _setup()
+    res = client.post("/llm/v1/rerank", json={"query": "q", "texts": ["a"]})
+    assert res.status_code == 401
+    assert recorder.requests == []  # jamais forwardé sans auth
+
+
+def test_rerank_passthrough_to_backend_root_with_relay_auth():
+    _, client, recorder = _setup({"RERANK_MODEL_NAME": "bge-reranker-v2-m3"})
+    relay_headers = enroll(client)
+    res = client.post(
+        "/llm/v1/rerank", json={"query": "budget", "texts": ["menu", "budget 2027"]},
+        headers=relay_headers,
+    )
+    assert res.status_code == 200
+    assert res.json() == [{"index": 1, "score": 0.9}, {"index": 0, "score": 0.1}]
+    outbound = recorder.requests[-1]
+    # TEI / passerelle MirAI : /rerank à la racine, pas sous /v1 (BACKEND_URL = …/v1).
+    assert str(outbound.url) == "https://backend.test/rerank"
+    assert outbound.headers["authorization"] == f"Bearer {BACKEND_TOKEN}"
+    assert "x-relay-key" not in outbound.headers
+    sent = json.loads(outbound.content)
+    assert sent["model"] == "bge-reranker-v2-m3"  # modèle par défaut posé si absent
+    assert sent["texts"] == ["menu", "budget 2027"]
+    assert BACKEND_TOKEN not in res.text
+
+
+def test_rerank_counts_toward_quota():
+    _, client, _ = _setup({"LLM_QUOTA_REQUESTS_PER_MINUTE": "1", "LLM_QUOTA_WINDOW_SECONDS": "60"})
+    relay_headers = enroll(client)
+    payload = {"query": "q", "texts": ["a"]}
+    assert client.post("/llm/v1/rerank", json=payload, headers=relay_headers).status_code == 200
+    assert client.post("/llm/v1/rerank", json=payload, headers=relay_headers).status_code == 429
+
+
+def test_rerank_url_strips_trailing_v1():
+    from app.llm.proxy import rerank_url
+    assert rerank_url("https://api.mirai.test/v1") == "https://api.mirai.test/rerank"
+    assert rerank_url("https://api.mirai.test/v1/") == "https://api.mirai.test/rerank"
+    assert rerank_url("http://wireguard-proxy:8444") == "http://wireguard-proxy:8444/rerank"
 
 
 def test_chat_completions_stream_passthrough():

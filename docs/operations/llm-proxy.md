@@ -79,6 +79,26 @@ Comportement selon `FORCE_LLM_ENDPOINT_OVERRIDE` : `true` → `embdUrl = {PUBLIC
 
 ---
 
+## Reranking (recherche) — `POST /llm/v1/rerank`
+
+Le proxy relaie le **reclassement** que l'extension Thunderbird applique à sa recherche (liste des
+mails et sources de la synthèse) : corps au format TEI `{query, texts[, model]}`, réponse
+`[{index, score}]` passée telle quelle. Même auth, même quota, même kill-switch `deny_all`, clé backend
+injectée côté serveur, non streamé. Le backend est appelé sur **`/rerank` à la racine de son hôte**
+(un `/v1` final de son URL est retiré) : c'est là que les rerankers TEI et la passerelle MirAI le
+servent (`/v1/rerank` y répond 404). Un même `LLM_BASE_URL` sert donc chat, embeddings et reranking.
+
+L'extension reçoit dans `/config` : `rerankModel` (= `RERANK_MODEL_NAME`), `rerankEndpoint`
+(`{llmEndpoint}/rerank` en mode proxy ; `/rerank` à la racine de `LLM_BASE_URL` en mode direct) et
+`rerankToken` (= `llmToken` minté ; effacé sur un `/config` non authentifié). Elle annonce le
+reclassement (`searchRerank`, `summaryRerank`) **dès que `rerankEndpoint` est posé**.
+
+**Seule variable à poser** : `RERANK_MODEL_NAME` (registre Config, hot-reloadable ; **vide = reranker
+désactivé, et aucune URL n'est servie**). Passerelle MirAI : `bge-reranker-v2-m3`. Si le reranker n'est
+pas chez le backend par défaut, l'aiguiller par `LLM_BACKENDS` (`"model_map": {"bge-reranker-*": "mirai"}`).
+
+---
+
 ## Opérations courantes (onglet Config admin — tout est hot-reload)
 
 | Besoin | Action | Effet |

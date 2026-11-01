@@ -2,6 +2,9 @@
 # WireGuard egress proxy — tunnels HTTPS traffic to <SSO_HOSTNAME>
 # through a WireGuard VPN.  Other pods reach the SSO via this service:
 #   http://wireguard-proxy/  →  nginx  →  wg0 tunnel  →  <SSO_HOSTNAME>
+# and the MirAI API (reranker, LLM) the same way, on port 8444 — its public
+# address filters source IPs, the tunnel is the only path from Scaleway:
+#   http://wireguard-proxy:8444/  →  nginx  →  wg0 tunnel  →  <MIRAI_API_HOSTNAME>
 #
 # The pod runs:
 #   1. WireGuard sidecar (alpine + wireguard-tools) maintaining the wg0 tunnel
@@ -41,6 +44,37 @@ data:
         proxy_set_header Connection "";
         proxy_connect_timeout 60;
         proxy_read_timeout 60;
+      }
+
+      location = /healthz {
+        add_header Content-Type text/plain;
+        return 200 'ok';
+      }
+    }
+
+    # API MirAI (passerelle LLM : /rerank, /v1/...) par le tunnel. Adresse interne
+    # résolue par le DNS du VPN ; certificat vérifié contre le nom public.
+    upstream mirai_api {
+      server <MIRAI_API_INTERNAL_IP>:443;
+      keepalive 16;
+      keepalive_timeout 3600s;
+    }
+    server {
+      listen 8444;
+      server_name _;
+
+      location / {
+        proxy_pass https://mirai_api;
+        proxy_ssl_server_name on;
+        proxy_ssl_name <MIRAI_API_HOSTNAME>;
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_set_header Host <MIRAI_API_HOSTNAME>;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 30;
+        proxy_read_timeout 120;
+        client_max_body_size 20m;
       }
 
       location = /healthz {
@@ -108,6 +142,7 @@ spec:
           image: nginx:1.29-alpine
           ports:
             - containerPort: 8443
+            - containerPort: 8444
           volumeMounts:
             - name: nginx-config
               mountPath: /etc/nginx/conf.d/default.conf
@@ -157,6 +192,10 @@ spec:
       targetPort: 8443
       protocol: TCP
       name: https
+    - port: 8444
+      targetPort: 8444
+      protocol: TCP
+      name: mirai-api
 ---
 # Keycloak warmer — pod séparé (réseau cluster normal, contrairement au pod
 # wireguard-proxy dont le netns est verrouillé par le kill-switch WireGuard).
