@@ -141,6 +141,15 @@ spec:
                 secretKeyRef:
                   name: {{ include "device-management.secretName" . }}
                   key: DM_TELEMETRY_TOKEN_SIGNING_KEY
+            # Signe les llmToken servis aux extensions dans /config (le llmProxy
+            # les vérifie avec la même clé). Sans elle : pas de jeton, et les
+            # appels LLM des extensions échouent.
+            - name: DM_LLM_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_LLM_TOKEN_SIGNING_KEY
+                  optional: true
             {{- include "device-management.awsEnv" . | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
             {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}

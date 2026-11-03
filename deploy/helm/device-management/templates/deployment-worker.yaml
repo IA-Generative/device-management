@@ -99,6 +99,12 @@ spec:
             # consumed by the livenessProbe below (freshness check).
             - name: DM_WORKER_HEARTBEAT_FILE
               value: {{ .Values.worker.heartbeatFile | quote }}
+            - name: PARC_EXPORT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: PARC_EXPORT_SECRET
+                  optional: true
             {{- include "device-management.awsEnv" . | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
             # Required by the prod startup guard (validate_security_config in

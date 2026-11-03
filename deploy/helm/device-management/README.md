@@ -26,6 +26,7 @@ for the deliberate differences from those manifests.
 | `worker` | `DM_RUNTIME_MODE=worker` (`python -m app.worker_main`) | 2 | Queue consumer. Liveness via heartbeat-file freshness (no HTTP endpoint). |
 | `telemetryRelay` | `DM_RUNTIME_MODE=api` (implicit), isolated config | 1 | Second instance of the same image, dedicated to telemetry ingestion so its traffic/config never shares blast radius with `api`. |
 | `llmProxy` | `DM_RUNTIME_MODE=llm` | 2 | Third instance of the same image, dedicated to the OpenAI-compatible `/llm/v1` proxy. Stateless (no volumes/PVC), I/O-bound (long-lived SSE streams) — see `autoscaling`. Disabled by default; enable once `secrets.values.LLM_BASE_URL`/`LLM_API_TOKEN` are set. |
+| `relayAssistant` | nginx (`nginx-unprivileged`) | 1 | Disabled by default. Reverse-proxy of the Keycloak OIDC endpoints (`certs`, `auth`, `token`, `userinfo`) for the extensions, plus relay routes gated by the api's `/relay/authorize`. Its own Ingress strips the `/relay-assistant` prefix. Requires `config.relay.keycloakUpstream` as a **FQDN**: the render fails on a short host name, which nginx's resolver cannot expand (502 "Host not found"). |
 | `migration` | n/a (Job) | — | `alembic upgrade head`, runs as a `pre-install,pre-upgrade` hook before any Deployment rolls out. Self-sufficient on a fully empty database — see "First install" below. |
 | `postgres.internal` | n/a (dev only) | 1 | Disabled by default. See install matrix. |
 | `postgres.cnpg` | n/a (CNPG `Cluster` CR) | `instances` (default 3) | Disabled by default. Requires the CloudNativePG operator. See "PostgreSQL" below. |
@@ -50,6 +51,21 @@ image:
 `image.tag` defaults to `.Chart.AppVersion`, which release-please keeps equal
 to the repository's `VERSION`. Pin `image.tag` explicitly in production: an
 immutable tag is what lets Argo CD see a change and roll back.
+
+## Models served to the extensions
+
+`/config` tells the extensions which models to use. An empty value disables
+the feature on the extension side:
+
+| Value | Env | Extension feature |
+|---|---|---|
+| `config.llm.embdModelName` | `EMBD_MODEL_NAME` | local search indexing (embeddings through `/llm/v1/embeddings`) |
+| `config.llm.rerankModelName` | `RERANK_MODEL_NAME` | result reranking (`/llm/v1/rerank`, `rerankEndpoint` is only served when set) |
+
+Both reach the api and the llmProxy through the ConfigMap. The api also needs
+`DM_LLM_TOKEN_SIGNING_KEY` in the Secret: it signs the per-client `llmToken`
+that the llmProxy checks. Without it, the extensions get no token and their
+LLM calls fail.
 
 ## Install matrix
 

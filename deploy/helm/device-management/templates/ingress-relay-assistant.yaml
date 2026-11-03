@@ -1,0 +1,34 @@
+{{- if and .Values.relayAssistant.enabled .Values.relayAssistant.ingress.enabled }}
+{{- $ing := .Values.relayAssistant.ingress }}
+{{- $host := $ing.host | default (index .Values.ingress.hosts 0).host }}
+{{- $className := $ing.className | default .Values.ingress.className }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "relay-assistant") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "relay-assistant") | nindent 4 }}
+  {{- with $ing.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if $className }}
+  ingressClassName: {{ $className }}
+  {{- end }}
+  {{- with ($ing.tls | default .Values.ingress.tls) }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: {{ $ing.path }}
+            pathType: {{ $ing.pathType }}
+            backend:
+              service:
+                name: {{ include "device-management.componentName" (dict "root" . "component" "relay-assistant") }}
+                port:
+                  number: {{ .Values.relayAssistant.service.port }}
+{{- end }}
