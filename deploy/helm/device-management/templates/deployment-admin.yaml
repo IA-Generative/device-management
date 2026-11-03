@@ -9,7 +9,7 @@ metadata:
 spec:
   replicas: {{ .Values.admin.replicaCount }}
   strategy:
-    {{- toYaml .Values.admin.strategy | nindent 4 }}
+    {{- include "device-management.strategy" .Values.admin.strategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 6 }}
