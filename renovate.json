@@ -1,0 +1,15 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "baseBranches": ["develop"],
+  "packageRules": [
+    {
+      "description": "Workflows réutilisables fabnum-cicd : un seul tag pour tous les appels, montée groupée.",
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["workflow"],
+      "matchDepNames": ["dnum-mi/fabnum-cicd"],
+      "groupName": "fabnum-cicd",
+      "pinDigests": false
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+# Livraison — release-please tient sur main une PR « release X.Y.Z » ; sa fusion publie
+# ghcr.io/ia-generative/device-management:X.Y.Z, attestée (provenance, SBOM, signature),
+# qui embarque son journal (/app/version.json servi sur /__version__, ADR-0004).
+# La production suit par Renovate, dans le dépôt de déploiement — jamais d'ici.
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/ia-generative/device-management
+
+jobs:
+  # Sans GitHub App, la PR de release est ouverte par GITHUB_TOKEN et ne déclenche pas la
+  # CI exigée : la fermer puis la rouvrir à la main la relance.
+  release:
+    uses: dnum-mi/fabnum-cicd/.github/workflows/release-app.yml@v0.25.3
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+  build:
+    needs: [release]
+    if: ${{ needs.release.outputs.release-created == 'true' }}
+    uses: dnum-mi/fabnum-cicd/.github/workflows/build-docker.yml@v0.25.3
+    permissions:
+      contents: read
+      packages: write
+    with:
+      IMAGE_NAME: ghcr.io/ia-generative/device-management
+      IMAGE_TAG: ${{ needs.release.outputs.version }}
+      IMAGE_CONTEXT: ./
+      IMAGE_DOCKERFILE: ./deploy/docker/Dockerfile
+      PUSH: true
+      LATEST_TAG: false
+      BUILD_AMD64: true
+      BUILD_ARM64: true
+      BUILD_ARGS: |
+        DM_IMAGE_TAG=${{ needs.release.outputs.version }}
+        COMMIT=${{ github.sha }}
+        BUILD=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        CODE_DATE=${{ github.event.head_commit.timestamp }}
+        SOURCE=${{ github.server_url }}/${{ github.repository }}
+
+  attest:
+    needs: [build]
+    uses: dnum-mi/fabnum-cicd/.github/workflows/attest-docker.yml@v0.25.3
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      IMAGE_NAME: ghcr.io/ia-generative/device-management
+      DIGEST: ${{ needs.build.outputs.digest }}
+      PROVENANCE: true
+      SBOM: true
+      SIGN: true
+
+  # ADR-0004 : étiquette d'image = tag git sans le « v » = version.json (.version, .commit).
+  verify-version:
+    needs: [release, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+      ACTOR: ${{ github.actor }}
+      TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - name: Le tag git existe
+        run: |
+          git ls-remote --exit-code origin "refs/tags/v${VERSION}" >/dev/null \
+            || { echo "::error::tag git v${VERSION} absent"; exit 1; }
+      - name: L'image dit la même version et le même commit
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin >/dev/null
+          bash scripts/verif-version.sh --image "$IMAGE:$VERSION" --tag "$VERSION" --commit "$GITHUB_SHA"
+
+  # La release dépose sur main un commit (VERSION, CHANGELOG, Chart.yaml) que develop n'a
+  # pas : on ouvre la PR main → develop. Ouverte par GITHUB_TOKEN, elle ne déclenche pas
+  # la CI exigée sur develop : la fermer puis la rouvrir à la main.
+  resync-develop:
+    needs: [release, verify-version]
+    if: ${{ needs.release.outputs.release-created == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - name: PR main → develop si develop est en retard
+        run: |
+          set -euo pipefail
+          retard=$(gh api "repos/$GITHUB_REPOSITORY/compare/develop...main" --jq .ahead_by)
+          if [ "$retard" = "0" ]; then echo "develop contient déjà main"; exit 0; fi
+          ouverte=$(gh pr list -R "$GITHUB_REPOSITORY" --base develop --head main --json number --jq '.[0].number')
+          if [ -n "$ouverte" ]; then echo "PR main → develop déjà ouverte (#$ouverte)"; exit 0; fi
+          gh pr create -R "$GITHUB_REPOSITORY" --base develop --head main \
+            --title "chore: resynchroniser develop après la release ${VERSION}" \
+            --body "Reprend dans develop le commit de release ${VERSION} (VERSION, CHANGELOG, Chart.yaml).
+          Fusionner en commit de fusion. Si la CI ne démarre pas, fermer puis rouvrir la PR."

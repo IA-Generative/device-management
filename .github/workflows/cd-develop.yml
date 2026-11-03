@@ -1,0 +1,88 @@
+# Image de la branche de développement, déployée sur brave-bassi par l'Argo CD de MirAI next
+# (Application int-device-management, qui suit develop et tire develop-<sha8>).
+# Une étiquette FIXE par commit : fabnum n'ajoute pas d'étiquette mobile pour develop, et
+# Argo CD désigne l'image par le commit qu'il déploie ($ARGOCD_APP_REVISION_SHORT_8).
+# Les versions publiées (X.Y.Z) sont l'affaire de cd.yml, sur main.
+name: CD develop
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: cd-develop
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/ia-generative/device-management
+
+jobs:
+  infos:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      code-date: ${{ steps.v.outputs.code_date }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - id: v
+        run: |
+          echo "tag=develop-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+          echo "code_date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [infos]
+    uses: dnum-mi/fabnum-cicd/.github/workflows/build-docker.yml@v0.25.3
+    permissions:
+      contents: read
+      packages: write
+    with:
+      IMAGE_NAME: ghcr.io/ia-generative/device-management
+      IMAGE_TAG: ${{ needs.infos.outputs.tag }}
+      IMAGE_CONTEXT: ./
+      IMAGE_DOCKERFILE: ./deploy/docker/Dockerfile
+      PUSH: true
+      BUILD_AMD64: true
+      BUILD_ARM64: true
+      BUILD_ARGS: |
+        DM_IMAGE_TAG=${{ needs.infos.outputs.tag }}
+        COMMIT=${{ github.sha }}
+        BUILD=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        CODE_DATE=${{ needs.infos.outputs.code-date }}
+        SOURCE=${{ github.server_url }}/${{ github.repository }}
+
+  # Les défauts d'attest-docker sont à `false` : un appel qui n'active rien n'atteste rien.
+  attest:
+    needs: [build]
+    uses: dnum-mi/fabnum-cicd/.github/workflows/attest-docker.yml@v0.25.3
+    permissions:
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      IMAGE_NAME: ghcr.io/ia-generative/device-management
+      DIGEST: ${{ needs.build.outputs.digest }}
+      PROVENANCE: true
+      SBOM: true
+      SIGN: true
+
+  verify:
+    needs: [infos, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    env:
+      TAG: ${{ needs.infos.outputs.tag }}
+      ACTOR: ${{ github.actor }}
+      TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - name: L'image publiée dit le bon commit et la bonne étiquette
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin >/dev/null
+          bash scripts/verif-version.sh --image "$IMAGE:$TAG" --tag "$TAG" --commit "$GITHUB_SHA"
