@@ -1,0 +1,30 @@
+name: Provenance des PR vers main
+
+# main ne reçoit que des PR venues de develop (intégration validée sur
+# brave-bassi) ou la PR de release de release-please. GitHub ne sait pas
+# restreindre la branche source d'une PR : ce job est un contrôle EXIGÉ
+# dans la protection de main.
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  source-autorisee:
+    runs-on: ubuntu-latest
+    steps:
+      - name: La branche source est develop ou la PR de release
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo "::error::PR depuis un fork ($HEAD_REPO) : passer par develop."
+            exit 1
+          fi
+          case "$HEAD_REF" in
+            develop|release-please--branches--main) echo "source autorisée : $HEAD_REF" ;;
+            *) echo "::error::main n'accepte que develop (ou la PR de release) — source : $HEAD_REF. Viser develop."; exit 1 ;;
+          esac
