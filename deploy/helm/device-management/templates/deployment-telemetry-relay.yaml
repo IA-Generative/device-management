@@ -69,11 +69,24 @@ spec:
             # Runtime config overrides (cross-pod): required to decrypt the
             # secret telemetry overrides (upstream/signing keys).
             {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.telemetryRelay.runtimeConfig.pollIntervalSeconds "editable" .Values.telemetryRelay.runtimeConfig.editable) | nindent 12 }}
-            - name: DATABASE_URL
+            {{- include "device-management.databaseEnv" . | nindent 12 }}
+            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
+            # Required by the prod startup guard (validate_security_config in
+            # app/main.py): it runs at module-import time regardless of
+            # DM_RUNTIME_MODE, so telemetryRelay is subject to the same
+            # "insecure configuration" check as api/admin.
+            - name: ADMIN_SESSION_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "device-management.secretName" . }}
-                  key: DATABASE_URL
+                  key: ADMIN_SESSION_SECRET
+                  optional: true
+            - name: DM_RELAY_SECRET_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_RELAY_SECRET_PEPPER
+                  optional: true
             - name: DM_TELEMETRY_UPSTREAM_KEY
               valueFrom:
                 secretKeyRef:

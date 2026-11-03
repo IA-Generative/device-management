@@ -54,6 +54,8 @@ spec:
                 echo "waiting for postgres...";
                 sleep 2;
               done
+          resources:
+            {{- toYaml .Values.worker.waitForPostgres.resources | nindent 12 }}
       {{- end }}
       containers:
         - name: worker
@@ -99,6 +101,23 @@ spec:
               value: {{ .Values.worker.heartbeatFile | quote }}
             {{- include "device-management.awsEnv" . | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
+            # Required by the prod startup guard (validate_security_config in
+            # app/main.py): it runs at module-import time, and worker_main.py
+            # imports app.main too — so the worker is subject to the same
+            # "insecure configuration" check as api/admin despite never
+            # serving HTTP or handling admin sessions itself.
+            - name: ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: ADMIN_SESSION_SECRET
+                  optional: true
+            - name: DM_RELAY_SECRET_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_RELAY_SECRET_PEPPER
+                  optional: true
             {{- with .Values.worker.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

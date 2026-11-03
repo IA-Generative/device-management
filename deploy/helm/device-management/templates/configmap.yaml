@@ -75,7 +75,12 @@ data:
 
   # -- config.relay --
   DM_RELAY_ENABLED: {{ .Values.config.relay.enabled | quote }}
-  DM_RELAY_KEY_TTL_SECONDS: {{ .Values.config.relay.keyTtlSeconds | quote }}
+  # `int` first: Helm decodes values.yaml numbers as float64, and Go's default
+  # float64->string formatting renders round numbers like the 2592000 default
+  # (30 days) as "2.592e+06" once `quote` stringifies it directly — breaking
+  # Settings' int parsing on every default install. Casting through `int`
+  # forces decimal formatting.
+  DM_RELAY_KEY_TTL_SECONDS: {{ .Values.config.relay.keyTtlSeconds | int | quote }}
   DM_RELAY_ALLOWED_TARGETS_CSV: {{ .Values.config.relay.allowedTargetsCsv | quote }}
   DM_RELAY_REQUIRE_KEY_FOR_SECRETS: {{ .Values.config.relay.requireKeyForSecrets | quote }}
   DM_RELAY_ASSISTANT_URL: {{ .Values.config.relay.assistantUrl | quote }}

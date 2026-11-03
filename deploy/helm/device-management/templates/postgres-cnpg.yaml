@@ -1,0 +1,53 @@
+{{- if .Values.postgres.cnpg.enabled }}
+{{- if .Values.postgres.internal.enabled }}
+{{- fail "postgres.internal.enabled and postgres.cnpg.enabled are mutually exclusive: choose exactly one Postgres provisioning mode." }}
+{{- end }}
+{{- if or .Values.secrets.values.DATABASE_URL .Values.secrets.values.DATABASE_ADMIN_URL }}
+{{- fail "postgres.cnpg.enabled=true sources DATABASE_URL/DATABASE_ADMIN_URL from the CNPG-managed Secrets; leave secrets.values.DATABASE_URL and secrets.values.DATABASE_ADMIN_URL empty (they would otherwise be set but silently ignored)." }}
+{{- end }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "device-management.cnpgClusterName" . }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "db") | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  instances: {{ .Values.postgres.cnpg.instances }}
+  {{- if .Values.postgres.cnpg.temporaryStartupBootstrapNeedsSuperuser }}
+  # STOPGAP (see device-management.cnpgSuperuserAdminUrlOverride in
+  # _helpers.tpl): makes CNPG create/rotate a <cluster>-superuser Secret,
+  # needed only until the upstream app's admin-privileged startup bootstrap
+  # becomes opt-in. Set postgres.cnpg.temporaryStartupBootstrapNeedsSuperuser
+  # to false (and re-deploy) once that's live to stop managing it.
+  enableSuperuserAccess: true
+  {{- end }}
+  storage:
+    {{- with .Values.postgres.cnpg.storage.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+    size: {{ .Values.postgres.cnpg.storage.size | quote }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.postgres.cnpg.database | quote }}
+      owner: {{ .Values.postgres.cnpg.owner | quote }}
+      # Extensions créées en superuser au bootstrap : les migrations tournent
+      # ensuite avec le rôle applicatif (tables possédées par lui — un alembic
+      # exécuté en superuser rendrait les tables inaccessibles à l'app), et
+      # leurs CREATE EXTENSION IF NOT EXISTS deviennent des no-ops.
+      postInitApplicationSQL:
+        - CREATE EXTENSION IF NOT EXISTS pgcrypto;
+        - CREATE EXTENSION IF NOT EXISTS citext;
+  {{- with .Values.postgres.cnpg.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.postgres.cnpg.postgresql.parameters }}
+  postgresql:
+    parameters:
+      {{- toYaml . | nindent 6 }}
+  {{- end }}
+{{- end }}
