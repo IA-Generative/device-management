@@ -342,3 +342,15 @@ Usage: {{ include "device-management.awsEnv" . }}
       name: {{ include "device-management.secretName" . }}
       key: AWS_SESSION_TOKEN
 {{- end -}}
+
+{{/*
+metadata.annotations : commonAnnotations + l'ordre de synchronisation d'Argo CD (sync-wave),
+ignoré par Helm. -1 = prérequis (ServiceAccount, ConfigMap, Secret, base), 0 = migration (hook
+Sync de job-migrate.yaml), 1 = applications : la migration attend une base prête, les pods
+attendent la migration. Usage : {{ include "device-management.annotations" (dict "root" . "wave" "1") }}
+*/}}
+{{- define "device-management.annotations" -}}
+{{- $a := merge (dict "argocd.argoproj.io/sync-wave" (toString .wave)) (.root.Values.commonAnnotations | default dict) -}}
+annotations:
+  {{- toYaml $a | nindent 2 }}
+{{- end -}}

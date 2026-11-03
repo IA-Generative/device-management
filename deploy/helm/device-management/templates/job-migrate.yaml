@@ -17,6 +17,12 @@ metadata:
     "helm.sh/hook": post-install,pre-upgrade
     "helm.sh/hook-weight": {{ .Values.migration.hookWeight | quote }}
     "helm.sh/hook-delete-policy": {{ .Values.migration.hookDeletePolicy }}
+    # Argo CD ignore les hooks Helm quand ce hook est posé : sans lui, il range
+    # post-install,pre-upgrade en PreSync, AVANT le ServiceAccount et la base (Job refusé,
+    # synchronisation bloquée). En Sync, vague 0 : après les prérequis (-1), avant les pods (1).
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   backoffLimit: {{ .Values.migration.backoffLimit }}
   template:

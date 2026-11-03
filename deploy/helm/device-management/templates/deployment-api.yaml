@@ -5,10 +5,7 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "api") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "1") | nindent 2 }}
 spec:
   {{- if not .Values.api.autoscaling.enabled }}
   replicas: {{ .Values.api.replicaCount }}

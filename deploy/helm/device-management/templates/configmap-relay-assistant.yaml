@@ -12,6 +12,7 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "relay-assistant") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "relay-assistant") | nindent 4 }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "-1") | nindent 2 }}
 # Gabarit nginx rendu par Helm. Seul ${RELAY_PROXY_SHARED_TOKEN} (secret) est
 # substitué au démarrage par l'entrypoint nginx (envsubst des seules variables
 # définies) : les $variables nginx restent intactes.

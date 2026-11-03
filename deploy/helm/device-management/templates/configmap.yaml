@@ -4,10 +4,7 @@ metadata:
   name: {{ include "device-management.configMapName" . }}
   labels:
     {{- include "device-management.labels" . | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "-1") | nindent 2 }}
 # Non-secret config only (endpoints, flags, TTLs, allowlists...). Consumed by
 # every DM_* Deployment via `envFrom: configMapRef` — actual secrets keep an
 # individual env/secretKeyRef in each deployment template instead.
