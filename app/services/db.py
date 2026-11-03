@@ -77,18 +77,27 @@ def get_pool():
 
 
 class PoolConn:
-    """Context manager: borrows a connection from the pool, returns it on exit."""
+    """Context manager: borrows a connection from the pool, returns it on exit.
+
+    La connexion n'est empruntée qu'à l'ENTRÉE du bloc `with`, jamais à la
+    construction : un appelant qui crée le contexte puis ne l'ouvre pas (sortie
+    anticipée, condition fausse) ne retient rien. L'emprunt à la construction a
+    épuisé le pool (« connection pool exhausted », /config et /catalog en 500).
+    """
     __slots__ = ("_conn", "_pool")
 
     def __init__(self, pool):
         self._pool = pool
-        self._conn = pool.getconn()
-        self._conn.autocommit = True
+        self._conn = None
 
     def __enter__(self):
+        self._conn = self._pool.getconn()
+        self._conn.autocommit = True
         return self._conn
 
     def __exit__(self, *exc):
+        if self._conn is None:
+            return
         try:
             self._pool.putconn(self._conn)
         except Exception:
