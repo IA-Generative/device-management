@@ -1,0 +1,105 @@
+# CI de pull request — appelle dnum-mi/fabnum-cicd au tag exact (skill repo-cicd-cpin).
+# Rien n'est publié : l'image est construite et scannée, pas poussée. Les tests Python,
+# le contrôle du CHANGELOG et celui de /__version__ restent dans ci.yml.
+name: CI CPiN
+
+on:
+  pull_request:
+    branches: [develop, main]
+
+permissions: {}
+
+concurrency:
+  group: ci-cpin-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint-commits:
+    uses: dnum-mi/fabnum-cicd/.github/workflows/lint-commits.yml@v0.25.3
+    permissions:
+      contents: read
+
+  scan-gitleaks:
+    uses: dnum-mi/fabnum-cicd/.github/workflows/scan-gitleaks.yml@v0.25.3
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    with:
+      PR_NUMBER: >-
+        ${{ github.event.pull_request.head.repo.full_name == github.repository
+        && github.event.pull_request.number || '' }}
+
+  # Configuration (Dockerfile, manifestes) : RAPPORT seulement, pas encore de passe de
+  # durcissement sur ce dépôt.
+  scan-config:
+    uses: dnum-mi/fabnum-cicd/.github/workflows/scan-trivy.yml@v0.25.3
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+      pull-requests: write
+    with:
+      PATH: ./
+      CATEGORY: config
+      SEVERITY: CRITICAL,HIGH
+      FAIL_ON_ERROR: false
+      PR_NUMBER: >-
+        ${{ github.event.pull_request.head.repo.full_name == github.repository
+        && github.event.pull_request.number || '' }}
+
+  lint-yaml:
+    uses: dnum-mi/fabnum-cicd/.github/workflows/lint-yaml.yml@v0.25.3
+    permissions:
+      contents: read
+    with:
+      CONFIG_FILE: .yamllint
+      SCAN_PATH: .github
+
+  build:
+    uses: dnum-mi/fabnum-cicd/.github/workflows/build-docker.yml@v0.25.3
+    permissions:
+      contents: read
+      packages: write
+    with:
+      IMAGE_NAME: ghcr.io/ia-generative/device-management
+      IMAGE_TAG: pr-${{ github.event.pull_request.number }}
+      IMAGE_CONTEXT: ./
+      IMAGE_DOCKERFILE: ./deploy/docker/Dockerfile
+      PUSH: false
+      BUILD_AMD64: true
+      BUILD_ARM64: false
+      BUILD_ARGS: |
+        DM_IMAGE_TAG=pr-${{ github.event.pull_request.number }}
+        COMMIT=${{ github.event.pull_request.head.sha }}
+        SOURCE=${{ github.server_url }}/${{ github.repository }}
+
+  scan-image:
+    needs: [build]
+    uses: dnum-mi/fabnum-cicd/.github/workflows/scan-trivy.yml@v0.25.3
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+      pull-requests: write
+    with:
+      IMAGE_ARTIFACT: ${{ needs.build.outputs.artifact-prefix }}-amd64
+      CATEGORY: image-amd64
+      SEVERITY: CRITICAL
+      FAIL_ON_ERROR: true
+      PR_NUMBER: >-
+        ${{ github.event.pull_request.head.repo.full_name == github.repository
+        && github.event.pull_request.number || '' }}
+
+  all-jobs-passed:
+    name: All jobs passed
+    if: ${{ always() }}
+    needs: [lint-commits, scan-gitleaks, scan-config, lint-yaml, build, scan-image]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Vérifier le résultat des jobs
+        env:
+          NEEDS: ${{ toJson(needs) }}
+        run: |
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'
