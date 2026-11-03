@@ -1,8 +1,11 @@
 """Experiment branches: coexisting campaigns + experimental catalogue versions
 
-Revision ID: 003
-Revises: 002
+Revision ID: 006
+Revises: 005
 Create Date: 2026-07-25
+
+Renumérotée 006 (était un second « 003 » à côté de runtime_config : deux têtes, et alembic
+n'en appliquait qu'une). Idempotente : rejouée sans effet sur une base qui l'a déjà reçue.
 
 Additive only (ADD COLUMN IF NOT EXISTS + CHECK widening): safe to run against an
 existing database, reversible by dropping the added objects.
@@ -18,8 +21,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "003"
-down_revision: Union[str, None] = "002"
+revision: str = "006"
+down_revision: Union[str, None] = "005"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
