@@ -28,7 +28,7 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
       code-date: ${{ steps.v.outputs.code_date }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - id: v
         run: |
           echo "tag=develop-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
@@ -81,7 +81,7 @@ jobs:
       ACTOR: ${{ github.actor }}
       TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: L'image publiée dit le bon commit et la bonne étiquette
         run: |
           echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin >/dev/null
