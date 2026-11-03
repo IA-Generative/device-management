@@ -512,6 +512,60 @@ llmProxy:
     maxUnavailable: 1
 
 # -----------------------------------------------------------------------------
+# relayAssistant — nginx reverse-proxy in front of Keycloak (OIDC endpoints for
+# the extensions: certs, auth, token, userinfo) and, behind the api's
+# /relay/authorize check, of companion services. Disabled by default.
+# -----------------------------------------------------------------------------
+relayAssistant:
+  enabled: false
+  replicaCount: 1
+  # Unprivileged nginx: listens on 8080, runs under any UID (OpenShift
+  # restricted SCC) with a read-only root filesystem.
+  image:
+    repository: docker.io/nginxinc/nginx-unprivileged
+    tag: "1.29.8-alpine"
+    pullPolicy: IfNotPresent
+  containerPort: 8080
+  service:
+    port: 80
+  # DNS server nginx uses to resolve its upstreams. Empty = read from the pod's
+  # /etc/resolv.conf at startup (recommended).
+  resolver: ""
+  # Cluster DNS domain, used to build the api's FQDN (the nginx resolver does
+  # not expand short names).
+  clusterDomain: cluster.local
+  # Upstreams other than Keycloak (whose URL is config.relay.keycloakUpstream).
+  # Empty = route not served.
+  upstreams:
+    mcrApi: ""
+  # Dedicated Ingress: the relay is exposed under a path prefix that nginx
+  # ingress strips (regex + rewrite). Host/className/tls default to `ingress`.
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    path: /relay-assistant(/|$)(.*)
+    pathType: ImplementationSpecific
+    annotations:
+      nginx.ingress.kubernetes.io/use-regex: "true"
+      nginx.ingress.kubernetes.io/rewrite-target: /$2
+      nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+      nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+    tls: []
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
 # migration — Alembic schema migration Job, run as a Helm hook
 # (pre-install,pre-upgrade) before any Deployment is rolled out.
 # -----------------------------------------------------------------------------
@@ -764,6 +818,37 @@ config:
     # reverse-proxy in front of Keycloak/other upstreams, if deployed
     # alongside this chart.
     assistantUrl: ""
+    # RELAY_KEYCLOAK_UPSTREAM. Optional. Keycloak realm URL reached server-side
+    # (by the api's /auth/token relay and by relayAssistant), e.g.
+    # https://sso.example/realms/<realm>. MUST be a FQDN: the relay's nginx
+    # resolver does not expand short names (render fails otherwise).
+    keycloakUpstream: ""
+    # DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS. Optional, default false. When true,
+    # the config served to plugins points keycloakTokenEndpoint at
+    # {PUBLIC_BASE_URL}/auth/token and userinfo at /relay-assistant/keycloak/...
+    forceKeycloakEndpoints: false
+
+  # Models announced to the extensions in /config. Empty = feature disabled
+  # on the extension side. Requests through llmProxy use the model the client
+  # names, these are only the defaults.
+  llm:
+    # EMBD_MODEL_NAME. Embeddings model (local search indexing), e.g. bge-m3.
+    embdModelName: ""
+    # RERANK_MODEL_NAME. Reranking model (/llm/v1/rerank), e.g.
+    # bge-reranker-v2-m3. Empty = no rerankEndpoint served.
+    rerankModelName: ""
+
+  # Fleet-state export run by the worker (PARC_EXPORT_SECRET lives in the
+  # Secret). Defaults mirror app/settings.py.
+  parc:
+    # PARC_EXPORT_ENABLED. Optional, default false.
+    enabled: false
+    # PARC_EXPORT_URL. Target endpoint of the export.
+    url: ""
+    # PARC_EXPORT_INTERVALLE_S. Seconds between exports, default 300.
+    intervalSeconds: 300
+    # PARC_INSTANCE_LABEL. Label identifying this instance, default dm-x.
+    instanceLabel: "dm-x"
 
 # -----------------------------------------------------------------------------
 # contentTemplate — NOT application config: these are plain string
@@ -866,6 +951,9 @@ secrets:
     # llmToken minted by api and verified by llmProxy (dual auth alongside
     # the relay key). Required for that flow when llmProxy.enabled=true.
     DM_LLM_TOKEN_SIGNING_KEY: ""
+    # PARC_EXPORT_SECRET. Required when config.parc.enabled. Shared secret
+    # authenticating the fleet-state export (worker).
+    PARC_EXPORT_SECRET: ""
     # AWS_ACCESS_KEY_ID. Required when config.storage.storeEnrollS3 or
     # binariesMode=presign (S3 credentials).
     AWS_ACCESS_KEY_ID: ""
