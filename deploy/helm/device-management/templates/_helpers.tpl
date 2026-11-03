@@ -354,3 +354,17 @@ attendent la migration. Usage : {{ include "device-management.annotations" (dict
 annotations:
   {{- toYaml $a | nindent 2 }}
 {{- end -}}
+
+{{/*
+spec.strategy d'un Deployment. Avec `Recreate`, le bloc `rollingUpdate` est retiré :
+Kubernetes le refuse (« may not be specified when strategy type is 'Recreate' »), et Helm
+le garde quand on surcharge seulement `type` (fusion des tables avec les valeurs par
+défaut). Usage : {{ include "device-management.strategy" .Values.api.strategy }}
+*/}}
+{{- define "device-management.strategy" -}}
+{{- if eq (.type | default "RollingUpdate") "Recreate" -}}
+type: Recreate
+{{- else -}}
+{{ toYaml . }}
+{{- end -}}
+{{- end -}}
