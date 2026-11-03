@@ -143,6 +143,7 @@ spec:
                   key: DM_TELEMETRY_TOKEN_SIGNING_KEY
             {{- include "device-management.awsEnv" . | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
+            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
             {{- with .Values.api.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

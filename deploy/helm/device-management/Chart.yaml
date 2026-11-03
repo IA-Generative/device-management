@@ -5,7 +5,7 @@ type: application
 
 # Version du chart (SemVer indépendant de l'application). À incrémenter à chaque
 # changement de templates/values, même si appVersion ne bouge pas.
-version: 0.1.0
+version: 0.5.0
 
 # Version applicative packagée par défaut, identique au fichier VERSION à la
 # racine du dépôt : release-please met les deux à jour ensemble (extra-files).

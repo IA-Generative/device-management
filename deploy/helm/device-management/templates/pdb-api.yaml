@@ -1,0 +1,13 @@
+{{- if and .Values.api.enabled .Values.api.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "api") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.api.pdb.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+{{- end }}

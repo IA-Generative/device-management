@@ -1,9 +1,13 @@
 # device-management
 
 Helm chart for **device-management**: distribution/configuration/telemetry
-server for office-suite extensions. One container image, four roles
-(`api` / `admin` / `worker` / `telemetryRelay`) driven by `DM_RUNTIME_MODE`,
-plus a schema-migration Job that runs as a Helm hook.
+server for office-suite extensions. One container image, five roles
+(`api` / `admin` / `worker` / `telemetryRelay` / `llmProxy`) driven by
+`DM_RUNTIME_MODE`, plus a schema-migration Job that runs as a Helm hook.
+
+This chart lives next to the application code. The repository's CI
+(fabnum-cicd) publishes the image it deploys, `ghcr.io/ia-generative/device-management`
+(see "Image" below).
 
 This chart is the **only supported deployment path** for this application —
 there is no companion deploy script. Every environment-specific need is
@@ -21,14 +25,38 @@ for the deliberate differences from those manifests.
 | `admin` | `DM_RUNTIME_MODE=admin` | 1 | Back-office UI. Owns a writable content PVC; `Recreate` strategy. |
 | `worker` | `DM_RUNTIME_MODE=worker` (`python -m app.worker_main`) | 2 | Queue consumer. Liveness via heartbeat-file freshness (no HTTP endpoint). |
 | `telemetryRelay` | `DM_RUNTIME_MODE=api` (implicit), isolated config | 1 | Second instance of the same image, dedicated to telemetry ingestion so its traffic/config never shares blast radius with `api`. |
+| `llmProxy` | `DM_RUNTIME_MODE=llm` | 2 | Third instance of the same image, dedicated to the OpenAI-compatible `/llm/v1` proxy. Stateless (no volumes/PVC), I/O-bound (long-lived SSE streams) — see `autoscaling`. Disabled by default; enable once `secrets.values.LLM_BASE_URL`/`LLM_API_TOKEN` are set. |
 | `migration` | n/a (Job) | — | `alembic upgrade head`, runs as a `pre-install,pre-upgrade` hook before any Deployment rolls out. Self-sufficient on a fully empty database — see "First install" below. |
 | `postgres.internal` | n/a (dev only) | 1 | Disabled by default. See install matrix. |
+| `postgres.cnpg` | n/a (CNPG `Cluster` CR) | `instances` (default 3) | Disabled by default. Requires the CloudNativePG operator. See "PostgreSQL" below. |
+
+## Image
+
+The repository's CI publishes a public, attested image (provenance, SBOM,
+signature) built from `deploy/docker/Dockerfile`:
+
+| Tag | Published when | Used by |
+|---|---|---|
+| `X.Y.Z` | the release-please release PR is merged into `main` | production, pinned in its values file (bumped by Renovate) |
+| `develop-<sha8>` | every merge into `develop` | integration, deployed by Argo CD from `develop` |
+
+```yaml
+image:
+  registry: ghcr.io
+  repository: ia-generative/device-management
+  tag: "0.9.22"   # optional: falls back to .Chart.AppVersion when empty
+```
+
+`image.tag` defaults to `.Chart.AppVersion`, which release-please keeps equal
+to the repository's `VERSION`. Pin `image.tag` explicitly in production: an
+immutable tag is what lets Argo CD see a change and roll back.
 
 ## Install matrix
 
 ### Production
 
-External Postgres, external S3 (or S3-compatible), external Keycloak.
+External Postgres (or a CloudNativePG-managed `Cluster`, see "PostgreSQL"
+below), external S3 (or S3-compatible), external Keycloak.
 `postgres.internal.enabled` must stay `false` (the default).
 
 ```bash
@@ -37,11 +65,12 @@ helm upgrade --install device-management deploy/helm/device-management \
   --namespace device-management --create-namespace
 ```
 
-Start from `deploy/helm/examples/values-prod-example.yaml` (placeholders
-only — copy it, fill in real hostnames, and keep the copy out of version
+Start from `deploy/helm/examples/values-prod-example.yaml` (generic,
+placeholders only). Site values (hosts, Vault paths, Secret names) live in the
+deployment repositories, never in this public one. Copy it, fill in real values, and keep the copy out of version
 control; store site-specific values files in your private ops repo,
-gitignored, next to a `*.example` template, same convention the old
-manifest overlays used).
+gitignored, next to a `*.example`/checklist template, same convention the
+old manifest overlays used.
 
 Required before install, at minimum:
 - `image.registry` / `image.repository` / `image.tag` (or rely on `appVersion`).
@@ -75,6 +104,75 @@ helm upgrade --install device-management deploy/helm/device-management \
 `postgres.internal` is a single, non-HA Postgres Deployment for
 development/demo only — never enable it in production.
 
+## PostgreSQL
+
+Three mutually exclusive modes; the chart fails the render (`fail`) if more
+than one applies.
+
+| Mode | How | Use for |
+|---|---|---|
+| External | Leave `postgres.internal.enabled` and `postgres.cnpg.enabled` both `false` (default). Set `secrets.values.DATABASE_URL`/`DATABASE_ADMIN_URL` yourself, or the equivalent keys in `secrets.existingSecret`. | Any externally managed Postgres you already operate (RDS, on-prem, another team's cluster...). |
+| CloudNativePG (`postgres.cnpg`) | `postgres.cnpg.enabled=true`. The chart renders a CNPG `Cluster` and wires `DATABASE_URL`/`DATABASE_ADMIN_URL` straight from its operator-managed Secrets. | **Recommended for production** when a CNPG operator is available on the target cluster. |
+| Internal dev (`postgres.internal`) | `postgres.internal.enabled=true`, plus `secrets.values.DATABASE_URL`/`DATABASE_ADMIN_URL` pointing at the in-cluster Deployment (see "Dev / demo" above). | Local/demo only — single non-HA Pod, no backups. |
+
+### CloudNativePG (CNPG)
+
+**Prerequisite:** the [CloudNativePG operator](https://cloudnative-pg.io/)
+must already be installed on the target cluster (CRD
+`clusters.postgresql.cnpg.io`, `apiVersion: postgresql.cnpg.io/v1`) — this
+chart only renders a `Cluster` object, it does not install the operator.
+
+When `postgres.cnpg.enabled=true`:
+- The chart renders a `Cluster` named `<release>-device-management-db` with
+  `spec.bootstrap.initdb.database`/`owner` from `postgres.cnpg.database`/
+  `owner`, and `enableSuperuserAccess: true` (needed by the migration Job —
+  see below).
+- CNPG auto-creates and rotates two Secrets: `<cluster>-app` (key `uri`,
+  the app-owner DSN) and `<cluster>-superuser` (key `uri`, the superuser
+  DSN). The chart reads `DATABASE_URL` from the former and
+  `DATABASE_ADMIN_URL` from the latter directly — `secrets.values.
+  DATABASE_URL`/`DATABASE_ADMIN_URL` must stay empty (the chart fails the
+  render otherwise, since they'd be set but silently ignored).
+- The migration Job (a `pre-install,pre-upgrade` hook) waits for the
+  Cluster's `<cluster>-rw` Service to accept connections
+  (`migration.waitForPostgres`) before running Alembic — a hook Job runs
+  before any ordinary resource in the release, including the `Cluster` CR
+  itself, so on a first install the database may not exist yet when the Job
+  starts. Helm's hook-weight ordering only guarantees resource *creation*
+  order, not readiness (it has no built-in "wait until Ready" for a CRD the
+  way it does for a Job), so the wait has to happen inside the Job via a
+  polling `pg_isready` init container instead.
+- `postgres.cnpg.storage.storageClass` is optional and empty by default —
+  the field is then omitted from the Cluster spec entirely, so the cluster's
+  default StorageClass is used. Set it explicitly if the target cluster has
+  no default StorageClass, or to pick a non-default one for PGDATA.
+
+Example production values (`deploy/helm/examples/values-cnpg-example.yaml`
+has the full file):
+
+```yaml
+postgres:
+  internal:
+    enabled: false
+  cnpg:
+    enabled: true
+    instances: 3
+    storage:
+      storageClass: ""   # empty = cluster default StorageClass
+      size: 20Gi
+    database: device_management
+    owner: device_management_app
+
+secrets:
+  existingSecret: device-management-secrets   # non-DB secrets only; see below
+```
+
+Validate with:
+
+```bash
+helm template deploy/helm/device-management -f deploy/helm/examples/values-cnpg-example.yaml
+```
+
 ## Secret provisioning
 
 The only imperative, one-time step this chart requires is getting real
@@ -99,6 +197,10 @@ kubectl create secret generic device-management-secrets \
   --from-literal=TELEMETRY_SALT="$(openssl rand -hex 16)" \
   --from-literal=ADMIN_OIDC_CLIENT_SECRET="" \
   --from-literal=LLM_API_TOKEN="<llm-api-token>" \
+  --from-literal=LLM_BASE_URL="<llm-upstream-base-url>" \
+  --from-literal=DEFAULT_MODEL_NAME="" \
+  --from-literal=EMBD_MODEL_NAME="" \
+  --from-literal=DM_LLM_TOKEN_SIGNING_KEY="$(openssl rand -hex 32)" \
   --from-literal=AWS_ACCESS_KEY_ID="<aws-access-key-id>" \
   --from-literal=AWS_SECRET_ACCESS_KEY="<aws-secret-access-key>" \
   --from-literal=AWS_SESSION_TOKEN="" \
@@ -120,6 +222,42 @@ route, since every Deployment references them individually
 gitignored values file (`secrets.create: true`, the default) — see the
 warning `helm install`/`upgrade` prints in `NOTES.txt` when this path is
 active.
+
+**Also supported: Vault Secrets Operator.** Set `vault.enabled: true` and
+the chart renders a `VaultStaticSecret` CR (Vault Secrets Operator CRD,
+`secrets.hashicorp.com/v1beta1`) instead of the two options above — VSO then
+owns creating/syncing/rotating the destination Secret itself, and every
+Deployment keeps reading it via `secretKeyRef` exactly as in the other two
+modes (no other template changes needed anywhere).
+
+Prerequisites, not managed by this chart:
+- Vault Secrets Operator installed on the target cluster.
+- A `VaultAuth` CR already provisioned in this namespace (how VSO
+  authenticates to Vault — typically shared across apps and owned by
+  platform/infra tooling). Reference its name via `vault.vaultAuthRef`.
+- A Vault KV secret at `vault.mount`/`vault.path` containing **every** key
+  listed under `secrets.values` in `values.yaml` — VSO syncs the whole KV
+  payload verbatim into the destination Secret (there's no per-key
+  selection in the CRD), so partial payloads leave some Deployments missing
+  env vars they reference.
+
+```yaml
+vault:
+  enabled: true
+  vaultAuthRef: my-vault-auth   # pre-existing VaultAuth CR in this namespace
+  mount: secret                 # KV mount path
+  type: kv-v2
+  path: device-management/prod  # path within `mount`
+  refreshAfter: 1h
+  rolloutRestartTargets: [api, admin, worker, telemetryRelay]  # add llmProxy if enabled
+```
+
+`vault.enabled=true` overrides `secrets.create` (the chart's own Secret
+template is skipped regardless of that flag's value) — Helm and VSO must
+never both try to own the same Secret. `secrets.existingSecret`, if set,
+still controls the Secret's *name* (VSO's `destination.name` follows the
+same rule as everywhere else in the chart); leave it empty to use the
+chart-generated default name.
 
 ## First install (empty database)
 
@@ -168,9 +306,10 @@ helm upgrade device-management deploy/helm/device-management \
 - Changing `admin.persistence.accessModes` after first install does not
   resize/migrate the underlying PVC — Kubernetes does not support that.
   Recreate the PVC (and restore content) if you need to change access mode.
-- Scaling `api`/`worker` replicas is always safe (S3-backed storage, no RWO
-  contention). `admin` is designed for a single replica; do not scale it
-  without first making its content volume ReadWriteMany.
+- Scaling `api`/`worker`/`telemetryRelay`/`llmProxy` replicas is always safe
+  (S3-backed storage or fully stateless, no RWO contention). `admin` is
+  designed for a single replica; do not scale it without first making its
+  content volume ReadWriteMany.
 
 ## Rollback
 
@@ -257,6 +396,21 @@ if you rely on them; override both the same way as `image.*`.
   default `api` mode with a trimmed-down ConfigMap override
   (`DM_CONFIG_ENABLED=false`, no enroll storage) purely to isolate its
   blast radius from the main `api` Deployment.
+- **`llmProxy` overrides two ConfigMap-sourced tokens with real server-side
+  secrets.** `LLM_BASE_URL` and `DEFAULT_MODEL_NAME` exist twice: once as
+  `contentTemplate.llmBaseUrl`/`defaultModelName` (public, client-facing
+  tokens baked into the ConfigMap) and once as `secrets.values.LLM_BASE_URL`/
+  `DEFAULT_MODEL_NAME` (the real upstream, server-side only). The `llmProxy`
+  Deployment's explicit `env:` entries for these names always win over its
+  `envFrom: configMapRef` — this is deliberate, not a bug, and matches the
+  reference `llm-proxy` manifest's own behavior.
+- **PodDisruptionBudgets default off for single-replica components.**
+  `admin` has no `pdb` block at all (single replica by design, `Recreate`
+  strategy). `telemetryRelay`'s `pdb.enabled` defaults to `false` because its
+  `replicaCount` also defaults to `1` — a `maxUnavailable: 1` PDB on a single
+  pod blocks voluntary node drains entirely. Enable it once you raise
+  `telemetryRelay.replicaCount` above 1. `api`/`worker`/`llmProxy` ship with
+  `pdb.enabled: true` by default (multi-replica by default).
 - **The migration Job uses `DATABASE_ADMIN_URL`, unlike the old reference
   manifest.** The plain-manifest version only wired `DATABASE_URL` into that
   Job because, in that older flow, a separate imperative script applied
@@ -274,13 +428,16 @@ sections.
 | `image` / `imagePullSecrets` | Container image reference and pull credentials. |
 | `serviceAccount` | ServiceAccount creation/reuse. |
 | `podSecurityContext` / `containerSecurityContext` | Pod/container hardening defaults (non-root uid 10001, seccomp RuntimeDefault, read-only rootfs). Set `podSecurityContext.runAsUser: null` on OpenShift so the cluster SCC assigns the uid. |
-| `api` / `admin` / `worker` / `telemetryRelay` | Per-component replicas, resources, probes, autoscaling, extra env/volumes. |
+| `api` / `admin` / `worker` / `telemetryRelay` / `llmProxy` | Per-component replicas, resources, probes, autoscaling, PodDisruptionBudget (`pdb`, all but `admin`), extra env/volumes. |
 | `migration` | Alembic migration hook Job settings. |
 | `ingress` | Optional single Ingress for `api`/`admin`/`telemetryRelay`. Disabled by default. |
 | `config` | Non-secret `DM_*`/`KEYCLOAK_*`/`POSTGRES_*`/`AWS_*` application settings, rendered into one ConfigMap. |
 | `contentTemplate` | Browser-extension/plugin substitution tokens (`PUBLIC_BASE_URL`, `LLM_BASE_URL`, `API_BASE`, ...) — content, not server config, but rides on the same ConfigMap. |
 | `secrets` | Sensitive values. `existingSecret` to reference a Secret managed outside Helm (recommended in production); `create`/`values` for a chart-managed Secret otherwise. |
+| `vault` | Optional: render a `VaultStaticSecret` CR (Vault Secrets Operator) instead, so VSO owns the runtime Secret. Overrides `secrets.create`. See "Secret provisioning" above. |
 | `postgres.internal` | Optional dev-only Postgres Deployment. Keep disabled in production. |
+| `postgres.cnpg` | Optional CloudNativePG-managed Postgres `Cluster` — recommended for production. See "PostgreSQL" above. |
+| `migration.waitForPostgres` | Init container blocking the migration hook Job until Postgres accepts connections (needed for `postgres.internal`/`postgres.cnpg`, whose Deployment/Cluster is not itself a hook). |
 
 ## Validation
 
@@ -288,4 +445,5 @@ sections.
 helm lint deploy/helm/device-management
 helm template deploy/helm/device-management
 helm template deploy/helm/device-management -f deploy/helm/examples/values-prod-example.yaml
+helm template deploy/helm/device-management -f deploy/helm/examples/values-cnpg-example.yaml
 ```

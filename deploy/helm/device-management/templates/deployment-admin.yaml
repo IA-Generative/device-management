@@ -57,6 +57,7 @@ spec:
               value: "admin"
             {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.admin.runtimeConfig.pollIntervalSeconds "editable" .Values.admin.runtimeConfig.editable) | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
+            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
             - name: ADMIN_OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
