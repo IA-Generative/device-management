@@ -11,7 +11,7 @@ spec:
   replicas: {{ .Values.worker.replicaCount }}
   {{- end }}
   strategy:
-    {{- toYaml .Values.worker.strategy | nindent 4 }}
+    {{- include "device-management.strategy" .Values.worker.strategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
