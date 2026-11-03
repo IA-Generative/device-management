@@ -5,10 +5,7 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "relay-assistant") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "relay-assistant") | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "1") | nindent 2 }}
 spec:
   replicas: {{ .Values.relayAssistant.replicaCount }}
   selector:

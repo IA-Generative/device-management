@@ -11,10 +11,7 @@ metadata:
   name: {{ include "device-management.cnpgClusterName" . }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "db") | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "-1") | nindent 2 }}
 spec:
   instances: {{ .Values.postgres.cnpg.instances }}
   {{- if .Values.postgres.cnpg.temporaryStartupBootstrapNeedsSuperuser }}

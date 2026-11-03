@@ -6,6 +6,7 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "postgres") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "-1") | nindent 2 }}
 spec:
   accessModes:
     {{- toYaml .Values.postgres.internal.persistence.accessModes | nindent 4 }}
@@ -23,6 +24,7 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "postgres") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "-1") | nindent 2 }}
 spec:
   replicas: 1
   strategy:
@@ -97,6 +99,7 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "postgres") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "-1") | nindent 2 }}
 spec:
   type: ClusterIP
   selector:
