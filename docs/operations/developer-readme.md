@@ -135,9 +135,31 @@ bash scripts/verif-version.sh --image device-management:latest --tag "$(cat VERS
 
 Les scripts de build (`build-local.sh`, `build-k8s.sh`, `build-incluster.sh`) passent les
 build-args ; `VERSION` est aliasée sur `DM_IMAGE_TAG`. Un nouveau chemin de build doit faire
-pareil, sinon l'image dira `dev`. `CHANGELOG.md` est la mémoire du projet : une section
-`## [X.Y.Z] - date` par version, la plus récente en tête (reconstitué depuis git le 2026-09-28 ;
-release-please le tiendra ensuite). À chaque montée de `VERSION`, ajouter sa section.
+pareil, sinon l'image dira `dev`. `CHANGELOG.md` est la mémoire du projet : une section par
+version, la plus récente en tête. Depuis la 0.9.23, **release-please** la rédige à partir des
+messages de commit (`feat` → Nouveautés, `fix` → Corrections ; les autres types restent hors du
+journal) et tient `VERSION` et l'`appVersion` du chart : on n'y touche plus à la main.
+
+## Branches, fusions et releases
+
+| Étape | PR | Fusion | Effet |
+|---|---|---|---|
+| Travail | `feat/…`, `fix/…` → `develop` | **squash** (`gh pr merge N --squash`) | image `develop-<sha8>`, déployée sur l'intégration par Argo CD |
+| Promotion | `develop` → `main` | **commit de fusion** (`--merge`) | release-please ouvre la PR « release X.Y.Z » |
+| Release | `release-please--branches--main--…` → `main` | **commit de fusion** | tag `vX.Y.Z`, image `X.Y.Z` attestée, PR de resynchronisation `main` → `develop` |
+| Resynchronisation | `main` → `develop` | **commit de fusion** | `develop` reprend `VERSION` et le CHANGELOG |
+
+- **Squash vers `develop`** : une PR devient un seul commit, titré comme la PR (réglage du
+  dépôt). Le **titre de la PR** est donc le message que lit release-please : format
+  conventionnel (`fix(db): …`), moins de 100 caractères, minuscule après les deux-points, et
+  rédigé pour le public (il finit dans `/__version__`). Avec un commit de fusion, release-please
+  compte la correction deux fois : le commit, et la fusion qui porte le titre de la PR.
+- **Jamais de squash** vers `main` ni pour la resynchronisation : il effacerait l'historique
+  partagé entre `main` et `develop`, et la resynchronisation suivante partirait en conflit.
+- `main` n'accepte que des PR venues de `develop` ou de release-please (contrôle
+  `source-autorisee`).
+- Les PR ouvertes par release-please (release, resynchronisation) ne déclenchent pas la CI
+  exigée tant que la GitHub App fabnum n'est pas installée : les fermer puis les rouvrir.
 
 ## Build et deploiement
 
