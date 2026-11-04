@@ -6,6 +6,20 @@ il ne porte ni détail d'infrastructure ni détail technique fin (ceux-là viven
 documentation). Historique reconstitué le 2026-09-28 depuis les commits, puis reformulé ; les versions
 suivantes seront tenues par release-please. Titres au format `## [X.Y.Z] - date`.
 
+## [0.9.23](https://github.com/IA-Generative/device-management/compare/v0.9.22...v0.9.23) (2026-11-04)
+
+
+### Corrections
+
+* **db:** /config et /catalog ne tombent plus en erreur après quelques requêtes sans poste ([d7cd918](https://github.com/IA-Generative/device-management/commit/d7cd91802b55cc75186871d264720d8003a03511))
+* **db:** /config et /catalog ne tombent plus en erreur après quelques requêtes sans poste ([2d744ec](https://github.com/IA-Generative/device-management/commit/2d744ecee0f79319b77bb08332474bec0731b41e))
+* **helm:** ordre de synchronisation Argo CD — prérequis, puis migration, puis pods ([8f305e7](https://github.com/IA-Generative/device-management/commit/8f305e7f9f26eb39996b72fd07a4bdf638537421))
+* **helm:** ordre de synchronisation Argo CD — prérequis, puis migration, puis pods ([b2ef5d1](https://github.com/IA-Generative/device-management/commit/b2ef5d1b6fc9b2e1c1544fef9ebd05aff6e07c7b))
+* **helm:** stratégie Recreate sans le bloc rollingUpdate des valeurs par défaut (api, admin, worker) ([268dd89](https://github.com/IA-Generative/device-management/commit/268dd89b4482f2abf2114a486a995acdec70e46c))
+* **helm:** stratégie Recreate sans le bloc rollingUpdate des valeurs par défaut (api, admin, worker) ([b8aa695](https://github.com/IA-Generative/device-management/commit/b8aa695bcb9337447164d9e7f3a5f2a1dd5d53f0))
+* **migrations:** la mise à jour du schéma fonctionne de nouveau sur une base neuve ([8da9b97](https://github.com/IA-Generative/device-management/commit/8da9b97751e69418c6e237100e74d04c6710a645))
+* **migrations:** la mise à jour du schéma fonctionne de nouveau sur une base neuve ([1b604d6](https://github.com/IA-Generative/device-management/commit/1b604d620d0562152eafeaad81d866b6cd70d3af))
+
 ## [0.9.22] - 2026-11-01
 
 ### Nouveautés
