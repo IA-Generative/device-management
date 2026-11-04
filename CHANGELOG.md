@@ -6,6 +6,16 @@ il ne porte ni détail d'infrastructure ni détail technique fin (ceux-là viven
 documentation). Historique reconstitué le 2026-09-28 depuis les commits, puis reformulé ; les versions
 suivantes seront tenues par release-please. Titres au format `## [X.Y.Z] - date`.
 
+## [0.9.23](https://github.com/IA-Generative/device-management/compare/v0.9.22...v0.9.23) (2026-11-04)
+
+
+### Corrections
+
+* **db:** /config et /catalog ne tombent plus en erreur après quelques requêtes sans poste ([d7cd918](https://github.com/IA-Generative/device-management/commit/d7cd91802b55cc75186871d264720d8003a03511))
+* **helm:** ordre de synchronisation Argo CD — prérequis, puis migration, puis pods ([8f305e7](https://github.com/IA-Generative/device-management/commit/8f305e7f9f26eb39996b72fd07a4bdf638537421))
+* **helm:** stratégie Recreate sans le bloc rollingUpdate des valeurs par défaut (api, admin, worker) ([268dd89](https://github.com/IA-Generative/device-management/commit/268dd89b4482f2abf2114a486a995acdec70e46c))
+* **migrations:** la mise à jour du schéma fonctionne de nouveau sur une base neuve ([8da9b97](https://github.com/IA-Generative/device-management/commit/8da9b97751e69418c6e237100e74d04c6710a645))
+
 ## [0.9.22] - 2026-11-01
 
 ### Nouveautés
