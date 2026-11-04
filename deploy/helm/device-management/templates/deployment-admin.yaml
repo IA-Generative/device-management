@@ -5,14 +5,11 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "admin") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "admin") | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "1") | nindent 2 }}
 spec:
   replicas: {{ .Values.admin.replicaCount }}
   strategy:
-    {{- toYaml .Values.admin.strategy | nindent 4 }}
+    {{- include "device-management.strategy" .Values.admin.strategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 6 }}
@@ -57,6 +54,7 @@ spec:
               value: "admin"
             {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.admin.runtimeConfig.pollIntervalSeconds "editable" .Values.admin.runtimeConfig.editable) | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
+            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
             - name: ADMIN_OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:

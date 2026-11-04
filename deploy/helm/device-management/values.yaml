@@ -9,9 +9,11 @@
 image:
   # Registry hostname (e.g. "ghcr.io" or "docker.io"). Optional: leave empty to
   # use `repository` as a fully-qualified reference.
-  registry: ""
-  # Image repository. Required.
-  repository: device-management
+  registry: "ghcr.io"
+  # Image repository. Required. Public image published by this repository's
+  # CI (fabnum-cicd): `X.Y.Z` on release from main, `develop-<sha8>` from
+  # develop. Override with `--set image.repository=...` for a mirror.
+  repository: ia-generative/device-management
   # Image tag. Optional: defaults to .Chart.AppVersion when empty.
   tag: ""
   # Pull policy for all containers using this image. Optional.
@@ -185,6 +187,12 @@ api:
   extraVolumes: []
   extraVolumeMounts: []
 
+  # PodDisruptionBudget. maxUnavailable (not minAvailable) so it stays valid
+  # regardless of the current replica count under autoscaling.enabled=true.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+
 # -----------------------------------------------------------------------------
 # admin — back-office UI (DM_RUNTIME_MODE=admin). Single replica: it owns a
 # writable content volume (uploaded binaries/config) and its OIDC session
@@ -302,6 +310,15 @@ worker:
     # postgres service name when postgres.internal.enabled=true, otherwise
     # must be set explicitly (external DB host).
     host: ""
+    # Also used by migration.waitForPostgres's init container (same image,
+    # same tiny footprint — a loop of `pg_isready` calls).
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
 
   resources:
     requests:
@@ -342,6 +359,10 @@ worker:
   extraVolumes: []
   extraVolumeMounts: []
 
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+
 # -----------------------------------------------------------------------------
 # telemetryRelay — second instance of the same image (DM_RUNTIME_MODE=api,
 # implicit default) dedicated to telemetry ingestion only. Isolated from the
@@ -361,7 +382,13 @@ telemetryRelay:
     pollIntervalSeconds: 3
     editable: true
 
-  resources: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
 
   probes:
     startup:
@@ -392,6 +419,152 @@ telemetryRelay:
   extraVolumes: []
   extraVolumeMounts: []
 
+  # PodDisruptionBudget. Disabled by default: replicaCount defaults to 1
+  # (single instance), where a maxUnavailable:1 PDB would block voluntary
+  # node drains entirely. Enable once replicaCount/autoscaling.minReplicas
+  # is raised above 1.
+  pdb:
+    enabled: false
+    maxUnavailable: 1
+
+# -----------------------------------------------------------------------------
+# llmProxy — dedicated, stateless instance of the same image
+# (DM_RUNTIME_MODE=llm) serving only the OpenAI-compatible /llm/v1 proxy
+# routes + probes/metrics. No volumes/PVC: scales horizontally everywhere.
+# Shared state (quotas, relay-key revocation, runtime config) lives in
+# Postgres, so there is no session affinity requirement on its Service.
+# Disabled by default — enable once secrets.values.LLM_BASE_URL/
+# LLM_API_TOKEN (and optionally DEFAULT_MODEL_NAME/EMBD_MODEL_NAME/
+# DM_LLM_TOKEN_SIGNING_KEY) are populated.
+# -----------------------------------------------------------------------------
+llmProxy:
+  enabled: false
+  replicaCount: 2
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3001
+
+  runtimeConfig:
+    pollIntervalSeconds: 3
+    editable: true
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  # I/O-bound workload (long-lived SSE streams): memory is the dominant
+  # scaling signal, CPU stays low even under heavy concurrency.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 60
+    targetMemoryUtilizationPercentage: 70
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        policies:
+          - type: Percent
+            value: 100
+            periodSeconds: 30
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        policies:
+          - type: Percent
+            value: 20
+            periodSeconds: 60
+
+  probes:
+    startup:
+      path: /livez
+      periodSeconds: 2
+      failureThreshold: 15
+      timeoutSeconds: 3
+    readiness:
+      path: /readyz
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+    liveness:
+      path: /livez
+      initialDelaySeconds: 10
+      periodSeconds: 15
+      timeoutSeconds: 3
+      failureThreshold: 4
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+
+# -----------------------------------------------------------------------------
+# relayAssistant — nginx reverse-proxy in front of Keycloak (OIDC endpoints for
+# the extensions: certs, auth, token, userinfo) and, behind the api's
+# /relay/authorize check, of companion services. Disabled by default.
+# -----------------------------------------------------------------------------
+relayAssistant:
+  enabled: false
+  replicaCount: 1
+  # Unprivileged nginx: listens on 8080, runs under any UID (OpenShift
+  # restricted SCC) with a read-only root filesystem.
+  image:
+    repository: docker.io/nginxinc/nginx-unprivileged
+    tag: "1.29.8-alpine"
+    pullPolicy: IfNotPresent
+  containerPort: 8080
+  service:
+    port: 80
+  # DNS server nginx uses to resolve its upstreams. Empty = read from the pod's
+  # /etc/resolv.conf at startup (recommended).
+  resolver: ""
+  # Cluster DNS domain, used to build the api's FQDN (the nginx resolver does
+  # not expand short names).
+  clusterDomain: cluster.local
+  # Upstreams other than Keycloak (whose URL is config.relay.keycloakUpstream).
+  # Empty = route not served.
+  upstreams:
+    mcrApi: ""
+  # Dedicated Ingress: the relay is exposed under a path prefix that nginx
+  # ingress strips (regex + rewrite). Host/className/tls default to `ingress`.
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    path: /relay-assistant(/|$)(.*)
+    pathType: ImplementationSpecific
+    annotations:
+      nginx.ingress.kubernetes.io/use-regex: "true"
+      nginx.ingress.kubernetes.io/rewrite-target: /$2
+      nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+      nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+    tls: []
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 # -----------------------------------------------------------------------------
 # migration — Alembic schema migration Job, run as a Helm hook
 # (pre-install,pre-upgrade) before any Deployment is rolled out.
@@ -404,7 +577,38 @@ migration:
   # Optional: keep succeeded/failed hook Jobs around for inspection instead
   # of Helm deleting them before the next run.
   hookDeletePolicy: before-hook-creation
-  resources: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Init container blocking the migration Job until Postgres accepts
+  # connections. Needed because this Job is a Helm hook (runs before any
+  # other resource) but `postgres.internal`/`postgres.cnpg` provision the
+  # database as an ordinary resource in the same release — on a first
+  # install there is no guarantee the database exists yet when the hook
+  # fires. A `helm.sh/hook-weight` ordering trick can't fix this: Helm only
+  # waits for hook *Jobs* to complete, it has no notion of "ready" for a
+  # Deployment or a CNPG Cluster CR, so the wait has to happen inside the
+  # Job itself. Optional; only meaningful when the DB is reachable from a
+  # plain `pg_isready` call (skip it for managed DBs that require e.g. IAM
+  # auth).
+  waitForPostgres:
+    enabled: true
+    # Reuses worker.waitForPostgres.image (same postgres-client image,
+    # single source of truth).
+    # Hostname passed to `pg_isready -h`. Defaults to the internal-postgres
+    # or CNPG `-rw` service name when one of those modes is enabled,
+    # otherwise must be set explicitly (external DB host).
+    host: ""
+    # Optional, default 300 (5 minutes). Generous enough to cover a CNPG
+    # Cluster's first bootstrap (instance creation + PVC provisioning) on a
+    # first install; the Job fails clearly once exceeded instead of
+    # retrying forever.
+    timeoutSeconds: 300
 
 # -----------------------------------------------------------------------------
 # ingress — optional single Ingress fronting api (/), admin (/admin) and
@@ -426,6 +630,9 @@ ingress:
         - path: /telemetry/v1
           pathType: Prefix
           service: telemetryRelay
+        - path: /llm
+          pathType: Prefix
+          service: llmProxy
         - path: /
           pathType: Prefix
           service: api
@@ -469,9 +676,10 @@ config:
     # DM_BOOTSTRAP_URLS. Optional, default "". CSV of config-server bootstrap
     # URLs returned to enrolling clients, in priority order.
     bootstrapUrls: ""
-    # DM_LOCAL_API_ALLOWED_ORIGINS. Optional, default "". CSV of the exact web
-    # origins (scheme, host, port) allowed to call the extensions' local API,
-    # served as config.localApiAllowedOrigins. Empty = key not served.
+    # DM_LOCAL_API_ALLOWED_ORIGINS. Optional. CSV of exact web origins
+    # (scheme://host[:port]) allowed to call the extensions' local API (e.g.
+    # Mon portail). Served to plugins as config.localApiAllowedOrigins;
+    # empty = not served, the extension keeps its own setting.
     localApiAllowedOrigins: ""
 
   # S3-backed storage for enrollment payloads and distributed binaries
@@ -499,6 +707,9 @@ config:
     presignTtlSeconds: 300
     # DM_S3_ENDPOINT_URL. Optional, default "". Set for S3-compatible
     # providers (e.g. MinIO in dev); leave empty for AWS S3.
+    # MUST be the REGIONAL endpoint (https://s3.<region>.example.invalid),
+    # never a bucket-specific hostname: the client uses virtual-host
+    # addressing and would prepend the bucket a second time (TLS mismatch).
     s3EndpointUrl: ""
 
   # AWS region/tag metadata. Credentials (AWS_ACCESS_KEY_ID/
@@ -607,6 +818,37 @@ config:
     # reverse-proxy in front of Keycloak/other upstreams, if deployed
     # alongside this chart.
     assistantUrl: ""
+    # RELAY_KEYCLOAK_UPSTREAM. Optional. Keycloak realm URL reached server-side
+    # (by the api's /auth/token relay and by relayAssistant), e.g.
+    # https://sso.example/realms/<realm>. MUST be a FQDN: the relay's nginx
+    # resolver does not expand short names (render fails otherwise).
+    keycloakUpstream: ""
+    # DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS. Optional, default false. When true,
+    # the config served to plugins points keycloakTokenEndpoint at
+    # {PUBLIC_BASE_URL}/auth/token and userinfo at /relay-assistant/keycloak/...
+    forceKeycloakEndpoints: false
+
+  # Models announced to the extensions in /config. Empty = feature disabled
+  # on the extension side. Requests through llmProxy use the model the client
+  # names, these are only the defaults.
+  llm:
+    # EMBD_MODEL_NAME. Embeddings model (local search indexing), e.g. bge-m3.
+    embdModelName: ""
+    # RERANK_MODEL_NAME. Reranking model (/llm/v1/rerank), e.g.
+    # bge-reranker-v2-m3. Empty = no rerankEndpoint served.
+    rerankModelName: ""
+
+  # Fleet-state export run by the worker (PARC_EXPORT_SECRET lives in the
+  # Secret). Defaults mirror app/settings.py.
+  parc:
+    # PARC_EXPORT_ENABLED. Optional, default false.
+    enabled: false
+    # PARC_EXPORT_URL. Target endpoint of the export.
+    url: ""
+    # PARC_EXPORT_INTERVALLE_S. Seconds between exports, default 300.
+    intervalSeconds: 300
+    # PARC_INSTANCE_LABEL. Label identifying this instance, default dm-x.
+    instanceLabel: "dm-x"
 
 # -----------------------------------------------------------------------------
 # contentTemplate — NOT application config: these are plain string
@@ -691,8 +933,27 @@ secrets:
     # is confidential; leave empty for a public/PKCE client.
     ADMIN_OIDC_CLIENT_SECRET: ""
     # LLM_API_TOKEN. Required if the app calls an LLM API server-side (debug
-    # page, etc).
+    # page, etc), and by llmProxy when llmProxy.enabled=true.
     LLM_API_TOKEN: ""
+    # LLM_BASE_URL. Required when llmProxy.enabled=true — the real upstream
+    # LLM API base URL the proxy forwards to. Server-side only; never
+    # exposed to clients (distinct from contentTemplate.llmBaseUrl, the
+    # public-facing token handed to enrolled clients).
+    LLM_BASE_URL: ""
+    # DEFAULT_MODEL_NAME. Optional. Default model name used server-side by
+    # llmProxy (distinct from contentTemplate.defaultModelName, the
+    # client-facing token).
+    DEFAULT_MODEL_NAME: ""
+    # EMBD_MODEL_NAME. Optional. Default embeddings model for llmProxy's
+    # /llm/v1/embeddings fallback when the client omits 'model'.
+    EMBD_MODEL_NAME: ""
+    # DM_LLM_TOKEN_SIGNING_KEY. Optional. Signs the short-lived per-client
+    # llmToken minted by api and verified by llmProxy (dual auth alongside
+    # the relay key). Required for that flow when llmProxy.enabled=true.
+    DM_LLM_TOKEN_SIGNING_KEY: ""
+    # PARC_EXPORT_SECRET. Required when config.parc.enabled. Shared secret
+    # authenticating the fleet-state export (worker).
+    PARC_EXPORT_SECRET: ""
     # AWS_ACCESS_KEY_ID. Required when config.storage.storeEnrollS3 or
     # binariesMode=presign (S3 credentials).
     AWS_ACCESS_KEY_ID: ""
@@ -721,10 +982,75 @@ secrets:
     DB_ADMIN_PASSWORD: ""
 
 # -----------------------------------------------------------------------------
+# vault — optional: instead of `secrets.create` (chart-managed Secret) or a
+# manually-provisioned `secrets.existingSecret`, have the Vault Secrets
+# Operator (VSO) own the runtime Secret by rendering a VaultStaticSecret CR
+# (CRD `secrets.hashicorp.com/v1beta1`). Requires VSO already installed on
+# the target cluster (this chart does not install it) and a VaultAuth CR
+# already provisioned in this namespace (typically shared across apps and
+# owned by platform/infra tooling, not by this chart).
+#
+# When enabled, `vault.enabled=true` overrides `secrets.create` — the
+# chart's own Secret template is skipped regardless of `secrets.create`,
+# since Helm must not also try to own the same Secret VSO creates. The
+# Secret's *name* still follows the existing rule (`secrets.existingSecret`
+# if set, else the chart-generated default `<fullname>-secrets`) — every
+# Deployment keeps reading it via secretKeyRef exactly as in the non-Vault
+# case, no template changes needed anywhere else.
+#
+# The Vault secret at `vault.path` must contain every key listed under
+# `secrets.values` above (VSO syncs a KV payload verbatim into the
+# destination Secret's data — there is no per-key selection in the CRD).
+# -----------------------------------------------------------------------------
+vault:
+  enabled: false
+  # Name of a pre-existing VaultAuth CR (Vault Secrets Operator CRD) in this
+  # namespace. Required when vault.enabled=true. Not created by this chart.
+  vaultAuthRef: ""
+  # Optional, default true. VSO's own default for this field is false,
+  # which means it silently skips syncing real Vault data into the
+  # destination Secret if one already exists under that name (e.g. left
+  # over from secrets.create=true before vault.enabled was turned on) — the
+  # Secret object exists but never gets populated, which looks exactly like
+  # "existingSecret doesn't take the values". True is almost always what
+  # you want here; set false only if you deliberately want VSO to leave a
+  # pre-existing same-named Secret alone.
+  destinationOverwrite: true
+  # KV mount path (e.g. "secret" for the default kv-v2 mount).
+  mount: secret
+  # KV secrets engine version backing `mount`: "kv-v1" or "kv-v2".
+  type: kv-v2
+  # Path within `mount` where the static secret lives (e.g.
+  # "device-management/prod"). Required when vault.enabled=true.
+  path: ""
+  # How often VSO re-reads Vault and re-syncs the destination Secret.
+  refreshAfter: 1h
+  # Component keys (matching this file's top-level keys: api/admin/worker/
+  # telemetryRelay/llmProxy) whose Deployment VSO should roll when the
+  # synced Secret's content changes. Only lists components enabled by
+  # default — add "llmProxy" too if you enable it.
+  rolloutRestartTargets:
+    - api
+    - admin
+    - worker
+    - telemetryRelay
+
+# -----------------------------------------------------------------------------
 # postgres.internal — optional dev-only Postgres StatefulSet. Disabled by
 # default: production is expected to point `secrets.values.DATABASE_URL` /
 # `DATABASE_ADMIN_URL` at an externally managed database (see README install
-# matrix). Do not enable this in production.
+# matrix) or enable `postgres.cnpg` below. Do not enable this in production.
+#
+# postgres.cnpg — optional CloudNativePG-managed Postgres Cluster
+# (recommended for production instead of an out-of-band external database).
+# Requires the CNPG operator to already be installed on the target cluster
+# (CRD `clusters.postgresql.cnpg.io`) — this chart does not install the
+# operator itself. Mutually exclusive with `postgres.internal.enabled`; the
+# chart fails the render if both are enabled. When enabled, DATABASE_URL/
+# DATABASE_ADMIN_URL are sourced directly from the Cluster's own
+# operator-managed Secrets, not from `secrets.values`/`secrets.existingSecret`
+# — the render also fails if those two keys are set alongside
+# `postgres.cnpg.enabled=true`, since they would silently be ignored.
 # -----------------------------------------------------------------------------
 postgres:
   internal:
@@ -732,10 +1058,83 @@ postgres:
     image:
       repository: docker.io/library/postgres
       tag: 16-alpine
-    resources: {}
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
     persistence:
       enabled: true
       size: 20Gi
       storageClassName: ""
       accessModes:
         - ReadWriteOnce
+
+  cnpg:
+    # Optional, default false.
+    enabled: false
+    # Number of instances in the Cluster (1 primary + N-1 streaming
+    # replicas). Optional, default 3 for production HA; set to 1 for a
+    # single-instance, non-HA cluster.
+    instances: 3
+    storage:
+      # Optional, default "" (empty). StorageClass backing each instance's
+      # PGDATA volume. Leave empty to use the cluster's default
+      # StorageClass (the `storageClass` field is then omitted from the
+      # Cluster spec entirely, matching CNPG's own fallback behavior). Set
+      # explicitly if the target cluster has no default StorageClass, or to
+      # pick a non-default one (e.g. a faster/replicated class for PGDATA).
+      storageClass: ""
+      # Optional, default 2Gi. Per-instance size; CNPG does not support
+      # shrinking a PVC afterward, so size for data + WAL retention headroom.
+      size: 2Gi
+    # Database created by `initdb` on first bootstrap. Optional, default
+    # "bootstrap" (mirrors config.postgres.db's default — the two are
+    # independent fields, since the app reads the dbname out of DATABASE_URL
+    # rather than out of config.postgres.db, but keep them describing the
+    # same database for operator sanity).
+    database: bootstrap
+    # Owner role of that database, created by `initdb`. Optional, default
+    # "postgres" (mirrors config.postgres.user's default — see note above).
+    owner: postgres
+    # Applied to the "postgres" container of every instance Pod. On a
+    # namespace with a ResourceQuota requiring requests/limits on every
+    # container (e.g. "must specify limits.cpu for: ..."), leaving this
+    # empty can leave the operator's *bootstrap* Job (the one-off
+    # `<cluster>-1-initdb` Job CNPG runs on first install, containers
+    # "bootstrap-controller"/"initdb") without resources too, depending on
+    # your CNPG operator version — some versions only propagate this to the
+    # instance Pods, not the bootstrap Job. If quota admission still
+    # rejects the initdb Job after setting this, ask your platform team for
+    # a namespace LimitRange with defaults (`default`/`defaultRequest`) —
+    # that's the only way to satisfy a "must specify" quota for containers
+    # in Jobs/Pods this chart doesn't itself template (CNPG's operator
+    # generates that bootstrap Job's spec, not this chart).
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    # Passthrough to the Cluster's spec.postgresql.parameters (postgresql.conf
+    # overrides, e.g. max_connections/shared_buffers). Optional, empty by
+    # default — CNPG's own defaults apply.
+    postgresql:
+      parameters: {}
+
+    # STOPGAP, default true — see device-management.cnpgSuperuserAdminUrlOverride
+    # in _helpers.tpl for the full explanation. Until the upstream
+    # device-management app makes its FastAPI startup hook's admin-privileged
+    # role/database/schema bootstrap opt-in (currently unconditional on every
+    # api/admin/telemetryRelay/llmProxy pod boot), those pods need genuine
+    # postgres-superuser credentials to CREATE ROLE/CREATE DATABASE. This
+    # makes DATABASE_ADMIN_URL on just those four components (never the
+    # migration Job or worker) point at CNPG's superuser-managed Secret
+    # instead of the app-role one, and sets enableSuperuserAccess: true on
+    # the Cluster so that Secret exists at all. Set to false (and re-deploy)
+    # once the upstream fix is live — the app will then no longer need or
+    # use admin-privileged credentials at startup at all.
+    temporaryStartupBootstrapNeedsSuperuser: true

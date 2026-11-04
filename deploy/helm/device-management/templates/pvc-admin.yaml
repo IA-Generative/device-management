@@ -5,6 +5,7 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "admin-content") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "admin") | nindent 4 }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "1") | nindent 2 }}
 spec:
   accessModes:
     {{- toYaml .Values.admin.persistence.accessModes | nindent 4 }}

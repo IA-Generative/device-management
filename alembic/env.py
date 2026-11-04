@@ -27,6 +27,19 @@ def _get_url() -> str:
         raise RuntimeError(
             "No database URL found. Set DATABASE_URL or DATABASE_ADMIN_URL."
         )
+    return _with_psycopg2_driver(url)
+
+
+def _with_psycopg2_driver(url: str) -> str:
+    """Nomme le pilote quand l'URL ne le dit pas (postgresql:// ou postgres://).
+
+    SQLAlchemy 2.1 choisit psycopg (v3) par défaut pour postgresql://, alors que
+    l'application n'embarque que psycopg2 : sans ce choix explicite, la migration
+    échoue sur « No module named 'psycopg' ».
+    """
+    for scheme in ("postgresql://", "postgres://"):
+        if url.startswith(scheme):
+            return "postgresql+psycopg2://" + url[len(scheme):]
     return url
 
 

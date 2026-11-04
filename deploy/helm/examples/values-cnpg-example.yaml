@@ -1,0 +1,168 @@
+# Example production-shaped values for the device-management chart, targeting
+# OpenShift with a CloudNativePG-managed Postgres Cluster (3 instances) and a
+# public image published by this repository's CI (ghcr.io).
+# Placeholders only (example.invalid / CHANGEME style) — copy this file,
+# replace every placeholder, and keep the result out of version control.
+#
+# Prerequisite: the CNPG operator must already be installed on the target
+# cluster (CRD `clusters.postgresql.cnpg.io`) — this chart does not install
+# it.
+#
+# Validate with:
+#   helm template device-management deploy/helm/device-management \
+#     -f deploy/helm/examples/values-cnpg-example.yaml
+
+image:
+  registry: ghcr.io
+  repository: ia-generative/device-management
+  tag: "0.9.22"
+
+imagePullSecrets:
+  - name: regcred
+
+# OpenShift: let the cluster's SCC (restricted-v2) assign an arbitrary uid
+# instead of the pinned uid 10001 baked into the image.
+podSecurityContext:
+  runAsUser: null
+
+api:
+  replicaCount: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 4
+    maxReplicas: 20
+
+admin:
+  replicaCount: 1
+  persistence:
+    enabled: true
+    size: 5Gi
+    # Left empty on purpose: uses the cluster's default StorageClass. Set
+    # explicitly only if your cluster has no default StorageClass, or to
+    # pick a non-default one.
+    storageClassName: ""
+
+worker:
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 12
+
+telemetryRelay:
+  replicaCount: 1
+
+# Dedicated LLM-proxy role (DM_RUNTIME_MODE=llm) — enable only if this
+# deployment needs the /llm/v1 proxy; requires secrets.values.LLM_BASE_URL /
+# LLM_API_TOKEN below to be real.
+llmProxy:
+  enabled: true
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+
+ingress:
+  enabled: true
+  # OpenShift 4's IngressController accepts plain Ingress objects and
+  # provisions Routes for them automatically — no dedicated Route template
+  # needed. Adjust className to match your cluster's default IngressClass.
+  className: openshift-default
+  # Empty by default — add whatever your ingress controller/router actually
+  # needs. Two things worth checking once you know which router serves
+  # className above: (1) /llm/v1/chat/completions streams SSE — it needs
+  # response buffering disabled and a read timeout past ~60s, or long
+  # streams get cut; (2) the admin OIDC callback returns a large
+  # Set-Cookie (session + id_token) — if /admin/callback 502s, the
+  # controller's response-buffer size needs raising. The exact annotations
+  # for both are nginx.ingress.kubernetes.io/* only if the community nginx
+  # Ingress Controller is what's actually running — OpenShift's default
+  # HAProxy router ignores those silently; use
+  # haproxy.router.openshift.io/timeout for the timeout side there instead,
+  # and ask your cluster admin about ROUTER_BUF_SIZE for the buffer side
+  # (no per-Route annotation exists for it).
+  annotations: {}
+  hosts:
+    - host: device-management.example.invalid
+      paths:
+        - path: /admin
+          pathType: Prefix
+          service: admin
+        - path: /telemetry/v1
+          pathType: Prefix
+          service: telemetryRelay
+        - path: /llm
+          pathType: Prefix
+          service: llmProxy
+        - path: /
+          pathType: Prefix
+          service: api
+  tls:
+    - hosts:
+        - device-management.example.invalid
+      secretName: device-management-tls
+
+# CloudNativePG-managed Postgres, 3 instances (1 primary + 2 streaming
+# replicas). Never enable postgres.internal alongside this — the chart fails
+# the render if both are set.
+postgres:
+  internal:
+    enabled: false
+  cnpg:
+    enabled: true
+    instances: 3
+    storage:
+      # Left empty on purpose: uses the cluster's default StorageClass. Set
+      # explicitly (e.g. "ocs-storagecluster-ceph-rbd", "gp3-csi") if your
+      # OpenShift cluster has no default StorageClass, or to pick a
+      # different one for PGDATA.
+      storageClass: ""
+      size: 20Gi
+    database: device_management
+    owner: device_management_app
+
+config:
+  app:
+    env: prod
+    profile: prod
+    enrollUrl: /enroll
+
+  storage:
+    storeEnrollS3: true
+    bucket: device-management-prod
+    binariesMode: presign
+
+  aws:
+    region: eu-west-3
+
+  keycloak:
+    issuerUrl: "https://sso.example.invalid"
+    realm: myorg
+    clientId: bootstrap-iassistant
+    redirectUri: "https://device-management.example.invalid/callback"
+    allowedRedirectUri: "https://device-management.example.invalid/callback"
+    adminRequiredGroup: "/g/device-management-admins"
+
+  auth:
+    verifyAccessToken: true
+    jwksUrl: "https://sso.example.invalid/realms/myorg/protocol/openid-connect/certs"
+
+  telemetry:
+    enabled: true
+    upstreamEndpoint: "http://otel-collector.telemetry.svc.cluster.local:4318/v1/traces"
+
+contentTemplate:
+  publicBaseUrl: "https://device-management.example.invalid"
+  llmBaseUrl: "https://llm.example.invalid/v1"
+  apiBase: "https://device-management.example.invalid"
+
+# DATABASE_URL/DATABASE_ADMIN_URL must NOT be set here or via
+# secrets.existingSecret's DATABASE_* keys — postgres.cnpg wires those two
+# straight from the Cluster's own operator-managed Secrets. Every other
+# sensitive key (ADMIN_SESSION_SECRET, DM_RELAY_SECRET_PEPPER, AWS
+# credentials..., and — since llmProxy.enabled=true above —
+# LLM_BASE_URL/LLM_API_TOKEN/DM_LLM_TOKEN_SIGNING_KEY) still needs a Secret,
+# managed the same way as any other install:
+secrets:
+  existingSecret: device-management-secrets

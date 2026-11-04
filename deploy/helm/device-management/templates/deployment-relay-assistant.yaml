@@ -1,0 +1,101 @@
+{{- if .Values.relayAssistant.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "relay-assistant") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "relay-assistant") | nindent 4 }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "1") | nindent 2 }}
+spec:
+  replicas: {{ .Values.relayAssistant.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "relay-assistant") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "relay-assistant") | nindent 8 }}
+        {{- with .Values.relayAssistant.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Le gabarit nginx n'est lu qu'au démarrage : le changer redémarre le pod.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-relay-assistant.yaml") . | sha256sum }}
+        {{- with .Values.relayAssistant.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "device-management.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "device-management.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: relay-assistant
+          image: {{ .Values.relayAssistant.image.repository }}:{{ .Values.relayAssistant.image.tag }}
+          imagePullPolicy: {{ .Values.relayAssistant.image.pullPolicy }}
+          securityContext:
+            {{- include "device-management.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.relayAssistant.containerPort }}
+          env:
+            {{- if not .Values.relayAssistant.resolver }}
+            - name: NGINX_ENTRYPOINT_LOCAL_RESOLVERS
+              value: "1"
+            {{- end }}
+            - name: RELAY_PROXY_SHARED_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_RELAY_PROXY_SHARED_TOKEN
+          volumeMounts:
+            - name: template
+              mountPath: /etc/nginx/templates/default.conf.template
+              subPath: default.conf.template
+            # readOnlyRootFilesystem : l'entrypoint écrit la conf rendue dans
+            # conf.d, nginx-unprivileged ses fichiers temporaires et son pid dans /tmp.
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.relayAssistant.resources | nindent 12 }}
+      {{- with .Values.relayAssistant.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.relayAssistant.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.relayAssistant.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: template
+          configMap:
+            name: {{ include "device-management.componentName" (dict "root" . "component" "relay-assistant") }}
+        - name: conf
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

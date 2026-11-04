@@ -4,10 +4,7 @@ metadata:
   name: {{ include "device-management.configMapName" . }}
   labels:
     {{- include "device-management.labels" . | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "-1") | nindent 2 }}
 # Non-secret config only (endpoints, flags, TTLs, allowlists...). Consumed by
 # every DM_* Deployment via `envFrom: configMapRef` — actual secrets keep an
 # individual env/secretKeyRef in each deployment template instead.
@@ -75,10 +72,33 @@ data:
 
   # -- config.relay --
   DM_RELAY_ENABLED: {{ .Values.config.relay.enabled | quote }}
-  DM_RELAY_KEY_TTL_SECONDS: {{ .Values.config.relay.keyTtlSeconds | quote }}
+  # `int` first: Helm decodes values.yaml numbers as float64, and Go's default
+  # float64->string formatting renders round numbers like the 2592000 default
+  # (30 days) as "2.592e+06" once `quote` stringifies it directly — breaking
+  # Settings' int parsing on every default install. Casting through `int`
+  # forces decimal formatting.
+  DM_RELAY_KEY_TTL_SECONDS: {{ .Values.config.relay.keyTtlSeconds | int | quote }}
   DM_RELAY_ALLOWED_TARGETS_CSV: {{ .Values.config.relay.allowedTargetsCsv | quote }}
   DM_RELAY_REQUIRE_KEY_FOR_SECRETS: {{ .Values.config.relay.requireKeyForSecrets | quote }}
   DM_RELAY_ASSISTANT_URL: {{ .Values.config.relay.assistantUrl | quote }}
+  {{- with .Values.config.relay.keycloakUpstream }}
+  {{- $host := regexReplaceAll "^[A-Za-z][A-Za-z0-9+.-]*://([^/:]+).*$" . "${1}" }}
+  {{- if not (contains "." $host) }}
+  {{- fail (printf "config.relay.keycloakUpstream : l'hôte %q n'a pas de point. Le resolver nginx du relais ne complète pas les noms courts (502 Host not found) : mettre le FQDN, par ex. <service>.<namespace>.svc.cluster.local." $host) }}
+  {{- end }}
+  {{- end }}
+  RELAY_KEYCLOAK_UPSTREAM: {{ .Values.config.relay.keycloakUpstream | quote }}
+  DM_RELAY_FORCE_KEYCLOAK_ENDPOINTS: {{ .Values.config.relay.forceKeycloakEndpoints | quote }}
+
+  # -- config.llm : modèles annoncés aux extensions (vide = fonction désactivée) --
+  EMBD_MODEL_NAME: {{ .Values.config.llm.embdModelName | quote }}
+  RERANK_MODEL_NAME: {{ .Values.config.llm.rerankModelName | quote }}
+
+  # -- config.parc : export de l'état du parc (worker), non secret --
+  PARC_EXPORT_ENABLED: {{ .Values.config.parc.enabled | quote }}
+  PARC_EXPORT_URL: {{ .Values.config.parc.url | quote }}
+  PARC_EXPORT_INTERVALLE_S: {{ .Values.config.parc.intervalSeconds | int | quote }}
+  PARC_INSTANCE_LABEL: {{ .Values.config.parc.instanceLabel | quote }}
 
   # -- contentTemplate: browser-extension/plugin substitution tokens, not
   # server config (see values.yaml comment on this section) --

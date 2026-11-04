@@ -1,0 +1,98 @@
+{{- if .Values.relayAssistant.enabled }}
+{{- if not .Values.config.relay.keycloakUpstream }}
+{{- fail "relayAssistant.enabled exige config.relay.keycloakUpstream (URL du realm Keycloak, en FQDN)." }}
+{{- end }}
+{{- /* FQDN obligatoire : les proxy_pass qui portent une variable ($is_args…) sont
+résolus par le resolver nginx, qui ne complète pas les noms courts. */}}
+{{- $api := printf "http://%s.%s.svc.%s:%v" (include "device-management.componentName" (dict "root" . "component" "api")) .Release.Namespace .Values.relayAssistant.clusterDomain .Values.api.service.port }}
+{{- $kc := trimSuffix "/" .Values.config.relay.keycloakUpstream }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "relay-assistant") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "relay-assistant") | nindent 4 }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "-1") | nindent 2 }}
+# Gabarit nginx rendu par Helm. Seul ${RELAY_PROXY_SHARED_TOKEN} (secret) est
+# substitué au démarrage par l'entrypoint nginx (envsubst des seules variables
+# définies) : les $variables nginx restent intactes.
+data:
+  default.conf.template: |
+    server {
+      listen {{ .Values.relayAssistant.containerPort }};
+      server_name _;
+
+      # Vide : l'entrypoint nginx lit /etc/resolv.conf (NGINX_ENTRYPOINT_LOCAL_RESOLVERS).
+      resolver {{ .Values.relayAssistant.resolver | default "${NGINX_LOCAL_RESOLVERS}" }} valid=30s ipv6=off;
+
+      proxy_ssl_server_name on;
+      proxy_http_version 1.1;
+
+      # Réponses Keycloak : gros cookies de session OIDC et gros JWT → sans
+      # ces tampons, "upstream sent too big header" / 502.
+      proxy_buffer_size 16k;
+      proxy_buffers 8 16k;
+      proxy_busy_buffers_size 32k;
+      large_client_header_buffers 4 16k;
+
+      location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 'ok';
+      }
+
+      # Clés publiques de signature : matière publique, sans contrôle relais.
+      location = /keycloak/protocol/openid-connect/certs {
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass {{ $kc }}/protocol/openid-connect/certs$is_args$args;
+      }
+
+      location = /__relay_auth {
+        internal;
+        proxy_pass {{ $api }}/relay/authorize;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Relay-Client $http_x_relay_client;
+        proxy_set_header X-Relay-Key $http_x_relay_key;
+        proxy_set_header X-Relay-Proxy-Token ${RELAY_PROXY_SHARED_TOKEN};
+        proxy_set_header X-Relay-Target $relay_target;
+        proxy_set_header X-Original-Method $request_method;
+        proxy_set_header X-Original-URI $request_uri;
+      }
+
+      # Endpoints OIDC publics par conception : /auth est une redirection du
+      # navigateur (pas d'en-tête X-Relay-* possible au premier login), /token
+      # est protégé par PKCE, /userinfo par le jeton porteur.
+      location ~ ^/keycloak/protocol/openid-connect/(auth|token|userinfo)$ {
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Content-Type $http_content_type;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass {{ $kc }}/protocol/openid-connect/$1$is_args$args;
+      }
+
+      {{- with .Values.relayAssistant.upstreams.mcrApi }}
+
+      location ~ ^/mcr-api/(.+)$ {
+        set $relay_target mcr-api;
+        auth_request /__relay_auth;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Content-Type $http_content_type;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass {{ trimSuffix "/" . }}/$1$is_args$args;
+      }
+      {{- end }}
+
+      location = /telemetry/v1/traces {
+        set $relay_target telemetry;
+        auth_request /__relay_auth;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Content-Type $http_content_type;
+        proxy_set_header User-Agent $http_user_agent;
+        proxy_pass {{ $api }}/telemetry/v1/traces$is_args$args;
+      }
+
+      location / {
+        return 404;
+      }
+    }
+{{- end }}

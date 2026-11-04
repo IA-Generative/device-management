@@ -1,0 +1,179 @@
+{{- if .Values.llmProxy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "device-management.componentName" (dict "root" . "component" "llm-proxy") }}
+  labels:
+    {{- include "device-management.componentLabels" (dict "root" . "component" "llm-proxy") | nindent 4 }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "1") | nindent 2 }}
+spec:
+  {{- if not .Values.llmProxy.autoscaling.enabled }}
+  replicas: {{ .Values.llmProxy.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "llm-proxy") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "llm-proxy") | nindent 8 }}
+        {{- with .Values.llmProxy.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.llmProxy.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "device-management.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "device-management.podSecurityContext" . | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: llm-proxy
+          image: {{ include "device-management.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "device-management.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uvicorn
+            - app.main:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - {{ .Values.llmProxy.service.targetPort | quote }}
+            - --proxy-headers
+            - --forwarded-allow-ips
+            - "*"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.llmProxy.service.targetPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "device-management.configMapName" . }}
+          env:
+            - name: DM_PORT
+              value: {{ .Values.llmProxy.service.targetPort | quote }}
+            - name: DM_RUNTIME_MODE
+              value: "llm"
+            - name: DM_CONFIG_ENABLED
+              value: "false"
+            - name: DM_STORE_ENROLL_LOCALLY
+              value: "false"
+            - name: DM_STORE_ENROLL_S3
+              value: "false"
+            {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.llmProxy.runtimeConfig.pollIntervalSeconds "editable" .Values.llmProxy.runtimeConfig.editable) | nindent 12 }}
+            {{- include "device-management.databaseEnv" . | nindent 12 }}
+            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
+            # Required by the prod startup guard (validate_security_config in
+            # app/main.py): it runs at module-import time regardless of
+            # DM_RUNTIME_MODE, so llmProxy is subject to the same "insecure
+            # configuration" check as api/admin despite never handling
+            # admin sessions itself.
+            - name: ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: ADMIN_SESSION_SECRET
+                  optional: true
+            # Auth relais entrante : vérification des clés X-Relay-* (hash poivré, DB).
+            - name: DM_RELAY_SECRET_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_RELAY_SECRET_PEPPER
+            # llmToken signé par client (auth duale) — même clé que le pod api
+            # qui les mint dans /config.
+            - name: DM_LLM_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_LLM_TOKEN_SIGNING_KEY
+                  optional: true
+            # Backend LLM réel — la clé ne quitte jamais le serveur. Ces deux
+            # entrées écrasent volontairement les tokens ConfigMap du même
+            # nom (contentTemplate.llmBaseUrl/defaultModelName, client-facing)
+            # avec les valeurs serveur réelles : `env` prend toujours le pas
+            # sur `envFrom` pour un même nom de variable.
+            - name: LLM_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: LLM_BASE_URL
+            - name: LLM_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: LLM_API_TOKEN
+            - name: DEFAULT_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DEFAULT_MODEL_NAME
+                  optional: true
+            - name: EMBD_MODEL_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: EMBD_MODEL_NAME
+                  optional: true
+            {{- with .Values.llmProxy.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.llmProxy.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.llmProxy.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.llmProxy.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.llmProxy.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.llmProxy.probes.startup.failureThreshold }}
+            timeoutSeconds: {{ .Values.llmProxy.probes.startup.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.llmProxy.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.llmProxy.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.llmProxy.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.llmProxy.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.llmProxy.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.llmProxy.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.llmProxy.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.llmProxy.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.llmProxy.probes.liveness.failureThreshold }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- with .Values.llmProxy.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.llmProxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llmProxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llmProxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

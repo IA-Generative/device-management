@@ -2,16 +2,16 @@
 # Placeholders only (example.invalid style) — copy this file, replace every
 # placeholder, and keep the result out of version control (or store it in
 # your private ops repo, gitignored, next to a *.example template like this
-# one — same convention as the raw k8s manifests under deploy/k8s/overlays).
+# one).
 #
 # Validate with:
 #   helm template device-management deploy/helm/device-management \
 #     -f deploy/helm/examples/values-prod-example.yaml
 
 image:
-  registry: ghcr.io/example-org
-  repository: device-management
-  tag: "0.8.1"
+  registry: ghcr.io
+  repository: ia-generative/device-management
+  tag: "0.9.22"
 
 imagePullSecrets:
   - name: regcred
@@ -33,7 +33,10 @@ admin:
   persistence:
     enabled: true
     size: 5Gi
-    storageClassName: standard
+    # Left empty on purpose: uses the cluster's default StorageClass. Set
+    # explicitly only if your cluster has no default StorageClass, or to
+    # pick a non-default one.
+    storageClassName: ""
 
 worker:
   replicaCount: 2
@@ -48,13 +51,14 @@ telemetryRelay:
 ingress:
   enabled: true
   className: nginx
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    # The admin OIDC callback returns a large Set-Cookie (session + id_token):
-    # bump the response buffer or the ingress returns 502 on /admin/callback.
-    nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
-    nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+  # Empty by default — add whatever your ingress controller/router actually
+  # needs (e.g. a cert-manager cluster-issuer, or nginx.ingress.kubernetes.io/*
+  # tuning if you're really running the nginx Ingress Controller as
+  # className above). The admin OIDC callback returns a large Set-Cookie
+  # (session + id_token): if you see 502s on /admin/callback, your ingress
+  # controller's response-buffer size needs raising — the exact annotation
+  # depends on which controller you run.
+  annotations: {}
   hosts:
     - host: device-management.example.invalid
       paths:

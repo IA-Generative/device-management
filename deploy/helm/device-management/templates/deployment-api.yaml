@@ -5,16 +5,13 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "api") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "1") | nindent 2 }}
 spec:
   {{- if not .Values.api.autoscaling.enabled }}
   replicas: {{ .Values.api.replicaCount }}
   {{- end }}
   strategy:
-    {{- toYaml .Values.api.strategy | nindent 4 }}
+    {{- include "device-management.strategy" .Values.api.strategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "api") | nindent 6 }}
@@ -141,8 +138,18 @@ spec:
                 secretKeyRef:
                   name: {{ include "device-management.secretName" . }}
                   key: DM_TELEMETRY_TOKEN_SIGNING_KEY
+            # Signe les llmToken servis aux extensions dans /config (le llmProxy
+            # les vérifie avec la même clé). Sans elle : pas de jeton, et les
+            # appels LLM des extensions échouent.
+            - name: DM_LLM_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_LLM_TOKEN_SIGNING_KEY
+                  optional: true
             {{- include "device-management.awsEnv" . | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
+            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
             {{- with .Values.api.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

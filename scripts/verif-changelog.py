@@ -49,6 +49,13 @@ TECHNIQUE: list[tuple[str, re.Pattern[str]]] = [
         r"heartbeat|reaper|worker|queue|flake|smoke)\b", re.I)),
 ]
 
+# Liens que release-please pose vers le dépôt public (comparaison de versions, commit, PR,
+# ticket) : le SHA complet d'un lien de commit n'est pas un secret. On ne garde que le texte
+# du lien, qui reste soumis aux contrôles.
+LIEN_DEPOT = re.compile(
+    r"\[([^\]]*)\]\(https://github\.com/[\w.-]+/[\w.-]+/(?:commit|compare|issues|pull)/[^)\s]+\)"
+)
+
 TITRE = re.compile(r"^##\s+\[?v?(?P<version>\d+\.\d+\.\d+[^\]\s(]*)\]?")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 LONGUEUR_MAX = 240
@@ -70,6 +77,7 @@ def controler(chemin: Path) -> tuple[int, int]:
     section_pleine = False
     sections = 0
     for no, ligne in enumerate(lignes, 1):
+        ligne = LIEN_DEPOT.sub(r"\1", ligne)
         if ligne.startswith("## "):
             if section_courante is not None and not section_pleine:
                 constat(section_courante, "ÉCHEC", "section vide", lignes[section_courante - 1])

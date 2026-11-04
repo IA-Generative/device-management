@@ -7,16 +7,30 @@ Chart name, truncated/sanitized for use in resource names.
 
 {{/*
 Fully qualified app name. Honors fullnameOverride/nameOverride.
+
+Truncated to 45 (not 63): every derived resource name appends a suffix on
+top of this — the longest chain is componentName's "-telemetry-relay" (16
+chars), and postgres.cnpg additionally lets the CNPG *operator* itself
+append "-superuser"/"-rw"/"-app" (up to 10 more chars) to the Cluster name
+it derives from this, outside Helm's own rendering where nothing here can
+catch an overflow at template time. 45 + 16 = 61 (component chain) and
+45 + "-db-superuser" (13) = 58 (CNPG chain) both stay under the Kubernetes
+63-character label-value/DNS-label limit. Release names can legitimately be
+up to 53 chars on their own (Helm's own cap), so without this, a release
+name that doesn't happen to already contain "device-management" silently
+produces resource names that fail at apply time (see the
+`spec.template.labels: ... must be no more than 63 characters` failure on
+the migrate Job for a real example).
 */}}
 {{- define "device-management.fullname" -}}
 {{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- .Values.fullnameOverride | trunc 45 | trimSuffix "-" -}}
 {{- else -}}
 {{- $name := default .Chart.Name .Values.nameOverride -}}
 {{- if contains $name .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- .Release.Name | trunc 45 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 45 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -51,11 +65,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
-Component-scoped name, e.g. "release-device-management-admin".
+Component-scoped name, e.g. "release-device-management-admin". Truncated to
+63 (the Kubernetes label-value/DNS-label limit) as a defense-in-depth
+safety net on top of fullname's own 45-char budget — see the comment on
+"device-management.fullname" for why 45 was chosen.
 Usage: {{ include "device-management.componentName" (dict "root" . "component" "admin") }}
 */}}
 {{- define "device-management.componentName" -}}
-{{- printf "%s-%s" (include "device-management.fullname" .root) .component -}}
+{{- printf "%s-%s" (include "device-management.fullname" .root) .component | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
@@ -87,7 +104,7 @@ ServiceAccount name.
 Name of the ConfigMap holding non-secret DM_* config.
 */}}
 {{- define "device-management.configMapName" -}}
-{{- printf "%s-config" (include "device-management.fullname" .) -}}
+{{- printf "%s-config" (include "device-management.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
@@ -97,7 +114,7 @@ Name of the Secret used at runtime: existingSecret if set, else the chart-manage
 {{- if .Values.secrets.existingSecret -}}
 {{- .Values.secrets.existingSecret -}}
 {{- else -}}
-{{- printf "%s-secrets" (include "device-management.fullname" .) -}}
+{{- printf "%s-secrets" (include "device-management.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 
@@ -174,10 +191,37 @@ Usage: {{ include "device-management.identityEnv" (dict "root" . "pollIntervalSe
 {{- end -}}
 
 {{/*
-DATABASE_URL/DATABASE_ADMIN_URL secretKeyRef pair, shared by api/admin/worker/telemetryRelay.
+DATABASE_URL/DATABASE_ADMIN_URL secretKeyRef pair, shared by api/admin/worker/telemetryRelay/migrate.
+When postgres.cnpg.enabled, both are sourced from the CNPG operator's
+`<cluster>-app` Secret (key `uri`) — CNPG generates and rotates it itself.
+The migrations run with the application role on purpose: the tables must be
+owned by it, and the extensions are pre-created at cluster bootstrap
+(postInitApplicationSQL), so no superuser access is needed.
 Usage: {{ include "device-management.databaseEnv" . }}
 */}}
 {{- define "device-management.databaseEnv" -}}
+{{- if .Values.postgres.cnpg.enabled -}}
+{{- $cluster := include "device-management.cnpgClusterName" . -}}
+- name: DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ $cluster }}-app
+      key: uri
+# Intentionally the same app-role Secret as DATABASE_URL, not genuinely
+# admin-privileged: alembic (the migration Job) uses whichever of
+# DATABASE_ADMIN_URL/DATABASE_URL is set for its ENTIRE run, not just the
+# initial CREATE EXTENSION step — pointing this at CNPG's superuser role
+# would make every table it creates owned by that role instead of the
+# app's, breaking the app's own runtime access to them. Components that
+# separately need genuine superuser credentials (see
+# device-management.cnpgSuperuserAdminUrlOverride) must override this
+# afterwards in their own env: list, not here.
+- name: DATABASE_ADMIN_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ $cluster }}-app
+      key: uri
+{{- else -}}
 - name: DATABASE_URL
   valueFrom:
     secretKeyRef:
@@ -189,16 +233,49 @@ Usage: {{ include "device-management.databaseEnv" . }}
       name: {{ include "device-management.secretName" . }}
       key: DATABASE_ADMIN_URL
 {{- end -}}
+{{- end -}}
 
 {{/*
-Maps an ingress path's `service` key (api|admin|telemetryRelay, matching the
-values.yaml top-level component keys) to the kebab-case component suffix used
-in resource names (api|admin|telemetry-relay).
+STOPGAP — remove once the upstream device-management fix (making the
+FastAPI startup hook's admin-privileged role/database/schema bootstrap
+opt-in, off by default) is deployed. Until then, that hook runs
+unconditionally on every api/admin/telemetryRelay/llmProxy pod boot (they
+all run `uvicorn app.main:app`) and genuinely needs postgres-superuser
+credentials to CREATE ROLE/CREATE DATABASE — which DATABASE_ADMIN_URL from
+device-management.databaseEnv does NOT provide (deliberately: alembic uses
+that same value for its entire migration run, so it stays pointed at the
+app role to avoid tables ending up owned by a role the app can't use).
+This appends a second DATABASE_ADMIN_URL entry sourced from CNPG's
+enableSuperuserAccess-managed Secret; Kubernetes uses the LAST entry with a
+given name in a container's env: list, so this overrides the one from
+databaseEnv above as long as it's included afterwards.
+Only include this on components running the FastAPI app (api/admin/
+telemetryRelay/llmProxy) — never on the migration Job or worker.
+Usage: {{ include "device-management.cnpgSuperuserAdminUrlOverride" . }}
+(placed AFTER device-management.databaseEnv in that component's env: list)
+*/}}
+{{- define "device-management.cnpgSuperuserAdminUrlOverride" -}}
+{{- if and .Values.postgres.cnpg.enabled .Values.postgres.cnpg.temporaryStartupBootstrapNeedsSuperuser -}}
+{{- $cluster := include "device-management.cnpgClusterName" . -}}
+- name: DATABASE_ADMIN_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ $cluster }}-superuser
+      key: uri
+{{- end -}}
+{{- end -}}
+
+{{/*
+Maps an ingress path's `service` key (api|admin|telemetryRelay|llmProxy,
+matching the values.yaml top-level component keys) to the kebab-case
+component suffix used in resource names (api|admin|telemetry-relay|llm-proxy).
 Usage: {{ include "device-management.serviceComponentSuffix" (dict "service" "telemetryRelay") }}
 */}}
 {{- define "device-management.serviceComponentSuffix" -}}
 {{- if eq .service "telemetryRelay" -}}
 telemetry-relay
+{{- else if eq .service "llmProxy" -}}
+llm-proxy
 {{- else -}}
 {{- .service -}}
 {{- end -}}
@@ -215,20 +292,32 @@ Usage: {{ include "device-management.ingressServicePort" (dict "root" $ "service
 {{- .root.Values.admin.service.port -}}
 {{- else if eq .service "telemetryRelay" -}}
 {{- .root.Values.telemetryRelay.service.port -}}
+{{- else if eq .service "llmProxy" -}}
+{{- .root.Values.llmProxy.service.port -}}
 {{- else -}}
-{{- fail (printf "ingress: unknown service %q (expected api|admin|telemetryRelay)" .service) -}}
+{{- fail (printf "ingress: unknown service %q (expected api|admin|telemetryRelay|llmProxy)" .service) -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
-Hostname of the internal dev postgres Service, used as the wait-for-postgres
-default target when postgres.internal.enabled=true. Empty otherwise — an
-external database has no such default (worker.waitForPostgres.host must be
-set explicitly).
+Name of the CNPG Cluster resource (and the prefix of its operator-managed
+`-rw`/`-app`/`-superuser` Services/Secrets).
+*/}}
+{{- define "device-management.cnpgClusterName" -}}
+{{- include "device-management.componentName" (dict "root" . "component" "db") -}}
+{{- end -}}
+
+{{/*
+Hostname of the cluster-provisioned postgres Service, used as the
+wait-for-postgres default target when postgres.internal.enabled=true or
+postgres.cnpg.enabled=true. Empty otherwise — an external database has no
+such default (waitForPostgres.host must be set explicitly in that case).
 */}}
 {{- define "device-management.postgresHost" -}}
 {{- if .Values.postgres.internal.enabled -}}
 {{- include "device-management.componentName" (dict "root" . "component" "postgres") -}}
+{{- else if .Values.postgres.cnpg.enabled -}}
+{{- printf "%s-rw" (include "device-management.cnpgClusterName" .) -}}
 {{- end -}}
 {{- end -}}
 
@@ -252,4 +341,30 @@ Usage: {{ include "device-management.awsEnv" . }}
     secretKeyRef:
       name: {{ include "device-management.secretName" . }}
       key: AWS_SESSION_TOKEN
+{{- end -}}
+
+{{/*
+metadata.annotations : commonAnnotations + l'ordre de synchronisation d'Argo CD (sync-wave),
+ignoré par Helm. -1 = prérequis (ServiceAccount, ConfigMap, Secret, base), 0 = migration (hook
+Sync de job-migrate.yaml), 1 = applications : la migration attend une base prête, les pods
+attendent la migration. Usage : {{ include "device-management.annotations" (dict "root" . "wave" "1") }}
+*/}}
+{{- define "device-management.annotations" -}}
+{{- $a := merge (dict "argocd.argoproj.io/sync-wave" (toString .wave)) (.root.Values.commonAnnotations | default dict) -}}
+annotations:
+  {{- toYaml $a | nindent 2 }}
+{{- end -}}
+
+{{/*
+spec.strategy d'un Deployment. Avec `Recreate`, le bloc `rollingUpdate` est retiré :
+Kubernetes le refuse (« may not be specified when strategy type is 'Recreate' »), et Helm
+le garde quand on surcharge seulement `type` (fusion des tables avec les valeurs par
+défaut). Usage : {{ include "device-management.strategy" .Values.api.strategy }}
+*/}}
+{{- define "device-management.strategy" -}}
+{{- if eq (.type | default "RollingUpdate") "Recreate" -}}
+type: Recreate
+{{- else -}}
+{{ toYaml . }}
+{{- end -}}
 {{- end -}}

@@ -5,16 +5,13 @@ metadata:
   name: {{ include "device-management.componentName" (dict "root" . "component" "worker") }}
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
-  {{- with .Values.commonAnnotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+  {{- include "device-management.annotations" (dict "root" . "wave" "1") | nindent 2 }}
 spec:
   {{- if not .Values.worker.autoscaling.enabled }}
   replicas: {{ .Values.worker.replicaCount }}
   {{- end }}
   strategy:
-    {{- toYaml .Values.worker.strategy | nindent 4 }}
+    {{- include "device-management.strategy" .Values.worker.strategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "device-management.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
@@ -54,6 +51,8 @@ spec:
                 echo "waiting for postgres...";
                 sleep 2;
               done
+          resources:
+            {{- toYaml .Values.worker.waitForPostgres.resources | nindent 12 }}
       {{- end }}
       containers:
         - name: worker
@@ -97,8 +96,31 @@ spec:
             # consumed by the livenessProbe below (freshness check).
             - name: DM_WORKER_HEARTBEAT_FILE
               value: {{ .Values.worker.heartbeatFile | quote }}
+            - name: PARC_EXPORT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: PARC_EXPORT_SECRET
+                  optional: true
             {{- include "device-management.awsEnv" . | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
+            # Required by the prod startup guard (validate_security_config in
+            # app/main.py): it runs at module-import time, and worker_main.py
+            # imports app.main too — so the worker is subject to the same
+            # "insecure configuration" check as api/admin despite never
+            # serving HTTP or handling admin sessions itself.
+            - name: ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: ADMIN_SESSION_SECRET
+                  optional: true
+            - name: DM_RELAY_SECRET_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_RELAY_SECRET_PEPPER
+                  optional: true
             {{- with .Values.worker.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

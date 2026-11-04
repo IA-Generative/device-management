@@ -10,9 +10,19 @@ metadata:
   labels:
     {{- include "device-management.componentLabels" (dict "root" . "component" "migrate") | nindent 4 }}
   annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
+    # post-install (et non pre-install) : à la première installation, le
+    # ServiceAccount et le Cluster CNPG sont des ressources ordinaires créées
+    # après les hooks pre-* — un hook pre-install attendrait une base qui ne
+    # peut pas encore exister. En upgrade, pre-upgrade migre avant le rollout.
+    "helm.sh/hook": post-install,pre-upgrade
     "helm.sh/hook-weight": {{ .Values.migration.hookWeight | quote }}
     "helm.sh/hook-delete-policy": {{ .Values.migration.hookDeletePolicy }}
+    # Argo CD ignore les hooks Helm quand ce hook est posé : sans lui, il range
+    # post-install,pre-upgrade en PreSync, AVANT le ServiceAccount et la base (Job refusé,
+    # synchronisation bloquée). En Sync, vague 0 : après les prérequis (-1), avant les pods (1).
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   backoffLimit: {{ .Values.migration.backoffLimit }}
   template:
@@ -28,6 +38,35 @@ spec:
       {{- end }}
       securityContext:
         {{- include "device-management.podSecurityContext" . | nindent 8 }}
+      {{- if .Values.migration.waitForPostgres.enabled }}
+      initContainers:
+        - name: wait-for-postgres
+          image: "{{ .Values.worker.waitForPostgres.image.repository }}:{{ .Values.worker.waitForPostgres.image.tag }}"
+          securityContext:
+            {{- include "device-management.containerSecurityContext" . | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              host={{ .Values.migration.waitForPostgres.host | default (include "device-management.postgresHost" .) | quote }}
+              if [ -z "$host" ]; then
+                echo "migration.waitForPostgres.host is empty and no default database host could be resolved (neither postgres.internal nor postgres.cnpg is enabled) — set it explicitly, or disable migration.waitForPostgres.enabled" >&2
+                exit 1
+              fi
+              timeout={{ .Values.migration.waitForPostgres.timeoutSeconds }}
+              elapsed=0
+              until pg_isready -h "$host" -U {{ .Values.config.postgres.user | quote }}; do
+                elapsed=$((elapsed + 2))
+                if [ "$elapsed" -ge "$timeout" ]; then
+                  echo "timed out after ${timeout}s waiting for postgres at $host" >&2
+                  exit 1
+                fi
+                echo "waiting for postgres at $host (${elapsed}/${timeout}s)...";
+                sleep 2;
+              done
+          resources:
+            {{- toYaml .Values.worker.waitForPostgres.resources | nindent 12 }}
+      {{- end }}
       containers:
         - name: alembic-migrate
           image: {{ include "device-management.image" . }}
