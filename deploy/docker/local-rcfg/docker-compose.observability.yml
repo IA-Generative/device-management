@@ -13,7 +13,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:11.3.0
+    image: grafana/grafana:11.6.16
     ports:
       - "3030:3000"
     environment:
