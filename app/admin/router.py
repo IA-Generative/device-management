@@ -3651,14 +3651,17 @@ async def api_debug_status(request: Request):
         except Exception:
             checks["llm"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
 
-    # Relay
-    relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant")
-    t0 = _time.monotonic()
-    try:
-        urlreq.urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3)
-        checks["relay"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
-    except Exception:
-        checks["relay"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
+    # Relay — omis quand il n'est pas déployé (variable vide), comme keycloak et llm
+    # quand ils ne sont pas configurés : règle unique dans app.services.relay_assistant.
+    from app.services import relay_assistant
+    relay_healthz = relay_assistant.healthz_url()
+    if relay_healthz:
+        t0 = _time.monotonic()
+        try:
+            urlreq.urlopen(relay_healthz, timeout=3)
+            checks["relay"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
+        except Exception:
+            checks["relay"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
 
     all_ok = all(c["ok"] for c in checks.values())
     down = [k for k, v in checks.items() if not v["ok"]]
@@ -3811,6 +3814,90 @@ def _llm_models_detail() -> str:
     return f"{model} · embed: {embd or '(désactivé)'}"
 
 
+def _relay_check_detail(urlopen) -> str:
+    """Détail du contrôle « Relay-assistant » de la page de debug.
+
+    Variable absente : défaut docker-compose (le relais est un conteneur voisin).
+    Variable présente mais VIDE : le chart n'a pas déployé le relais nginx — en
+    production, l'api sert /relay-assistant/* elle-même (_RELAY_UPSTREAM_MAP) et
+    c'est voulu. Ce n'est pas une erreur, et surtout pas « unknown url type:
+    '/healthz' » : un chemin sans hôte n'est pas un état de service.
+    """
+    from app.services import relay_assistant
+    healthz = relay_assistant.healthz_url()
+    if not healthz:
+        return "non déployé"
+    with urlopen(healthz, timeout=3):
+        pass
+    return "nginx OK"
+
+
+def _relay_chain_checks(client_factory=None) -> tuple[None, dict]:
+    """Lignes « Relais api → <cible> » de la page de debug : la chaîne réelle du relais
+    servi par l'api (api → proxy de sortie → upstream), une par cible configurée.
+
+    C'est l'api qui porte le proxy de sortie et le vrai trafic : quand l'admin tourne à
+    part (DM_RUNTIME_MODE=admin), on interroge l'api sur son Service interne
+    (DM_API_INTERNAL_URL, posé par le chart) ; en mode all, on sonde directement.
+    Jamais d'erreur levée : la page de debug ne doit pas tomber avec le proxy.
+    """
+    import time as _time
+
+    from app.services import relay_probe
+    prefixe = "Relais api → "
+    mode = str(settings.runtime_mode or "api").strip().lower()
+    if mode in ("api", "all"):
+        res = relay_probe.sonder_toutes()
+    else:
+        base, source = _api_internal_url()
+        if not base:
+            return None, {prefixe + "?": {"status": "error", "latency_ms": 0,
+                          "detail": "adresse de l'api inconnue : ni DM_API_INTERNAL_URL, ni DM_INTERNAL_URL, "
+                                    "ni HOSTNAME de la forme <release>-admin-…"}}
+        jeton = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
+        t0 = _time.monotonic()
+        try:
+            factory = client_factory or (lambda: httpx.Client(trust_env=False, timeout=8))
+            with factory() as client:
+                r = client.get(f"{base}/ops/relay/probe", headers={"X-Internal-Token": jeton})
+            if r.status_code == 401:
+                return None, {prefixe + "?": {"status": "error", "latency_ms": round((_time.monotonic()-t0)*1000),
+                              "detail": "l'api refuse la sonde : jeton DM_QUEUE_ADMIN_TOKEN absent ou différent "
+                                        f"({base}, {source})"}}
+            r.raise_for_status()
+            res = r.json()
+        except Exception as e:
+            return None, {prefixe + "?": {"status": "error", "latency_ms": round((_time.monotonic()-t0)*1000),
+                          "detail": f"l'api ne répond pas sur /ops/relay/probe ({base}, {source}) : {str(e)[:80]}"}}
+    cibles = res.get("cibles") or {}
+    if not cibles:
+        return None, {prefixe + "?": {"status": "ok", "latency_ms": 0,
+                      "detail": "aucune cible configurée (RELAY_*_UPSTREAM)"}}
+    return None, {prefixe + c: {"status": v.get("status", "error"), "latency_ms": v.get("latency_ms", 0),
+                                "detail": relay_probe.detail_complet(v)} for c, v in cibles.items()}
+
+
+def _api_internal_url() -> tuple[str | None, str]:
+    """Où l'admin joint l'api dans le cluster, et d'où vient cette adresse.
+
+    1. DM_API_INTERNAL_URL (chart, Service .svc) ; 2. DM_INTERNAL_URL (déjà posé par le
+    chart ET par le kustomize du DGX, nom court du Service de l'api) ; 3. à défaut, le nom
+    du Deployment de l'admin déduit de HOSTNAME (<nom>-<rs>-<pod>) en remplaçant le
+    suffixe -admin par -api, comme le chart nomme ses Services. Une nouvelle image ne
+    doit pas créer de rouge avant que le chart ou le kustomize suive.
+    """
+    for var in ("DM_API_INTERNAL_URL", "DM_INTERNAL_URL"):
+        v = (os.getenv(var) or "").strip().rstrip("/")
+        if v:
+            return v, f"variable {var}"
+    morceaux = (os.getenv("HOSTNAME") or "").strip().split("-")
+    if len(morceaux) >= 4:
+        deploiement = "-".join(morceaux[:-2])
+        if deploiement.endswith("-admin"):
+            return f"http://{deploiement[: -len('-admin')]}-api", "défaut déduit de HOSTNAME"
+    return None, "aucune source"
+
+
 @router.get("/debug", response_class=HTMLResponse)
 @require_admin
 async def debug_page(request: Request):
@@ -3875,10 +3962,7 @@ async def debug_page(request: Request):
             return f"{models} (upstream injoignable)"
 
     def check_relay():
-        relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant")
-        with urlreq.urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3):
-            pass
-        return "nginx OK"
+        return _relay_check_detail(urlreq.urlopen)
 
     def check_telemetry():
         url = os.getenv("DM_TELEMETRY_UPSTREAM_ENDPOINT", "")
@@ -3893,17 +3977,21 @@ async def debug_page(request: Request):
 
     # Run checks in parallel
     checks = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         futures = [
             pool.submit(_check, "PostgreSQL", check_db),
             pool.submit(_check, "Keycloak OIDC", check_keycloak),
             pool.submit(_check, "LLM", check_llm),
-            pool.submit(_check, "Relay-assistant", check_relay),
+            pool.submit(_check, "Relay-assistant nginx", check_relay),
             pool.submit(_check, "Telemetrie upstream", check_telemetry),
+            pool.submit(_relay_chain_checks),
         ]
         for f in concurrent.futures.as_completed(futures, timeout=15):
             name, result = f.result()
-            checks[name] = result
+            if name is None:  # la chaîne du relais : une ligne par cible
+                checks.update(result)
+            else:
+                checks[name] = result
 
     # Config vars (safe)
     from app.services.crypto import is_sensitive_key, mask_secret
