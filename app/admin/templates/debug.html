@@ -330,6 +330,10 @@
       } else if (secret) {
         editor = document.createElement('input'); editor.className = 'dm-input';
         editor.type = 'password'; editor.placeholder = 'nouvelle valeur';
+      } else if (type === 'json') {
+        editor = document.createElement('textarea'); editor.className = 'dm-input';
+        editor.rows = 8; editor.spellcheck = false; editor.style.fontFamily = 'monospace';
+        editor.value = (cur == null ? '' : cur);
       } else {
         editor = document.createElement('input'); editor.className = 'dm-input';
         editor.type = (type === 'int' || type === 'float') ? 'number' : 'text';

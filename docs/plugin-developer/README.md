@@ -134,6 +134,7 @@ version sur quelques postes avant de généraliser (§3.3 et §9).
 | Pourquoi boucle-t-il sur la même mise à jour ? | [contrat §0](plugin-dm-protocol-update-features.md), obligations 3 et 6 |
 | Mon checksum ne correspond jamais | [contrat §2 bis](plugin-dm-protocol-update-features.md) — les `dm-*.json` sont retirés du binaire avant publication |
 | Comment déclarer mes feature flags ? | [packaging-guide](packaging-guide.md) → `featureToggles`, puis [contrat §4.4](plugin-dm-protocol-update-features.md) |
+| Comment afficher un lien (portail, communauté bêta, aide) sans coder l'adresse ? | [contrat §4.2 bis](plugin-dm-protocol-update-features.md) → clé `links`, consommée par `id` |
 | Comment tester une version sur quelques postes ? | [contrat §6 bis](plugin-dm-protocol-update-features.md) |
 | Puis-je ajouter un champ sans casser les anciens clients ? | [contrat §9](plugin-dm-protocol-update-features.md) |
 | Comment brancher le SSO Keycloak ? | [consumer-readme](consumer-readme.md) § « Keycloak : Authorization Code + PKCE » |

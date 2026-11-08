@@ -227,6 +227,7 @@ le catalogue ni l'IHM d'administration ne les remplacent.
 | `<profil>` | surcharges par environnement, fusionnées par-dessus `default` |
 | `${{VAR}}` | placeholder substitué par le serveur à l'exécution (endpoints, realm Keycloak, jetons…) |
 | `featureToggles` | **défauts des feature flags**, par profil |
+| `links` | liens à montrer dans l'interface, fusionnés **par `id`** (`default` ⊕ profil) par-dessus les liens communs du serveur — [§4.2 bis](#42-bis-clé-links--liens-distribués-aux-applications) |
 | `_description` | commentaire, retiré de la configuration servie |
 
 **`featureToggles` est le point de contact avec le §4.4.** Trois conséquences :
@@ -356,6 +357,85 @@ hôte, port) autorisées à appeler l'API HTTP locale de l'extension, par exempl
 `"https://portail.example,http://localhost:8080"` (= `DM_LOCAL_API_ALLOWED_ORIGINS` côté DM, surchargeable
 par plugin). **Absente** quand le DM n'en a pas : gardez alors votre valeur locale. Ce n'est qu'une liste
 d'origines : elle n'active pas l'API locale, qui reste pilotée par le flag `localApi`.
+
+### 4.2 bis Clé `links` — liens distribués aux applications
+
+> Introduite pour le conseil « portail de recherche » de la fenêtre Recherche
+> (issue #83) ; générique : tout lien, signet ou renvoi vers une fonctionnalité que
+> l'interface doit montrer sans que l'adresse soit codée dans le paquet.
+
+`config.links` est une liste **plate, résolue par le serveur**, **toujours présente**
+(`[]` quand rien n'est à montrer). Chaque entrée nomme le **rôle** du lien dans
+l'interface (`id`), pas sa destination : la destination change, le rôle non.
+
+```json
+{
+  "config": {
+    "links": [
+      {
+        "id": "search-portal",
+        "label": "Chercher aussi dans d'autres sources avec le portail de recherche",
+        "url": "https://monportail.numerique-interieur.com/",
+        "hint": "en bêta : s'inscrire",
+        "hintUrl": "https://communaute.mirai.interieur.gouv.fr/invite/kguG2oQ"
+      },
+      {
+        "id": "beta-signup",
+        "label": "Rejoindre la communauté bêta",
+        "url": "https://communaute.mirai.interieur.gouv.fr/invite/kguG2oQ"
+      }
+    ]
+  }
+}
+```
+
+| Champ | Contrainte | Rôle |
+|---|---|---|
+| `id` | obligatoire, `[a-z0-9][a-z0-9-]{1,39}`, stable | rôle du lien ; **le plugin ne rend que les ids qu'il connaît** et ignore les autres |
+| `label` | obligatoire, ≤ 80 car. | texte du lien |
+| `url` | obligatoire, `https://` absolue, ≤ 2048 | cible, ouverte dans le navigateur par défaut |
+| `hint` | optionnel, ≤ 200 car. | texte court accolé (ex. « en bêta : s'inscrire ») |
+| `hintUrl` | optionnel, `https://`, ≤ 2048 | cible du `hint` ; sans `hintUrl`, le `hint` est du texte simple |
+
+Le serveur **garantit** ces contraintes : une entrée hors contrat est retirée de la
+liste servie (jamais la liste entière). L'ordre de la liste est l'ordre d'affichage
+quand plusieurs liens sont montrés au même endroit. Aucun `${{VAR}}` n'y survit.
+
+**Ids connus aujourd'hui** : `search-portal` (fenêtre Recherche, bas du résumé — le
+`hint` porte l'inscription à la bêta), `beta-signup` (invitation à la communauté
+bêta), `beta-feedback` (page d'avis de la bêta : `url` est la **base** du portail, le
+plugin y ajoute son propre chemin `/_beta/retour?app=…`). Réservés pour la suite :
+`documentation`, `feedback-form`, `help`, `community`, `beta-messages`. Un plugin qui a besoin d'un nouveau rôle le propose dans une
+issue DM, avec son id.
+
+**Contrat de consommation côté plugin** — identique à `features` :
+
+- `links` est stocké tel quel (une seule préférence non sensible, par ex.
+  `extensions.IAssistant.links` = JSON de la liste) et **remplacé EN BLOC** à chaque
+  `/config`, jamais fusionné avec la valeur précédente : un lien retiré côté DM
+  disparaît du poste à la réponse suivante — zéro lien fantôme, y compris via le cache
+  disque ;
+- l'écran demande `getLink("search-portal")` et **masque l'élément** quand l'id est
+  absent (ou `links` vide) ; aucune valeur de repli codée en dur pour un lien que le
+  DM a volontairement retiré ;
+- le plugin revérifie `https://` sur `url`/`hintUrl` avant d'ouvrir (défense en
+  profondeur) ; pas d'allowlist réseau à appliquer, ces URL s'ouvrent dans le
+  navigateur.
+
+**Résolution côté DM** (priorité croissante, fusion **par `id`, champ par champ**) :
+
+```
+links = DM_LINKS                     (commun à toutes les applications — values du chart,
+                                      modifiable à chaud dans l'onglet Config admin)
+      ⊕ DM_LINKS_BY_APP[device_type] (propre à une application : matisse, pablo, libreoffice…)
+      ⊕ gabarit dm-config.json       (`links` de `default`, puis du profil)
+      ⊕ surcharge catalogue          (plugin_env_overrides, clé `links`, JSON, par plugin et profil)
+```
+
+Une couche n'a pas à répéter tout le lien : `{"id": "search-portal", "url": "https://…"}`
+ne change que l'adresse ; `{"id": "beta-signup", "hidden": true}` retire le lien pour
+cette application (ou ce plugin/profil). Les ajouts spécifiques viennent après la
+liste commune.
 
 ### 4.3 Objet `update` — directive de mise à jour
 
@@ -1032,6 +1112,7 @@ Règles :
 |---|---|
 | `update: null` si pas de campagne — jamais absent | le plugin vérifie `if update:` |
 | `features: {}` si aucun flag défini — jamais absent | le plugin utilise `features.get(k, True)` |
+| `links: []` si aucun lien — jamais absent ; remplacé en bloc côté client | zéro lien fantôme ; un id inconnu est ignoré, un id connu absent masque l'élément |
 | Nouveaux champs dans `update` → ignorés par vieux clients | parsing défensif |
 | Nouveau flag dans `features` → `True` par défaut côté plugin | non-cassant |
 | `meta.schema_version` incrémenté si breaking change | permet migration graduelle |

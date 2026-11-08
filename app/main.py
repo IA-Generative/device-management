@@ -55,6 +55,7 @@ from .admin.services import communications as _comms_svc
 from .postgres_queue import PostgresQueue, QueueJob
 from .s3 import s3_client
 from .services import health as _health
+from .services import links as _links
 from .services.crypto import (
     SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
 )
@@ -708,6 +709,15 @@ def _apply_catalog_overrides(cfg: dict, *, plugin_id: int, profile: str, cur) ->
             WHERE plugin_id = %s AND environment = %s
         """, (plugin_id, profile))
         for key, value in cur.fetchall():
+            if key == _links.LINKS_KEY:
+                # Surcharge catalogue des liens : JSON fusionné PAR id par-dessus la
+                # liste déjà résolue (une entrée {id, url} ne change que l'url ;
+                # {id, hidden: true} retire le lien pour ce plugin/profil).
+                config_obj[key] = _links.finalize(_links.merge(
+                    _links.parse_list(config_obj.get(key), source="resolved"),
+                    _links.parse_list(value, source=f"catalog.{profile}"),
+                ))
+                continue
             config_obj[key] = value
     except Exception:
         pass
@@ -776,7 +786,7 @@ def _build_config_from_template(template: dict, profile: str) -> dict:
 
     `featureToggles` is deep-merged (default ⊕ profile) instead of the shallow
     top-level merge: a profile section that overrides one flag must not wipe
-    the other flags declared in `default`.
+    the other flags declared in `default`. `links` is merged by id the same way.
     """
     default = dict(template.get("default", {}))
     env_section = template.get(profile, {})
@@ -786,6 +796,13 @@ def _build_config_from_template(template: dict, profile: str) -> dict:
         profile_toggles = env_section.get("featureToggles")
         if isinstance(default_toggles, dict) and isinstance(profile_toggles, dict):
             merged["featureToggles"] = {**default_toggles, **profile_toggles}
+        # `links` (issue #83) : fusion PAR id (default ⊕ profil), champ par champ — un
+        # profil qui ne change que l'url du portail ne perd pas les autres liens.
+        if _links.LINKS_KEY in default or _links.LINKS_KEY in env_section:
+            merged[_links.LINKS_KEY] = _links.merge(
+                _links.parse_list(default.get(_links.LINKS_KEY), source="template.default"),
+                _links.parse_list(env_section.get(_links.LINKS_KEY), source=f"template.{profile}"),
+            )
     else:
         merged = default
     # Remove inline documentation fields
@@ -1928,6 +1945,18 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None,
     local_api_origins = runtime_config.cfg("DM_LOCAL_API_ALLOWED_ORIGINS", as_list=True)
     if local_api_origins:
         config_obj["localApiAllowedOrigins"] = ",".join(local_api_origins)
+
+    # Liens distribués (issue #83) : liste RÉSOLUE, toujours servie (éventuellement
+    # vide) — le client la remplace en bloc. Couches : DM_LINKS (commun, values du
+    # chart / admin) ⊕ DM_LINKS_BY_APP[device_type] ⊕ gabarit du plugin (default ⊕
+    # profil, déjà fusionnés par _build_config_from_template). La surcharge
+    # catalogue (plugin_env_overrides, clé `links`) s'applique ensuite.
+    config_obj[_links.LINKS_KEY] = _links.resolve(
+        runtime_config.cfg(_links.ENV_COMMON, ""),
+        config_obj.get(_links.LINKS_KEY),
+        device_type=device,
+        by_app=runtime_config.cfg(_links.ENV_BY_APP, ""),
+    )
 
     public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
     if public_base:
