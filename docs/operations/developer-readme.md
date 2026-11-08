@@ -49,8 +49,8 @@ Quand un plugin appelle `/config/{x}/config.json?profile=dev` :
                 Fallback : config/{device_name}/ ou config/{device_type}/ (fichier)
  3. INJECTION   force device_name, config_path, bootstrap_url
  4. SUBSTITUTION ${{VAR}} → valeurs env systeme (LLM, Keycloak, etc.)
- 5. OVERRIDES DM telemetrie, relay, etc.
- 6. OVERRIDES CATALOGUE  plugin_env_overrides (par plugin + profil)
+ 5. OVERRIDES DM telemetrie, relay, links (DM_LINKS ⊕ DM_LINKS_BY_APP[device_type] ⊕ template)
+ 6. OVERRIDES CATALOGUE  plugin_env_overrides (par plugin + profil ; cle `links` fusionnee par id)
  7. KEYCLOAK    plugin_keycloak_clients → injecte client_id + realm
  8. ACCESS CTRL open | waitlist | keycloak_group
  9. SCRUB       secrets masques si pas de relay credentials

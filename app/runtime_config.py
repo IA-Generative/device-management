@@ -47,7 +47,7 @@ class ConfigKeySpec:
     env_name: str                 # canonical ENV var name (and override table key)
     label: str                    # human label (FR) for the UI
     group: str                    # UI grouping
-    type: str                     # bool | int | float | str | list
+    type: str                     # bool | int | float | str | list | json (str, JSON validé)
     hot_reloadable: bool          # True = effective without restart
     sensitive: bool = False       # secret: encrypted at rest, masked in UI
     settings_field: str | None = None  # Pydantic Settings field to setattr, if any
@@ -76,6 +76,14 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
         "DM_LOCAL_API_ALLOWED_ORIGINS",
         "Origines web autorisées sur l'API locale des extensions (vide = non servi)",
         "Plugins", "list", True),
+    "DM_LINKS": _spec(
+        "DM_LINKS",
+        "Liens distribués à toutes les applications (JSON : [{id, label, url, hint?, hintUrl?}])",
+        "Plugins", "json", True),
+    "DM_LINKS_BY_APP": _spec(
+        "DM_LINKS_BY_APP",
+        "Liens propres à une application (JSON : {device_type: [{id, …} | {id, hidden: true}]})",
+        "Plugins", "json", True),
     # ── Keycloak ──
     "KEYCLOAK_ISSUER_URL": _spec("KEYCLOAK_ISSUER_URL", "Keycloak issuer URL", "Keycloak", "str", False),
     "KEYCLOAK_REALM": _spec("KEYCLOAK_REALM", "Keycloak realm", "Keycloak", "str", False),
@@ -203,6 +211,11 @@ def _coerce(value: Any, vtype: str) -> Any:
         return float(value)
     if vtype == "list":
         return _parse_list(value)
+    if vtype == "json":
+        text = str(value).strip()
+        if text:
+            json.loads(text)  # ValueError si invalide ; stocké tel quel (texte)
+        return text
     return str(value)
 
 
@@ -248,8 +261,15 @@ def snapshot_baseline(force: bool = False) -> None:
                 _BASELINE_PY[env] = getattr(settings, spec.settings_field, None)
             else:
                 raw = os.getenv(env, "")
-                _BASELINE_PY[env] = _coerce(raw, spec.type) if raw != "" else (
-                    [] if spec.type == "list" else "" if spec.type == "str" else None)
+                try:
+                    _BASELINE_PY[env] = _coerce(raw, spec.type) if raw != "" else (
+                        [] if spec.type == "list" else "" if spec.type in ("str", "json") else None)
+                except (ValueError, TypeError) as e:
+                    # Valeur d'environnement hors type (ex. JSON invalide dans les
+                    # values du chart) : le pod démarre, la clé vaut « vide », et le
+                    # défaut est journalisé plutôt que de bloquer le service.
+                    logger.warning("runtime_config: baseline %s ignorée (%s)", env, e)
+                    _BASELINE_PY[env] = "" if spec.type in ("str", "json") else None
         _baseline_ready = True
 
 
