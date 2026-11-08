@@ -3651,14 +3651,17 @@ async def api_debug_status(request: Request):
         except Exception:
             checks["llm"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
 
-    # Relay
-    relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant")
-    t0 = _time.monotonic()
-    try:
-        urlreq.urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3)
-        checks["relay"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
-    except Exception:
-        checks["relay"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
+    # Relay — omis quand il n'est pas déployé (variable vide), comme keycloak et llm
+    # quand ils ne sont pas configurés : règle unique dans app.services.relay_assistant.
+    from app.services import relay_assistant
+    relay_healthz = relay_assistant.healthz_url()
+    if relay_healthz:
+        t0 = _time.monotonic()
+        try:
+            urlreq.urlopen(relay_healthz, timeout=3)
+            checks["relay"] = {"ok": True, "ms": round((_time.monotonic()-t0)*1000)}
+        except Exception:
+            checks["relay"] = {"ok": False, "ms": round((_time.monotonic()-t0)*1000)}
 
     all_ok = all(c["ok"] for c in checks.values())
     down = [k for k, v in checks.items() if not v["ok"]]
@@ -3820,10 +3823,11 @@ def _relay_check_detail(urlopen) -> str:
     c'est voulu. Ce n'est pas une erreur, et surtout pas « unknown url type:
     '/healthz' » : un chemin sans hôte n'est pas un état de service.
     """
-    relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant").strip()
-    if not relay_url:
+    from app.services import relay_assistant
+    healthz = relay_assistant.healthz_url()
+    if not healthz:
         return "non déployé"
-    with urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3):
+    with urlopen(healthz, timeout=3):
         pass
     return "nginx OK"
 

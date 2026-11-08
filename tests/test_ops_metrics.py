@@ -202,6 +202,35 @@ class TestHealthFull:
         assert "checked_at" in data
         assert data["services"]["postgres"]["status"] == "ok"
 
+    def test_health_full_relais_non_deploye_omis(self, client, mod):
+        """DM_RELAY_ASSISTANT_URL vide (prod sans relais nginx) : pas de service « relay »,
+        pas d'appel à /healthz, et le statut global n'est pas « degraded » pour autant."""
+        cur = _make_cursor({"SELECT 1": [(1,)]})
+        conn = _make_conn(cur)
+        urlopen = MagicMock()
+        env = {"DM_RELAY_ASSISTANT_URL": "", "DM_AUTH_JWKS_URL": "", "ADMIN_OIDC_ISSUER_URL": "",
+               "KEYCLOAK_ISSUER_URL": "", "LLM_BASE_URL": ""}
+        with patch.object(mod.psycopg2, "connect", return_value=conn), \
+             patch.dict(os.environ, env), patch("urllib.request.urlopen", urlopen):
+            resp = client.get("/ops/health/full")
+        data = resp.json()
+        assert "relay" not in data["services"]
+        assert data["status"] == "ok"
+        assert not any("/healthz" in str(c.args[0]) for c in urlopen.call_args_list)
+
+    def test_health_full_relais_deploye_sonde(self, client, mod):
+        cur = _make_cursor({"SELECT 1": [(1,)]})
+        conn = _make_conn(cur)
+        urlopen = MagicMock()
+        urlopen.return_value.close.return_value = None
+        with patch.object(mod.psycopg2, "connect", return_value=conn), \
+             patch.dict(os.environ, {"DM_RELAY_ASSISTANT_URL": "http://relay-assistant/"}), \
+             patch("urllib.request.urlopen", urlopen):
+            resp = client.get("/ops/health/full")
+        data = resp.json()
+        assert data["services"]["relay"]["status"] == "ok"
+        assert any(c.args[0] == "http://relay-assistant/healthz" for c in urlopen.call_args_list)
+
     def test_health_full_db_down(self, client, mod):
         with patch.object(mod.psycopg2, "connect", side_effect=Exception("refused")):
             resp = client.get("/ops/health/full")

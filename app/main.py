@@ -4497,8 +4497,12 @@ def ops_health_full():
 
     # Relay: the relay-assistant K8s Service listens on port 80 (targetPort 8080).
     # Probing :8080 directly bypassed the Service and timed out (false "error").
-    relay_base = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant").rstrip("/")
-    _do("relay", lambda: (urlreq.urlopen(f"{relay_base}/healthz", timeout=3).close() or "ok"))
+    # Variable vide = relais non déployé (prod) : omis, comme keycloak et llm non
+    # configurés — sinon urlopen("/healthz") rendait le statut global « degraded ».
+    from app.services import relay_assistant
+    relay_healthz = relay_assistant.healthz_url()
+    if relay_healthz:
+        _do("relay", lambda: (urlreq.urlopen(relay_healthz, timeout=3).close() or "ok"))
 
     has_critical = any(checks.get(s, {}).get("status") == "error" for s in critical_svcs)
     has_any_err = any(v.get("status") == "error" for v in checks.values())
