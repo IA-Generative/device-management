@@ -11,11 +11,11 @@ Règles :
   simplement absentes du résultat (pas une erreur) ;
 - une réponse HTTP, même 401/403/404, prouve que la chaîne va jusqu'à l'upstream : ok ;
   un 5xx est une erreur de l'upstream ou du proxy ;
-- le résultat est gardé quelques secondes (`CACHE_S`) : la route /ops/relay/probe est
-  publique comme /ops/health/full, et personne ne doit pouvoir faire marteler le proxy
-  en la rechargeant ;
-- rien de secret ne sort : l'URL de la cible n'est pas renvoyée, seul l'hôte du proxy
-  (sans identifiants) l'est, pour que le voyant dise « par quel chemin ».
+- le résultat est gardé quelques secondes (`CACHE_S`) : personne ne doit pouvoir faire
+  marteler le proxy en rechargeant une page ;
+- deux niveaux de détail : `detail_complet` (hôte:port du proxy, pour la route protégée
+  et /admin/debug) et `detail_public` (« par le proxy » sans hôte, pour /ops/health/full
+  qui est publique). Jamais l'URL de la cible, jamais d'identifiant de proxy.
 """
 from __future__ import annotations
 
@@ -87,11 +87,12 @@ def _classer(exc: Exception) -> str:
 def sonder(cible: str, url: str, client_factory=None) -> dict:
     """Un GET sur l'URL de la cible, avec la pile du relais (trust_env=True).
 
-    Retourne {"status": "ok"|"error", "latency_ms": int, "detail": str, "http": int|None}.
+    Retourne {"status": "ok"|"error", "latency_ms": int, "http": int|None,
+              "detail": str (sans hôte de proxy), "via": "proxy"|"direct", "proxy": str|None}.
     `client_factory` ne sert qu'aux tests.
     """
-    via = proxy_sortant()
-    chemin = f" par le proxy {via}" if via else " en direct"
+    via_hote = proxy_sortant()
+    base = {"via": "proxy" if via_hote else "direct", "proxy": via_hote}
     factory = client_factory or (lambda: httpx.Client(trust_env=True, timeout=TIMEOUT_S, verify=tls_verify()))
     t0 = time.monotonic()
     try:
@@ -99,13 +100,24 @@ def sonder(cible: str, url: str, client_factory=None) -> dict:
             r = client.get(url)
         ms = round((time.monotonic() - t0) * 1000)
         if r.status_code >= 500:
-            return {"status": "error", "latency_ms": ms, "http": r.status_code,
-                    "detail": f"HTTP {r.status_code}{chemin} — l'upstream ou le proxy répond en erreur"}
-        return {"status": "ok", "latency_ms": ms, "http": r.status_code,
-                "detail": f"HTTP {r.status_code}{chemin}"}
+            return {**base, "status": "error", "latency_ms": ms, "http": r.status_code,
+                    "detail": f"HTTP {r.status_code} — l'upstream ou le proxy répond en erreur"}
+        return {**base, "status": "ok", "latency_ms": ms, "http": r.status_code, "detail": f"HTTP {r.status_code}"}
     except Exception as exc:  # toute cause réseau devient un détail lisible, jamais une 500
         ms = round((time.monotonic() - t0) * 1000)
-        return {"status": "error", "latency_ms": ms, "http": None, "detail": f"{_classer(exc)}{chemin}"}
+        return {**base, "status": "error", "latency_ms": ms, "http": None, "detail": _classer(exc)}
+
+
+def detail_complet(res: dict) -> str:
+    """Pour la route protégée et /admin/debug : nomme le proxy (hôte:port)."""
+    if res.get("via") == "proxy":
+        return f"{res.get('detail', '')} par le proxy {res.get('proxy') or '?'}"
+    return f"{res.get('detail', '')} en direct"
+
+
+def detail_public(res: dict) -> str:
+    """Pour /ops/health/full, publique : le chemin sans l'adresse du proxy."""
+    return f"{res.get('detail', '')} {'par le proxy' if res.get('via') == 'proxy' else 'en direct'}"
 
 
 def sonder_toutes(force: bool = False, client_factory=None) -> dict:

@@ -4507,9 +4507,11 @@ def ops_health_full():
     # La chaîne du relais servi par l'api (api → proxy de sortie → upstream), une entrée
     # par cible configurée. C'est elle qui dit si ORION / le proxy de prod laisse passer.
     # Résultat gardé 15 s par app.services.relay_probe : pas de martèlement du proxy.
+    # Route publique : le détail dit « par le proxy » sans en donner l'adresse.
     from app.services import relay_probe
     for _cible, _res in relay_probe.sonder_toutes()["cibles"].items():
-        checks[f"relay-chain:{_cible}"] = {k: _res[k] for k in ("status", "latency_ms", "detail")}
+        checks[f"relay-chain:{_cible}"] = {"status": _res["status"], "latency_ms": _res["latency_ms"],
+                                           "detail": relay_probe.detail_public(_res)}
 
     has_critical = any(checks.get(s, {}).get("status") == "error" for s in critical_svcs)
     has_any_err = any(v.get("status") == "error" for v in checks.values())
@@ -4523,15 +4525,23 @@ def ops_health_full():
 
 
 @app.get("/ops/relay/probe")
-def ops_relay_probe():
+def ops_relay_probe(request: Request):
     """La chaîne du relais vue depuis l'api : api → proxy de sortie → chaque upstream.
 
-    Publique comme /ops/health/full ; le résultat est gardé 15 s, et ne porte ni URL
-    d'upstream ni identifiant de proxy. La page /admin/debug l'appelle sur le Service
-    interne de l'api (DM_API_INTERNAL_URL) : c'est l'api qui a le proxy, pas l'admin.
+    Cluster-internal, gardée par le jeton de service comme /internal/config/state :
+    X-Internal-Token comparé en temps constant à DM_QUEUE_ADMIN_TOKEN, refus si le jeton
+    n'est pas configuré. Le résultat (gardé 15 s) nomme l'hôte:port du proxy mais ni URL
+    d'upstream ni identifiant. La page /admin/debug l'appelle sur le Service interne de
+    l'api : c'est l'api qui a le proxy de sortie, pas l'admin.
     """
+    expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
+    provided = request.headers.get("X-Internal-Token", "")
+    if not expected or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
     from app.services import relay_probe
-    return JSONResponse(relay_probe.sonder_toutes())
+    res = relay_probe.sonder_toutes()
+    return JSONResponse({**res, "cibles": {c: {**v, "detail_complet": relay_probe.detail_complet(v)}
+                                           for c, v in res["cibles"].items()}})
 
 
 @app.get("/ops/metrics")

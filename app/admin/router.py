@@ -3849,26 +3849,53 @@ def _relay_chain_checks(client_factory=None) -> tuple[None, dict]:
     if mode in ("api", "all"):
         res = relay_probe.sonder_toutes()
     else:
-        base = (os.getenv("DM_API_INTERNAL_URL") or "").strip().rstrip("/")
+        base, source = _api_internal_url()
         if not base:
             return None, {prefixe + "?": {"status": "error", "latency_ms": 0,
-                          "detail": "DM_API_INTERNAL_URL absent : l'admin ne sait pas joindre l'api"}}
+                          "detail": "adresse de l'api inconnue : ni DM_API_INTERNAL_URL, ni DM_INTERNAL_URL, "
+                                    "ni HOSTNAME de la forme <release>-admin-…"}}
+        jeton = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
         t0 = _time.monotonic()
         try:
             factory = client_factory or (lambda: httpx.Client(trust_env=False, timeout=8))
             with factory() as client:
-                r = client.get(f"{base}/ops/relay/probe")
+                r = client.get(f"{base}/ops/relay/probe", headers={"X-Internal-Token": jeton})
+            if r.status_code == 401:
+                return None, {prefixe + "?": {"status": "error", "latency_ms": round((_time.monotonic()-t0)*1000),
+                              "detail": "l'api refuse la sonde : jeton DM_QUEUE_ADMIN_TOKEN absent ou différent "
+                                        f"({base}, {source})"}}
             r.raise_for_status()
             res = r.json()
         except Exception as e:
             return None, {prefixe + "?": {"status": "error", "latency_ms": round((_time.monotonic()-t0)*1000),
-                          "detail": f"l'api ne répond pas sur /ops/relay/probe : {str(e)[:90]}"}}
+                          "detail": f"l'api ne répond pas sur /ops/relay/probe ({base}, {source}) : {str(e)[:80]}"}}
     cibles = res.get("cibles") or {}
     if not cibles:
         return None, {prefixe + "?": {"status": "ok", "latency_ms": 0,
                       "detail": "aucune cible configurée (RELAY_*_UPSTREAM)"}}
     return None, {prefixe + c: {"status": v.get("status", "error"), "latency_ms": v.get("latency_ms", 0),
-                                "detail": v.get("detail", "")} for c, v in cibles.items()}
+                                "detail": relay_probe.detail_complet(v)} for c, v in cibles.items()}
+
+
+def _api_internal_url() -> tuple[str | None, str]:
+    """Où l'admin joint l'api dans le cluster, et d'où vient cette adresse.
+
+    1. DM_API_INTERNAL_URL (chart, Service .svc) ; 2. DM_INTERNAL_URL (déjà posé par le
+    chart ET par le kustomize du DGX, nom court du Service de l'api) ; 3. à défaut, le nom
+    du Deployment de l'admin déduit de HOSTNAME (<nom>-<rs>-<pod>) en remplaçant le
+    suffixe -admin par -api, comme le chart nomme ses Services. Une nouvelle image ne
+    doit pas créer de rouge avant que le chart ou le kustomize suive.
+    """
+    for var in ("DM_API_INTERNAL_URL", "DM_INTERNAL_URL"):
+        v = (os.getenv(var) or "").strip().rstrip("/")
+        if v:
+            return v, f"variable {var}"
+    morceaux = (os.getenv("HOSTNAME") or "").strip().split("-")
+    if len(morceaux) >= 4:
+        deploiement = "-".join(morceaux[:-2])
+        if deploiement.endswith("-admin"):
+            return f"http://{deploiement[: -len('-admin')]}-api", "défaut déduit de HOSTNAME"
+    return None, "aucune source"
 
 
 @router.get("/debug", response_class=HTMLResponse)

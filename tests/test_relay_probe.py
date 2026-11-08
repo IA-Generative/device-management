@@ -69,20 +69,24 @@ def test_http_200_ok_par_proxy():
     with patch.dict(os.environ, {"HTTPS_PROXY": "http://10.224.32.127:80"}):
         r = relay_probe.sonder("keycloak", "https://sso/.well-known/openid-configuration", _factory_reponse(200))
     assert r["status"] == "ok" and r["http"] == 200
-    assert "par le proxy 10.224.32.127:80" in r["detail"]
+    assert r["via"] == "proxy" and r["proxy"] == "10.224.32.127:80"
+    assert r["detail"] == "HTTP 200"
+    assert relay_probe.detail_complet(r) == "HTTP 200 par le proxy 10.224.32.127:80"
+    assert relay_probe.detail_public(r) == "HTTP 200 par le proxy"
 
 
 def test_http_401_prouve_que_la_chaine_passe():
     with patch.dict(os.environ, {"HTTPS_PROXY": ""}):
         r = relay_probe.sonder("mcr-api", "https://mcr/api", _factory_reponse(401))
-    assert r["status"] == "ok" and r["http"] == 401
-    assert "en direct" in r["detail"]
+    assert r["status"] == "ok" and r["http"] == 401 and r["via"] == "direct"
+    assert relay_probe.detail_complet(r) == "HTTP 401 en direct"
+    assert relay_probe.detail_public(r) == "HTTP 401 en direct"
 
 
 def test_http_5xx_est_une_erreur():
     r = relay_probe.sonder("keycloak", "https://sso", _factory_reponse(502))
     assert r["status"] == "error" and r["http"] == 502
-    assert "HTTP 502" in r["detail"]
+    assert r["detail"].startswith("HTTP 502")
 
 
 def test_proxy_error_nomme_le_proxy():
@@ -105,11 +109,13 @@ def test_delai_depasse():
     assert r["status"] == "error" and r["detail"].startswith("délai dépassé")
 
 
-def test_aucune_url_ni_secret_dans_le_detail():
+def test_aucune_url_ni_secret_meme_dans_le_detail_complet():
     with patch.dict(os.environ, {"HTTPS_PROXY": "http://u:p@proxy.interne:3128"}):
         r = relay_probe.sonder("keycloak", "https://sso.secret.example/realms/x", _factory_reponse(200))
-    assert "sso.secret.example" not in r["detail"]
-    assert "u:p" not in r["detail"] and "proxy.interne:3128" in r["detail"]
+    complet = relay_probe.detail_complet(r)
+    assert "sso.secret.example" not in complet
+    assert "u:p" not in complet and "proxy.interne:3128" in complet
+    assert "proxy.interne" not in relay_probe.detail_public(r)
 
 
 # ─── Toutes, avec cache ────────────────────────────────────────────────────────────────

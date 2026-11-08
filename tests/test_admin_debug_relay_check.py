@@ -59,63 +59,112 @@ def test_variable_posee_interroge_healthz():
 # ─── Chaîne du relais servi par l'api, vue de la page de debug ────────────────────────
 
 
-def _reponse_api(payload):
+def _reponse_api(payload, status=200):
     client = MagicMock()
     client.__enter__.return_value = client
     client.__exit__.return_value = False
     rep = MagicMock()
+    rep.status_code = status
     rep.raise_for_status.return_value = None
     rep.json.return_value = payload
     client.get.return_value = rep
     return MagicMock(return_value=client)
 
 
-def test_chaine_mode_admin_interroge_l_api_interne():
+_PAYLOAD = {"proxy": "10.224.32.127:80", "cibles": {
+    "keycloak": {"status": "ok", "latency_ms": 41, "http": 200, "detail": "HTTP 200",
+                 "via": "proxy", "proxy": "10.224.32.127:80"}}}
+
+_SANS_ADRESSE = {"DM_API_INTERNAL_URL": "", "DM_INTERNAL_URL": "", "HOSTNAME": ""}
+
+
+def test_chaine_mode_admin_interroge_l_api_avec_le_jeton():
     from app.admin.router import _relay_chain_checks
-    payload = {"proxy": "10.224.32.127:80", "cibles": {
-        "keycloak": {"status": "ok", "latency_ms": 41, "detail": "HTTP 200 par le proxy 10.224.32.127:80"}}}
-    factory = _reponse_api(payload)
-    with patch("app.admin.router.settings") as st, \
-         patch.dict(os.environ, {"DM_API_INTERNAL_URL": "http://dm-device-management-api.ns.svc:80/"}):
+    factory = _reponse_api(_PAYLOAD)
+    env = {**_SANS_ADRESSE, "DM_API_INTERNAL_URL": "http://dm-device-management-api.ns.svc:80/",
+           "DM_QUEUE_ADMIN_TOKEN": "jeton-de-test"}
+    with patch("app.admin.router.settings") as st, patch.dict(os.environ, env):
         st.runtime_mode = "admin"
         name, lignes = _relay_chain_checks(client_factory=factory)
     assert name is None
     assert lignes == {"Relais api → keycloak": {"status": "ok", "latency_ms": 41,
                                                "detail": "HTTP 200 par le proxy 10.224.32.127:80"}}
-    factory.return_value.get.assert_called_once_with("http://dm-device-management-api.ns.svc:80/ops/relay/probe")
+    factory.return_value.get.assert_called_once_with(
+        "http://dm-device-management-api.ns.svc:80/ops/relay/probe", headers={"X-Internal-Token": "jeton-de-test"})
 
 
-def test_chaine_mode_admin_sans_url_api_dit_pourquoi():
+def test_chaine_defaut_dm_internal_url_du_chart_et_du_dgx():
+    """Sans DM_API_INTERNAL_URL, l'admin prend DM_INTERNAL_URL (déjà posé partout)."""
+    from app.admin.router import _api_internal_url, _relay_chain_checks
+    env = {**_SANS_ADRESSE, "DM_INTERNAL_URL": "http://device-management"}
+    with patch.dict(os.environ, env):
+        assert _api_internal_url() == ("http://device-management", "variable DM_INTERNAL_URL")
+    factory = _reponse_api(_PAYLOAD)
+    with patch("app.admin.router.settings") as st, patch.dict(os.environ, env):
+        st.runtime_mode = "admin"
+        _, lignes = _relay_chain_checks(client_factory=factory)
+    assert lignes["Relais api → keycloak"]["status"] == "ok"
+    assert factory.return_value.get.call_args.args[0] == "http://device-management/ops/relay/probe"
+
+
+def test_chaine_defaut_deduit_du_hostname():
+    """Dernier recours : <release>-admin-<rs>-<pod> → http://<release>-api."""
+    from app.admin.router import _api_internal_url
+    env = {**_SANS_ADRESSE, "HOSTNAME": "devicemanager-prod-c626-device-management-60da-d-admin-7c9f8b5d4-x2k9q"}
+    with patch.dict(os.environ, env):
+        url, source = _api_internal_url()
+    assert url == "http://devicemanager-prod-c626-device-management-60da-d-api"
+    assert source == "défaut déduit de HOSTNAME"
+    with patch.dict(os.environ, {**_SANS_ADRESSE, "HOSTNAME": "poste-de-dev"}):
+        assert _api_internal_url() == (None, "aucune source")
+
+
+def test_chaine_mode_admin_sans_aucune_adresse_dit_pourquoi():
     from app.admin.router import _relay_chain_checks
-    with patch("app.admin.router.settings") as st, patch.dict(os.environ, {"DM_API_INTERNAL_URL": ""}):
+    with patch("app.admin.router.settings") as st, patch.dict(os.environ, _SANS_ADRESSE):
         st.runtime_mode = "admin"
         _, lignes = _relay_chain_checks()
     (seule,) = lignes.values()
-    assert seule["status"] == "error" and "DM_API_INTERNAL_URL" in seule["detail"]
+    assert seule["status"] == "error" and "DM_INTERNAL_URL" in seule["detail"]
 
 
-def test_chaine_mode_admin_api_injoignable_ne_leve_pas():
+def test_chaine_mode_admin_401_nomme_le_jeton():
+    from app.admin.router import _relay_chain_checks
+    factory = _reponse_api({}, status=401)
+    env = {**_SANS_ADRESSE, "DM_INTERNAL_URL": "http://device-management", "DM_QUEUE_ADMIN_TOKEN": ""}
+    with patch("app.admin.router.settings") as st, patch.dict(os.environ, env):
+        st.runtime_mode = "admin"
+        _, lignes = _relay_chain_checks(client_factory=factory)
+    (seule,) = lignes.values()
+    assert seule["status"] == "error"
+    assert "jeton DM_QUEUE_ADMIN_TOKEN absent ou différent" in seule["detail"]
+    assert "http://device-management" in seule["detail"] and "variable DM_INTERNAL_URL" in seule["detail"]
+
+
+def test_chaine_mode_admin_api_injoignable_ne_leve_pas_et_dit_l_url_tentee():
     from app.admin.router import _relay_chain_checks
     client = MagicMock()
     client.__enter__.return_value = client
     client.__exit__.return_value = False
     client.get.side_effect = OSError("connexion refusée")
-    with patch("app.admin.router.settings") as st, \
-         patch.dict(os.environ, {"DM_API_INTERNAL_URL": "http://api.ns.svc"}):
+    env = {**_SANS_ADRESSE, "HOSTNAME": "dm-device-management-admin-7c9f8b5d4-x2k9q"}
+    with patch("app.admin.router.settings") as st, patch.dict(os.environ, env):
         st.runtime_mode = "admin"
         _, lignes = _relay_chain_checks(client_factory=MagicMock(return_value=client))
     (seule,) = lignes.values()
     assert seule["status"] == "error" and "ne répond pas" in seule["detail"]
+    assert "http://dm-device-management-api" in seule["detail"] and "défaut déduit de HOSTNAME" in seule["detail"]
 
 
 def test_chaine_mode_all_sonde_directement():
     from app.admin.router import _relay_chain_checks
     from app.services import relay_probe
-    res = {"proxy": None, "cibles": {"mcr-api": {"status": "error", "latency_ms": 5, "detail": "connexion ou DNS : x en direct"}}}
+    res = {"proxy": None, "cibles": {"mcr-api": {"status": "error", "latency_ms": 5, "http": None,
+                                                 "detail": "connexion ou DNS : x", "via": "direct", "proxy": None}}}
     with patch("app.admin.router.settings") as st, patch.object(relay_probe, "sonder_toutes", return_value=res):
         st.runtime_mode = "all"
         _, lignes = _relay_chain_checks()
-    assert lignes["Relais api → mcr-api"]["status"] == "error"
+    assert lignes["Relais api → mcr-api"] == {"status": "error", "latency_ms": 5, "detail": "connexion ou DNS : x en direct"}
 
 
 def test_chaine_sans_cible_configuree_reste_verte():
