@@ -18,6 +18,10 @@ jobs:
     uses: dnum-mi/fabnum-cicd/.github/workflows/lint-commits.yml@v0.25.3
     permissions:
       contents: read
+    with:
+      # 120 et non 100 : la fusion « squash » de GitHub reprend le titre de la PR
+      # et lui ajoute « (#NN) » ; un titre de 100 déborde alors sur develop (#84).
+      MAX_SUBJECT_LENGTH: 120
 
   scan-gitleaks:
     uses: dnum-mi/fabnum-cicd/.github/workflows/scan-gitleaks.yml@v0.25.3
