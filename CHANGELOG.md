@@ -6,6 +6,13 @@ il ne porte ni détail d'infrastructure ni détail technique fin (ceux-là viven
 documentation). Historique reconstitué le 2026-09-28 depuis les commits, puis reformulé ; les versions
 suivantes seront tenues par release-please. Titres au format `## [X.Y.Z] - date`.
 
+## [0.10.1](https://github.com/IA-Generative/device-management/compare/v0.10.0...v0.10.1) (2026-11-08)
+
+
+### Corrections
+
+* **ops:** relais nginx « non déployé » et sonde de la chaîne du relais par le proxy de sortie ([#97](https://github.com/IA-Generative/device-management/issues/97)) ([9a70bc5](https://github.com/IA-Generative/device-management/commit/9a70bc5fb85aef5a6e0d4d4791dd895aec42efdf))
+
 ## [0.10.0](https://github.com/IA-Generative/device-management/compare/v0.9.23...v0.10.0) (2026-11-08)
 
 
