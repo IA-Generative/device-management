@@ -9,7 +9,7 @@ version: 0.5.0
 
 # Version applicative packagée par défaut, identique au fichier VERSION à la racine du
 # dépôt. release-please ne réécrit QUE cette ligne, grâce au repère en fin de ligne.
-appVersion: "0.9.23" # x-release-please-version
+appVersion: "0.10.0" # x-release-please-version
 
 keywords:
   - device-management

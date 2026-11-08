@@ -6,6 +6,13 @@ il ne porte ni détail d'infrastructure ni détail technique fin (ceux-là viven
 documentation). Historique reconstitué le 2026-09-28 depuis les commits, puis reformulé ; les versions
 suivantes seront tenues par release-please. Titres au format `## [X.Y.Z] - date`.
 
+## [0.10.0](https://github.com/IA-Generative/device-management/compare/v0.9.23...v0.10.0) (2026-11-08)
+
+
+### Nouveautés
+
+* **config:** liens distribués aux applications (clé `links`) — portail de recherche et communauté bêta ([#84](https://github.com/IA-Generative/device-management/issues/84)) ([8ed937b](https://github.com/IA-Generative/device-management/commit/8ed937b2b75062a29f22ecd6af82221a947eb1ae))
+
 ## [0.9.23](https://github.com/IA-Generative/device-management/compare/v0.9.22...v0.9.23) (2026-11-04)
 
 
