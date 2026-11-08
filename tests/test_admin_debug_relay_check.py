@@ -56,6 +56,79 @@ def test_variable_posee_interroge_healthz():
     urlopen.assert_called_once_with("http://dm-relay-assistant:8080/healthz", timeout=3)
 
 
+# ─── Chaîne du relais servi par l'api, vue de la page de debug ────────────────────────
+
+
+def _reponse_api(payload):
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.__exit__.return_value = False
+    rep = MagicMock()
+    rep.raise_for_status.return_value = None
+    rep.json.return_value = payload
+    client.get.return_value = rep
+    return MagicMock(return_value=client)
+
+
+def test_chaine_mode_admin_interroge_l_api_interne():
+    from app.admin.router import _relay_chain_checks
+    payload = {"proxy": "10.224.32.127:80", "cibles": {
+        "keycloak": {"status": "ok", "latency_ms": 41, "detail": "HTTP 200 par le proxy 10.224.32.127:80"}}}
+    factory = _reponse_api(payload)
+    with patch("app.admin.router.settings") as st, \
+         patch.dict(os.environ, {"DM_API_INTERNAL_URL": "http://dm-device-management-api.ns.svc:80/"}):
+        st.runtime_mode = "admin"
+        name, lignes = _relay_chain_checks(client_factory=factory)
+    assert name is None
+    assert lignes == {"Relais api → keycloak": {"status": "ok", "latency_ms": 41,
+                                               "detail": "HTTP 200 par le proxy 10.224.32.127:80"}}
+    factory.return_value.get.assert_called_once_with("http://dm-device-management-api.ns.svc:80/ops/relay/probe")
+
+
+def test_chaine_mode_admin_sans_url_api_dit_pourquoi():
+    from app.admin.router import _relay_chain_checks
+    with patch("app.admin.router.settings") as st, patch.dict(os.environ, {"DM_API_INTERNAL_URL": ""}):
+        st.runtime_mode = "admin"
+        _, lignes = _relay_chain_checks()
+    (seule,) = lignes.values()
+    assert seule["status"] == "error" and "DM_API_INTERNAL_URL" in seule["detail"]
+
+
+def test_chaine_mode_admin_api_injoignable_ne_leve_pas():
+    from app.admin.router import _relay_chain_checks
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.__exit__.return_value = False
+    client.get.side_effect = OSError("connexion refusée")
+    with patch("app.admin.router.settings") as st, \
+         patch.dict(os.environ, {"DM_API_INTERNAL_URL": "http://api.ns.svc"}):
+        st.runtime_mode = "admin"
+        _, lignes = _relay_chain_checks(client_factory=MagicMock(return_value=client))
+    (seule,) = lignes.values()
+    assert seule["status"] == "error" and "ne répond pas" in seule["detail"]
+
+
+def test_chaine_mode_all_sonde_directement():
+    from app.admin.router import _relay_chain_checks
+    from app.services import relay_probe
+    res = {"proxy": None, "cibles": {"mcr-api": {"status": "error", "latency_ms": 5, "detail": "connexion ou DNS : x en direct"}}}
+    with patch("app.admin.router.settings") as st, patch.object(relay_probe, "sonder_toutes", return_value=res):
+        st.runtime_mode = "all"
+        _, lignes = _relay_chain_checks()
+    assert lignes["Relais api → mcr-api"]["status"] == "error"
+
+
+def test_chaine_sans_cible_configuree_reste_verte():
+    from app.admin.router import _relay_chain_checks
+    from app.services import relay_probe
+    with patch("app.admin.router.settings") as st, \
+         patch.object(relay_probe, "sonder_toutes", return_value={"proxy": None, "cibles": {}}):
+        st.runtime_mode = "all"
+        _, lignes = _relay_chain_checks()
+    (seule,) = lignes.values()
+    assert seule["status"] == "ok" and "aucune cible" in seule["detail"]
+
+
 # ─── Bandeau d'état des pages admin (/admin/api/debug/status) ─────────────────────────
 
 

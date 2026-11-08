@@ -52,6 +52,13 @@ spec:
           env:
             - name: DM_RUNTIME_MODE
               value: "admin"
+            {{- if .Values.api.enabled }}
+            # Service interne de l'api : la page /admin/debug lui demande l'état de la chaîne
+            # du relais (/ops/relay/probe), car c'est l'api qui porte le proxy de sortie.
+            # Nom en .svc (sans domaine de cluster) : résolu par le search domain du pod.
+            - name: DM_API_INTERNAL_URL
+              value: {{ printf "http://%s.%s.svc:%v" (include "device-management.componentName" (dict "root" . "component" "api")) .Release.Namespace .Values.api.service.port | quote }}
+            {{- end }}
             {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.admin.runtimeConfig.pollIntervalSeconds "editable" .Values.admin.runtimeConfig.editable) | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
             {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}

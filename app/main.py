@@ -4504,6 +4504,13 @@ def ops_health_full():
     if relay_healthz:
         _do("relay", lambda: (urlreq.urlopen(relay_healthz, timeout=3).close() or "ok"))
 
+    # La chaîne du relais servi par l'api (api → proxy de sortie → upstream), une entrée
+    # par cible configurée. C'est elle qui dit si ORION / le proxy de prod laisse passer.
+    # Résultat gardé 15 s par app.services.relay_probe : pas de martèlement du proxy.
+    from app.services import relay_probe
+    for _cible, _res in relay_probe.sonder_toutes()["cibles"].items():
+        checks[f"relay-chain:{_cible}"] = {k: _res[k] for k in ("status", "latency_ms", "detail")}
+
     has_critical = any(checks.get(s, {}).get("status") == "error" for s in critical_svcs)
     has_any_err = any(v.get("status") == "error" for v in checks.values())
     global_status = "error" if has_critical else ("degraded" if has_any_err else "ok")
@@ -4513,6 +4520,18 @@ def ops_health_full():
         "checked_at": datetime.now(UTC).isoformat(),
         "services": checks,
     })
+
+
+@app.get("/ops/relay/probe")
+def ops_relay_probe():
+    """La chaîne du relais vue depuis l'api : api → proxy de sortie → chaque upstream.
+
+    Publique comme /ops/health/full ; le résultat est gardé 15 s, et ne porte ni URL
+    d'upstream ni identifiant de proxy. La page /admin/debug l'appelle sur le Service
+    interne de l'api (DM_API_INTERNAL_URL) : c'est l'api qui a le proxy, pas l'admin.
+    """
+    from app.services import relay_probe
+    return JSONResponse(relay_probe.sonder_toutes())
 
 
 @app.get("/ops/metrics")

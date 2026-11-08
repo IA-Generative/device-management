@@ -231,6 +231,41 @@ class TestHealthFull:
         assert data["services"]["relay"]["status"] == "ok"
         assert any(c.args[0] == "http://relay-assistant/healthz" for c in urlopen.call_args_list)
 
+    def test_health_full_porte_la_chaine_du_relais(self, client, mod):
+        """Une entrée relay-chain:<cible> par cible configurée, prise à la sonde (en cache)."""
+        from app.services import relay_probe
+        cur = _make_cursor({"SELECT 1": [(1,)]})
+        conn = _make_conn(cur)
+        res = {"checked_at": 0, "proxy": "10.224.32.127:80", "cibles": {
+            "keycloak": {"status": "ok", "latency_ms": 37, "http": 200, "detail": "HTTP 200 par le proxy 10.224.32.127:80"}}}
+        with patch.object(mod.psycopg2, "connect", return_value=conn), \
+             patch.object(relay_probe, "sonder_toutes", return_value=res):
+            data = client.get("/ops/health/full").json()
+        assert data["services"]["relay-chain:keycloak"] == {"status": "ok", "latency_ms": 37,
+                                                            "detail": "HTTP 200 par le proxy 10.224.32.127:80"}
+
+    def test_health_full_chaine_cassee_degrade_sans_etre_critique(self, client, mod):
+        from app.services import relay_probe
+        cur = _make_cursor({"SELECT 1": [(1,)]})
+        conn = _make_conn(cur)
+        res = {"checked_at": 0, "proxy": None, "cibles": {
+            "keycloak": {"status": "error", "latency_ms": 3, "http": None, "detail": "connexion ou DNS : x en direct"}}}
+        env = {"DM_AUTH_JWKS_URL": "", "ADMIN_OIDC_ISSUER_URL": "", "KEYCLOAK_ISSUER_URL": "",
+               "LLM_BASE_URL": "", "DM_RELAY_ASSISTANT_URL": ""}
+        with patch.object(mod.psycopg2, "connect", return_value=conn), patch.dict(os.environ, env), \
+             patch.object(relay_probe, "sonder_toutes", return_value=res):
+            data = client.get("/ops/health/full").json()
+        assert data["services"]["relay-chain:keycloak"]["status"] == "error"
+        assert data["status"] == "degraded"
+
+    def test_relay_probe_route_rend_la_sonde(self, client):
+        from app.services import relay_probe
+        res = {"checked_at": 1.0, "proxy": None, "cibles": {}}
+        with patch.object(relay_probe, "sonder_toutes", return_value=res):
+            resp = client.get("/ops/relay/probe")
+        assert resp.status_code == 200
+        assert resp.json() == res
+
     def test_health_full_db_down(self, client, mod):
         with patch.object(mod.psycopg2, "connect", side_effect=Exception("refused")):
             resp = client.get("/ops/health/full")

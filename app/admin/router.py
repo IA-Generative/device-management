@@ -3832,6 +3832,45 @@ def _relay_check_detail(urlopen) -> str:
     return "nginx OK"
 
 
+def _relay_chain_checks(client_factory=None) -> tuple[None, dict]:
+    """Lignes « Relais api → <cible> » de la page de debug : la chaîne réelle du relais
+    servi par l'api (api → proxy de sortie → upstream), une par cible configurée.
+
+    C'est l'api qui porte le proxy de sortie et le vrai trafic : quand l'admin tourne à
+    part (DM_RUNTIME_MODE=admin), on interroge l'api sur son Service interne
+    (DM_API_INTERNAL_URL, posé par le chart) ; en mode all, on sonde directement.
+    Jamais d'erreur levée : la page de debug ne doit pas tomber avec le proxy.
+    """
+    import time as _time
+
+    from app.services import relay_probe
+    prefixe = "Relais api → "
+    mode = str(settings.runtime_mode or "api").strip().lower()
+    if mode in ("api", "all"):
+        res = relay_probe.sonder_toutes()
+    else:
+        base = (os.getenv("DM_API_INTERNAL_URL") or "").strip().rstrip("/")
+        if not base:
+            return None, {prefixe + "?": {"status": "error", "latency_ms": 0,
+                          "detail": "DM_API_INTERNAL_URL absent : l'admin ne sait pas joindre l'api"}}
+        t0 = _time.monotonic()
+        try:
+            factory = client_factory or (lambda: httpx.Client(trust_env=False, timeout=8))
+            with factory() as client:
+                r = client.get(f"{base}/ops/relay/probe")
+            r.raise_for_status()
+            res = r.json()
+        except Exception as e:
+            return None, {prefixe + "?": {"status": "error", "latency_ms": round((_time.monotonic()-t0)*1000),
+                          "detail": f"l'api ne répond pas sur /ops/relay/probe : {str(e)[:90]}"}}
+    cibles = res.get("cibles") or {}
+    if not cibles:
+        return None, {prefixe + "?": {"status": "ok", "latency_ms": 0,
+                      "detail": "aucune cible configurée (RELAY_*_UPSTREAM)"}}
+    return None, {prefixe + c: {"status": v.get("status", "error"), "latency_ms": v.get("latency_ms", 0),
+                                "detail": v.get("detail", "")} for c, v in cibles.items()}
+
+
 @router.get("/debug", response_class=HTMLResponse)
 @require_admin
 async def debug_page(request: Request):
@@ -3911,17 +3950,21 @@ async def debug_page(request: Request):
 
     # Run checks in parallel
     checks = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         futures = [
             pool.submit(_check, "PostgreSQL", check_db),
             pool.submit(_check, "Keycloak OIDC", check_keycloak),
             pool.submit(_check, "LLM", check_llm),
-            pool.submit(_check, "Relay-assistant", check_relay),
+            pool.submit(_check, "Relay-assistant nginx", check_relay),
             pool.submit(_check, "Telemetrie upstream", check_telemetry),
+            pool.submit(_relay_chain_checks),
         ]
         for f in concurrent.futures.as_completed(futures, timeout=15):
             name, result = f.result()
-            checks[name] = result
+            if name is None:  # la chaîne du relais : une ligne par cible
+                checks.update(result)
+            else:
+                checks[name] = result
 
     # Config vars (safe)
     from app.services.crypto import is_sensitive_key, mask_secret
