@@ -60,7 +60,7 @@ services:
   # /telemetry & /mcr-api -> DM (relay-gated). Corrige le check "Relay-assistant"
   # de /admin/debug et donne au plugin son chemin OIDC (auth/token/refresh/userinfo).
   relay-assistant:
-    image: nginx:1.29-alpine
+    image: nginx:1.31-alpine
     ports:
       - "8091:8080"
     environment:
