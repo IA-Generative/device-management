@@ -202,6 +202,92 @@ class TestHealthFull:
         assert "checked_at" in data
         assert data["services"]["postgres"]["status"] == "ok"
 
+    def test_health_full_relais_non_deploye_omis(self, client, mod):
+        """DM_RELAY_ASSISTANT_URL vide (prod sans relais nginx) : pas de service « relay »,
+        pas d'appel à /healthz, et le statut global n'est pas « degraded » pour autant."""
+        cur = _make_cursor({"SELECT 1": [(1,)]})
+        conn = _make_conn(cur)
+        urlopen = MagicMock()
+        env = {"DM_RELAY_ASSISTANT_URL": "", "DM_AUTH_JWKS_URL": "", "ADMIN_OIDC_ISSUER_URL": "",
+               "KEYCLOAK_ISSUER_URL": "", "LLM_BASE_URL": ""}
+        with patch.object(mod.psycopg2, "connect", return_value=conn), \
+             patch.dict(os.environ, env), patch("urllib.request.urlopen", urlopen):
+            resp = client.get("/ops/health/full")
+        data = resp.json()
+        assert "relay" not in data["services"]
+        assert data["status"] == "ok"
+        assert not any("/healthz" in str(c.args[0]) for c in urlopen.call_args_list)
+
+    def test_health_full_relais_deploye_sonde(self, client, mod):
+        cur = _make_cursor({"SELECT 1": [(1,)]})
+        conn = _make_conn(cur)
+        urlopen = MagicMock()
+        urlopen.return_value.close.return_value = None
+        with patch.object(mod.psycopg2, "connect", return_value=conn), \
+             patch.dict(os.environ, {"DM_RELAY_ASSISTANT_URL": "http://relay-assistant/"}), \
+             patch("urllib.request.urlopen", urlopen):
+            resp = client.get("/ops/health/full")
+        data = resp.json()
+        assert data["services"]["relay"]["status"] == "ok"
+        assert any(c.args[0] == "http://relay-assistant/healthz" for c in urlopen.call_args_list)
+
+    def test_health_full_porte_la_chaine_du_relais(self, client, mod):
+        """Une entrée relay-chain:<cible> par cible configurée, prise à la sonde (en cache)."""
+        from app.services import relay_probe
+        cur = _make_cursor({"SELECT 1": [(1,)]})
+        conn = _make_conn(cur)
+        res = {"checked_at": 0, "proxy": "10.224.32.127:80", "cibles": {
+            "keycloak": {"status": "ok", "latency_ms": 37, "http": 200, "detail": "HTTP 200",
+                         "via": "proxy", "proxy": "10.224.32.127:80"}}}
+        with patch.object(mod.psycopg2, "connect", return_value=conn), \
+             patch.object(relay_probe, "sonder_toutes", return_value=res):
+            resp = client.get("/ops/health/full")
+        data = resp.json()
+        # Route publique : « par le proxy », jamais son adresse.
+        assert data["services"]["relay-chain:keycloak"] == {"status": "ok", "latency_ms": 37,
+                                                            "detail": "HTTP 200 par le proxy"}
+        assert "10.224.32.127" not in resp.text
+
+    def test_health_full_chaine_cassee_degrade_sans_etre_critique(self, client, mod):
+        from app.services import relay_probe
+        cur = _make_cursor({"SELECT 1": [(1,)]})
+        conn = _make_conn(cur)
+        res = {"checked_at": 0, "proxy": None, "cibles": {
+            "keycloak": {"status": "error", "latency_ms": 3, "http": None, "detail": "connexion ou DNS : x",
+                         "via": "direct", "proxy": None}}}
+        env = {"DM_AUTH_JWKS_URL": "", "ADMIN_OIDC_ISSUER_URL": "", "KEYCLOAK_ISSUER_URL": "",
+               "LLM_BASE_URL": "", "DM_RELAY_ASSISTANT_URL": ""}
+        with patch.object(mod.psycopg2, "connect", return_value=conn), patch.dict(os.environ, env), \
+             patch.object(relay_probe, "sonder_toutes", return_value=res):
+            data = client.get("/ops/health/full").json()
+        assert data["services"]["relay-chain:keycloak"]["status"] == "error"
+        assert data["status"] == "degraded"
+
+    def test_relay_probe_refuse_sans_jeton(self, client):
+        """Fail closed : ni jeton fourni, ni jeton configuré → 401, sans sonder."""
+        from app.services import relay_probe
+        with patch.object(relay_probe, "sonder_toutes") as sonde:
+            with patch.dict(os.environ, {"DM_QUEUE_ADMIN_TOKEN": "secret-ops"}):
+                sans = client.get("/ops/relay/probe")
+                faux = client.get("/ops/relay/probe", headers={"X-Internal-Token": "autre"})
+            with patch.dict(os.environ, {"DM_QUEUE_ADMIN_TOKEN": ""}):
+                non_configure = client.get("/ops/relay/probe", headers={"X-Internal-Token": ""})
+        assert (sans.status_code, faux.status_code, non_configure.status_code) == (401, 401, 401)
+        sonde.assert_not_called()
+
+    def test_relay_probe_avec_jeton_rend_la_sonde_et_le_detail_complet(self, client):
+        from app.services import relay_probe
+        res = {"checked_at": 1.0, "proxy": "10.224.32.127:80", "cibles": {
+            "keycloak": {"status": "ok", "latency_ms": 12, "http": 200, "detail": "HTTP 200",
+                         "via": "proxy", "proxy": "10.224.32.127:80"}}}
+        with patch.object(relay_probe, "sonder_toutes", return_value=res), \
+             patch.dict(os.environ, {"DM_QUEUE_ADMIN_TOKEN": "secret-ops"}):
+            resp = client.get("/ops/relay/probe", headers={"X-Internal-Token": "secret-ops"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["proxy"] == "10.224.32.127:80"
+        assert data["cibles"]["keycloak"]["detail_complet"] == "HTTP 200 par le proxy 10.224.32.127:80"
+
     def test_health_full_db_down(self, client, mod):
         with patch.object(mod.psycopg2, "connect", side_effect=Exception("refused")):
             resp = client.get("/ops/health/full")

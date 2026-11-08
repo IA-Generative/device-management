@@ -4497,8 +4497,21 @@ def ops_health_full():
 
     # Relay: the relay-assistant K8s Service listens on port 80 (targetPort 8080).
     # Probing :8080 directly bypassed the Service and timed out (false "error").
-    relay_base = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant").rstrip("/")
-    _do("relay", lambda: (urlreq.urlopen(f"{relay_base}/healthz", timeout=3).close() or "ok"))
+    # Variable vide = relais non déployé (prod) : omis, comme keycloak et llm non
+    # configurés — sinon urlopen("/healthz") rendait le statut global « degraded ».
+    from app.services import relay_assistant
+    relay_healthz = relay_assistant.healthz_url()
+    if relay_healthz:
+        _do("relay", lambda: (urlreq.urlopen(relay_healthz, timeout=3).close() or "ok"))
+
+    # La chaîne du relais servi par l'api (api → proxy de sortie → upstream), une entrée
+    # par cible configurée. C'est elle qui dit si ORION / le proxy de prod laisse passer.
+    # Résultat gardé 15 s par app.services.relay_probe : pas de martèlement du proxy.
+    # Route publique : le détail dit « par le proxy » sans en donner l'adresse.
+    from app.services import relay_probe
+    for _cible, _res in relay_probe.sonder_toutes()["cibles"].items():
+        checks[f"relay-chain:{_cible}"] = {"status": _res["status"], "latency_ms": _res["latency_ms"],
+                                           "detail": relay_probe.detail_public(_res)}
 
     has_critical = any(checks.get(s, {}).get("status") == "error" for s in critical_svcs)
     has_any_err = any(v.get("status") == "error" for v in checks.values())
@@ -4509,6 +4522,26 @@ def ops_health_full():
         "checked_at": datetime.now(UTC).isoformat(),
         "services": checks,
     })
+
+
+@app.get("/ops/relay/probe")
+def ops_relay_probe(request: Request):
+    """La chaîne du relais vue depuis l'api : api → proxy de sortie → chaque upstream.
+
+    Cluster-internal, gardée par le jeton de service comme /internal/config/state :
+    X-Internal-Token comparé en temps constant à DM_QUEUE_ADMIN_TOKEN, refus si le jeton
+    n'est pas configuré. Le résultat (gardé 15 s) nomme l'hôte:port du proxy mais ni URL
+    d'upstream ni identifiant. La page /admin/debug l'appelle sur le Service interne de
+    l'api : c'est l'api qui a le proxy de sortie, pas l'admin.
+    """
+    expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
+    provided = request.headers.get("X-Internal-Token", "")
+    if not expected or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    from app.services import relay_probe
+    res = relay_probe.sonder_toutes()
+    return JSONResponse({**res, "cibles": {c: {**v, "detail_complet": relay_probe.detail_complet(v)}
+                                           for c, v in res["cibles"].items()}})
 
 
 @app.get("/ops/metrics")
