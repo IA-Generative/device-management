@@ -3811,6 +3811,23 @@ def _llm_models_detail() -> str:
     return f"{model} · embed: {embd or '(désactivé)'}"
 
 
+def _relay_check_detail(urlopen) -> str:
+    """Détail du contrôle « Relay-assistant » de la page de debug.
+
+    Variable absente : défaut docker-compose (le relais est un conteneur voisin).
+    Variable présente mais VIDE : le chart n'a pas déployé le relais nginx — en
+    production, l'api sert /relay-assistant/* elle-même (_RELAY_UPSTREAM_MAP) et
+    c'est voulu. Ce n'est pas une erreur, et surtout pas « unknown url type:
+    '/healthz' » : un chemin sans hôte n'est pas un état de service.
+    """
+    relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant").strip()
+    if not relay_url:
+        return "non déployé"
+    with urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3):
+        pass
+    return "nginx OK"
+
+
 @router.get("/debug", response_class=HTMLResponse)
 @require_admin
 async def debug_page(request: Request):
@@ -3875,10 +3892,7 @@ async def debug_page(request: Request):
             return f"{models} (upstream injoignable)"
 
     def check_relay():
-        relay_url = os.getenv("DM_RELAY_ASSISTANT_URL", "http://relay-assistant")
-        with urlreq.urlopen(f"{relay_url.rstrip('/')}/healthz", timeout=3):
-            pass
-        return "nginx OK"
+        return _relay_check_detail(urlreq.urlopen)
 
     def check_telemetry():
         url = os.getenv("DM_TELEMETRY_UPSTREAM_ENDPOINT", "")
