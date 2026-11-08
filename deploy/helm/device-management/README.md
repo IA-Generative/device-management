@@ -448,6 +448,7 @@ sections.
 | `migration` | Alembic migration hook Job settings. |
 | `ingress` | Optional single Ingress for `api`/`admin`/`telemetryRelay`. Disabled by default. |
 | `config` | Non-secret `DM_*`/`KEYCLOAK_*`/`POSTGRES_*`/`AWS_*` application settings, rendered into one ConfigMap. |
+| `config.app.links` / `config.app.linksByApp` | Links the extensions show their users (search portal, beta community...), served resolved in `/config` as `config.links`; `linksByApp` refines per `device_type`. Hot-reloadable from the admin Config tab (`DM_LINKS`, `DM_LINKS_BY_APP`). |
 | `contentTemplate` | Browser-extension/plugin substitution tokens (`PUBLIC_BASE_URL`, `LLM_BASE_URL`, `API_BASE`, ...) — content, not server config, but rides on the same ConfigMap. |
 | `secrets` | Sensitive values. `existingSecret` to reference a Secret managed outside Helm (recommended in production); `create`/`values` for a chart-managed Secret otherwise. |
 | `vault` | Optional: render a `VaultStaticSecret` CR (Vault Secrets Operator) instead, so VSO owns the runtime Secret. Overrides `secrets.create`. See "Secret provisioning" above. |

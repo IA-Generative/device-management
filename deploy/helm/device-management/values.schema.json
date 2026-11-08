@@ -4,6 +4,21 @@
   "type": "object",
   "additionalProperties": true,
   "required": ["image", "config"],
+  "$defs": {
+    "link": {
+            "type": "object",
+            "required": ["id"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,39}$" },
+              "label": { "type": "string", "maxLength": 80 },
+              "url": { "type": "string", "pattern": "^https://", "maxLength": 2048 },
+              "hint": { "type": "string", "maxLength": 200 },
+              "hintUrl": { "type": "string", "pattern": "^https://", "maxLength": 2048 },
+              "hidden": { "type": "boolean" }
+            }
+          }
+  },
   "properties": {
     "image": {
       "type": "object",
@@ -148,6 +163,16 @@
       "type": "object",
       "required": ["app", "storage", "keycloak", "auth", "telemetry", "postgres"],
       "properties": {
+        "app": {
+          "type": "object",
+          "properties": {
+            "links": { "type": "array", "items": { "$ref": "#/$defs/link" } },
+            "linksByApp": {
+              "type": "object",
+              "additionalProperties": { "type": "array", "items": { "$ref": "#/$defs/link" } }
+            }
+          }
+        },
         "keycloak": {
           "type": "object",
           "required": ["issuerUrl", "realm", "clientId"],

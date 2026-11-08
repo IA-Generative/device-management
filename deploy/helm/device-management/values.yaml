@@ -681,6 +681,40 @@ config:
     # Mon portail). Served to plugins as config.localApiAllowedOrigins;
     # empty = not served, the extension keeps its own setting.
     localApiAllowedOrigins: ""
+    # DM_LINKS (rendered as JSON). Links distributed to EVERY application in
+    # /config as `config.links` — a flat list the extension replaces as a
+    # whole on each poll (never merged client-side). Each entry names the
+    # ROLE of the link in the UI (`id`, stable kebab-case), not its
+    # destination; the extension only renders the ids it knows.
+    # Entry: {id, label (<=80), url (https://), hint? (<=200), hintUrl? (https://)}.
+    # Hot-reloadable from the admin Config tab; the plugin's dm-config.json
+    # template (default/profile `links`) and the catalogue override (key
+    # `links`) refine it per application, merged BY id field by field.
+    # Empty list = no link served.
+    links:
+      - id: search-portal
+        label: "Chercher aussi dans d'autres sources avec le portail de recherche"
+        url: "https://monportail.numerique-interieur.com/"
+        hint: "en bêta : s'inscrire"
+        hintUrl: "https://communaute.mirai.interieur.gouv.fr/invite/kguG2oQ"
+      - id: beta-signup
+        label: "Rejoindre la communauté bêta"
+        url: "https://communaute.mirai.interieur.gouv.fr/invite/kguG2oQ"
+      # Base URL only: the extension appends its own /_beta/retour?app=... path.
+      - id: beta-feedback
+        label: "Donner mon avis sur la bêta"
+        url: "https://monportail.numerique-interieur.com"
+        hint: "Votre avis s'ouvre dans le navigateur"
+    # DM_LINKS_BY_APP (rendered as JSON). Per-application refinements, keyed
+    # by device_type (matisse, pablo, libreoffice...). Same entry shape,
+    # merged BY id over `links`: a partial entry ({id, url}) changes only
+    # that field; {id, hidden: true} removes the link for that application.
+    # Example:
+    #   linksByApp:
+    #     libreoffice:
+    #       - id: search-portal
+    #         hidden: true
+    linksByApp: {}
 
   # S3-backed storage for enrollment payloads and distributed binaries
   # (default since horizontal scaling requires no RWO PVC on api/worker).

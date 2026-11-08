@@ -1,11 +1,16 @@
 apiVersion: v2
 name: device-management
-description: >-
-  Serveur de gestion de flotte (distribution, configuration, télémétrie) pour
-  extensions bureautiques
+description: Serveur de gestion de flotte (distribution, configuration, télémétrie) pour extensions bureautiques
 type: application
+
+# Version du chart (SemVer indépendant de l'application). À incrémenter à chaque
+# changement de templates/values, même si appVersion ne bouge pas.
 version: 0.5.0
-appVersion: 0.9.23
+
+# Version applicative packagée par défaut, identique au fichier VERSION à la racine du
+# dépôt. release-please ne réécrit QUE cette ligne, grâce au repère en fin de ligne.
+appVersion: "0.9.23" # x-release-please-version
+
 keywords:
   - device-management
   - fastapi

@@ -9,9 +9,8 @@
       "version-file": "VERSION",
       "extra-files": [
         {
-          "type": "yaml",
-          "path": "deploy/helm/device-management/Chart.yaml",
-          "jsonpath": "$.appVersion"
+          "type": "generic",
+          "path": "deploy/helm/device-management/Chart.yaml"
         }
       ],
       "changelog-sections": [
