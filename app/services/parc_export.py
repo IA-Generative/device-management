@@ -49,6 +49,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 from datetime import UTC, date, datetime, timedelta
@@ -557,14 +558,42 @@ def _purger_local(conn, aujourdhui: date) -> None:
     conn.commit()
 
 
+# ── Qui exporte ──────────────────────────────────────────────────────────────
+# Un seul rôle porte la boucle d'export : le worker (DM_RUNTIME_MODE=worker), ou
+# le processus unique du mode all. Les autres rôles (api, admin, llm,
+# telemetry-relay) n'ont ni le proxy de sortie ni PARC_EXPORT_SECRET en
+# production : vu le 2026-11-08, une surcharge runtime DM_PARC_EXPORT_ENABLED=true
+# les faisait tous tourner, le premier réveillé prenait le cycle et échouait
+# (DNS en 20 ms, 50 échecs « réseau » par jour), pendant que l'admin envoyait un
+# secret vide depuis « Exporter maintenant ». Le réglage runtime n'est plus qu'un
+# interrupteur DU worker.
+
+ROLES_EXPORTATEURS = frozenset({"worker", "all"})
+
+
+def mode_courant() -> str:
+    from ..settings import settings
+    return str(settings.runtime_mode or "api").strip().lower()
+
+
+def exporte_ici(mode: str | None = None) -> bool:
+    """Ce processus a-t-il le droit de porter la boucle et d'envoyer au bus ?"""
+    return (mode if mode is not None else mode_courant()).strip().lower() in ROLES_EXPORTATEURS
+
+
+def _pod_label() -> str:
+    """Qui a fait ce cycle : nom du pod (HOSTNAME), sinon le mode. Borné à 80."""
+    return (os.getenv("HOSTNAME") or "").strip()[:80] or mode_courant()
+
+
 def _journaliser(conn, *, type_envoi: str, seq: int, lignes: int, code: int | None,
                  duree_ms: int) -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO parc_export_journal (type, seq, lignes, code, duree_ms) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (type_envoi, seq, lignes, code, duree_ms))
+                "INSERT INTO parc_export_journal (type, seq, lignes, code, duree_ms, pod) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (type_envoi, seq, lignes, code, duree_ms, _pod_label()))
             cur.execute(
                 "DELETE FROM parc_export_journal WHERE id NOT IN ("
                 "  SELECT id FROM parc_export_journal ORDER BY id DESC LIMIT %s)",
@@ -627,7 +656,13 @@ def executer_cycle(*, force: bool = False) -> dict:
     base_url = str(settings.parc_export_url or "").strip()
     if not base_url:
         return {"statut": "non_configure"}
-    secret = str(settings.parc_export_secret or "")
+    secret = str(settings.parc_export_secret or "").strip()
+    if not secret:
+        # Sans secret, le bus répondrait 401 à coup sûr : on ne sort pas sur le
+        # réseau, on le dit. En production seul le worker reçoit PARC_EXPORT_SECRET.
+        logger.warning("parc export: PARC_EXPORT_SECRET absent dans ce pod (%s), cycle refusé",
+                       _pod_label())
+        return {"statut": "secret_absent"}
     intervalle = max(60, int(settings.parc_export_intervalle_s or 300))
 
     conn = get_db_connection()
@@ -745,11 +780,18 @@ def executer_cycle(*, force: bool = False) -> dict:
 def etat_pour_debug() -> dict:
     """Résumé pour la section « Export parc » de /admin/debug (best-effort)."""
     from ..settings import settings
+    mode = mode_courant()
     resume: dict = {
         "actif": bool(settings.parc_export_enabled),
         "configure": bool(str(settings.parc_export_url or "").strip()),
         "instance": str(settings.parc_instance_label or "dm-x"),
         "intervalle_s": int(settings.parc_export_intervalle_s or 300),
+        # Qui exporte : ce pod (mode all) ou le worker. L'admin ne porte jamais la
+        # boucle ; « Exporter maintenant » lui délègue (demande_en_attente).
+        "exportateur": {"mode": mode, "exporte_ici": exporte_ici(mode),
+                        "roles": sorted(ROLES_EXPORTATEURS),
+                        "secret_present": bool(str(settings.parc_export_secret or "").strip())},
+        "demande_en_attente": None,
         "etat": None,
         "journal": [],
         "echecs_24h": 0,
@@ -776,12 +818,15 @@ def etat_pour_debug() -> dict:
                     "resyncs": int(row[4] or 0),
                     "dernier_jour": row[5],
                 }
+            cur.execute("SELECT demande_forcee FROM parc_export_etat WHERE id = 1")
+            row = cur.fetchone()
+            resume["demande_en_attente"] = row[0] if row else None
             cur.execute(
-                "SELECT heure, type, seq, lignes, code, duree_ms "
+                "SELECT heure, type, seq, lignes, code, duree_ms, pod "
                 "FROM parc_export_journal ORDER BY id DESC LIMIT 10")
             resume["journal"] = [
-                {"heure": h, "type": t, "seq": s, "lignes": li, "code": c, "duree_ms": d}
-                for (h, t, s, li, c, d) in cur.fetchall()
+                {"heure": h, "type": t, "seq": s, "lignes": li, "code": c, "duree_ms": d, "pod": pod}
+                for (h, t, s, li, c, d, pod) in cur.fetchall()
             ]
             cur.execute(
                 "SELECT COUNT(*) FROM parc_export_journal "
@@ -804,17 +849,79 @@ _TIC_SECONDES = 15.0
 _derniere_tentative = 0.0
 
 
-def boucle_de_fond(stop_event: threading.Event) -> None:  # pragma: no cover - boucle, testée via executer_cycle
+def demander_cycle() -> dict:
+    """« Exporter maintenant » depuis un pod qui n'exporte pas : on dépose la
+    demande en base, le worker la prend à son prochain réveil (≤ 15 s)."""
+    conn = get_db_connection()
+    if conn is None:
+        return {"statut": "pas_de_base"}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE parc_export_etat SET demande_forcee = now() WHERE id = 1")
+        conn.commit()
+        return {"statut": "demande_transmise", "delai_max_s": int(_TIC_SECONDES)}
+    except Exception:
+        logger.exception("parc export: dépôt de la demande de cycle en échec")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {"statut": "erreur"}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _prendre_demande() -> bool:
+    """Le worker relève (et efface) une demande de cycle forcé, s'il y en a une."""
+    conn = get_db_connection()
+    if conn is None:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE parc_export_etat SET demande_forcee = NULL "
+                "WHERE id = 1 AND demande_forcee IS NOT NULL RETURNING 1")
+            prise = cur.fetchone() is not None
+        conn.commit()
+        return prise
+    except Exception:
+        logger.debug("parc export: lecture de la demande de cycle en échec", exc_info=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def boucle_de_fond(stop_event: threading.Event, mode: str | None = None) -> None:
     """Réveil toutes les ~15 s ; cycle quand l'intervalle (hot-reloadable) est
-    écoulé et que l'export est actif. La garde « trop tôt » du cycle évite les
-    doublons multi-pods."""
+    écoulé et que l'export est actif, ou dès qu'une demande forcée est déposée.
+    Ne tourne QUE dans un rôle exportateur : ailleurs, elle se termine aussitôt,
+    quelle que soit la surcharge runtime DM_PARC_EXPORT_ENABLED."""
     global _derniere_tentative
-    logger.info("parc export: boucle de fond démarrée")
+    mode = (mode if mode is not None else mode_courant()).strip().lower()
+    if not exporte_ici(mode):
+        logger.info("parc export: pas de boucle de fond dans le rôle %s (exportateurs : %s)",
+                    mode, ", ".join(sorted(ROLES_EXPORTATEURS)))
+        return
+    logger.info("parc export: boucle de fond démarrée (rôle %s)", mode)
     while not stop_event.is_set():
         stop_event.wait(_TIC_SECONDES)
         if stop_event.is_set():
             break
         try:
+            if _prendre_demande():
+                _derniere_tentative = time.monotonic()
+                executer_cycle(force=True)
+                continue
             from ..settings import settings
             if not bool(settings.parc_export_enabled):
                 continue
@@ -828,8 +935,13 @@ def boucle_de_fond(stop_event: threading.Event) -> None:  # pragma: no cover - b
     logger.info("parc export: boucle de fond arrêtée")
 
 
-def demarrer_fond(stop_event: threading.Event) -> threading.Thread:
-    t = threading.Thread(target=boucle_de_fond, args=(stop_event,),
+def demarrer_fond(stop_event: threading.Event, mode: str | None = None) -> threading.Thread | None:
+    """Lance la boucle si ce rôle exporte ; sinon None, et rien ne tourne."""
+    mode = (mode if mode is not None else mode_courant()).strip().lower()
+    if not exporte_ici(mode):
+        logger.info("parc export: rôle %s, aucune boucle d'export (le worker s'en charge)", mode)
+        return None
+    t = threading.Thread(target=boucle_de_fond, args=(stop_event, mode),
                          daemon=True, name="dm-parc-export")
     t.start()
     return t
