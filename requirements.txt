@@ -1,6 +1,6 @@
-# fastapi 0.136.3 tire starlette 1.2.1, qui corrige CVE-2025-62727 (ReDoS Range
+# fastapi 0.162.4 (exige opentelemetry-api >= 1.44) tire starlette >= 1.x, qui corrige CVE-2025-62727 (ReDoS Range
 # FileResponse), PYSEC-2026-161 (Host header) et CVE-2025-54121 (multipart DoS).
-fastapi==0.136.3
+fastapi==0.162.4
 starlette>=1.0.1  # plancher de sécurité explicite (dép. transitive de fastapi)
 # /!\ starlette >=1.0 a SUPPRIMÉ l'ancienne signature TemplateResponse(name, context).
 # Tous les rendus doivent utiliser TemplateResponse(request, name, context).
@@ -20,9 +20,9 @@ defusedxml>=0.7.1,<0.8  # parsing XML durci (anti-XXE) du description.xml des OX
 tenacity==9.2.1  # retries bornés (backoff exponentiel + jitter) sur les appels réseau transitoires
 # Observabilité (OTel) — désactivée par défaut (OTEL_EXPORTER_OTLP_ENDPOINT absent = no-op),
 # donc sans impact en environnement air-gapped. Versions pinnées ensemble (même release train).
-opentelemetry-api==1.37.0
-opentelemetry-sdk==1.37.0
-opentelemetry-exporter-otlp-proto-http==1.37.0
-opentelemetry-instrumentation-fastapi==0.58b0
-opentelemetry-instrumentation-httpx==0.58b0
-opentelemetry-instrumentation-psycopg2==0.58b0
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation-fastapi==0.66b2
+opentelemetry-instrumentation-httpx==0.66b2
+opentelemetry-instrumentation-psycopg2==0.66b2
