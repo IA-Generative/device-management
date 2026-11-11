@@ -24,7 +24,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: tempo
-          image: docker.io/grafana/tempo:2.6.1
+          image: docker.io/grafana/tempo:2.10.10
           args:
             - "-config.file=/etc/tempo/tempo.yaml"
           ports:

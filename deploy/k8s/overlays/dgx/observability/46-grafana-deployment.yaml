@@ -23,7 +23,7 @@ spec:
         fsGroup: 472
       containers:
         - name: grafana
-          image: docker.io/grafana/grafana:11.3.0
+          image: docker.io/grafana/grafana:11.6.16
           ports:
             - name: http
               containerPort: 3000
