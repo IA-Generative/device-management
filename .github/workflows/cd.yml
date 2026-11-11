@@ -67,7 +67,7 @@ jobs:
   # ADR-0004 : étiquette d'image = tag git sans le « v » = version.json (.version, .commit).
   verify-version:
     needs: [release, build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: read
@@ -92,7 +92,7 @@ jobs:
   resync-develop:
     needs: [release, verify-version]
     if: ${{ needs.release.outputs.release-created == 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       pull-requests: write
