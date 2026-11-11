@@ -219,7 +219,7 @@ async def trace_id_middleware(request: Request, call_next):
 # Les routes du monolithe sont déclarées au niveau module ; en mode llm on ne
 # sert QUE le proxy + sondes + métriques (pod stateless scalable, sans PVC).
 _LLM_MODE_ALLOWED_PREFIXES = (
-    "/llm/", "/livez", "/readyz", "/healthz", "/metrics", "/internal", "/__version__",
+    "/llm/", "/tools/", "/livez", "/readyz", "/healthz", "/metrics", "/internal", "/__version__",
 )
 
 if _RUNTIME_MODE == "llm":
@@ -1729,6 +1729,8 @@ def _relay_allowed_targets() -> list[str]:
         targets.append("telemetry")
     if "llm" not in targets:
         targets.append("llm")
+    if "tools" not in targets:
+        targets.append("tools")
     return sorted(set(targets))
 
 
@@ -1862,6 +1864,11 @@ def _verify_relay_credentials(relay_client_id: str, relay_key: str, target: str 
     # /llm/v1 sans ré-enrôlement, juste via le llmEndpoint reçu au prochain /config.
     if "config" in effective_targets and "llm" not in effective_targets:
         effective_targets.append("llm")
+        effective_targets.sort()
+    # Rétrocompat relais d'outils (/tools/v1) : même raisonnement, le toolsEndpoint
+    # arrive au prochain /config sans ré-enrôlement.
+    if "config" in effective_targets and "tools" not in effective_targets:
+        effective_targets.append("tools")
         effective_targets.sort()
 
     if target_norm and effective_targets and target_norm not in effective_targets:
@@ -2079,6 +2086,25 @@ def _apply_llm_proxy_overrides(cfg: dict, *, relay_ok: bool, relay_meta: dict | 
     config_obj["rerankModel"] = rerank_model
     config_obj["rerankEndpoint"] = rerank_endpoint
     config_obj["rerankToken"] = str(config_obj.get("llmToken") or "") if rerank_endpoint else ""
+    return cfg
+
+
+def _apply_tools_relay_overrides(cfg: dict) -> dict:
+    """Clé toolsEndpoint annoncée au plugin (relais d'outils, issue #116) : l'URL publique
+    de /tools/v1 si le relais est actif et qu'au moins un service est servi à ce profil,
+    sinon une chaîne vide (le plugin n'affiche alors aucun outil externe)."""
+    config_obj = cfg.get("config")
+    if not isinstance(config_obj, dict):
+        return cfg
+    from .tools.registry import services_actifs  # import différé (pas de cycle)
+    from .tools.router import public_tools_url
+    endpoint = ""
+    try:
+        if services_actifs():
+            endpoint = public_tools_url()
+    except Exception:
+        logger.exception("relais d'outils : registre illisible, toolsEndpoint vide")
+    config_obj["toolsEndpoint"] = endpoint
     return cfg
 
 
@@ -2972,6 +2998,7 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
         relay_ok=bool(relay_ok),
         relay_meta=relay_meta if relay_ok and isinstance(relay_meta, dict) else None,
     )
+    cfg = _apply_tools_relay_overrides(cfg)
 
     # 3) keep top-level enable switch from service settings if you still want a global kill-switch
     cfg["enabled"] = bool(settings.config_enabled)
@@ -5853,12 +5880,23 @@ if _RUNTIME_MODE in ("api", "all", "llm"):
         hop_headers=_RELAY_HOP_HEADERS,
     ))
 
+    # Relais d'outils (/tools/v1, issue #116) : mêmes modes que le proxy LLM, mêmes
+    # helpers injectés ; le jeton de la personne est vérifié par _verify_access_token.
+    from .tools.router import build_router as _build_tools_router
+
+    app.include_router(_build_tools_router(
+        relay_auth=_relay_auth_from_request,
+        verify_access_token=_verify_access_token,
+    ))
+
 
 @app.on_event("shutdown")
 async def _shutdown_llm_http_client() -> None:
     from .llm.http_client import aclose_async_client
+    from .tools.http_client import aclose_async_client as _aclose_tools_client
 
     await aclose_async_client()
+    await _aclose_tools_client()
 
 
 # ---- Local entrypoint (VS Code friendly)
