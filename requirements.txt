@@ -5,7 +5,7 @@ starlette>=1.0.1  # plancher de sécurité explicite (dép. transitive de fastap
 # /!\ starlette >=1.0 a SUPPRIMÉ l'ancienne signature TemplateResponse(name, context).
 # Tous les rendus doivent utiliser TemplateResponse(request, name, context).
 uvicorn[standard]==0.49.0
-pydantic-settings==2.14.1
+pydantic-settings==2.14.2
 boto3==1.43.24
 psycopg2-binary>=2.9.10,<3.0
 alembic>=1.13.0,<2.0
