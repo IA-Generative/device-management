@@ -6,6 +6,13 @@ il ne porte ni détail d'infrastructure ni détail technique fin (ceux-là viven
 documentation). Historique reconstitué le 2026-09-28 depuis les commits, puis reformulé ; les versions
 suivantes seront tenues par release-please. Titres au format `## [X.Y.Z] - date`.
 
+## [0.10.2](https://github.com/IA-Generative/device-management/compare/v0.10.1...v0.10.2) (2026-11-11)
+
+
+### Corrections
+
+* **parc:** l'export ne tourne que dans le worker, « Exporter maintenant » délègue, jamais d'envoi sans secret ([#109](https://github.com/IA-Generative/device-management/issues/109)) ([f797c1f](https://github.com/IA-Generative/device-management/commit/f797c1f279dd4c64cd907350fc13209cc3a33c29))
+
 ## [0.10.1](https://github.com/IA-Generative/device-management/compare/v0.10.0...v0.10.1) (2026-11-08)
 
 
