@@ -26,7 +26,8 @@ jobs:
       - name: pip-audit (dependency CVEs)
         run: pip-audit -r requirements.txt || true  # report-only initially
       - name: Semgrep (SAST)
-        run: semgrep --config auto app || true       # report-only initially
+        # Environnement isolé : semgrep épingle opentelemetry ~=1.37, l'application est en 1.45.
+        run: pipx run semgrep --config auto app || true  # report-only initially
       - name: Pytest (unit)
         # Les tests `integration` nécessitant Keycloak, un navigateur ou un
         # serveur live ne tournent pas ici. Ceux qui n'ont besoin que d'un

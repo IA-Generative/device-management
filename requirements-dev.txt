@@ -6,4 +6,5 @@ pytest>=9.0.3,<10
 ruff>=0.6,<1.0
 bandit>=1.7,<2.0
 pip-audit>=2.7,<3.0
-semgrep>=1.80,<2.0
+# semgrep est installé à part dans la CI (pipx) : il épingle opentelemetry ~=1.37,
+# incompatible avec l'OpenTelemetry 1.45 de l'application.
