@@ -305,7 +305,7 @@ worker:
     enabled: true
     image:
       repository: docker.io/library/postgres
-      tag: 16-alpine
+      tag: 18-alpine
     # Hostname:port passed to `pg_isready -h`. Defaults to the internal
     # postgres service name when postgres.internal.enabled=true, otherwise
     # must be set explicitly (external DB host).
@@ -1091,7 +1091,7 @@ postgres:
     enabled: false
     image:
       repository: docker.io/library/postgres
-      tag: 16-alpine
+      tag: 18-alpine
     resources:
       requests:
         cpu: 250m
