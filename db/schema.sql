@@ -551,8 +551,12 @@ CREATE TABLE IF NOT EXISTS parc_export_etat (
     dernier_envoi TIMESTAMPTZ,
     dernier_code INT,
     resyncs INT NOT NULL DEFAULT 0,
-    dernier_jour DATE
+    dernier_jour DATE,
+    -- « Exporter maintenant » depuis l'admin : demande déposée ici, relevée et
+    -- effacée par le worker à son prochain réveil (seul lui a le secret).
+    demande_forcee TIMESTAMPTZ
 );
+ALTER TABLE parc_export_etat ADD COLUMN IF NOT EXISTS demande_forcee TIMESTAMPTZ;
 INSERT INTO parc_export_etat (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
 -- Journal des cycles d'export (débogage admin) : petite table bornée (~50
@@ -565,8 +569,12 @@ CREATE TABLE IF NOT EXISTS parc_export_journal (
     seq BIGINT,
     lignes INT NOT NULL DEFAULT 0,
     code INT,
-    duree_ms INT
+    duree_ms INT,
+    -- Quel pod a fait le cycle (HOSTNAME) : le diagnostic « qui exporte ? » se
+    -- lit sur /admin/debug au lieu d'un Job.
+    pod VARCHAR(80)
 );
+ALTER TABLE parc_export_journal ADD COLUMN IF NOT EXISTS pod VARCHAR(80);
 
 -- ═══════════════════════════════════════════════════════════════
 -- AUDIT

@@ -41,11 +41,11 @@ def main() -> None:
             logger.info("Runtime config loaded; entering queue loop.")
         else:
             logger.warning("Runtime config not ready after 30s; entering queue loop anyway.")
-        # Export parc : la boucle vit aussi sur le worker (déploiements où l'API
-        # ne tourne pas en mode all). Le cycle se garde tout seul (flag runtime,
-        # verrou consultatif, garde « trop tôt ») — jamais d'envoi doublé.
+        # Export parc : c'est le worker qui porte la boucle (seul rôle avec le
+        # proxy de sortie et PARC_EXPORT_SECRET en production). Le cycle se garde
+        # tout seul (flag runtime, verrou consultatif, garde « trop tôt »).
         from .services import parc_export
-        parc_export.demarrer_fond(stop_event)
+        parc_export.demarrer_fond(stop_event, mode)
     else:
         runtime_config.snapshot_baseline()
         logger.info("Runtime config sync disabled (no DB); worker uses ENV baseline.")

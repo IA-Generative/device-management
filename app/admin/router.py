@@ -4063,13 +4063,16 @@ async def debug_page(request: Request):
 @router.post("/parc-export/run")
 @require_admin
 async def parc_export_run(request: Request):
-    """« Exporter maintenant » : force un cycle d'export parc (tracé en audit)."""
+    """« Exporter maintenant » : force un cycle d'export parc (tracé en audit).
+
+    Si ce pod n'exporte pas (mode admin : pas de proxy de sortie, pas de secret),
+    la demande est déposée en base et le worker la prend à son prochain réveil ;
+    en mode all, le cycle part d'ici."""
     if not _verify_csrf(request):
         raise HTTPException(403, "CSRF token invalid")
     from starlette.concurrency import run_in_threadpool
 
-    from app.services import parc_export as parc_export_svc
-    resultat = await run_in_threadpool(parc_export_svc.executer_cycle, force=True)
+    resultat = await run_in_threadpool(_parc_export_declencher)
     actor = getattr(request.state, "admin_session", {})
     try:
         conn = get_db_connection()
@@ -4084,8 +4087,16 @@ async def parc_export_run(request: Request):
             conn.close()
     except Exception:
         logger.exception("audit parc_export.run failed")
-    return JSONResponse({"ok": resultat.get("statut") in ("envoye", "resynchronise"),
+    return JSONResponse({"ok": resultat.get("statut") in ("envoye", "resynchronise", "demande_transmise"),
                          **resultat})
+
+
+def _parc_export_declencher() -> dict:
+    """Cycle immédiat si ce processus exporte (mode all), sinon délégation au worker."""
+    from app.services import parc_export as parc_export_svc
+    if parc_export_svc.exporte_ici():
+        return parc_export_svc.executer_cycle(force=True)
+    return parc_export_svc.demander_cycle()
 
 
 # ─── Runtime config overrides (editable from the debug page) ────────────────
