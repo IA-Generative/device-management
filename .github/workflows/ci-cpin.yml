@@ -99,7 +99,7 @@ jobs:
     name: All jobs passed
     if: ${{ always() }}
     needs: [lint-commits, scan-gitleaks, scan-config, lint-yaml, build, scan-image]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions: {}
     steps:
       - name: Vérifier le résultat des jobs
