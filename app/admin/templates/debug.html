@@ -162,6 +162,15 @@
   <span class="dm-badge dm-badge--neutral" title="PARC_EXPORT_INTERVALLE_S">
     {%- if pe.intervalle_s % 60 == 0 %}toutes les {{ pe.intervalle_s // 60 }} min{% else %}toutes les {{ pe.intervalle_s }} s{% endif -%}
   </span>
+  {% set ex = pe.exportateur %}
+  {% if ex %}
+  <span class="dm-badge dm-badge--neutral" title="Seuls les rôles {{ ex.roles | join(', ') }} portent la boucle d'export ; ce pod tourne en mode {{ ex.mode }}.">
+    {%- if ex.exporte_ici %}exporté par ce pod ({{ ex.mode }}){% else %}exporté par le worker — ce pod ({{ ex.mode }}) n'exporte pas{% endif -%}
+  </span>
+  {% if pe.demande_en_attente %}
+  <span class="dm-badge dm-badge--neutral" title="Déposée {{ timeago(pe.demande_en_attente) }} ; le worker la relève à son prochain réveil (≤ 15 s).">demande d'export en attente</span>
+  {% endif %}
+  {% endif %}
   <span style="flex:1;"></span>
   <button type="button" id="pe-run" class="dm-btn dm-btn--sm dm-btn--secondary"{% if not pe.configure %} disabled{% endif %}>Exporter maintenant</button>
   {% if config_editing_enabled %}
@@ -174,7 +183,7 @@
 <details style="margin-top:0.5rem;"{% if not pe_ok %} open{% endif %}>
   <summary style="cursor:pointer;font-size:0.85rem;color:#666;">Journal des cycles (10 derniers — persistés en table parc_export_journal)</summary>
   <table class="dm-table-compact" style="margin-top:0.5rem;">
-    <thead><tr><th>Heure</th><th>Type</th><th>Seq</th><th>Lignes</th><th>Code réponse</th><th>Durée</th></tr></thead>
+    <thead><tr><th>Heure</th><th>Type</th><th>Seq</th><th>Lignes</th><th>Code réponse</th><th>Durée</th><th>Pod</th></tr></thead>
     <tbody>
       {% for c in pe.journal %}
       <tr>
@@ -189,9 +198,10 @@
           {% else %}<span style="color:#CE0500;">{{ c.code }}</span>{% endif %}
         </td>
         <td>{{ c.duree_ms }}&nbsp;ms</td>
+        <td style="font-size:0.8rem;color:#666;" title="{{ c.pod or '' }}">{{ (c.pod or '—') | truncate(28, true, '…') }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="6" style="color:#666;">Aucun cycle enregistré.</td></tr>
+      <tr><td colspan="7" style="color:#666;">Aucun cycle enregistré.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -205,8 +215,12 @@
     fetch('/admin/parc-export/run', {
       method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf() }
     }).then(function (r) { return r.json(); }).then(function (d) {
-      alert(d.ok ? ('Export effectué (statut ' + d.statut + (d.code ? ', code ' + d.code : '') + ').')
-                 : ('Export non abouti : ' + (d.statut || 'erreur') + (d.code !== undefined ? ' (code ' + d.code + ')' : '')));
+      var msg;
+      if (d.statut === 'demande_transmise') msg = 'Demande transmise au worker : il exporte à son prochain réveil (sous ' + (d.delai_max_s || 15) + ' s). Rechargez la page dans quelques secondes pour voir le cycle dans le journal.';
+      else if (d.statut === 'secret_absent') msg = "Export refusé : ce pod n'a pas PARC_EXPORT_SECRET. Seul le worker peut exporter.";
+      else if (d.ok) msg = 'Export effectué (statut ' + d.statut + (d.code ? ', code ' + d.code : '') + ').';
+      else msg = 'Export non abouti : ' + (d.statut || 'erreur') + (d.code !== undefined ? ' (code ' + d.code + ')' : '');
+      alert(msg);
       location.reload();
     }).catch(function (e) { alert('Erreur : ' + e.message); run.disabled = false; });
   });

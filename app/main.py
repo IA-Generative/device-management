@@ -5995,17 +5995,22 @@ _parc_export_thread: threading.Thread | None = None
 
 @app.on_event("startup")
 def _startup_parc_export() -> None:
-    """Boucle de fond de l'export parc — tous les rôles FastAPI. Le cycle
-    lui-même se garde (flag runtime, verrou consultatif, garde « trop tôt ») :
-    plusieurs pods peuvent porter la boucle sans jamais doubler un envoi."""
+    """Boucle de fond de l'export parc — seulement dans un rôle exportateur
+    (mode all ici ; le worker dédié la porte dans worker_main). Les rôles api,
+    admin, llm et telemetry-relay n'exportent jamais : en production ils n'ont ni
+    le proxy de sortie ni PARC_EXPORT_SECRET, et une surcharge runtime ne doit
+    pas les faire sortir sur le réseau."""
     global _parc_export_stop, _parc_export_thread
     if psycopg2 is None or not _db_url_bootstrap():
         return
     if _parc_export_thread and _parc_export_thread.is_alive():
         return
     from .services import parc_export as _parc_export
+    if not _parc_export.exporte_ici(_RUNTIME_MODE):
+        logger.info("Parc export loop not started: role %s does not export (worker only).", _RUNTIME_MODE)
+        return
     _parc_export_stop = threading.Event()
-    _parc_export_thread = _parc_export.demarrer_fond(_parc_export_stop)
+    _parc_export_thread = _parc_export.demarrer_fond(_parc_export_stop, _RUNTIME_MODE)
     logger.info("Parc export background loop started.")
 
 

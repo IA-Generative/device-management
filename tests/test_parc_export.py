@@ -181,6 +181,14 @@ class FauxCurseur:
             db.etat["seq"] = int(p[0])
         elif s.startswith("UPDATE parc_export_etat SET dernier_jour"):
             db.etat["dernier_jour"] = p[0]
+        elif s.startswith("UPDATE parc_export_etat SET demande_forcee = now()"):
+            db.etat["demande_forcee"] = datetime.now(UTC)
+        elif s.startswith("UPDATE parc_export_etat SET demande_forcee = NULL"):
+            if db.etat.get("demande_forcee") is not None:
+                db.etat["demande_forcee"] = None
+                self._rows = [(1,)]
+        elif s.startswith("SELECT demande_forcee FROM parc_export_etat"):
+            self._rows = [(db.etat.get("demande_forcee"),)]
         elif s.startswith("SELECT heure, type"):
             self._rows = list(reversed(db.journal))[:10]
         elif s.startswith("SELECT COUNT(*) FROM parc_export_journal"):
@@ -835,3 +843,104 @@ def test_plugin_resolu_sans_version_reste_silencieux():
     with FauxConnexion(db).cursor() as cur:
         pe._versions_courantes(cur, AUJOURDHUI)
     assert pe.PLUGINS_NON_RESOLUS == {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Qui exporte : le worker seul, délégation d'« Exporter maintenant », secret absent
+# (vu en production le 2026-11-08 : sept pods en boucle, l'admin en 401)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_seuls_worker_et_all_exportent():
+    assert pe.exporte_ici("worker") and pe.exporte_ici("all")
+    for role in ("api", "admin", "llm", "telemetry-relay", "", "API"):
+        assert not pe.exporte_ici(role), role
+
+
+def test_demarrer_fond_ne_lance_rien_hors_role_exportateur(monkeypatch):
+    from app.settings import settings
+    monkeypatch.setattr(settings, "parc_export_enabled", True)  # la surcharge runtime ne change rien
+    stop = threading.Event()
+    assert pe.demarrer_fond(stop, "admin") is None
+    assert pe.demarrer_fond(stop, "api") is None
+    t = pe.demarrer_fond(stop, "worker")
+    assert t is not None and t.is_alive()
+    stop.set()
+    t.join(timeout=2)
+    assert not t.is_alive()
+
+
+def test_boucle_de_fond_se_termine_aussitot_hors_role(monkeypatch):
+    from app.settings import settings
+    monkeypatch.setattr(settings, "parc_export_enabled", True)
+    appels = []
+    monkeypatch.setattr(pe, "executer_cycle", lambda **kw: appels.append(kw))
+    monkeypatch.setattr(pe, "_TIC_SECONDES", 0.01)
+    stop = threading.Event()
+    pe.boucle_de_fond(stop, mode="llm")  # retourne sans attendre stop
+    assert appels == []
+
+
+def test_secret_absent_refuse_sans_appel_reseau(env_export, faux_bus, monkeypatch, caplog):
+    from app.settings import settings
+    monkeypatch.setattr(settings, "parc_export_secret", "")
+    with caplog.at_level("WARNING"):
+        assert pe.executer_cycle(force=True) == {"statut": "secret_absent"}
+    assert faux_bus.requetes == []
+    assert any("PARC_EXPORT_SECRET absent" in r.message for r in caplog.records)
+    monkeypatch.setattr(settings, "parc_export_secret", "   ")
+    assert pe.executer_cycle(force=True) == {"statut": "secret_absent"}
+    assert faux_bus.requetes == []
+
+
+def test_demande_de_cycle_deposee_puis_relevee_une_fois(env_export):
+    assert env_export.etat.get("demande_forcee") is None
+    assert pe._prendre_demande() is False
+    r = pe.demander_cycle()
+    assert r["statut"] == "demande_transmise" and r["delai_max_s"] == 15
+    assert env_export.etat["demande_forcee"] is not None
+    assert pe._prendre_demande() is True
+    assert env_export.etat["demande_forcee"] is None
+    assert pe._prendre_demande() is False
+
+
+def test_la_boucle_du_worker_honore_la_demande_meme_export_desactive(env_export, monkeypatch):
+    from app.settings import settings
+    monkeypatch.setattr(settings, "parc_export_enabled", False)
+    appels = []
+    monkeypatch.setattr(pe, "executer_cycle", lambda **kw: appels.append(kw) or {"statut": "envoye"})
+    monkeypatch.setattr(pe, "_TIC_SECONDES", 0.01)
+    pe.demander_cycle()
+    stop = threading.Event()
+    t = threading.Thread(target=pe.boucle_de_fond, args=(stop, "worker"), daemon=True)
+    t.start()
+    for _ in range(200):
+        if appels:
+            break
+        threading.Event().wait(0.01)
+    stop.set()
+    t.join(timeout=2)
+    assert appels == [{"force": True}]
+    assert env_export.etat["demande_forcee"] is None
+
+
+def test_le_journal_dit_quel_pod_a_fait_le_cycle(env_export, faux_bus, monkeypatch):
+    monkeypatch.setenv("HOSTNAME", "dm-device-management-worker-7c9f8b5d4-x2k9q")
+    pe.executer_cycle()
+    assert env_export.journal, "un cycle doit laisser une ligne de journal"
+    assert env_export.journal[-1][-1] == "dm-device-management-worker-7c9f8b5d4-x2k9q"
+    etat = pe.etat_pour_debug()
+    assert etat["journal"][0]["pod"] == "dm-device-management-worker-7c9f8b5d4-x2k9q"
+    assert etat["exportateur"]["roles"] == ["all", "worker"]
+    assert etat["demande_en_attente"] is None
+
+
+def test_declencheur_admin_delegue_hors_role_et_execute_en_mode_all(env_export, monkeypatch):
+    from app.admin.router import _parc_export_declencher
+    from app.settings import settings
+    monkeypatch.setattr(settings, "runtime_mode", "admin")
+    r = _parc_export_declencher()
+    assert r["statut"] == "demande_transmise"
+    assert env_export.etat["demande_forcee"] is not None
+    monkeypatch.setattr(settings, "runtime_mode", "all")
+    monkeypatch.setattr(pe, "executer_cycle", lambda **kw: {"statut": "envoye", **kw})
+    assert _parc_export_declencher() == {"statut": "envoye", "force": True}
