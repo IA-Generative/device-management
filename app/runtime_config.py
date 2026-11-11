@@ -135,6 +135,25 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
         "DM_LLM_READ_TIMEOUT_SECONDS",
         "Timeout lecture backend (s ; inter-chunk en streaming)",
         "Proxy LLM", "int", True, min=10, max=600),
+    # ── Relais d'outils (/tools/v1) — relues PAR REQUÊTE → hot-reload réel ──
+    "DM_TOOLS_ENABLED": _spec(
+        "DM_TOOLS_ENABLED", "Relais d'outils actif (défaut OFF)", "Relais d'outils", "bool", True),
+    "DM_TOOLS_REGISTRY": _spec(
+        "DM_TOOLS_REGISTRY",
+        "Registre des services d'outils (JSON : {services: [{id, protocol, upstream, tools, …}]})",
+        "Relais d'outils", "json", True),
+    "PUBLIC_TOOLS_URL": _spec(
+        "PUBLIC_TOOLS_URL", "URL publique du relais d'outils (défaut : PUBLIC_BASE_URL + /tools/v1)",
+        "Relais d'outils", "str", True),
+    "DM_TOOLS_RATE_PER_MINUTE": _spec(
+        "DM_TOOLS_RATE_PER_MINUTE", "Appels par personne, par service et par minute (0 = sans limite)",
+        "Relais d'outils", "int", True, min=0, max=10000),
+    "DM_TOOLS_DEFAULT_TIMEOUT_SECONDS": _spec(
+        "DM_TOOLS_DEFAULT_TIMEOUT_SECONDS", "Délai amont par défaut (s)",
+        "Relais d'outils", "int", True, min=1, max=180),
+    "DM_TOOLS_MAX_RESPONSE_KB": _spec(
+        "DM_TOOLS_MAX_RESPONSE_KB", "Taille maximale d'une réponse amont (Ko)",
+        "Relais d'outils", "int", True, min=1, max=4096),
     # ── Télémétrie ──
     "DM_TELEMETRY_ENABLED": _spec(
         "DM_TELEMETRY_ENABLED", "Télémétrie active", "Télémétrie", "bool", True,

@@ -3964,6 +3964,35 @@ async def debug_page(request: Request):
     def check_relay():
         return _relay_check_detail(urlreq.urlopen)
 
+    def check_tools_relay():
+        # Relais d'outils (/tools/v1) : état du registre, et sonde de santé des amonts qui en
+        # déclarent une (health_path, sans jeton). Lecture seule, jamais d'appel d'outil.
+        from app import runtime_config as _rc
+        from app.tools.registry import enabled as _tools_enabled
+        from app.tools.registry import parse_registry, services_actifs
+        if not _tools_enabled():
+            return "désactivé (DM_TOOLS_ENABLED)"
+        declares = parse_registry(str(_rc.cfg("DM_TOOLS_REGISTRY", "") or ""))
+        actifs = services_actifs()
+        if not declares:
+            return "activé, registre vide"
+        parts = []
+        for s in actifs:
+            etat = f"{s.id} ({s.protocol}, {len(s.tools)} outil(s))"
+            if s.health_path:
+                try:
+                    with urlreq.urlopen(f"{s.upstream.rsplit('/', 1)[0] if s.protocol == 'mcp' else s.upstream}{s.health_path}", timeout=4) as r:
+                        etat += f" santé HTTP {r.status}"
+                except urllib_error.HTTPError as e:
+                    etat += f" santé HTTP {e.code}"
+                except OSError:
+                    etat += " santé injoignable"
+            parts.append(etat)
+        ecartes = len(declares) - len(actifs)
+        if ecartes:
+            parts.append(f"{ecartes} hors profil")
+        return " ; ".join(parts)
+
     def check_telemetry():
         url = os.getenv("DM_TELEMETRY_UPSTREAM_ENDPOINT", "")
         if not url:
@@ -3977,12 +4006,13 @@ async def debug_page(request: Request):
 
     # Run checks in parallel
     checks = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:
         futures = [
             pool.submit(_check, "PostgreSQL", check_db),
             pool.submit(_check, "Keycloak OIDC", check_keycloak),
             pool.submit(_check, "LLM", check_llm),
             pool.submit(_check, "Relay-assistant nginx", check_relay),
+            pool.submit(_check, "Relais d'outils", check_tools_relay),
             pool.submit(_check, "Telemetrie upstream", check_telemetry),
             pool.submit(_relay_chain_checks),
         ]

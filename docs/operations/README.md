@@ -10,5 +10,6 @@
 | [mode-operatoire-campagnes.md](mode-operatoire-campagnes.md) | Mode opératoire des campagnes de déploiement & feature toggling (administrateurs) |
 | [liens-distribues.md](liens-distribues.md) | Liens affichés par les extensions (portail de recherche, communauté bêta…) : où les changer, comment les masquer par application |
 | [llm-proxy.md](llm-proxy.md) | Proxy LLM `/llm/v1` (0.9.0) : rôle des clés, opérations courantes (quota, kill-switch, rollback, backends), déploiement, dépannage |
+| [relais-outils.md](relais-outils.md) | Relais d'outils `/tools/v1` (0.11.0) : découverte et appel des services MirAI (REST et MCP) avec l'identité de la personne, registre, bornes, journal |
 | [test-cahier.md](test-cahier.md) | Cahier de tests (unitaire, intégration, E2E, manuel) |
 | [debug-campaign-not-serving.md](debug-campaign-not-serving.md) | Troubleshooting : campagne qui ne sert plus de directive update |
