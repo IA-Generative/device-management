@@ -7,7 +7,7 @@
 # - restart: unless-stopped -> comes back after a host reboot (Docker auto-start)
 services:
   dm-postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     environment:
       POSTGRES_USER: owui
       POSTGRES_PASSWORD: owui
