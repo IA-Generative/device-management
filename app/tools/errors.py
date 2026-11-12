@@ -1,7 +1,9 @@
 """Erreurs du relais d'outils : une forme unique {"error": {"code", "message"}}.
 
 Codes du contrat (issue #116) : unauthorized, forbidden, not_found,
-invalid_arguments, rate_limited (avec Retry-After), unavailable, blocked,
+invalid_arguments, rate_limited (avec Retry-After), unavailable, blocked (refus de
+l'amont : politique, contenu), upstream_error (l'outil amont a échoué : erreur d'outil
+MCP isError ou 422 du service, sans lien avec un refus d'accès ni avec les arguments) ;
 truncated n'est pas une erreur (champ de la réponse 200).
 """
 from __future__ import annotations
@@ -14,7 +16,7 @@ CODES_PAR_STATUT = {
     403: "forbidden",
     404: "not_found",
     413: "invalid_arguments",
-    422: "blocked",
+    422: "upstream_error",
     429: "rate_limited",
     502: "unavailable",
     503: "unavailable",

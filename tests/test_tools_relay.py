@@ -276,6 +276,7 @@ def test_erreur_d_outil_mcp_n_est_pas_un_200():
     res = client.post("/tools/v1/mescollections/rechercher", headers=_entetes(client),
                       json={"arguments": {"question": "x"}})
     assert res.status_code == 400
+    assert res.json()["error"]["code"] == "upstream_error"
     assert res.json()["error"]["message"] == "collection introuvable"
 
 
