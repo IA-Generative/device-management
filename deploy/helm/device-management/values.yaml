@@ -681,6 +681,17 @@ config:
     # Mon portail). Served to plugins as config.localApiAllowedOrigins;
     # empty = not served, the extension keeps its own setting.
     localApiAllowedOrigins: ""
+    # DM_CONFIG_OVERRIDES (rendered as JSON). Keys of config.json imposed by
+    # THIS deployment on every plugin, merged over the plugin's template and
+    # BEFORE the keys the DM computes itself (telemetry, links, relays…) and
+    # before per-plugin catalog overrides, which still win. Use it for plugin
+    # settings that differ per environment (e.g. the Mes réunions base URL on
+    # the integration instance). Keys that have their own variable (links,
+    # bootstrapUrls, localApiAllowedOrigins…) are ignored. Empty = nothing.
+    # Example:
+    #   configOverrides:
+    #     mesReunionsBaseUrl: "https://mesreunions.example"
+    configOverrides: {}
     # DM_LINKS (rendered as JSON). Links distributed to EVERY application in
     # /config as `config.links` — a flat list the extension replaces as a
     # whole on each poll (never merged client-side). Each entry names the

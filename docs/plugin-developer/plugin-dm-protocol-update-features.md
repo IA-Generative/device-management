@@ -352,6 +352,12 @@ clé du backend réel — utilisez `llmEndpoint` / `llmToken` dans tout nouveau 
 (= `EMBD_MODEL_NAME` côté DM, vide = embedder désactivé) est propre à l'embedder. Côté plugin, `embdModel`
 va en pref ; l'URL/token sont réutilisés in-memory depuis le LLM (pas de token périssable en `about:config`).
 
+**Clés imposées par le déploiement** — `DM_CONFIG_OVERRIDES` (values du chart `config.app.configOverrides`,
+ou admin) : objet JSON `{clé: valeur}` posé dans `config` pour **toutes** les applications de ce déploiement,
+par-dessus le gabarit du plugin et avant la surcharge catalogue par plugin (qui l'emporte). Sert aux réglages
+qui changent d'un environnement à l'autre, par exemple `mesReunionsBaseUrl` sur l'instance d'intégration. Les
+clés qui ont leur propre variable (`links`, `bootstrapUrls`, `localApiAllowedOrigins`…) y sont ignorées.
+
 **API locale (origines autorisées)** — `localApiAllowedOrigins` : CSV des origines web exactes (schéma,
 hôte, port) autorisées à appeler l'API HTTP locale de l'extension, par exemple
 `"https://portail.example,http://localhost:8080"` (= `DM_LOCAL_API_ALLOWED_ORIGINS` côté DM, surchargeable
