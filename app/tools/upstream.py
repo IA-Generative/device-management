@@ -237,7 +237,9 @@ async def appeler_mcp(service: Service, outil: Outil, arguments: dict, bearer: s
     if result.get("isError"):
         # Une erreur d'outil MCP (HTTP 200 + isError) devient une erreur du relais, pas un 200.
         message = (textes[0] if textes and isinstance(textes[0], str) else "l'outil a échoué")[:300]
-        raise ToolsError(400, "invalid_arguments" if "argument" in message.lower() else "blocked", message)
+        # « blocked » se lirait comme un refus d'accès : une erreur d'outil est upstream_error,
+        # sauf si l'outil parle d'arguments (le modèle peut alors corriger son appel).
+        raise ToolsError(400, "invalid_arguments" if "argument" in message.lower() else "upstream_error", message)
     if isinstance(result.get("structuredContent"), dict):
         return result["structuredContent"], False, len(rep.body)
     if textes and isinstance(textes[0], str):
