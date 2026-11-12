@@ -76,6 +76,11 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
         "DM_LOCAL_API_ALLOWED_ORIGINS",
         "Origines web autorisées sur l'API locale des extensions (vide = non servi)",
         "Plugins", "list", True),
+    "DM_CONFIG_OVERRIDES": _spec(
+        "DM_CONFIG_OVERRIDES",
+        "Clés de config.json imposées par le déploiement (JSON objet, ex. {\"mesReunionsBaseUrl\": \"https://…\"}) ; "
+        "les clés calculées par le DM et les surcharges catalogue l'emportent",
+        "Plugins", "json", True),
     "DM_LINKS": _spec(
         "DM_LINKS",
         "Liens distribués à toutes les applications (JSON : [{id, label, url, hint?, hintUrl?}])",

@@ -20,6 +20,7 @@ data:
   DM_TLS_VERIFY: {{ .Values.config.app.tlsVerify | quote }}
   DM_BOOTSTRAP_URLS: {{ .Values.config.app.bootstrapUrls | quote }}
   DM_LOCAL_API_ALLOWED_ORIGINS: {{ .Values.config.app.localApiAllowedOrigins | quote }}
+  DM_CONFIG_OVERRIDES: {{ .Values.config.app.configOverrides | default dict | toJson | quote }}
   DM_LINKS: {{ .Values.config.app.links | default list | toJson | quote }}
   DM_LINKS_BY_APP: {{ .Values.config.app.linksByApp | default dict | toJson | quote }}
 

@@ -1927,6 +1927,41 @@ def _scrub_secret_values(cfg: dict) -> dict:
     cfg_obj["config"] = config_obj
     return cfg_obj
 
+_CONFIG_OVERRIDES_RESERVED = frozenset({
+    "links", "bootstrapUrls", "localApiAllowedOrigins", "telemetryEnabled", "telemetryEndpoint",
+    "telemetryAuthorizationType", "llmEndpoint", "toolsEndpoint", "relayAssistantBaseUrl",
+})
+
+
+def _deployment_config_overrides() -> dict:
+    """DM_CONFIG_OVERRIDES (JSON objet) → {clé: valeur} à poser dans config.json.
+
+    Hot-reloadable (relu à chaque requête). Les clés que le DM calcule lui-même ou qui ont
+    leur propre variable (liens, bootstrapUrls…) sont ignorées avec un avertissement, pour
+    qu'une valeur ne soit jamais posée par deux chemins. Valeurs : scalaires, listes ou
+    objets JSON, servis tels quels (le plugin est seul juge de ce qu'il lit)."""
+    raw = str(runtime_config.cfg("DM_CONFIG_OVERRIDES", "") or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        logger.warning("DM_CONFIG_OVERRIDES n'est pas du JSON valide : ignoré")
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("DM_CONFIG_OVERRIDES doit être un objet JSON : ignoré")
+        return {}
+    out: dict = {}
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        if key in _CONFIG_OVERRIDES_RESERVED:
+            logger.warning("DM_CONFIG_OVERRIDES: clé %s ignorée (elle a sa propre variable)", key)
+            continue
+        out[key] = value
+    return out
+
+
 def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None,
                      client_uuid: str = "") -> dict:
     """Apply targeted overrides from env."""
@@ -1935,6 +1970,13 @@ def _apply_overrides(cfg: dict, *, profile: str, device: str | None = None,
     config_obj = cfg.get("config")
     if not isinstance(config_obj, dict):
         return cfg
+
+    # Clés imposées par le déploiement (values du chart / admin) : DM_CONFIG_OVERRIDES,
+    # objet JSON {clé: valeur} fusionné SUR le gabarit du plugin, AVANT les clés que le DM
+    # calcule lui-même (télémétrie, liens, relais…) et avant la surcharge catalogue par
+    # plugin : un déploiement fixe une valeur, le catalogue peut encore la raffiner.
+    for key, value in _deployment_config_overrides().items():
+        config_obj[key] = value
 
     config_obj["telemetryEnabled"] = bool(settings.telemetry_enabled)
     config_obj["telemetryEndpoint"] = _resolve_public_telemetry_endpoint()
