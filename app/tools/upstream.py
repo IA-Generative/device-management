@@ -82,6 +82,10 @@ async def _envoyer(service: Service, outil: Outil, request: httpx.Request) -> Re
 def _lever_si_erreur_amont(service: Service, rep: ReponseAmont) -> None:
     """Un statut amont ≥ 400 devient une erreur du contrat ; le message amont est repris
     s'il a la forme {error:{code,message}}, sans jamais recopier d'autre contenu."""
+    if 300 <= rep.status < 400:
+        # Une redirection (vers une page de connexion HTML, typiquement) n'est pas une réponse
+        # d'API : on ne la suit pas et on ne la prend jamais pour une acceptation.
+        raise ToolsError(502, "unavailable", f"{service.label} a répondu par une redirection ({rep.status})")
     if rep.status < 400:
         return
     code = code_amont(rep.status)

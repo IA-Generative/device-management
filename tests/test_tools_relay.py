@@ -60,6 +60,7 @@ class Amonts:
     def __init__(self):
         self.requests: list[httpx.Request] = []
         self.panne_reunions = False
+        self.redirection_reunions = False
         self.reponse_longue = False
         self.statut_collections = 200
         self.is_error = False
@@ -80,7 +81,7 @@ class Amonts:
         if host == "reunions.test":
             if self.panne_reunions:
                 raise httpx.ConnectError("refus", request=request)
-            if request.url.path == "/api/v1/search":
+            if request.url.path == "/api/v1/search" and not self.redirection_reunions:
                 if self.reponse_longue:
                     return httpx.Response(200, json={"results": ["x" * 3000]})
                 return httpx.Response(200, json={"total": 1, "query": request.url.params.get("q"),
@@ -276,6 +277,18 @@ def test_erreur_d_outil_mcp_n_est_pas_un_200():
                       json={"arguments": {"question": "x"}})
     assert res.status_code == 400
     assert res.json()["error"]["message"] == "collection introuvable"
+
+
+def test_redirection_amont_n_est_pas_un_200():
+    """Un 302 vers /login (HTML) n'est ni suivi ni pris pour une acceptation."""
+    _, client, amonts = _setup()
+    amonts.redirection_reunions = True
+    res = client.post("/tools/v1/mesreunions/chercher", headers=_entetes(client),
+                      json={"arguments": {"q": "budget"}})
+    assert res.status_code == 502
+    assert res.json()["error"]["code"] == "unavailable"
+    assert "redirection" in res.json()["error"]["message"]
+    assert all(r.url.path != "/login" for r in amonts.requests)
 
 
 def test_refus_amont_403_devient_forbidden():
