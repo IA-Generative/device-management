@@ -1,6 +1,6 @@
 # fastapi 0.162.4 (exige opentelemetry-api >= 1.44) tire starlette >= 1.x, qui corrige CVE-2025-62727 (ReDoS Range
 # FileResponse), PYSEC-2026-161 (Host header) et CVE-2025-54121 (multipart DoS).
-fastapi==0.162.4
+fastapi==0.162.7
 starlette>=1.0.1  # plancher de sécurité explicite (dép. transitive de fastapi)
 # /!\ starlette >=1.0 a SUPPRIMÉ l'ancienne signature TemplateResponse(name, context).
 # Tous les rendus doivent utiliser TemplateResponse(request, name, context).
