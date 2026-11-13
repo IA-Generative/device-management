@@ -6,7 +6,7 @@ starlette>=1.0.1  # plancher de sécurité explicite (dép. transitive de fastap
 # Tous les rendus doivent utiliser TemplateResponse(request, name, context).
 uvicorn[standard]==0.54.0
 pydantic-settings==2.16.2
-boto3==1.44.0
+boto3==1.44.3
 psycopg2-binary>=2.9.10,<3.0
 alembic>=1.13.0,<2.0
 PyJWT[crypto]>=2.9.0,<3.0
