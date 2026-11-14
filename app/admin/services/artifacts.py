@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 
 ALLOWED_EXTENSIONS = {".oxt", ".xpi", ".crx"}
@@ -90,19 +91,22 @@ def check_overwrite(cur, *, device_type: str, platform_variant: str, version: st
 
 def create_artifact(cur, *, device_type: str, platform_variant: str,
                     version: str, s3_path: str, checksum: str,
-                    changelog_url: str = None) -> int:
+                    changelog_url: str = None, bootstrap_info: dict | None = None) -> int:
+    """`bootstrap_info` : relevé de la liste de DM du paquet (issue #133)."""
     cur.execute("""
         INSERT INTO artifacts (device_type, platform_variant, version,
-                              s3_path, checksum, changelog_url)
-        VALUES (%s, %s, %s, %s, %s, %s)
+                              s3_path, checksum, changelog_url, bootstrap_info)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (device_type, platform_variant, version) DO UPDATE SET
             s3_path = EXCLUDED.s3_path,
             checksum = EXCLUDED.checksum,
             changelog_url = COALESCE(EXCLUDED.changelog_url, artifacts.changelog_url),
+            bootstrap_info = EXCLUDED.bootstrap_info,
             released_at = NOW()
         RETURNING id
     """, (device_type, platform_variant or "", version, s3_path,
-          checksum, changelog_url or None))
+          checksum, changelog_url or None,
+          json.dumps(bootstrap_info) if bootstrap_info else None))
     return cur.fetchone()[0]
 
 

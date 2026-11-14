@@ -62,6 +62,12 @@ curl -s https://bootstrap.example.com/binaries/libreoffice/2.0.0/mirai.oxt \
 # Doit correspondre au hash ci-dessus
 ```
 
+> **Liste de DM du paquet.** À l'envoi par l'admin ou par l'API, le DM réécrit dans le paquet la
+> liste des DM que le poste interrogera pour y mettre la sienne (`DM_BOOTSTRAP_URLS`, à défaut
+> `PUBLIC_BASE_URL`) : le binaire servi et son empreinte ne sont donc pas ceux du fichier construit.
+> Un paquet déposé directement en stockage n'est ni contrôlé ni réécrit. Détail des formats et des
+> cas de refus : `docs/plugin-developer/packaging-guide.md`, « Liste de DM inscrite dans le paquet ».
+
 ### 1.3 Enregistrer l'artifact en DB
 
 ```sql

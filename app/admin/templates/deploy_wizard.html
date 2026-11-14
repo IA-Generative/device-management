@@ -152,6 +152,14 @@
             (les postes deja sur ce numero ne recevront pas le nouveau binaire). Sans cette case, l'envoi est refuse.</span>
           </label>
         </div>
+        <div class="dm-form-row">
+          <label style="display:flex;gap:0.5rem;align-items:flex-start;font-size:0.9rem;">
+            <input type="checkbox" name="keep_bootstrap" value="1">
+            <span>Servir tel quel un paquet signe dont la liste de DM n'est pas celle de cette instance
+            (ses postes interrogeront un autre DM). Sans cette case, un tel paquet est refuse ; un paquet
+            non signe voit toujours sa liste reecrite.</span>
+          </label>
+        </div>
       </div>
     </details>
 

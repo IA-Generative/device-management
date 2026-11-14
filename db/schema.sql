@@ -207,8 +207,11 @@ CREATE TABLE IF NOT EXISTS artifacts (
     changelog_url TEXT,
     is_active BOOLEAN DEFAULT true,
     released_at TIMESTAMPTZ DEFAULT now(),
+    -- Liste de DM que porte le paquet, relevée à l'envoi (issue #133).
+    bootstrap_info JSONB,
     UNIQUE (device_type, platform_variant, version)
 );
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS bootstrap_info JSONB;
 
 CREATE TABLE IF NOT EXISTS plugin_versions (
     id SERIAL PRIMARY KEY,

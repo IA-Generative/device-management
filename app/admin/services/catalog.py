@@ -125,12 +125,13 @@ def list_versions(cur, plugin_id: int) -> list[dict]:
     cur.execute("""
         SELECT pv.*,
                a.s3_path, a.checksum, a.device_type AS artifact_device_type,
+               a.bootstrap_info,
                COUNT(pi.id) FILTER (WHERE pi.installed_version = pv.version) AS install_count
         FROM plugin_versions pv
         LEFT JOIN artifacts a ON a.id = pv.artifact_id
         LEFT JOIN plugin_installations pi ON pi.plugin_id = pv.plugin_id
         WHERE pv.plugin_id = %s
-        GROUP BY pv.id, a.s3_path, a.checksum, a.device_type
+        GROUP BY pv.id, a.id
         ORDER BY pv.created_at DESC
     """, (plugin_id,))
     cols = [d[0] for d in cur.description]

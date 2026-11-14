@@ -5,6 +5,7 @@ Architecture: routes delegate to services, never run SQL directly.
 """
 
 import csv
+import html
 import io
 import json
 import logging
@@ -13,6 +14,7 @@ import re
 import time
 import urllib.parse
 import uuid
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlencode
@@ -27,6 +29,7 @@ from app.resilience import retry_transient
 
 from .. import runtime_config as rcfg
 from ..services import binaries as binaries_svc
+from ..services import package_bootstrap
 from ..services.crypto import encrypt_secret, secrets_encryption_available
 from ..services.versions import unorderable_version_message
 from ..settings import settings
@@ -150,18 +153,27 @@ def _read_dm_manifest(zf) -> dict | None:
     return None
 
 
-def _strip_dm_metadata_from_zip(data: bytes) -> bytes:
-    """Remove dm-config.json and dm-manifest.json from a ZIP archive (OXT/XPI/CRX) before storage."""
-    import zipfile
-    strip_names = {"dm-config.json", "dm_config.json", "dm-manifest.json", "dm_manifest.json"}
-    src = zipfile.ZipFile(io.BytesIO(data))
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
-        for item in src.infolist():
-            if item.filename.lower() in strip_names:
-                continue
-            dst.writestr(item, src.read(item.filename))
-    return buf.getvalue()
+def _prepare_package(data: bytes, keep_bootstrap="") -> tuple[bytes, dict]:
+    """Paquet tel qu'il sera stocké et servi, et relevé de sa liste de DM (issue #133).
+
+    Retire dm-config.json / dm-manifest.json (OXT/XPI/CRX) et inscrit la liste de
+    DM de l'instance si celle du paquet diffère. L'empreinte se calcule sur le
+    résultat. Un paquet signé dont la liste diffère est refusé (409), sauf
+    conservation confirmée.
+    """
+    try:
+        return package_bootstrap.prepare(data, keep=_form_truthy(keep_bootstrap))
+    except package_bootstrap.SignedPackageMismatch as e:
+        raise HTTPException(409, {"code": "bootstrap_signed", "message": str(e)}) from e
+    except zipfile.BadZipFile as e:
+        raise HTTPException(400, "Le fichier envoyé n'est pas une archive de plugin lisible.") from e
+
+
+def _bootstrap_audit(info: dict | None) -> dict:
+    """Ce que le journal d'audit retient du relevé."""
+    info = info or {}
+    return {"status": info.get("status"), "package_urls": info.get("package_urls"),
+            "served_urls": info.get("served_urls")}
 
 
 # ─── OIDC callback / logout ──────────────────────────────────────────────
@@ -907,6 +919,7 @@ async def artifact_upload(request: Request,
                           platform_variant: str = Form(""),
                           version: str = Form(...),
                           changelog_url: str = Form(""),
+                          keep_bootstrap: str = Form(""),
                           binary: UploadFile = File(...)):
     # Validate extension
     error = artifacts_svc.validate_upload(binary.filename or "", binary.size or 0)
@@ -917,6 +930,14 @@ async def artifact_upload(request: Request,
     if len(data) > artifacts_svc.MAX_UPLOAD_SIZE:
         return HTMLResponse('<div class="dm-flash dm-flash--error">Fichier trop volumineux (>100 Mo)</div>')
 
+    # Liste de DM du paquet alignée sur l'instance avant le calcul d'empreinte (issue #133).
+    bootstrap_info = None
+    try:
+        data, bootstrap_info = package_bootstrap.prepare(data, keep=_form_truthy(keep_bootstrap))
+    except package_bootstrap.SignedPackageMismatch as e:
+        return HTMLResponse(f'<div class="dm-flash dm-flash--error">{html.escape(str(e))}</div>')
+    except Exception:
+        logger.warning("artifact upload: archive illisible, stockée telle quelle")
     checksum = artifacts_svc.compute_checksum(data)
 
     # Store locally + push to DM API pods. Assainir chaque composant
@@ -939,7 +960,7 @@ async def artifact_upload(request: Request,
             artifact_id = artifacts_svc.create_artifact(
                 cur, device_type=device_type, platform_variant=platform_variant,
                 version=version, s3_path=local_path, checksum=checksum,
-                changelog_url=changelog_url or None,
+                changelog_url=changelog_url or None, bootstrap_info=bootstrap_info,
             )
             actor = getattr(request.state, "admin_session", {})
             audit_log(cur, actor=actor, action="artifact.upload",
@@ -1352,6 +1373,7 @@ async def deploy_create(request: Request,
                         name: str = Form(""),
                         rollback_artifact_id: str = Form(""),
                         confirm_overwrite: str = Form(""),
+                        keep_bootstrap: str = Form(""),
                         binary: UploadFile = File(...)):
     # 1. Upload artifact
     error = artifacts_svc.validate_upload(binary.filename or "", binary.size or 0)
@@ -1368,20 +1390,24 @@ async def deploy_create(request: Request,
     try:
         import zipfile
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            for name in zf.namelist():
-                basename = name.rsplit("/", 1)[-1].lower()
+            # « entry », pas « name » : la boucle écrasait le champ « Nom du
+            # déploiement », et le fichier stocké prenait le nom de la dernière
+            # entrée de l'archive (chemin inexistant dès qu'elle est dans un dossier).
+            for entry in zf.namelist():
+                basename = entry.rsplit("/", 1)[-1].lower()
                 if basename in ("dm-config.json", "dm_config.json"):
-                    raw = zf.read(name).decode("utf-8", errors="replace")
+                    raw = zf.read(entry).decode("utf-8", errors="replace")
                     deploy_config_template = json.loads(raw)
                     deploy_config_template = _apply_platform_defaults(deploy_config_template)
                 elif basename in ("dm-manifest.json", "dm_manifest.json"):
-                    raw = zf.read(name).decode("utf-8", errors="replace")
+                    raw = zf.read(entry).decode("utf-8", errors="replace")
                     deploy_dm_manifest = json.loads(raw)
     except Exception:
         pass
 
     # Strip dm-config.json from the binary before storage (users shouldn't see placeholders)
-    data = _strip_dm_metadata_from_zip(data)
+    # et inscrire la liste de DM de l'instance (issue #133).
+    data, bootstrap_info = _prepare_package(data, keep_bootstrap)
 
     checksum = artifacts_svc.compute_checksum(data)
     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
@@ -1421,6 +1447,7 @@ async def deploy_create(request: Request,
             artifact_id = artifacts_svc.create_artifact(
                 cur, device_type=device_type, platform_variant="",
                 version=version, s3_path=local_path, checksum=checksum,
+                bootstrap_info=bootstrap_info,
             )
 
             # 3. Campaign
@@ -1499,7 +1526,8 @@ async def deploy_create(request: Request,
                       payload={"name": campaign_name, "device_type": device_type,
                                "version": version, "deploy_type": deploy_type,
                                "has_config_template": bool(deploy_config_template),
-                               "binary_overwritten": overwritten},
+                               "binary_overwritten": overwritten,
+                               "bootstrap": _bootstrap_audit(bootstrap_info)},
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/deploy/{campaign_id}", status_code=303)
@@ -2140,7 +2168,9 @@ async def catalog_create(request: Request):
 
             if initial_version and bin_data:
                 try:
-                    bin_data = _strip_dm_metadata_from_zip(bin_data)
+                    # Paquet signé à la liste divergente : refusé ici (pas de
+                    # confirmation sur ce formulaire) ; l'envoyer par « Nouvelle version ».
+                    bin_data, bootstrap_info = package_bootstrap.prepare(bin_data)
                     checksum = artifacts_svc.compute_checksum(bin_data)
                     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
                     # Normalize filename to {slug}-{version}.{ext} for consistent download URLs
@@ -2154,6 +2184,7 @@ async def catalog_create(request: Request):
                     artifact_id = artifacts_svc.create_artifact(
                         cur, device_type=device_type, platform_variant="",
                         version=initial_version, s3_path=local_path, checksum=checksum,
+                        bootstrap_info=bootstrap_info,
                     )
                     catalog_svc.create_version(
                         cur, plugin_id=plugin_id, version=initial_version,
@@ -2184,7 +2215,8 @@ async def catalog_create(request: Request):
 
 @router.get("/catalog/{plugin_id}", response_class=HTMLResponse)
 @require_admin
-async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "versions"):
+async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "versions",
+                                bootstrap_notice: int = 0):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -2192,9 +2224,23 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             if not plugin:
                 raise HTTPException(404, "Plugin non trouve")
             versions = catalog_svc.list_versions(cur, plugin_id)
+            _instance_dm = package_bootstrap.instance_urls()
+            _bootstrap_notice = None
             for _v in versions:
                 # Forme non reconnue : aucune campagne ordinaire ne la servira (issue #132).
                 _v["unorderable"] = unorderable_version_message(_v.get("version")) is not None
+                # Liste de DM que porte le paquet (issue #133) : relevée à l'envoi ;
+                # pour un paquet antérieur, lue dans le fichier s'il est sur ce disque.
+                try:
+                    _v["bootstrap"] = package_bootstrap.describe(
+                        _v.get("bootstrap_info") or package_bootstrap.inspect_file(_v.get("s3_path")),
+                        _instance_dm)
+                except Exception:
+                    logger.warning("relevé de liste de DM indisponible pour la version %s",
+                                   _v.get("version"), exc_info=True)
+                    _v["bootstrap"] = None
+                if bootstrap_notice and _v.get("id") == bootstrap_notice:
+                    _bootstrap_notice = _v["bootstrap"]
             try:
                 general_version = catalog_svc.get_general_version(cur, plugin_id)
             except Exception:
@@ -2296,6 +2342,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             "request": request, "plugin": plugin, "versions": versions,
             "general_version": general_version,
             "general_coverage": general_coverage,
+            "bootstrap_notice": _bootstrap_notice, "instance_dm": _instance_dm,
             "stats": stats, "installations": installations,
             "artifacts": artifact_list, "features": features,
             "env_overrides": env_overrides, "kc_clients": kc_clients,
@@ -2774,6 +2821,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         hypotheses = body.get("hypotheses", "")
         make_general = body.get("make_general", False)
         confirm_overwrite = body.get("confirm_overwrite", False)
+        keep_bootstrap = body.get("keep_bootstrap", False)
         campaign_kind = body.get("campaign_kind", "ordinary")
         upload_id = body.get("upload_id", "")
         if not upload_id:
@@ -2802,6 +2850,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         hypotheses = form.get("hypotheses", "")
         make_general = form.get("make_general", "")
         confirm_overwrite = form.get("confirm_overwrite", "")
+        keep_bootstrap = form.get("keep_bootstrap", "")
         campaign_kind = form.get("campaign_kind", "ordinary")
         binary = form.get("binary")
         if not binary or not hasattr(binary, "read"):
@@ -2852,8 +2901,9 @@ async def catalog_version_upload(request: Request, plugin_id: int):
     except Exception:
         pass
 
-    # 3. Strip dm-config.json from binary, store artifact
-    data = _strip_dm_metadata_from_zip(data)
+    # 3. Strip dm-config.json from binary, inscrire la liste de DM de l'instance
+    # (issue #133), store artifact — l'empreinte porte sur le paquet réécrit.
+    data, bootstrap_info = _prepare_package(data, keep_bootstrap)
     checksum = artifacts_svc.compute_checksum(data)
 
     conn = get_db_connection()
@@ -2916,6 +2966,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
             artifact_id = artifacts_svc.create_artifact(
                 cur, device_type=device_type, platform_variant=platform_variant,
                 version=version, s3_path=local_path, checksum=checksum,
+                bootstrap_info=bootstrap_info,
             )
 
             # 5. Create version. 'published' (main, immédiat) OU 'experimental'
@@ -3000,7 +3051,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                       resource_type="plugin_version", resource_id=str(vid),
                       payload={"plugin_id": plugin_id, "version": version,
                                "has_config_template": bool(deploy_config_template),
-                               "binary_overwritten": overwritten},
+                               "binary_overwritten": overwritten,
+                               "bootstrap": _bootstrap_audit(bootstrap_info)},
                       ip=request.client.host if request.client else None)
 
             # 7. Deploy if requested
@@ -3049,9 +3101,11 @@ async def catalog_version_upload(request: Request, plugin_id: int):
 
             conn.commit()
 
+        # Un écart de liste de DM se dit dès le retour sur la fiche (issue #133).
+        _notice = f"&bootstrap_notice={vid}" if bootstrap_info.get("message") else ""
         if campaign_id:
-            return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments", status_code=303)
-        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
+            return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments{_notice}", status_code=303)
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions{_notice}", status_code=303)
     except HTTPException:
         raise
     except Exception as e:

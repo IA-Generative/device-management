@@ -166,6 +166,18 @@
 </div>
 {% endif %}
 
+{# Liste de DM du paquet qui vient d'etre envoye (issue #133) : un ecart se dit, il ne passe pas en silence #}
+{% if bootstrap_notice and bootstrap_notice.message %}
+<div id="bootstrap-notice" role="alert"
+     style="background:#FFF8E5;border:1px solid #B34000;border-left-width:4px;border-radius:6px;padding:1rem;margin:1rem 0;">
+  <strong>{% if bootstrap_notice.rewritten %}Liste de DM du paquet reecrite a l'envoi.{% else %}Liste de DM du paquet : a verifier.{% endif %}</strong>
+  <p style="margin:0.5rem 0 0 0;font-size:0.9rem;">{{ bootstrap_notice.message }}</p>
+  {% for note in bootstrap_notice.notes %}
+  <p style="margin:0.35rem 0 0 0;font-size:0.8rem;color:#666;">{{ note }}</p>
+  {% endfor %}
+</div>
+{% endif %}
+
 {# Tabs #}
 <div class="dm-tabs">
   <div class="dm-tabs__list">
@@ -452,6 +464,28 @@
           {% if general_version and general_version.id == v.id %}
           <span class="dm-badge dm-badge--success" style="margin-left:0.35rem;" title="Seule version annoncee a tout le parc par les canaux natifs">generale</span>
           {% endif %}
+          {# Liste de DM que porte le paquet (issue #133) : les postes equipes interrogeront ces adresses #}
+          <div class="dm-version-bootstrap" style="font-size:0.75rem;color:#666;margin-top:0.25rem;font-weight:normal;">
+            {% if not v.bootstrap %}
+              {% if v.artifact_id %}DM du paquet : non releve (paquet envoye avant ce controle, fichier absent de ce pod){% endif %}
+            {% elif v.bootstrap.has_list %}
+              DM du paquet : <code>{{ v.bootstrap.served_urls | join(', ') or 'aucune adresse' }}</code>
+              {% if v.bootstrap.rewritten %}
+              <span title="Le paquet envoye nommait : {{ v.bootstrap.package_urls | join(', ') or 'aucune adresse' }}">(reecrite a l'envoi)</span>
+              {% endif %}
+              {% if v.bootstrap.mismatch %}
+              <span class="dm-badge dm-badge--error" style="margin-left:0.25rem;"
+                    title="Les postes qui installent ce paquet interrogeront {{ v.bootstrap.served_urls | join(', ') or 'aucun DM' }}, pas cette instance ({{ v.bootstrap.instance_urls | join(', ') }}). Renvoyez le paquet : sa liste sera reecrite.">n'envoie pas les postes vers ce DM</span>
+              {% endif %}
+              {% if v.bootstrap.signed %}<span title="Paquet signe : jamais reecrit">(signe)</span>{% endif %}
+            {% elif v.bootstrap.status == 'offline' %}
+              DM du paquet : aucun (paquet hors ligne)
+            {% elif v.bootstrap.status == 'unreadable' %}
+              DM du paquet : archive illisible
+            {% else %}
+              DM du paquet : aucune liste reconnue
+            {% endif %}
+          </div>
           {# Le tag distingue deux branches parallèles : sans lui, deux versions
              experimentales sont indiscernables autrement que par leur numero. #}
           {% if v.tag %}
@@ -829,6 +863,7 @@ async function nvUploadFileChunked(file) {
 }
 
 let nvConfirmOverwrite = false;
+let nvKeepBootstrap = false;
 async function nvSubmit(action) {
   const errBox = document.getElementById('nv-deploy-error');
   errBox.style.display = 'none';
@@ -902,6 +937,7 @@ async function nvSubmit(action) {
     payload.action = action;
     payload.upload_id = uploadId;
     if (nvConfirmOverwrite) payload.confirm_overwrite = true;
+    if (nvKeepBootstrap) payload.keep_bootstrap = true;
 
     document.getElementById('nv-btn-deploy').innerHTML =
       '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
@@ -924,8 +960,17 @@ async function nvSubmit(action) {
       const t = await resp.text();
       let msg = 'Erreur ' + resp.status;
       try { msg = JSON.parse(t).detail || msg; } catch {}
+      // Paquet signe dont la liste de DM n'est pas celle de l'instance (issue #133) :
+      // il ne peut pas etre reecrit ; le servir tel quel demande une confirmation.
+      if (resp.status === 409 && msg && msg.code === 'bootstrap_signed') {
+        if (!nvKeepBootstrap && confirm(msg.message + '\n\nServir ce paquet tel quel ?')) {
+          nvKeepBootstrap = true;
+          return nvSubmit(action);
+        }
+        msg = msg.message;
+      }
       // Meme numero de version, binaire different : confirmation explicite (issue #132).
-      if (resp.status === 409 && !nvConfirmOverwrite && confirm(msg + '\n\nRemplacer le binaire de cette version ?')) {
+      else if (resp.status === 409 && !nvConfirmOverwrite && confirm(msg + '\n\nRemplacer le binaire de cette version ?')) {
         nvConfirmOverwrite = true;
         return nvSubmit(action);
       }

@@ -496,6 +496,47 @@ export DM_ADMIN_TOKEN="votre-token"
   --strategy canary
 ```
 
+### Liste de DM inscrite dans le paquet
+
+Un paquet porte en dur la liste des Device Management que le poste interrogera. **Un paquet
+servi par un DM ramène ses postes vers ce DM** : à l'envoi (admin et API), le DM lit cette
+liste, la compare à la sienne (`DM_BOOTSTRAP_URLS`, à défaut `PUBLIC_BASE_URL`) et, si elle
+diffère, **la réécrit dans l'archive**. L'empreinte stockée et annoncée dans la directive de
+mise à jour est celle du paquet réécrit. La comparaison tient compte de l'ordre (c'est la
+priorité), pas de la barre finale ni de la casse de l'hôte.
+
+| Format reconnu | Où est la liste | Ce qui est réécrit |
+|---|---|---|
+| Thunderbird (`.xpi` legacy) | `defaults/preferences/*.js`, ligne `pref('extensions.<X>.bootstrapUrls', 'url1,url2');` | la valeur CSV de cette ligne ; la préférence au singulier (dernier DM gagnant) n'est pas touchée |
+| LibreOffice (`.oxt`) | `config.default.json` à la racine : `bootstrap_urls`, `bootstrap_url` | ces deux clés, et les `<src>` de `<update-information>` dans `description.xml` qui en dérivent |
+| Extension de navigateur | `src/dm/config.json` : `bootstrap_urls` / `bootstrap_url` du profil actif (`activeProfile`) | ces clés du profil actif ; les adresses de repli codées dans les scripts ne le sont pas |
+
+Le format est reconnu au contenu de l'archive, pas au type déclaré. Cas particuliers :
+
+- **paquet déjà correct** : servi sans changement, sans avertissement ;
+- **paquet signé** (CRX, `META-INF/mozilla.rsa`, `cose.sig`, signatures de document) dont la
+  liste diffère : il ne peut pas être réécrit sans casser sa signature. L'envoi est refusé
+  (`409`, `code: bootstrap_signed`) ; `keep_bootstrap=true` le fait servir tel quel, écart affiché ;
+- **paquet LibreOffice hors ligne** (`enabled: false`) : jamais touché ;
+- **instance sans adresse connue** (`DM_BOOTSTRAP_URLS` et `PUBLIC_BASE_URL` vides) ou adresse
+  d'instance impropre : pas de réécriture, et l'envoi dit vers où le paquet enverra les postes.
+
+L'API renvoie le relevé dans `bootstrap` (`status` : `aligned`, `rewritten`, `kept`, `none`,
+`offline`, `instance_unknown`, `instance_invalid` ; `package_urls`, `served_urls`) et un texte dans
+`warnings` dès qu'il y a quelque chose à dire. L'admin l'affiche au retour de l'envoi, puis dans
+chaque ligne de l'onglet « Versions » (« DM du paquet »), avec un badge si la liste n'est plus
+celle de l'instance — par exemple après un changement de `DM_BOOTSTRAP_URLS` : renvoyer le paquet
+suffit à le réaligner.
+
+Deux conséquences à connaître :
+
+- le plugin garde en tête le dernier DM qui lui a répondu : un poste déjà parti vers un autre DM
+  n'est pas ramené par un paquet réécrit (sujet côté plugin) ;
+- pour LibreOffice, l'ensemble des adresses du paquet définit l'environnement auquel sont liés
+  la paire relais et le jeton de rafraîchissement : un paquet dont l'ensemble d'adresses change
+  fait se ré-enrôler les postes à la mise à jour. Renseigner dans `DM_BOOTSTRAP_URLS` la liste
+  complète voulue (DM de secours compris) avant d'envoyer.
+
 ---
 
 ## Vérification

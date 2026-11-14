@@ -675,6 +675,9 @@ config:
     tlsVerify: true
     # DM_BOOTSTRAP_URLS. Optional, default "". CSV of config-server bootstrap
     # URLs returned to enrolling clients, in priority order.
+    # Also the list written into every plugin package at upload (a package
+    # served by this DM brings its devices back to this DM); falls back to
+    # PUBLIC_BASE_URL when empty.
     bootstrapUrls: ""
     # DM_LOCAL_API_ALLOWED_ORIGINS. Optional. CSV of exact web origins
     # (scheme://host[:port]) allowed to call the extensions' local API (e.g.

@@ -56,6 +56,7 @@ from .postgres_queue import PostgresQueue, QueueJob
 from .s3 import s3_client
 from .services import health as _health
 from .services import links as _links
+from .services import package_bootstrap as _package_bootstrap
 from .services import update_rules as _update_rules
 from .services.crypto import (
     SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
@@ -3729,6 +3730,7 @@ async def api_plugin_deploy(slug: str, request: Request):
     cohort_id = form.get("cohort_id")
     make_general = str(form.get("general", "")).strip().lower() in ("1", "true", "on", "yes")
     overwrite = str(form.get("overwrite", "")).strip().lower() in ("1", "true", "on", "yes")
+    keep_bootstrap = str(form.get("keep_bootstrap", "")).strip().lower() in ("1", "true", "on", "yes")
     if cohort_id not in (None, "") and not str(cohort_id).strip().isdigit():
         return JSONResponse({"ok": False, "error": "cohort_id must be an integer"}, status_code=400)
 
@@ -3740,13 +3742,13 @@ async def api_plugin_deploy(slug: str, request: Request):
     # aller-retour dans le threadpool, hors event-loop.
     return await run_in_threadpool(
         _deploy_plugin_db_work, slug, data, orig_filename, version, strategy, urgency, cohort_id, db_url,
-        make_general, overwrite,
+        make_general, overwrite, keep_bootstrap,
     )
 
 
 def _deploy_plugin_db_work(
     slug: str, data: bytes, orig_filename: str, version: str, strategy: str, urgency: str, cohort_id, db_url: str,
-    make_general: bool = False, overwrite: bool = False,
+    make_general: bool = False, overwrite: bool = False, keep_bootstrap: bool = False,
 ):
     """Partie bloquante de POST /api/plugins/{slug}/deploy (DB + zip + persist
     binaire) — exécutée en threadpool par l'endpoint async."""
@@ -3805,19 +3807,17 @@ def _deploy_plugin_db_work(
             except Exception:
                 pass
 
-            # 4. Strip dm metadata from binary, compute checksum, store
+            # 4. Strip dm metadata from binary, inscrire la liste de DM de
+            # l'instance si celle du paquet diffère (issue #133), compute checksum
+            # — sur le paquet tel qu'il sera servi —, store.
+            bootstrap_info = None
             try:
-                strip_names = {"dm-config.json", "dm_config.json", "dm-manifest.json", "dm_manifest.json"}
-                src = _zf.ZipFile(_io.BytesIO(data))
-                buf = _io.BytesIO()
-                with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as dst:
-                    for item in src.infolist():
-                        if item.filename.lower() in strip_names:
-                            continue
-                        dst.writestr(item, src.read(item.filename))
-                data = buf.getvalue()
+                data, bootstrap_info = _package_bootstrap.prepare(data, keep=keep_bootstrap)
+            except _package_bootstrap.SignedPackageMismatch as e:
+                return JSONResponse({"ok": False, "error": str(e), "code": "bootstrap_signed",
+                                     "bootstrap": e.info}, status_code=409)
             except Exception:
-                pass
+                logger.warning("api_plugin_deploy: archive illisible, stockée telle quelle")
 
             checksum = "sha256:" + hashlib.sha256(data).hexdigest()
             # Assainir chaque composant fourni par l'utilisateur avant de
@@ -3856,12 +3856,15 @@ def _deploy_plugin_db_work(
 
             # 5. Upsert artifact — use the persisted reference as canonical
             cur.execute("""
-                INSERT INTO artifacts (device_type, platform_variant, version, s3_path, checksum)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO artifacts (device_type, platform_variant, version, s3_path, checksum,
+                                       bootstrap_info)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (device_type, platform_variant, version) DO UPDATE SET
-                    s3_path = EXCLUDED.s3_path, checksum = EXCLUDED.checksum, released_at = NOW()
+                    s3_path = EXCLUDED.s3_path, checksum = EXCLUDED.checksum,
+                    bootstrap_info = EXCLUDED.bootstrap_info, released_at = NOW()
                 RETURNING id
-            """, (device_type, "", version, binary_ref, checksum))
+            """, (device_type, "", version, binary_ref, checksum,
+                  json.dumps(bootstrap_info) if bootstrap_info else None))
             artifact_id = cur.fetchone()[0]
 
             # 6. Deprecate old versions + upsert new version
@@ -3964,6 +3967,10 @@ def _deploy_plugin_db_work(
             "strategy": strategy,
             "general": make_general,
             "feature_flags": flags_diff,
+            # Liste de DM que porte le paquet servi (issue #133) ; un écart ou une
+            # réécriture est aussi dit dans « warnings ».
+            "bootstrap": bootstrap_info,
+            "warnings": [bootstrap_info["message"]] if (bootstrap_info or {}).get("message") else [],
         }, status_code=201)
     except Exception as e:
         logger.exception("api_plugin_deploy failed")
@@ -4237,6 +4244,16 @@ async def api_upload_artifact(request: Request):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
         return JSONResponse({"ok": False, "error": "invalid version"}, status_code=400)
     data = await binary.read()
+    # Liste de DM du paquet alignée sur l'instance avant le calcul d'empreinte (issue #133).
+    keep_bootstrap = str(form.get("keep_bootstrap", "")).strip().lower() in ("1", "true", "on", "yes")
+    bootstrap_info = None
+    try:
+        data, bootstrap_info = _package_bootstrap.prepare(data, keep=keep_bootstrap)
+    except _package_bootstrap.SignedPackageMismatch as e:
+        return JSONResponse({"ok": False, "error": str(e), "code": "bootstrap_signed",
+                             "bootstrap": e.info}, status_code=409)
+    except Exception:
+        logger.warning("api_upload_artifact: archive illisible, stockée telle quelle")
     checksum = "sha256:" + hashlib.sha256(data).hexdigest()
     filename = os.path.basename(binary.filename or f"mirai-{version}.oxt")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", filename):
@@ -4261,15 +4278,21 @@ async def api_upload_artifact(request: Request):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO artifacts (device_type, version, s3_path, checksum, changelog_url)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO artifacts (device_type, version, s3_path, checksum, changelog_url,
+                                       bootstrap_info)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (device_type, version, local_path, checksum, changelog_url),
+                (device_type, version, local_path, checksum, changelog_url,
+                 json.dumps(bootstrap_info) if bootstrap_info else None),
             )
             artifact_id = cur.fetchone()[0]
         conn.close()
-        return JSONResponse({"ok": True, "artifact_id": artifact_id, "checksum": checksum}, status_code=201)
+        return JSONResponse({
+            "ok": True, "artifact_id": artifact_id, "checksum": checksum,
+            "bootstrap": bootstrap_info,
+            "warnings": [bootstrap_info["message"]] if (bootstrap_info or {}).get("message") else [],
+        }, status_code=201)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
