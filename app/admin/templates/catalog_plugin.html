@@ -140,6 +140,32 @@
   </div>
 </div>
 
+{# Version generale sans campagne (issue #132) : les plugins qui ne lisent que /config ne la recoivent pas #}
+{% if general_coverage and general_coverage.coverage != 'full' %}
+<div id="general-coverage-warning" role="alert"
+     style="background:#FFF3F3;border:1px solid #CE0500;border-left-width:4px;border-radius:6px;padding:1rem;margin:1rem 0;">
+  {% if general_coverage.coverage == 'none' %}
+  <strong>La version generale {{ general_coverage.version }} n'est portee par aucune campagne active.</strong>
+  {% else %}
+  <strong>La version generale {{ general_coverage.version }} n'est portee que par une campagne ciblee (cohorte).</strong>
+  {% endif %}
+  <p style="margin:0.5rem 0;font-size:0.9rem;">
+    « Generale » ne concerne que les canaux natifs (feed LibreOffice, manifestes navigateur).
+    Les plugins qui lisent <code>/config</code> (Thunderbird, mises a jour pilotees) ne recoivent une version
+    que par une campagne active : {% if general_coverage.coverage == 'none' %}aujourd'hui, aucun poste ne la recevra par cette voie.{% else %}les postes hors cohorte ne la recevront pas par cette voie.{% endif %}
+  </p>
+  {% if general_coverage.can_create %}
+  <form method="post" action="/admin/catalog/{{ plugin.id }}/general-campaign" style="display:inline;">
+    <button class="dm-btn dm-btn--primary dm-btn--sm"
+            onclick="return confirm('Creer une campagne active pour la version {{ general_coverage.version }}, sur tout le parc, sans palier ? Elle remplace la campagne ordinaire active de ce plugin, s il y en a une.')">Creer la campagne par defaut (tout le parc)</button>
+  </form>
+  <span style="font-size:0.85rem;color:#666;margin-left:0.5rem;">ou « + Nouvelle version » puis « Publier et deployer » pour un deploiement progressif ou cible.</span>
+  {% else %}
+  <span style="font-size:0.85rem;">Cette version n'a pas de binaire heberge : creez la campagne depuis « Campagnes ».</span>
+  {% endif %}
+</div>
+{% endif %}
+
 {# Tabs #}
 <div class="dm-tabs">
   <div class="dm-tabs__list">
@@ -358,7 +384,9 @@
             <input type="checkbox" name="make_general" id="nv-make-general" value="1">
             <span>Definir comme <strong>version generale</strong> : elle sera annoncee a tout le parc par les canaux natifs
             (feed LibreOffice, manifestes Firefox/Chrome). Laisser decoche pour un canary ou une campagne ciblee :
-            publier ne diffuse pas.</span>
+            publier ne diffuse pas.
+            <br><em>Les plugins qui lisent <code>/config</code> (Thunderbird) ne recoivent une version que par une campagne :
+            utilisez « Publier et deployer », sinon la fiche du plugin proposera de creer la campagne.</em></span>
           </label>
         </div>
 
@@ -456,7 +484,7 @@
   </div>
   {% if deployments %}
   <table>
-    <thead><tr><th>Nom</th><th>Version</th><th>Env</th><th>Statut</th><th>Progression</th><th>Date</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Nom</th><th>Version</th><th>Env</th><th>Statut</th><th title="Postes a qui la campagne servirait une mise a jour aujourd'hui / installations actives du plugin">Eligibles</th><th>Progression</th><th>Date</th><th>Actions</th></tr></thead>
     <tbody>
       {% for d in deployments %}
       <tr>
@@ -469,6 +497,15 @@
           {% elif d.status == 'completed' %}<span class="dm-badge dm-badge--neutral">Termine</span>
           {% elif d.status == 'rolled_back' %}<span class="dm-badge dm-badge--error">Annule</span>
           {% else %}<span class="dm-badge dm-badge--neutral">{{ d.status }}</span>{% endif %}
+        </td>
+        <td>
+          {% if d.reach %}
+          <a href="/admin/campaigns/{{ d.id }}" title="{{ d.reach.zero_reason or 'Detail des postes non servis' }}"
+             {% if d.reach.eligible == 0 %}style="color:#CE0500;font-weight:bold;"{% endif %}>{{ d.reach.eligible }}/{{ d.reach.installed }}</a>
+          {% if d.reach.eligible == 0 and d.status == 'active' %}
+          <div style="color:#CE0500;font-size:0.75rem;max-width:260px;">Ne sert personne. {{ d.reach.zero_reason }}</div>
+          {% endif %}
+          {% else %}-{% endif %}
         </td>
         <td>
           {% if d.progress_pct is defined %}
@@ -676,6 +713,7 @@ async function nvUploadFileChunked(file) {
   return uploadId;
 }
 
+let nvConfirmOverwrite = false;
 async function nvSubmit(action) {
   const errBox = document.getElementById('nv-deploy-error');
   errBox.style.display = 'none';
@@ -696,6 +734,23 @@ async function nvSubmit(action) {
     errBox.style.display = 'block';
     nvGoStep(1);
     return;
+  }
+
+  // Cible incomplete : refusee ici, et par le serveur (issue #132).
+  if (action === 'deploy') {
+    const f = document.getElementById('nv-form');
+    const mode = (f.querySelector('input[name="target_mode"]:checked') || {}).value;
+    let targetErr = '';
+    if (mode === 'existing' && !f.querySelector('select[name="cohort_id"]').value) {
+      targetErr = 'Cible « cohorte existante » : choisissez une cohorte, ou « Tous les utilisateurs ».';
+    } else if (mode === 'emails' && !f.querySelector('textarea[name="emails"]').value.trim()) {
+      targetErr = 'Cible « adresses email » : la liste est vide.';
+    }
+    if (targetErr) {
+      errBox.textContent = targetErr;
+      errBox.style.display = 'block';
+      return;
+    }
   }
 
   // Validate prod confirmation
@@ -733,6 +788,7 @@ async function nvSubmit(action) {
     }
     payload.action = action;
     payload.upload_id = uploadId;
+    if (nvConfirmOverwrite) payload.confirm_overwrite = true;
 
     document.getElementById('nv-btn-deploy').innerHTML =
       '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
@@ -755,6 +811,11 @@ async function nvSubmit(action) {
       const t = await resp.text();
       let msg = 'Erreur ' + resp.status;
       try { msg = JSON.parse(t).detail || msg; } catch {}
+      // Meme numero de version, binaire different : confirmation explicite (issue #132).
+      if (resp.status === 409 && !nvConfirmOverwrite && confirm(msg + '\n\nRemplacer le binaire de cette version ?')) {
+        nvConfirmOverwrite = true;
+        return nvSubmit(action);
+      }
       errBox.textContent = msg;
       errBox.style.display = 'block';
       document.querySelectorAll('#nv-btn-deploy, [onclick*="nvSubmit"]').forEach(b => b.disabled = false);

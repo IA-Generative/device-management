@@ -80,6 +80,7 @@ jobs:
         # un navigateur ou un serveur déployé, indisponibles sur le runner.
         run: |
           pytest -m integration \
+            tests/test_deploy_guidance_pg.py \
             tests/test_experiment_campaigns_pg.py \
             tests/test_general_version_pg.py \
             tests/test_libreoffice_update_feed_pg.py \

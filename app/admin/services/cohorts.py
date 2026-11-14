@@ -67,6 +67,63 @@ def add_members(cur, cohort_id: int, members: list[tuple[str, str]]) -> int:
     return count
 
 
+class TargetError(ValueError):
+    """Cible de déploiement refusée : elle ne désigne personne, ou pas ce qui est demandé."""
+
+
+def resolve_deploy_target(cur, *, target_mode: str, cohort_id="", percent="",
+                          emails: str = "", auto_name: str, auto_description: str = "") -> int | None:
+    """Cohorte visée par un déploiement, ou None pour « tout le parc ».
+
+    Implémentation unique pour les formulaires de déploiement (issue #132). Une
+    cible incomplète est REFUSÉE (TargetError) : avant, « cohorte existante »
+    sans cohorte et une liste d'adresses vide retombaient en silence sur tout
+    le parc, et la cohorte « pourcentage » était créée sans son pourcentage
+    (config vide → 0 % → la campagne ne servait jamais personne).
+
+    `auto_name` : préfixe du nom des cohortes créées d'office (suffixé par
+    `-<n>pct` ou `-manual`).
+    """
+    mode = (target_mode or "all").strip()
+    if mode == "all":
+        return None
+    if mode == "existing":
+        raw = str(cohort_id or "").strip()
+        if not raw:
+            raise TargetError("Cible « cohorte existante » : choisissez une cohorte, "
+                              "ou sélectionnez « Tous les utilisateurs ».")
+        try:
+            cid = int(raw)
+        except ValueError as e:
+            raise TargetError("Cohorte invalide.") from e
+        if get_cohort(cur, cid) is None:
+            raise TargetError("Cohorte introuvable.")
+        return cid
+    if mode == "percent":
+        try:
+            pct = int(str(percent).strip())
+        except ValueError as e:
+            raise TargetError("Cible « pourcentage » : indiquez un nombre entre 1 et 100.") from e
+        if not 1 <= pct <= 100:
+            raise TargetError("Cible « pourcentage » : indiquez un nombre entre 1 et 100.")
+        # La clé `percentage` est celle que lit la résolution des cohortes d'un
+        # poste (app.main._resolve_device_cohorts).
+        return create_cohort(cur, name=f"{auto_name}-{pct}pct",
+                             description=auto_description or f"Auto: {pct}%",
+                             type="percentage", config={"percentage": pct})
+    if mode == "emails":
+        email_list = [e.strip() for e in str(emails or "").splitlines() if e.strip()]
+        if not email_list:
+            raise TargetError("Cible « adresses email » : la liste est vide. Saisissez au moins "
+                              "une adresse, ou sélectionnez « Tous les utilisateurs ».")
+        cid = create_cohort(cur, name=f"{auto_name}-manual",
+                            description=auto_description or f"Auto: {len(email_list)} emails",
+                            type="manual")
+        add_members(cur, cid, [("email", e) for e in email_list])
+        return cid
+    raise TargetError(f"Cible inconnue : {mode}.")
+
+
 def delete_cohort(cur, cohort_id: int) -> bool:
     cur.execute("DELETE FROM cohorts WHERE id = %s RETURNING id", (cohort_id,))
     return cur.fetchone() is not None

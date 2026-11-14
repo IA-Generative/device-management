@@ -521,8 +521,14 @@ client, la directive a exactement la même forme ; **deux règles changent** :
 | `artifact_url` | `/catalog/{slug}/download` (dernière main) | `/catalog/{slug}/download/{slug}-{version}.{ext}` (épinglée) |
 | Effet d'un downgrade | passe par le `rollback` déclaré | la cible est servie telle quelle |
 
-**Pourquoi la comparaison change.** Une expérimentation déploie couramment des libellés que
-l'ordre semver ne classe pas (`1.6.0-rc1`, `1.6.0-test3`) : exiger `cible > courante` les rendrait
+**Ordre des versions en campagne générale.** Le serveur compare les pré-versions comme semver :
+`1.6.0-rc.2` < `1.6.0-rc.10` < `1.6.0`, la partie numérique d'un identifiant étant lue comme un
+nombre (`rc2` < `rc10`) et les métadonnées de build (`+abc`) ignorées. Une « rc » en campagne
+générale est donc servie aux postes en version antérieure, puis remplacée par la version finale.
+Un libellé illisible (`v1.2`, `1.2.x`) n'est servi que par une campagne d'expérimentation.
+
+**Pourquoi la comparaison change.** Une expérimentation déploie couramment des libellés hors de
+cet ordre (`1.6.0-test3`), ou une version antérieure : exiger `cible > courante` les rendrait
 indéployables. En mode PIN, le serveur sert la cible dès que le device n'y est pas déjà — y compris
 si elle est « antérieure ». C'est le mécanisme qui permet aussi de **ramener** une cohorte sur une
 version précise sans monter un rollback.

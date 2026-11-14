@@ -82,6 +82,35 @@
   </div>
 </div>
 
+<!-- Postes eligibles (issue #132) : une campagne qui ne sert personne doit se voir -->
+{% if reach %}
+<div id="campaign-reach" class="dm-card" style="margin-top:1.5rem;padding:1rem;border-left:4px solid {% if reach.eligible == 0 %}#CE0500{% else %}#18753C{% endif %};">
+  <div style="font-size:1.125rem;font-weight:bold;">
+    {{ reach.eligible }} poste(s) eligible(s) aujourd'hui sur {{ reach.installed }} installation(s) active(s)
+  </div>
+  <div style="font-size:0.875rem;color:#666;margin-top:0.25rem;">
+    Version cible {{ reach.target_version or '-' }}
+    {% if reach.is_experiment %}(experimentation : version epinglee){% endif %}
+    | Cible : {{ reach.cohort or 'tout le parc' }}
+    {% if reach.rollout_percent < 100 %}| Palier en cours : {{ reach.rollout_percent }} %{% endif %}
+    {% if reach.rollbacks %}| dont {{ reach.rollbacks }} retour(s) arriere{% endif %}
+  </div>
+  {% if reach.zero_reason %}
+  <p style="color:#CE0500;margin:0.75rem 0 0 0;"><strong>Cette campagne ne sert personne.</strong> {{ reach.zero_reason }}</p>
+  {% endif %}
+  {% if reach.reasons %}
+  <ul style="margin:0.75rem 0 0 1.25rem;font-size:0.875rem;">
+    {% for r, n in reach.reasons.items() %}
+    <li>{{ n }} poste(s) non servi(s) : {{ reach.reason_labels[r] }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% for note in reach.notes %}
+  <p style="font-size:0.8rem;color:#666;margin:0.5rem 0 0 0;">{{ note }}</p>
+  {% endfor %}
+</div>
+{% endif %}
+
 <!-- Recent events -->
 <h2 style="font-size: 1.125rem; margin-top: 2rem;">Derniers evenements</h2>
 {% if events %}
