@@ -414,6 +414,9 @@
       <tr>
         <td>
           <strong>{{ v.version }}</strong>
+          {% if v.unorderable %}
+          <span class="dm-badge dm-badge--warning" style="margin-left:0.35rem;" title="Forme de version non reconnue (attendu 1.2.3 ou 1.2.3-rc.4) : une campagne ordinaire ne la servira a aucun poste, seule une campagne d'experimentation le peut">forme non reconnue</span>
+          {% endif %}
           {% if general_version and general_version.id == v.id %}
           <span class="dm-badge dm-badge--success" style="margin-left:0.35rem;" title="Seule version annoncee a tout le parc par les canaux natifs">generale</span>
           {% endif %}

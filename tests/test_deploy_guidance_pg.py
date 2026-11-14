@@ -231,6 +231,24 @@ def test_default_campaign_refuses_a_version_that_cannot_go_to_everyone(fixt, sta
         campaigns.create_default_campaign(fixt.cur, plugin_id=fixt.plugin_id, version_id=vid)
 
 
+def test_default_campaign_refuses_an_unrecognised_version(fixt):
+    campaigns, _, _ = _svc()
+    vid, _ = fixt.version("v1.0")
+    with pytest.raises(campaigns.DefaultCampaignError, match="Forme de version non reconnue"):
+        campaigns.create_default_campaign(fixt.cur, plugin_id=fixt.plugin_id, version_id=vid)
+
+
+def test_reach_flags_an_ordinary_campaign_on_an_unrecognised_version(fixt):
+    campaigns, _, _ = _svc()
+    _, aid = fixt.version("v1.0")
+    fixt.device("0.9.0")
+    reach = campaigns.campaign_reach(fixt.cur, fixt.campaign(aid))
+    assert reach["eligible"] == 0
+    assert any("Forme de version non reconnue" in n for n in reach["notes"])
+    pinned = campaigns.campaign_reach(fixt.cur, fixt.campaign(aid, is_experiment=True))
+    assert pinned["eligible"] == 1 and not any("non reconnue" in n for n in pinned["notes"])
+
+
 def test_default_campaign_refuses_a_version_without_hosted_binary(fixt):
     campaigns, _, _ = _svc()
     fixt.cur.execute("""
@@ -685,6 +703,36 @@ def test_e2e_incomplete_target_is_refused_and_leaves_nothing_behind(site, fields
     assert site.versions() == {}, "refus : aucune version créée"
     assert site.active_campaigns() == [], "et surtout pas de campagne sur tout le parc"
     assert site.stored_files() == [], "ni de binaire orphelin sur disque"
+
+
+@pytest.mark.parametrize("version", ["v1.0.0", "1.0.x", "nightly"])
+def test_e2e_deploy_of_an_unrecognised_version_is_refused_with_the_way_out(site, version):
+    """Une campagne ordinaire ne la servirait à personne : refus, pas de campagne muette."""
+    assert site.upload("0.9.0").status_code == 303
+    res = site.upload(version)
+    assert res.status_code == 400
+    assert "Forme de version non reconnue" in res.json()["detail"]
+    assert "expérimentale" in res.json()["detail"]
+    assert site.versions() == {"0.9.0": "published"}
+    assert site.active_campaigns() == [("0.9.0", None, False)], "la campagne qui fonctionnait reste active"
+    assert len(site.stored_files()) == 1
+
+    api = site.http.post(f"/api/plugins/{_SLUG}/deploy", data={"version": version},
+                         files={"binary": ("p.xpi", _xpi("x"), "application/octet-stream")},
+                         headers={"X-Admin-Token": _TOKEN})
+    assert api.status_code == 400 and api.json()["code"] == "version_format"
+
+    # Publiée sans campagne, elle reste possible (pin d'expérimentation) et se voit.
+    assert site.upload(version, action="experimental", tag="it").status_code == 303
+    assert "forme non reconnue" in _page(site, f"/admin/catalog/{site.plugin_id}")
+
+
+def test_e2e_four_number_fleet_receives_the_release_candidate(site):
+    """Anciens postes en 0.23.0.NNN face à une rc 0.24.0 en campagne ordinaire."""
+    assert site.upload("0.24.0-rc.179").status_code == 303
+    for installed in ("0.23.0.100", "0.23.0.150"):
+        assert site.config_update(installed)["target_version"] == "0.24.0-rc.179"
+    assert site.config_update("0.24.0.195") is None, "X.Y.Z.N est postérieure à la rc de X.Y.Z"
 
 
 def test_e2e_percent_target_serves_about_that_share(site):

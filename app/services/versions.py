@@ -75,3 +75,23 @@ def version_sort_key(v) -> tuple | None:
 def update_sort_key(v) -> tuple:
     """version_sort_key avec le repli historique : illisible → équivalent de (0,)."""
     return version_sort_key(v) or _FALLBACK_KEY
+
+
+UNORDERABLE_VERSION_HELP = (
+    "Forme de version non reconnue : « {version} ». Attendu des nombres séparés par des points, "
+    "éventuellement suivis d'un suffixe (1.2.3, 1.2.3-rc.4). Une campagne ordinaire ne servirait "
+    "cette version à aucun poste. Corrigez le numéro, ou publiez-la comme expérimentale et "
+    "servez-la par une campagne d'expérimentation."
+)
+
+
+def unorderable_version_message(v) -> str | None:
+    """Message à afficher si `v` ne peut pas être ordonnée, None sinon.
+
+    Une version illisible garde le repli (0,) : aucune campagne ordinaire ne la
+    sert. Les chemins qui créent une telle campagne la refusent avec ce message
+    (issue #132) au lieu de créer une campagne qui ne sert personne.
+    """
+    if version_sort_key(v) is not None:
+        return None
+    return UNORDERABLE_VERSION_HELP.format(version=str(v or "").strip())

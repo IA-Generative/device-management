@@ -6,6 +6,7 @@ import json
 import re
 
 from ...services import update_rules
+from ...services.versions import unorderable_version_message
 
 
 def list_campaigns(cur, *, status: str = None, limit: int = 50,
@@ -318,6 +319,9 @@ def campaign_reach(cur, campaign_id: int) -> dict | None:
         notes.append(f"Campagne « {status} » : rien n'est servi tant qu'elle n'est pas active.")
     if cohort_note:
         notes.append(cohort_note)
+    if target_version and not is_experiment and unorderable_version_message(target_version):
+        notes.append(f"Forme de version non reconnue (« {target_version} ») : une campagne ordinaire "
+                     "ne la sert à aucun poste. Seule une campagne d'expérimentation le peut.")
     if min_host or max_host:
         notes.append(f"Bornes de version d'hôte (min {min_host or '-'}, max {max_host or '-'}) non "
                      "évaluées : la version de l'hôte n'est pas mémorisée par poste.")
@@ -418,6 +422,9 @@ def create_default_campaign(cur, *, plugin_id: int, version_id: int,
         raise DefaultCampaignError(f"Une version « {status} » ne peut pas être déployée à tout le parc.")
     if artifact_id is None:
         raise DefaultCampaignError("Cette version n'a pas de binaire hébergé : une campagne ne peut pas la servir.")
+    unreadable = unorderable_version_message(version)
+    if unreadable:
+        raise DefaultCampaignError(unreadable)
     campaign_id = create_campaign(
         cur, name=f"MaJ {plugin_name} {version} [tout le parc]", type="plugin_update",
         artifact_id=artifact_id, target_cohort_id=None, status="active",

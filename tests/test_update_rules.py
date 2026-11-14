@@ -99,6 +99,43 @@ def test_decide_update_ordinary_campaign(installed, target, expected):
     assert rules.decide_update(plugin_version=installed, target_version=target) == expected
 
 
+@pytest.mark.parametrize("installed, target, served", [
+    # Anciens postes numérotés sur quatre nombres (0.23.0.NNN) : lisibles, et
+    # antérieurs à toute 0.24.0, rc comprise.
+    ("0.23.0.100", "0.24.0-rc.179", True),
+    ("0.23.0.150", "0.24.0", True),
+    ("0.24.0-rc.179", "0.23.0.150", False),
+    # Quatre nombres contre rc du même cœur : la rc précède X.Y.Z, donc X.Y.Z.N aussi.
+    ("0.24.0-rc.179", "0.24.0.195", True),
+    ("0.24.0.195", "0.24.0-rc.179", False),
+    # Le quatrième nombre est comparé (comportement historique du DM, inchangé).
+    ("0.23.0.100", "0.23.0.150", True),
+    ("0.24.0.194", "0.24.0.195", True),
+    ("0.24.0.195", "0.24.0.194", False),
+    ("0.24.0", "0.24.0.195", True),
+])
+def test_four_number_versions_stay_readable(installed, target, served):
+    assert version_sort_key(installed) is not None and version_sort_key(target) is not None
+    action, _ = rules.decide_update(plugin_version=installed, target_version=target)
+    assert (action == rules.UPDATE) is served
+
+
+@pytest.mark.parametrize("target", ["v1.2.0", "1.2.x", "nightly", "1.2.0-"])
+def test_unreadable_target_is_served_by_an_experiment_only(target):
+    """Repli (0,) réservé à l'illisible : aucune campagne ordinaire ne la sert."""
+    assert rules.decide_update(plugin_version="1.0.0", target_version=target)[0] is None
+    assert rules.decide_update(plugin_version="1.0.0", target_version=target,
+                               is_experiment=True)[0] == rules.UPDATE
+
+
+def test_unorderable_version_message_names_the_version_and_the_way_out():
+    from app.services.versions import unorderable_version_message
+    for readable in ("1.2.3", "0.24.0-rc.179", "0.23.0.150", "1.0.0-proto", "2.0+build"):
+        assert unorderable_version_message(readable) is None
+    msg = unorderable_version_message("v1.2")
+    assert "« v1.2 »" in msg and "1.2.3-rc.4" in msg and "expérimentation" in msg
+
+
 def test_decide_update_rollback_only_when_configured():
     assert rules.decide_update(plugin_version="2.0.0", target_version="1.6.0",
                                has_rollback=True) == (rules.ROLLBACK, rules.ROLLBACK)

@@ -28,6 +28,7 @@ from app.resilience import retry_transient
 from .. import runtime_config as rcfg
 from ..services import binaries as binaries_svc
 from ..services.crypto import encrypt_secret, secrets_encryption_available
+from ..services.versions import unorderable_version_message
 from ..settings import settings
 from .auth import (
     CLIENT_ID,
@@ -1389,6 +1390,9 @@ async def deploy_create(request: Request,
         with conn.cursor() as cur:
             # Contrôles AVANT d'écrire le binaire (issue #132) : un refus ne doit
             # pas laisser sur disque un fichier que la base ne connaît pas.
+            unreadable = unorderable_version_message(version)
+            if unreadable:
+                raise HTTPException(400, unreadable)
             try:
                 overwritten = artifacts_svc.check_overwrite(
                     cur, device_type=device_type, platform_variant="", version=version,
@@ -2182,6 +2186,9 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             if not plugin:
                 raise HTTPException(404, "Plugin non trouve")
             versions = catalog_svc.list_versions(cur, plugin_id)
+            for _v in versions:
+                # Forme non reconnue : aucune campagne ordinaire ne la servira (issue #132).
+                _v["unorderable"] = unorderable_version_message(_v.get("version")) is not None
             try:
                 general_version = catalog_svc.get_general_version(cur, plugin_id)
             except Exception:
@@ -2820,6 +2827,11 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 raise HTTPException(409, str(e)) from e
             target_cohort_id = None
             if action == "deploy":
+                # « deploy » crée une campagne ordinaire : une version qu'on ne
+                # sait pas ordonner n'y serait servie à personne.
+                unreadable = unorderable_version_message(version)
+                if unreadable:
+                    raise HTTPException(400, unreadable)
                 # Cible incomplète refusée (cohorts_svc.resolve_deploy_target).
                 try:
                     target_cohort_id = cohorts_svc.resolve_deploy_target(

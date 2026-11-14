@@ -3828,7 +3828,13 @@ def _deploy_plugin_db_work(
             filename = _safe_segment(orig_filename or f"{slug}-{version}.oxt", "filename")
             rel_path = f"{device_type}/{version}_{filename}"
 
-            # Contrôles AVANT de persister le binaire (issue #132).
+            # Contrôles AVANT de persister le binaire (issue #132). Cette route
+            # crée une campagne ordinaire : version qu'on ne sait pas ordonner = refus.
+            from app.services.versions import unorderable_version_message as _unorderable
+            unreadable = _unorderable(version)
+            if unreadable:
+                return JSONResponse({"ok": False, "error": unreadable, "code": "version_format"},
+                                    status_code=400)
             from app.admin.services import artifacts as _artifacts_svc
             try:
                 _artifacts_svc.check_overwrite(
