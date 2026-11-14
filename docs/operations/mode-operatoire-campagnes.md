@@ -137,6 +137,12 @@ VALUES (
 
 ### 3.1 Campagne de mise à jour plugin
 
+> **Depuis l'écran d'envoi.** « Publier et déployer » avec le type « Mise à jour ordinaire »
+> crée la campagne active en un geste, et annonce avant validation le nombre de postes à qui
+> la version sera proposée. « Publier sans déployer » et la case « version générale » ne
+> mettent à jour aucun poste qui lit `/config` : la fiche du plugin le signale et propose la
+> campagne par défaut. Les campagnes se retrouvent dans le menu **Campagnes**.
+
 > **Scoping par plugin (0.9.13+)** : une campagne n'est servie qu'aux devices du
 > plugin qu'elle cible — via `plugin_id` si renseigné, sinon via le
 > `device_type` de l'artifact. Avant 0.9.13, la campagne active la plus récente
@@ -178,6 +184,14 @@ VALUES (<flag_id>, <cohort_all_id>, false, NULL);
 ```
 
 ### 3.3 Campagne d'expérimentation — tester une future version sur une cohorte (0.9.14+)
+
+> **Depuis l'écran d'envoi (issue #132).** Tout se fait à l'étape « 3. Déployer » de
+> **Catalogue → plugin → + Nouvelle version** : type de campagne « Expérimentation sur une
+> cohorte », cible (cohorte existante ou liste d'adresses), stratégie, puis « Publier et
+> déployer ». La version est publiée en version d'essai (`experimental`, elle ne déprécie
+> rien) et la campagne d'expérimentation est créée active dans le même geste. Avant de
+> valider, l'écran annonce « Proposée aujourd'hui à N poste(s) sur M », ou « à aucun poste »
+> avec la raison. Le SQL ci-dessous reste valable pour les cas hors écran.
 
 > **Coexistence.** Une campagne `is_experiment = true` **coexiste** avec le rollout
 > général : créer/activer l'une ne complète PAS l'autre. On peut donc pousser une
@@ -431,7 +445,8 @@ Deux besoins distincts du multi-versions :
 
 Depuis l'admin **Catalogue → onglet Versions → wizard** : renseigner un **Tag
 expérimental** (ex. `exp-resume`) + les **Questions testées** (une par ligne), puis
-**« Publier comme expérimentale »**. La version est créée en `status='experimental'` :
+**« Publier en version d'essai (lien, sans campagne) »** (ancien libellé : « Publier comme
+expérimentale »). La version est créée en `status='experimental'` :
 servable par version/tag précis mais **jamais** comme « latest main » (fail-safe — toutes
 les requêtes « dernière publiée » filtrent `status='published'`). Aucune campagne n'est
 créée (pas de push).

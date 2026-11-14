@@ -270,9 +270,10 @@
           <label class="dm-label">Tag experimental (optionnel)</label>
           <input type="text" name="tag" class="dm-input" placeholder="ex: exp-nouveau-resume">
           <p class="dm-help" style="font-size:0.8rem;color:#666;margin:0.25rem 0 0;">
-            Pour une branche martyre/prototype : utilise le bouton
-            « Publier comme experimentale » (Etape 3). La version n'est PAS servie
-            comme stable ; elle est accessible via <code>/catalog/&lt;slug&gt;?exp=&lt;tag&gt;</code>.
+            Pour une version d'essai (prototype) : a l'etape 3, « Publier en version d'essai » la rend
+            telechargeable via <code>/catalog/&lt;slug&gt;?exp=&lt;tag&gt;</code>, sans campagne ;
+            « Experimentation sur une cohorte » la pousse en plus aux postes cibles.
+            Dans les deux cas elle n'est PAS servie comme stable.
           </p>
         </div>
         <div class="dm-form-row">
@@ -304,6 +305,26 @@
           {% endfor %}
         </div>
 
+        {# Type de campagne (issue #132) : tout se choisit ici, sans second ecran #}
+        <div style="margin-bottom:1.25rem;">
+          <h5 style="margin:0 0 0.75rem 0;">Type de campagne</h5>
+          <label style="display:block;margin-bottom:0.5rem;">
+            <input type="radio" name="campaign_kind" value="ordinary" checked onchange="nvToggleKind()">
+            <strong>Mise a jour ordinaire</strong> — proposee aux postes en version anterieure
+            (une pre-version <code>1.2.0-rc.3</code> precede <code>1.2.0</code>). Remplace la campagne ordinaire en cours de ce plugin.
+          </label>
+          <label style="display:block;margin-bottom:0.5rem;">
+            <input type="radio" name="campaign_kind" value="experiment" onchange="nvToggleKind()">
+            <strong>Experimentation sur une cohorte</strong> — cette version exacte est imposee aux postes cibles,
+            meme s'ils sont sur une version plus recente. La campagne ordinaire continue pour les autres ;
+            la version n'apparait pas au catalogue.
+          </label>
+          <div id="nv-kind-hint" style="display:none;margin-left:1.5rem;font-size:0.85rem;color:#666;">
+            Choisissez la cible ci-dessous : une cohorte existante (manuelle, par motif d'adresse ou groupe Keycloak)
+            ou une liste d'adresses. Tout le parc et le pourcentage ne sont pas possibles en experimentation.
+          </div>
+        </div>
+
         {# Strategy options (shown for "choice" and "progressive" environments) #}
         <div id="nv-strategy-panel" style="margin-bottom:1.25rem;">
           <h5 style="margin:0 0 0.75rem 0;">Strategie de deploiement</h5>
@@ -329,8 +350,8 @@
         </div>
 
         {# Target options (collapsible) #}
-        <details style="margin-bottom:1.25rem;">
-          <summary style="cursor:pointer;color:#000091;font-size:0.875rem;">Options de ciblage avancees</summary>
+        <details id="nv-target-details" style="margin-bottom:1.25rem;">
+          <summary style="cursor:pointer;color:#000091;font-size:0.875rem;">Cible : qui recoit cette version</summary>
           <div style="margin-top:0.75rem;">
             <div class="dm-form-row">
               <label style="display:block;margin-bottom:0.5rem;">
@@ -390,16 +411,27 @@
           </label>
         </div>
 
+        {# Ce qui va se passer, avant de valider (issue #132) #}
+        <div id="nv-preview" aria-live="polite"
+             style="border-left:4px solid #ccc;background:#fff;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.9rem;">
+          <strong id="nv-preview-summary">Ce que fera « Publier et deployer » s'affichera ici.</strong>
+          <ul id="nv-preview-details" style="margin:0.5rem 0 0 1.25rem;padding:0;font-size:0.85rem;color:#444;"></ul>
+        </div>
+
         <div id="nv-deploy-error" style="display:none;color:#CE0500;font-size:0.85rem;margin-bottom:0.5rem;"></div>
 
         <div class="dm-form-actions">
           <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvGoStep(2)">Retour</button>
           <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvSubmit('publish_only')">Publier sans deployer</button>
-          <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvSubmit('experimental')" title="Version martyre/prototype : publiee en 'experimental', accessible par ?exp=<tag>, sans campagne">Publier comme experimentale</button>
+          <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="nvSubmit('experimental')" title="Version d'essai telechargeable par son lien (?exp=<tag>) : aucune campagne, aucun poste mis a jour. Pour pousser une version a une cohorte, choisissez « Experimentation sur une cohorte » puis « Publier et deployer ».">Publier en version d'essai (lien, sans campagne)</button>
           <button type="button" class="dm-btn dm-btn--primary" id="nv-btn-deploy" onclick="nvSubmit('deploy')">
             Publier et deployer
           </button>
         </div>
+        <p style="font-size:0.8rem;color:#666;margin:0.5rem 0 0 0;">
+          « Publier sans deployer » et « version d'essai » ne mettent a jour aucun poste : seule une campagne le fait.
+          « Publier et deployer » cree la campagne active avec les choix ci-dessus.
+        </p>
       </div>
 
       <input type="hidden" name="action" id="nv-action" value="deploy">
@@ -557,7 +589,7 @@ function nvGoStep(n) {
     if (i < n) si.classList.add('dm-step--done');
     if (i === n) si.classList.add('dm-step--active');
   }
-  if (n === 3) nvUpdateEnvUI();
+  if (n === 3) { nvUpdateEnvUI(); nvPreview(); }
 }
 
 function resetNvForm() {
@@ -678,6 +710,86 @@ function nvToggleTarget() {
   }
 }
 
+function nvToggleKind() {
+  const exp = document.querySelector('input[name=campaign_kind]:checked')?.value === 'experiment';
+  document.getElementById('nv-kind-hint').style.display = exp ? 'block' : 'none';
+  const all = document.querySelector('input[name=target_mode][value=all]');
+  const pct = document.querySelector('input[name=target_mode][value=percent]');
+  all.disabled = exp;
+  pct.disabled = exp;
+  if (exp) {
+    document.getElementById('nv-target-details').open = true;
+    if (all.checked || pct.checked) {
+      document.querySelector('input[name=target_mode][value=existing]').checked = true;
+      nvToggleTarget();
+    }
+  }
+}
+
+// Ce que ferait « Publier et deployer » avec les choix en cours — lecture seule cote serveur.
+let nvPreviewSeq = 0;
+async function nvPreview() {
+  const form = document.getElementById('nv-form');
+  const box = document.getElementById('nv-preview');
+  const summary = document.getElementById('nv-preview-summary');
+  const details = document.getElementById('nv-preview-details');
+  const payload = {};
+  for (const [key, value] of new FormData(form).entries()) {
+    if (key !== 'binary') payload[key] = value;
+  }
+  const seq = ++nvPreviewSeq;
+  let data;
+  try {
+    const resp = await fetch('/admin/catalog/' + {{ plugin.id }} + '/deploy-preview', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    data = await resp.json();
+  } catch (err) {
+    data = null;
+  }
+  if (seq !== nvPreviewSeq) return data;   // une saisie plus recente a relance le calcul
+  details.textContent = '';
+  if (!data) {
+    box.style.borderLeftColor = '#ccc';
+    summary.textContent = 'Apercu indisponible : le deploiement reste possible.';
+    return null;
+  }
+  const addLine = (text) => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    details.appendChild(li);
+  };
+  if (!data.ok) {
+    box.style.borderLeftColor = '#CE0500';
+    summary.textContent = 'Deploiement impossible avec ces choix : ' + data.error;
+    return data;
+  }
+  box.style.borderLeftColor = data.eligible > 0 ? '#18753C' : '#CE0500';
+  summary.textContent = data.summary;
+  if (data.eligible > 0) {
+    for (const [reason, count] of Object.entries(data.reasons || {})) {
+      addLine(count + ' poste(s) non servi(s) : ' + data.reason_labels[reason]);
+    }
+  }
+  if ((data.supersedes || []).length) {
+    addLine('Remplace la campagne ordinaire en cours (version ' + data.supersedes.join(', ') + ').');
+  }
+  (data.notes || []).forEach(addLine);
+  return data;
+}
+
+let nvPreviewTimer = null;
+function nvSchedulePreview() {
+  clearTimeout(nvPreviewTimer);
+  nvPreviewTimer = setTimeout(nvPreview, 300);
+}
+document.getElementById('nv-step-3').addEventListener('input', nvSchedulePreview);
+document.getElementById('nv-step-3').addEventListener('change', nvSchedulePreview);
+
 function nvUpdateEstimate() {
   const h = parseInt(document.getElementById('nv-stage-hours').value) || 24;
   const totalH = h * 3;
@@ -739,19 +851,17 @@ async function nvSubmit(action) {
     return;
   }
 
-  // Cible incomplete : refusee ici, et par le serveur (issue #132).
+  // Avant de creer la campagne : ce que le serveur ferait de ces choix (issue #132).
+  // Refus (cible incomplete, forme de version) : on s'arrete. Aucun poste : on demande.
   if (action === 'deploy') {
-    const f = document.getElementById('nv-form');
-    const mode = (f.querySelector('input[name="target_mode"]:checked') || {}).value;
-    let targetErr = '';
-    if (mode === 'existing' && !f.querySelector('select[name="cohort_id"]').value) {
-      targetErr = 'Cible « cohorte existante » : choisissez une cohorte, ou « Tous les utilisateurs ».';
-    } else if (mode === 'emails' && !f.querySelector('textarea[name="emails"]').value.trim()) {
-      targetErr = 'Cible « adresses email » : la liste est vide.';
-    }
-    if (targetErr) {
-      errBox.textContent = targetErr;
+    const preview = await nvPreview();
+    if (preview && !preview.ok) {
+      errBox.textContent = preview.error;
       errBox.style.display = 'block';
+      return;
+    }
+    if (preview && preview.ok && preview.eligible === 0 &&
+        !confirm(preview.summary + '\n\nCreer quand meme la campagne ?')) {
       return;
     }
   }

@@ -886,3 +886,240 @@ def test_e2e_legacy_deploy_form_applies_the_same_guards(site):
 
     assert create(marker="b").status_code == 409
     assert create(marker="b", confirm_overwrite="1").status_code == 303
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Tout se fait à l'envoi (complément de l'issue #132)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ── Cible d'une campagne d'expérimentation ───────────────────────────────────
+
+def _validate(fixt, **kw):
+    _, cohorts, _ = _svc()
+    base = {"target_mode": "all", "cohort_id": "", "percent": "10", "emails": ""}
+    base.update(kw)
+    return cohorts.validate_deploy_target(fixt.cur, **base)
+
+
+def test_validate_target_creates_nothing(fixt):
+    fixt.cur.execute("SELECT count(*) FROM cohorts")
+    before = fixt.cur.fetchone()[0]
+    assert _validate(fixt) == ("all",)
+    assert _validate(fixt, target_mode="percent", percent="40") == ("percent", 40)
+    assert _validate(fixt, target_mode="emails", emails="a@example.org\nb@example.org") == \
+        ("emails", ["a@example.org", "b@example.org"])
+    fixt.cur.execute("SELECT count(*) FROM cohorts")
+    assert fixt.cur.fetchone()[0] == before
+
+
+def test_experiment_needs_a_bounded_target(fixt):
+    _, cohorts, _ = _svc()
+    with pytest.raises(cohorts.TargetError, match="pas tout le parc"):
+        _validate(fixt, experiment=True)
+    with pytest.raises(cohorts.TargetError, match="pourcentage"):
+        _validate(fixt, experiment=True, target_mode="percent", percent="10")
+    pct = cohorts.create_cohort(fixt.cur, name="IT 132 pct", description="", type="percentage",
+                                config={"percentage": 10})
+    with pytest.raises(cohorts.TargetError, match="cohorte en pourcentage"):
+        _validate(fixt, experiment=True, target_mode="existing", cohort_id=str(pct))
+    manual = cohorts.create_cohort(fixt.cur, name="IT 132 testeurs", description="", type="manual")
+    assert _validate(fixt, experiment=True, target_mode="existing", cohort_id=str(manual)) == ("cohort", manual)
+    assert _validate(fixt, experiment=True, target_mode="emails", emails="a@example.org") == \
+        ("emails", ["a@example.org"])
+
+
+# ── Aperçu avant de valider ──────────────────────────────────────────────────
+
+def test_preview_says_how_many_devices_would_be_offered_the_version(fixt):
+    campaigns, _, _ = _svc()
+    _, old = fixt.version("0.9.0")
+    fixt.campaign(old)
+    for v in ("0.8.0", "0.9.0", "0.9.0", "1.0.0"):
+        fixt.device(v)
+    p = campaigns.preview_deployment(fixt.cur, plugin_id=fixt.plugin_id, version="1.0.0", target=("all",))
+    assert (p["eligible"], p["installed"]) == (3, 4)
+    assert p["summary"] == "Proposée aujourd'hui à 3 poste(s) sur 4 installation(s) active(s)."
+    assert p["reasons"] == {"up_to_date": 1}
+    assert p["supersedes"] == ["0.9.0"], "la campagne ordinaire en cours sera clôturée : le dire"
+
+
+def test_preview_says_nobody_and_why(fixt):
+    campaigns, _, _ = _svc()
+    fixt.device("1.0.0")
+    fixt.device("1.2.0")
+    p = campaigns.preview_deployment(fixt.cur, plugin_id=fixt.plugin_id, version="1.0.0", target=("all",))
+    assert p["eligible"] == 0
+    assert p["summary"].startswith("Proposée à aucun poste. Aucun poste ne recevrait la version 1.0.0")
+    assert "déjà sur la version cible" in p["summary"] and "version postérieure" in p["summary"]
+
+    fixt.device("0.9.0", email="alice@example.org")
+    p = campaigns.preview_deployment(fixt.cur, plugin_id=fixt.plugin_id, version="1.0.0",
+                                     target=("emails", ["bob@example.org"]))
+    assert p["summary"] == "Proposée à aucun poste. La cohorte « 1 adresse(s) » ne contient aucun poste de ce plugin."
+
+
+def test_preview_without_any_installation(fixt):
+    campaigns, _, _ = _svc()
+    p = campaigns.preview_deployment(fixt.cur, plugin_id=fixt.plugin_id, version="1.0.0", target=("all",))
+    assert p["summary"] == "Proposée à aucun poste. Aucune installation active connue pour ce plugin."
+
+
+def test_preview_of_an_experiment_pins_and_supersedes_nothing(fixt):
+    campaigns, _, _ = _svc()
+    _, old = fixt.version("1.0.0")
+    fixt.campaign(old)
+    fixt.device("1.2.0", email="alice@example.org")
+    fixt.device("0.9.0", email="bob@example.org")
+    p = campaigns.preview_deployment(fixt.cur, plugin_id=fixt.plugin_id, version="1.1.0-rc.1",
+                                     target=("emails", ["alice@example.org"]), is_experiment=True)
+    assert p["eligible"] == 1, "version épinglée : servie même à un poste plus récent"
+    assert p["reasons"] == {"outside_cohort": 1}
+    assert p["supersedes"] == []
+
+
+def test_preview_first_stage_and_percent_target(fixt):
+    campaigns, _, _ = _svc()
+    from app.services import update_rules
+    uuids = [fixt.device("0.9.0") for _ in range(200)]
+    staged = campaigns.preview_deployment(fixt.cur, plugin_id=fixt.plugin_id, version="1.0.0",
+                                          target=("all",), first_stage_percent=5)
+    assert staged["eligible"] == sum(update_rules.rollout_admits(u, 5) for u in uuids)
+    assert "Premier palier : 5 %" in staged["summary"] or staged["eligible"] == 0
+    share = campaigns.preview_deployment(fixt.cur, plugin_id=fixt.plugin_id, version="1.0.0",
+                                         target=("percent", 30))
+    assert share["eligible"] == sum(update_rules.percentage_cohort_admits(u, 30) for u in uuids)
+
+
+# ── Rattachement au plugin des campagnes créées par « Nouvelle campagne » ────
+
+def test_plugin_of_an_artifact_is_the_one_of_its_version(fixt):
+    campaigns, _, _ = _svc()
+    _, aid = fixt.version("1.0.0")
+    assert campaigns.plugin_id_for_artifact(fixt.cur, aid) == fixt.plugin_id
+    assert campaigns.plugin_id_for_artifact(fixt.cur, None) is None
+
+
+def test_plugin_of_an_orphan_artifact_falls_back_on_the_device_type_if_unambiguous(fixt):
+    campaigns, _, _ = _svc()
+    fixt.cur.execute("""INSERT INTO artifacts (device_type, version, s3_path, checksum)
+                        VALUES (%s, '9.9.9', 'x/y.xpi', 'sha256:0') RETURNING id""", (_DEVICE_TYPE,))
+    orphan = fixt.cur.fetchone()[0]
+    assert campaigns.plugin_id_for_artifact(fixt.cur, orphan) == fixt.plugin_id
+    fixt.cur.execute("""INSERT INTO plugins (slug, name, device_type, status)
+                        VALUES (%s, 'IT jumeau', %s, 'active')""", (_SLUG + "-twin", _DEVICE_TYPE))
+    assert campaigns.plugin_id_for_artifact(fixt.cur, orphan) is None, "deux plugins du même type : on ne devine pas"
+
+
+# ── De bout en bout ──────────────────────────────────────────────────────────
+
+def test_e2e_experiment_campaign_created_at_upload(site):
+    """Le geste qu'il fallait faire en deux écrans : envoyer, puis /admin/campaigns/new."""
+    assert site.upload("1.0.0").status_code == 303
+    res = site.upload("1.1.0-rc.1", campaign_kind="experiment", target_mode="emails",
+                      emails="alice@example.org", make_general="1")
+    assert res.status_code == 303
+
+    assert site.versions() == {"1.0.0": "published", "1.1.0-rc.1": "experimental"}, \
+        "la version d'essai ne déprécie pas la stable et ne devient pas « dernière publiée »"
+    campaigns = site.active_campaigns()
+    assert ("1.0.0", None, False) in campaigns, "la campagne ordinaire continue"
+    [(version, cohort_id, is_experiment)] = [c for c in campaigns if c[0] == "1.1.0-rc.1"]
+    assert is_experiment is True and cohort_id is not None
+    assert site.sql("SELECT general_version_id FROM plugins WHERE id = %s", (site.plugin_id,)) == [(None,)]
+
+    alice = site.config_update("1.0.0", email="alice@example.org")
+    assert alice["target_version"] == "1.1.0-rc.1"
+    assert alice["artifact_url"] == f"/catalog/{_SLUG}/download/{_SLUG}-1.1.0-rc.1.xpi"
+    assert site.http.get(alice["artifact_url"]).status_code == 200
+    assert site.config_update("1.2.0", email="alice@example.org")["target_version"] == "1.1.0-rc.1", \
+        "expérimentation : version exacte imposée"
+    assert site.config_update("1.1.0-rc.1", email="alice@example.org") is None
+    assert site.config_update("0.9.0", email="bob@example.org")["target_version"] == "1.0.0"
+    assert site.config_update("1.0.0", email="bob@example.org") is None
+
+
+@pytest.mark.parametrize("fields, message", [
+    ({"target_mode": "all"}, "pas tout le parc"),
+    ({"target_mode": "percent", "percent": "10"}, "pourcentage"),
+    ({"target_mode": "emails", "emails": ""}, "liste est vide"),
+])
+def test_e2e_experiment_at_upload_needs_a_bounded_target(site, fields, message):
+    res = site.upload("1.1.0-rc.1", campaign_kind="experiment", **fields)
+    assert res.status_code == 400 and message in res.json()["detail"]
+    assert site.versions() == {} and site.active_campaigns() == [] and site.stored_files() == []
+
+
+def test_e2e_experiment_at_upload_accepts_an_unrecognised_label(site):
+    assert site.upload("nightly", campaign_kind="experiment", target_mode="emails",
+                       emails="alice@example.org").status_code == 303
+    assert site.config_update("1.0.0", email="alice@example.org")["target_version"] == "nightly"
+    assert site.upload("x", campaign_kind="autre").status_code == 400
+
+
+def _preview(site, **fields):
+    body = {"version": "1.0.0", "campaign_kind": "ordinary", "target_mode": "all",
+            "deploy_strategy": "patch_all"}
+    body.update(fields)
+    res = site.http.post(f"/admin/catalog/{site.plugin_id}/deploy-preview", json=body,
+                         headers={"x-admin-token": _TOKEN})
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_e2e_preview_announces_before_anything_is_created(site):
+    assert site.upload("0.9.0").status_code == 303
+    assert site.config_update("0.8.0") is not None          # un poste connu, en 0.8.0
+    before = (site.versions(), site.active_campaigns(), site.sql("SELECT count(*) FROM cohorts"))
+
+    ok = _preview(site)
+    assert ok["ok"] is True
+    assert ok["summary"] == "Proposée aujourd'hui à 1 poste(s) sur 1 installation(s) active(s)."
+    assert ok["supersedes"] == ["0.9.0"]
+
+    assert _preview(site, version="0.8.0")["summary"].startswith("Proposée à aucun poste.")
+    assert _preview(site, target_mode="percent", percent="50")["ok"] is True
+    assert _preview(site, target_mode="emails", emails="x@example.org")["eligible"] == 0
+
+    for refused, message in [
+        ({"target_mode": "existing", "cohort_id": ""}, "choisissez une cohorte"),
+        ({"target_mode": "emails", "emails": ""}, "liste est vide"),
+        ({"version": "v1.0"}, "Forme de version non reconnue"),
+        ({"version": ""}, "version est requise"),
+        ({"campaign_kind": "experiment"}, "pas tout le parc"),
+    ]:
+        out = _preview(site, **refused)
+        assert out["ok"] is False and message in out["error"], refused
+
+    assert _preview(site, version="v1.0", campaign_kind="experiment", target_mode="emails",
+                    emails="x@example.org")["ok"] is True, "l'expérimentation épingle un libellé libre"
+    assert (site.versions(), site.active_campaigns(), site.sql("SELECT count(*) FROM cohorts")) == before, \
+        "l'aperçu ne crée rien"
+    assert site.http.post("/admin/catalog/2147483000/deploy-preview", json={"version": "1"},
+                          headers={"x-admin-token": _TOKEN}).status_code == 404
+
+
+def test_e2e_campaign_form_attaches_the_campaign_to_its_plugin(site):
+    """/admin/campaigns/new ne passait pas plugin_id : la campagne n'apparaissait pas chez le plugin."""
+    assert site.upload("1.0.0", action="publish_only").status_code == 303
+    [(artifact_id,)] = site.sql("SELECT id FROM artifacts WHERE device_type = %s", (_DEVICE_TYPE,))
+    _page(site, "/admin/campaigns")     # pose la session d'administration
+    res = site.http.post("/admin/campaigns", follow_redirects=False,
+                         data={"name": "IT 132 formulaire", "artifact_id": str(artifact_id),
+                               "start_status": "active"})
+    assert res.status_code == 303
+    assert site.sql("SELECT plugin_id, status FROM campaigns WHERE name = 'IT 132 formulaire'") == \
+        [(site.plugin_id, "active")]
+    assert site.config_update("0.9.0")["target_version"] == "1.0.0"
+    assert "IT 132 formulaire" in _page(site, f"/admin/catalog/{site.plugin_id}?tab=deployments")
+
+
+def test_e2e_upload_screen_offers_everything_and_the_menu_reaches_campaigns(site):
+    html = _page(site, f"/admin/catalog/{site.plugin_id}")
+    assert '<a href="/admin/campaigns" class="">Campagnes</a>' in html, "entrée de menu absente"
+    assert 'name="campaign_kind" value="ordinary" checked' in html
+    assert 'name="campaign_kind" value="experiment"' in html
+    assert 'id="nv-preview"' in html and "/deploy-preview" in html
+    assert "Publier comme experimentale" not in html
+    assert "Publier en version d'essai (lien, sans campagne)" in html \
+        or "Publier en version d&#39;essai (lien, sans campagne)" in html
+    assert 'class="active">Campagnes</a>' in _page(site, "/admin/campaigns")

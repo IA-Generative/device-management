@@ -71,57 +71,93 @@ class TargetError(ValueError):
     """Cible de déploiement refusée : elle ne désigne personne, ou pas ce qui est demandé."""
 
 
-def resolve_deploy_target(cur, *, target_mode: str, cohort_id="", percent="",
-                          emails: str = "", auto_name: str, auto_description: str = "") -> int | None:
-    """Cohorte visée par un déploiement, ou None pour « tout le parc ».
+def validate_deploy_target(cur, *, target_mode: str, cohort_id="", percent="",
+                           emails: str = "", experiment: bool = False) -> tuple:
+    """Cible demandée, contrôlée sans rien créer.
 
-    Implémentation unique pour les formulaires de déploiement (issue #132). Une
-    cible incomplète est REFUSÉE (TargetError) : avant, « cohorte existante »
-    sans cohorte et une liste d'adresses vide retombaient en silence sur tout
-    le parc, et la cohorte « pourcentage » était créée sans son pourcentage
-    (config vide → 0 % → la campagne ne servait jamais personne).
+    Renvoie ("all",), ("cohort", id), ("percent", n) ou ("emails", [adresses]).
+    Une cible incomplète est REFUSÉE (TargetError) : avant l'issue #132,
+    « cohorte existante » sans cohorte et une liste d'adresses vide retombaient
+    en silence sur tout le parc.
 
-    `auto_name` : préfixe du nom des cohortes créées d'office (suffixé par
-    `-<n>pct` ou `-manual`).
+    `experiment` : une campagne d'expérimentation épingle sa version, y compris
+    en arrière, et coexiste avec le rollout général. Elle exige une cible
+    délimitée — cohorte manuelle, motif d'adresse, groupe Keycloak ou liste
+    d'adresses — jamais tout le parc ni un pourcentage (deux cohortes en
+    pourcentage se recouvrent au lieu de partitionner).
     """
     mode = (target_mode or "all").strip()
     if mode == "all":
-        return None
+        if experiment:
+            raise TargetError("Une campagne d'expérimentation vise une cohorte ou une liste d'adresses, "
+                              "pas tout le parc. Pour tout le parc, choisissez une campagne ordinaire.")
+        return ("all",)
     if mode == "existing":
         raw = str(cohort_id or "").strip()
         if not raw:
-            raise TargetError("Cible « cohorte existante » : choisissez une cohorte, "
-                              "ou sélectionnez « Tous les utilisateurs ».")
+            raise TargetError("Cible « cohorte existante » : choisissez une cohorte"
+                              + ("." if experiment else ", ou sélectionnez « Tous les utilisateurs »."))
         try:
             cid = int(raw)
         except ValueError as e:
             raise TargetError("Cohorte invalide.") from e
-        if get_cohort(cur, cid) is None:
+        cohort = get_cohort(cur, cid)
+        if cohort is None:
             raise TargetError("Cohorte introuvable.")
-        return cid
+        if experiment and cohort["type"] == "percentage":
+            raise TargetError("Une campagne d'expérimentation ne peut pas viser une cohorte en "
+                              "pourcentage : choisissez une cohorte manuelle, par motif d'adresse "
+                              "ou par groupe Keycloak.")
+        return ("cohort", cid)
     if mode == "percent":
+        if experiment:
+            raise TargetError("Une campagne d'expérimentation ne peut pas viser un pourcentage de "
+                              "comptes : choisissez une cohorte ou une liste d'adresses.")
         try:
             pct = int(str(percent).strip())
         except ValueError as e:
             raise TargetError("Cible « pourcentage » : indiquez un nombre entre 1 et 100.") from e
         if not 1 <= pct <= 100:
             raise TargetError("Cible « pourcentage » : indiquez un nombre entre 1 et 100.")
-        # La clé `percentage` est celle que lit la résolution des cohortes d'un
-        # poste (app.main._resolve_device_cohorts).
-        return create_cohort(cur, name=f"{auto_name}-{pct}pct",
-                             description=auto_description or f"Auto: {pct}%",
-                             type="percentage", config={"percentage": pct})
+        return ("percent", pct)
     if mode == "emails":
         email_list = [e.strip() for e in str(emails or "").splitlines() if e.strip()]
         if not email_list:
-            raise TargetError("Cible « adresses email » : la liste est vide. Saisissez au moins "
-                              "une adresse, ou sélectionnez « Tous les utilisateurs ».")
-        cid = create_cohort(cur, name=f"{auto_name}-manual",
-                            description=auto_description or f"Auto: {len(email_list)} emails",
-                            type="manual")
-        add_members(cur, cid, [("email", e) for e in email_list])
-        return cid
+            raise TargetError("Cible « adresses email » : la liste est vide. Saisissez au moins une adresse"
+                              + ("." if experiment else ", ou sélectionnez « Tous les utilisateurs »."))
+        return ("emails", email_list)
     raise TargetError(f"Cible inconnue : {mode}.")
+
+
+def resolve_deploy_target(cur, *, target_mode: str, cohort_id="", percent="",
+                          emails: str = "", auto_name: str, auto_description: str = "",
+                          experiment: bool = False) -> int | None:
+    """Cohorte visée par un déploiement, ou None pour « tout le parc ».
+
+    Implémentation unique pour les formulaires de déploiement : contrôle
+    (validate_deploy_target) puis création de la cohorte d'office s'il en faut
+    une. `auto_name` : préfixe de son nom (suffixé par `-<n>pct` ou `-manual`).
+    La cohorte « pourcentage » porte son pourcentage sous la clé `percentage`,
+    celle que lit app.main._resolve_device_cohorts (créée sans, elle ne
+    contenait personne).
+    """
+    spec = validate_deploy_target(cur, target_mode=target_mode, cohort_id=cohort_id,
+                                  percent=percent, emails=emails, experiment=experiment)
+    if spec[0] == "all":
+        return None
+    if spec[0] == "cohort":
+        return spec[1]
+    if spec[0] == "percent":
+        pct = spec[1]
+        return create_cohort(cur, name=f"{auto_name}-{pct}pct",
+                             description=auto_description or f"Auto: {pct}%",
+                             type="percentage", config={"percentage": pct})
+    email_list = spec[1]
+    cid = create_cohort(cur, name=f"{auto_name}-manual",
+                        description=auto_description or f"Auto: {len(email_list)} emails",
+                        type="manual")
+    add_members(cur, cid, [("email", e) for e in email_list])
+    return cid
 
 
 def delete_cohort(cur, cohort_id: int) -> bool:

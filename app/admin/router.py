@@ -1028,6 +1028,11 @@ async def campaign_create(request: Request,
     try:
         actor = getattr(request.state, "admin_session", {})
         with conn.cursor() as cur:
+            # Rattacher la campagne à son plugin, comme l'écran d'envoi et l'API
+            # (issue #132). Sans plugin_id, elle n'était appariée que par le type
+            # de l'artefact et n'apparaissait pas dans les déploiements du plugin.
+            plugin_id = campaigns_svc.plugin_id_for_artifact(
+                cur, int(artifact_id) if artifact_id else None)
             campaign_id = campaigns_svc.create_campaign(
                 cur,
                 name=name, description=description, type="plugin_update",
@@ -1040,6 +1045,7 @@ async def campaign_create(request: Request,
                 created_by=actor.get("email"),
                 is_experiment=is_experiment,
                 priority=priority,
+                plugin_id=plugin_id,
             )
             audit_log(cur, actor=actor, action="campaign.create",
                       resource_type="campaign", resource_id=str(campaign_id),
@@ -2533,6 +2539,51 @@ async def catalog_plugin_general_version(request: Request, plugin_id: int,
         conn.close()
 
 
+@router.post("/catalog/{plugin_id}/deploy-preview")
+@require_admin_or_service_token
+async def catalog_deploy_preview(request: Request, plugin_id: int):
+    """Ce que « Publier et déployer » ferait avec ces choix — lecture seule.
+
+    Corps JSON : les champs de l'étape « Déployer » (version, campaign_kind,
+    target_mode, cohort_id, percent, emails, deploy_strategy). Répond
+    {ok, summary, eligible, installed, reasons, notes, supersedes}, ou
+    {ok: false, error} quand le serveur refuserait le déploiement. Rien n'est
+    créé : ni cohorte, ni version, ni campagne (issue #132)."""
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, "JSON attendu") from e
+    version = str(body.get("version", "")).strip()
+    experiment = str(body.get("campaign_kind", "ordinary")).strip().lower() == "experiment"
+    progressive = str(body.get("deploy_strategy", "patch_all")).strip() == "progressive"
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            if not catalog_svc.get_plugin(cur, plugin_id):
+                raise HTTPException(404, "Plugin introuvable")
+            if not version:
+                return JSONResponse({"ok": False, "error": "La version est requise."})
+            unreadable = None if experiment else unorderable_version_message(version)
+            if unreadable:
+                return JSONResponse({"ok": False, "error": unreadable})
+            try:
+                target = cohorts_svc.validate_deploy_target(
+                    cur, target_mode=body.get("target_mode", "all"),
+                    cohort_id=body.get("cohort_id", ""), percent=body.get("percent", ""),
+                    emails=body.get("emails", ""), experiment=experiment)
+            except cohorts_svc.TargetError as e:
+                return JSONResponse({"ok": False, "error": str(e)})
+            preview = campaigns_svc.preview_deployment(
+                cur, plugin_id=plugin_id, version=version, target=target,
+                is_experiment=experiment,
+                # Premier palier du déploiement progressif créé par ce formulaire.
+                first_stage_percent=5 if progressive else 100)
+        return JSONResponse({"ok": True, **preview})
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 @router.post("/catalog/{plugin_id}/general-campaign")
 @require_admin_or_service_token
 async def catalog_plugin_general_campaign(request: Request, plugin_id: int):
@@ -2723,6 +2774,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         hypotheses = body.get("hypotheses", "")
         make_general = body.get("make_general", False)
         confirm_overwrite = body.get("confirm_overwrite", False)
+        campaign_kind = body.get("campaign_kind", "ordinary")
         upload_id = body.get("upload_id", "")
         if not upload_id:
             raise HTTPException(400, "Missing upload_id in JSON body")
@@ -2750,6 +2802,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         hypotheses = form.get("hypotheses", "")
         make_general = form.get("make_general", "")
         confirm_overwrite = form.get("confirm_overwrite", "")
+        campaign_kind = form.get("campaign_kind", "ordinary")
         binary = form.get("binary")
         if not binary or not hasattr(binary, "read"):
             raise HTTPException(400, "Missing binary file")
@@ -2767,7 +2820,15 @@ async def catalog_version_upload(request: Request, plugin_id: int):
     # Branche expérimentale (pull opt-in) : version publiée en 'experimental'
     # (jamais servie comme latest main), portant un tag + ses questions clés ; on
     # ne déploie PAS de campagne (action != 'deploy' → pas de push automatique).
-    is_experimental = (action == "experimental")
+    # « deploy » en campagne d'expérimentation (issue #132, tout se fait à
+    # l'envoi) : la version est une version d'essai — statut 'experimental',
+    # qui ne déprécie rien et ne devient jamais « dernière publiée » — et la
+    # campagne créée épingle cette version sur une cible délimitée.
+    campaign_kind = str(campaign_kind or "ordinary").strip().lower()
+    if campaign_kind not in ("ordinary", "experiment"):
+        raise HTTPException(400, "Type de campagne inconnu.")
+    experiment_campaign = (action == "deploy" and campaign_kind == "experiment")
+    is_experimental = (action == "experimental") or experiment_campaign
     if isinstance(hypotheses, list):
         hyp_list = [str(x).strip() for x in hypotheses if str(x).strip()] or None
     else:
@@ -2827,9 +2888,9 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 raise HTTPException(409, str(e)) from e
             target_cohort_id = None
             if action == "deploy":
-                # « deploy » crée une campagne ordinaire : une version qu'on ne
-                # sait pas ordonner n'y serait servie à personne.
-                unreadable = unorderable_version_message(version)
+                # Une campagne ordinaire ne sert à personne une version qu'on
+                # ne sait pas ordonner ; l'expérimentation, elle, l'épingle.
+                unreadable = None if experiment_campaign else unorderable_version_message(version)
                 if unreadable:
                     raise HTTPException(400, unreadable)
                 # Cible incomplète refusée (cohorts_svc.resolve_deploy_target).
@@ -2838,7 +2899,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                         cur, target_mode=target_mode, cohort_id=cohort_id,
                         percent=percent, emails=emails,
                         auto_name=f"auto-{device_type}-{version}-{environment}",
-                        auto_description=f"Auto: {environment}")
+                        auto_description=f"Auto: {environment}",
+                        experiment=experiment_campaign)
                 except cohorts_svc.TargetError as e:
                     raise HTTPException(400, str(e)) from e
 
@@ -2961,7 +3023,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 else:
                     urgency = "normal"
 
-                campaign_name = f"MaJ {plugin['name']} {version} [{environment}]"
+                campaign_name = (f"Essai {plugin['name']} {version} [{environment}]" if experiment_campaign
+                                 else f"MaJ {plugin['name']} {version} [{environment}]")
                 campaign_id = campaigns_svc.create_campaign(
                     cur, name=campaign_name, type="plugin_update",
                     artifact_id=artifact_id,
@@ -2970,6 +3033,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                     rollout_config=rollout_config,
                     created_by=actor.get("email"),
                     plugin_id=plugin_id,
+                    is_experiment=experiment_campaign,
                 )
                 # Set environment and plugin_id on campaign
                 cur.execute(
@@ -2979,7 +3043,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 audit_log(cur, actor=actor, action="deploy.create",
                           resource_type="campaign", resource_id=str(campaign_id),
                           payload={"plugin_id": plugin_id, "version": version,
-                                   "environment": environment, "strategy": deploy_strategy},
+                                   "environment": environment, "strategy": deploy_strategy,
+                                   "is_experiment": experiment_campaign},
                           ip=request.client.host if request.client else None)
 
             conn.commit()
