@@ -475,6 +475,7 @@ liste commune.
 | `deadline_at` | ISO8601 ou `null` | si non null : forcer update avant cette date |
 | `campaign_id` | int | pour le tracking dans `campaign_device_status` |
 | `plugin_slug` | slug ou `null` | plugin résolu par le serveur ; `null` si le device n'a pas pu être rattaché à une fiche catalogue |
+| `signature` | objet, ou clé absente | enveloppe signée du paquet servi (ADR-0006, `dm-package-signature/1`). Présente quand le DM signe ses paquets. Un plugin dont le paquet installé contient `dm-trust.json` la vérifie avant d'installer : signature, empreinte des octets téléchargés, `version` égale à `target_version`, `extension_id` égal au sien. Sans signature valide, il n'installe pas |
 | `restart_required` | `true`, ou clé absente | le déploiement demande le redémarrage du logiciel hôte après l'installation : le plugin le propose à l'utilisateur (« maintenant » / « plus tard »), sans le forcer. Seul `true` est émis. Sans effet si la version installée ne connaît pas ce champ |
 
 **Formes d'`artifact_url`** — trois formes possibles, toutes des chemins relatifs à la base
