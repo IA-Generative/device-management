@@ -19,6 +19,12 @@ data:
   DM_PORT: {{ .Values.config.app.port | quote }}
   DM_TLS_VERIFY: {{ .Values.config.app.tlsVerify | quote }}
   DM_BOOTSTRAP_URLS: {{ .Values.config.app.bootstrapUrls | quote }}
+  # Adresse interne du composant d'administration, qui détient les paquets : un pod de
+  # service qui n'a pas un fichier dans son cache va l'y chercher, et lui transmet ceux
+  # qu'il reçoit par l'API. Le défaut du code (« device-management-admin ») ne vaut que
+  # pour une release nommée ainsi ; sans ce réglage, l'adresse ne se résout pas et tout
+  # paquet absent du cache répond 404.
+  DM_ADMIN_INTERNAL_URL: {{ printf "http://%s:%v" (include "device-management.componentName" (dict "root" . "component" "admin")) .Values.admin.service.port | quote }}
   DM_LOCAL_API_ALLOWED_ORIGINS: {{ .Values.config.app.localApiAllowedOrigins | quote }}
   DM_CONFIG_OVERRIDES: {{ .Values.config.app.configOverrides | default dict | toJson | quote }}
   DM_LINKS: {{ .Values.config.app.links | default list | toJson | quote }}

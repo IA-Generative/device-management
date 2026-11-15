@@ -148,8 +148,7 @@ spec:
                   key: DM_LLM_TOKEN_SIGNING_KEY
                   optional: true
             {{- include "device-management.awsEnv" . | nindent 12 }}
-            {{- include "device-management.databaseEnv" . | nindent 12 }}
-            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
+            {{- include "device-management.databaseEnvForApp" . | nindent 12 }}
             {{- with .Values.api.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
