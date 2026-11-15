@@ -1,7 +1,7 @@
 """Catalogue : source GitHub d'un plugin et relevé de ses releases
 
-Revision ID: 011
-Revises: 010
+Revision ID: 012
+Revises: 011
 Create Date: 2026-11-15
 
 Issue #108 : un plugin peut déclarer d'où viennent ses paquets
@@ -20,8 +20,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "011"
-down_revision: str | None = "010"
+revision: str = "012"
+down_revision: str | None = "011"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -88,8 +88,8 @@ def test_migration_011_matches_schema_sql_and_replays(_db_url):
     """Une base montée par les migrations et une base montée par db/schema.sql
     doivent porter les mêmes colonnes ; rejouer la migration ne change rien."""
     import psycopg2
-    migration = _load("alembic/versions/011_github_releases.py", "migration_011")
-    assert migration.revision == "011" and migration.down_revision == "010"
+    migration = _load("alembic/versions/012_github_releases.py", "migration_012")
+    assert migration.revision == "012" and migration.down_revision == "011"
 
     conn = psycopg2.connect(_db_url)
     try:

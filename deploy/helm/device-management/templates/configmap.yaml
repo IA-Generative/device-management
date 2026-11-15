@@ -33,6 +33,11 @@ data:
   DM_PACKAGE_PUBLISHER_KEYS: {{ .Values.config.packageTrust.publisherKeys | quote }}
   DM_PACKAGE_TRUST_ROOTS: {{ .Values.config.packageTrust.trustRoots | quote }}
 
+  # -- config.github (issue #108) : relevé des releases GitHub des plugins. Lu par
+  # le worker (relevé) et par l'administration (téléchargement à l'import).
+  DM_GITHUB_API_URL: {{ .Values.config.github.apiUrl | quote }}
+  DM_GITHUB_POLL_INTERVAL: {{ .Values.config.github.pollInterval | quote }}
+
   # -- config.storage --
   DM_STORE_ENROLL_LOCALLY: {{ .Values.config.storage.storeEnrollLocally | quote }}
   DM_ENROLL_DIR: {{ .Values.config.storage.enrollDir | quote }}
