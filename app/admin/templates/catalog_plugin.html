@@ -260,6 +260,9 @@
       {# Adaptation de la configuration embarquee (issue #107). Le champ cache porte la
          valeur envoyee : une case decochee n'envoie rien, donc on ecrit 0 ou 1. #}
       <input type="hidden" name="adapt_config" id="nv-adapt-config" value="1">
+      {# Exigence de signature d'origine levee pour cet envoi (plugins dont la chaine de build
+         ne signe pas encore). Vaut 1 seulement si l'administrateur a decoche la case. #}
+      <input type="hidden" name="skip_signature" id="nv-skip-signature" value="">
 
       {# Step 2: Details (pre-filled) #}
       <div id="nv-step-2" style="display:none;">
@@ -678,7 +681,7 @@
           {% if v.origin.known %}
             <div>
               {% if v.origin.status == 'verified' %}<span class="dm-badge dm-badge--success">{{ v.origin.label }}</span>
-              {% elif v.origin.status in ('unsigned', 'unverified') %}<span class="dm-badge dm-badge--warning">{{ v.origin.label }}</span>
+              {% elif v.origin.status in ('unsigned', 'unverified') %}<span class="dm-badge dm-badge--warning"{% if v.origin.waived %} title="Importe sans signature d'origine : exigence levee par l'administrateur a l'envoi"{% endif %}>{{ v.origin.label }}{% if v.origin.waived %} (exigence levee){% endif %}</span>
               {% else %}<span class="dm-badge dm-badge--neutral">{{ v.origin.label }}</span>{% endif %}
             </div>
             {% if v.origin.ref %}
@@ -932,6 +935,7 @@ function resetNvForm() {
   document.getElementById('nv-import-preview').innerHTML = '';
   nvDropGithub();
   nvRefusal = null; nvConfirmRef = false; nvConfirmPrerelease = false;
+  document.getElementById('nv-skip-signature').value = '';
   document.getElementById('nv-file-analysis').innerHTML = '';
   document.getElementById('nv-detected-info').style.display = 'none';
   document.getElementById('nv-btn-step2').disabled = true;
@@ -958,7 +962,17 @@ function nvRenderImportPreview(data) {
       lines.push('<div style="color:#B34000;">&#9888; ' + dmEsc(b.message || 'Signature d\'origine non verifiable.') + '</div>');
     }
     (pkg.notes || []).forEach(n => lines.push('<div style="color:#B34000;">&#9888; ' + dmEsc(n) + '</div>'));
-    if (pkg.refusal) {
+    if (pkg.refusal && pkg.refusal.waivable) {
+      // Plugin dont la chaine de build ne signe pas encore : l'exigence se leve en
+      // decochant la case, puis en validant. Cochee par defaut : sans geste, refus.
+      nvRefusal = pkg.refusal;
+      lines.push('<div style="margin-top:0.5rem;border:1px solid #B34000;border-radius:6px;padding:0.75rem;background:#FFF8E5;">' +
+        '<div style="color:#B34000;font-weight:600;">&#9888; Aucune signature d\'origine n\'accompagne ce paquet.</div>' +
+        '<label style="display:flex;gap:0.5rem;align-items:flex-start;margin-top:0.5rem;">' +
+        '<input type="checkbox" id="nv-require-signature" checked onchange="nvToggleRequireSignature(this)">' +
+        '<span><strong>Exiger la signature d\'origine.</strong> La chaine de build de ce plugin ne signe pas encore ses paquets. ' +
+        'Decochez pour importer celui-ci sans preuve de son origine : ce choix est trace au journal d\'audit.</span></label></div>');
+    } else if (pkg.refusal) {
       nvRefusal = pkg.refusal;
       lines.push('<div style="color:#CE0500;font-weight:600;">&#10007; ' + dmEsc(pkg.refusal.message) + '</div>');
     }
@@ -977,6 +991,7 @@ function nvRenderImportPreview(data) {
       cfg.kept_unknown.map(e => '<code>' + dmEsc(e.profile + '.' + e.key) + '</code>').join(', ') + '</div>');
   }
   document.getElementById('nv-adapt-config').value = '1';
+  document.getElementById('nv-skip-signature').value = '';
   box.innerHTML = lines.length
     ? '<div style="background:#fff;border:1px solid #e5e5e5;border-radius:6px;padding:0.75rem;font-size:0.85rem;">' + lines.join('') + '</div>'
     : '';
@@ -1033,6 +1048,11 @@ async function nvImportFromGithub(tag, btn) {
   }
 }
 
+function nvToggleRequireSignature(box) {
+  // Case decochee = exigence levee pour cet envoi : « Suivant » se debloque.
+  document.getElementById('nv-skip-signature').value = box.checked ? '' : '1';
+  document.getElementById('nv-btn-step2').disabled = box.checked;
+}
 document.getElementById('nv-signature-input').addEventListener('change', function() {
   // Rejouer l'analyse avec la signature : le controle d'origine en depend.
   if (document.getElementById('nv-file-input').files[0] || nvGithub) nvAnalyze();
@@ -1122,6 +1142,7 @@ function nvAnalyze() {
         }
       }
       // Un refus sans appel (signature absente ou invalide, version discordante) arrete ici.
+      // Un refus levable (signature non exigee pour ce plugin) attend que la case soit decochee.
       btn.disabled = !!(nvRefusal && !nvRefusal.confirmable);
     })
     .catch(() => {
@@ -1452,6 +1473,10 @@ async function nvSubmit(action) {
       }
       // Refus sans appel de l'import (signature, version discordante, configuration de signature).
       else if (resp.status === 422 && msg && msg.message) {
+        msg = msg.message;
+      }
+      // Signature non exigee pour ce plugin, mais la case n'a pas ete decochee.
+      else if (resp.status === 409 && msg && msg.code === 'signature_waivable') {
         msg = msg.message;
       }
       // Meme numero de version, binaire different : confirmation explicite (issue #132).

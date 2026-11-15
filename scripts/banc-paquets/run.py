@@ -234,6 +234,19 @@ if c:
     z = zipfile.ZipFile(io.BytesIO(c["pkg"]))
     check("OXT : config et flux natif réécrits", "localhost:18090" in z.read("config.default.json").decode() and "localhost:18090" in z.read("description.xml").decode())
 
+section("7 bis. Plugin dont la chaîne de build ne signe pas encore")
+r = deploy(ADMIN, "banc-lo", "banc-lo-0.3.2.oxt", general="1")
+check("sans signature, case cochée : 409 signature_waivable", r.status_code == 409 and r.json().get("code") == "signature_waivable", r.text[:200])
+r = deploy(ADMIN, "banc-lo", "banc-lo-0.3.2.oxt", general="1", skip_signature="true")
+j = r.json() if r.status_code == 201 else {}
+check("exigence levée : importé, signé par le DM, levée notée", r.status_code == 201 and j.get("signed") is True
+      and ((j.get("provenance") or {}).get("build") or {}).get("waived") is True, r.text[:300])
+c = client_update("banc-lo", "0.3.1", "uuid-lo-2")
+check("poste : reçoit la 0.3.2, signature du DM vérifiée", c and c["target"] == "0.3.2" and c.get("verdict") == "ok", str(c and (c["target"], c.get("verdict"))))
+r = deploy(ADMIN, "banc-tb", "banc-tb-0.24.1.xpi", skip_signature="true")
+check("un plugin hors liste ne peut pas lever l'exigence", r.status_code == 422 and r.json().get("code") == "signature_required", r.text[:200])
+check("levée tracée au journal d'audit", int(psql("SELECT count(*) FROM admin_audit_log WHERE action = 'package.import' AND payload::text LIKE '%\"waived\": true%'") or 0) >= 1)
+
 section("8. Import depuis les releases GitHub (faux serveur)")
 source = {"repository": "IA-Generative/banc-plugin", "component": "banc", "asset_pattern": "banc-tb-*.xpi", "channel": "general"}
 psql(f"UPDATE plugins SET github_source = '{json.dumps(source)}'::jsonb WHERE id = {int(PID)}")

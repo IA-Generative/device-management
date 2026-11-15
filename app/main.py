@@ -3794,6 +3794,9 @@ async def api_plugin_deploy(slug: str, request: Request):
         « require ».
       - confirm_ref (bool, optional): accepte un paquet signé construit depuis
         une référence hors de DM_PACKAGE_ALLOWED_REFS. Tracé.
+      - skip_signature (bool, optional): importe sans signature d'origine un
+        paquet d'un plugin listé dans DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS
+        (chaîne de build qui ne signe pas encore). Sans lui, 409. Tracé.
       - restart_required (bool, optional): la directive demandera au plugin de
         proposer le redémarrage du logiciel hôte après l'installation.
       - confirm_prerelease (bool, optional): sur une instance de production,
@@ -3824,6 +3827,7 @@ async def api_plugin_deploy(slug: str, request: Request):
     overwrite = str(form.get("overwrite", "")).strip().lower() in ("1", "true", "on", "yes")
     keep_bootstrap = str(form.get("keep_bootstrap", "")).strip().lower() in ("1", "true", "on", "yes")
     confirm_ref = str(form.get("confirm_ref", "")).strip().lower() in ("1", "true", "on", "yes")
+    skip_signature = str(form.get("skip_signature", "")).strip().lower() in ("1", "true", "on", "yes")
     build_signature = await _form_file_bytes(form, "signature")
     adapt_config = str(form.get("adapt_config", "true")).strip().lower() not in ("0", "false", "off", "no")
     confirm_prerelease = str(form.get("confirm_prerelease", "")).strip().lower() in ("1", "true", "on", "yes")
@@ -3840,7 +3844,7 @@ async def api_plugin_deploy(slug: str, request: Request):
     return await run_in_threadpool(
         _deploy_plugin_db_work, slug, data, orig_filename, version, strategy, urgency, cohort_id, db_url,
         make_general, overwrite, keep_bootstrap, build_signature, confirm_ref, adapt_config,
-        confirm_prerelease, restart_required,
+        confirm_prerelease, restart_required, skip_signature,
     )
 
 
@@ -3865,7 +3869,7 @@ def _audit_package_import(cur, *, route: str, artifact_id, slug: str, version: s
                    payload={"route": route, "version": version, "checksum": checksum, "signed": signed,
                             "upstream_sha256": ((provenance or {}).get("upstream") or {}).get("sha256"),
                             "build": {k: build.get(k) for k in ("status", "keyid", "repository", "ref", "commit",
-                                                                  "ref_allowed", "ref_confirmed")
+                                                                  "ref_allowed", "ref_confirmed", "waived")
                                       if build.get(k) is not None}})
     except Exception:
         logger.exception("audit de l'import impossible")
@@ -3873,7 +3877,7 @@ def _audit_package_import(cur, *, route: str, artifact_id, slug: str, version: s
 
 def _package_refused_response(e: _package_import.PackageRefused) -> JSONResponse:
     """Refus d'import (ADR-0006) : 409 si une confirmation le lève, 422 sinon."""
-    status = 409 if e.code == _package_import.REF_NOT_ALLOWED else 422
+    status = 409 if e.code in (_package_import.REF_NOT_ALLOWED, _package_import.SIGNATURE_WAIVABLE) else 422
     return JSONResponse({"ok": False, "error": str(e), "code": e.code,
                          "build": e.info.get("build")}, status_code=status)
 
@@ -3882,7 +3886,7 @@ def _deploy_plugin_db_work(
     slug: str, data: bytes, orig_filename: str, version: str, strategy: str, urgency: str, cohort_id, db_url: str,
     make_general: bool = False, overwrite: bool = False, keep_bootstrap: bool = False,
     build_signature: bytes | None = None, confirm_ref: bool = False, adapt_config: bool = True,
-    confirm_prerelease: bool = False, restart_required: bool = False,
+    confirm_prerelease: bool = False, restart_required: bool = False, skip_signature: bool = False,
 ):
     """Partie bloquante de POST /api/plugins/{slug}/deploy (DB + zip + persist
     binaire) — exécutée en threadpool par l'endpoint async."""
@@ -3953,7 +3957,8 @@ def _deploy_plugin_db_work(
                 data, bootstrap_info = _package_import.import_package(
                     data, slug=slug, version=version, filename=f"{slug}-{version}{_ext}",
                     build_signature=build_signature, keep_bootstrap=keep_bootstrap,
-                    confirm_ref=confirm_ref, slug_aliases=[row[0] for row in cur.fetchall()])
+                    confirm_ref=confirm_ref, slug_aliases=[row[0] for row in cur.fetchall()],
+                    skip_signature=skip_signature)
             except _package_bootstrap.SignedPackageMismatch as e:
                 return JSONResponse({"ok": False, "error": str(e), "code": "bootstrap_signed",
                                      "bootstrap": e.info}, status_code=409)

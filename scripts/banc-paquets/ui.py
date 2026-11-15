@@ -135,6 +135,43 @@ with sync_playwright() as p:
     check("lien d'essai : bandeau, questions, retour à la générale", "Version d'essai" in t and "Les ecrans sont-ils clairs" in t and "Revenir a la version generale" in t, t[:300])
     pub.screenshot(path=f"{SHOTS}/8-catalogue-essai.png", full_page=True)
 
+    print("\n== U6. Lever l'exigence de signature : décocher la case, puis valider")
+    LO = psql("SELECT id FROM plugins WHERE slug='banc-lo'")
+    page.goto(f"{ADMIN}/admin/catalog/{LO}?tab=versions")
+    page.wait_for_load_state("networkidle")
+    page.click("text=+ Nouvelle version")
+    page.set_input_files("#nv-file-input", f("banc-lo-0.3.3.oxt"))
+    page.wait_for_selector("#nv-require-signature", timeout=15000)
+    check("case « Exiger la signature d'origine » affichée et cochée", page.is_checked("#nv-require-signature"))
+    check("case cochée : « Suivant » désactivé", page.is_disabled("#nv-btn-step2"))
+    page.screenshot(path=f"{SHOTS}/9-exigence-cochee.png", full_page=True)
+    page.uncheck("#nv-require-signature")
+    check("case décochée : « Suivant » actif", not page.is_disabled("#nv-btn-step2"))
+    page.screenshot(path=f"{SHOTS}/10-exigence-levee.png", full_page=True)
+    page.click("#nv-btn-step2")
+    page.click("text=Suivant — Deployer")
+    page.click("button:has-text('Publier sans deployer')")
+    for _ in range(40):
+        if psql("SELECT count(*) FROM plugin_versions WHERE version='0.3.3'") == "1":
+            break
+        page.wait_for_timeout(1000)
+    else:
+        print("     erreur affichée :", page.inner_text("#nv-deploy-error")[:400])
+    page.wait_for_load_state("networkidle")
+    waived = psql("SELECT provenance->'build'->>'waived' FROM artifacts WHERE version='0.3.3'")
+    check("paquet importé sans signature, levée enregistrée", waived == "true", waived)
+    page.goto(f"{ADMIN}/admin/catalog/{LO}?tab=versions")
+    page.wait_for_load_state("networkidle")
+    check("la fiche le dit : « Origine non signée (exigence levee) »", "Origine non signée (exigence levee)" in page.inner_text("#tab-versions"))
+    page.screenshot(path=f"{SHOTS}/11-fiche-exigence-levee.png", full_page=True)
+    # Un plugin hors liste : pas de case, refus sans appel.
+    page.goto(f"{ADMIN}/admin/catalog/{PID}?tab=versions")
+    page.wait_for_load_state("networkidle")
+    page.click("text=+ Nouvelle version")
+    page.set_input_files("#nv-file-input", f("banc-tb-0.24.1.xpi"))
+    page.wait_for_selector("#nv-import-preview div", timeout=15000)
+    check("plugin hors liste : aucune case, « Suivant » désactivé", page.locator("#nv-require-signature").count() == 0 and page.is_disabled("#nv-btn-step2"))
+
     check("aucune erreur de script dans les pages", not errors, str(errors)[:400])
     browser.close()
 

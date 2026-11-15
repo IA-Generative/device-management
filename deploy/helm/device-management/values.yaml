@@ -753,6 +753,14 @@ config:
     # résultat affiché et tracé. "require" : un paquet sans signature d'origine
     # valide est refusé, téléversement manuel compris.
     signaturePolicy: "off"
+    # DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS. Mesure d'attente : noms au catalogue,
+    # séparés par des virgules, des plugins dont la chaîne de build ne signe pas
+    # encore (ex. "mirai-libreoffice,iassistant-direct"). Sous "require", leurs
+    # paquets sans signature restent refusés par défaut ; l'administrateur les
+    # importe en décochant « Exiger la signature d'origine » à l'envoi, ce qui
+    # est tracé. Une signature fournie est toujours vérifiée. À vider dès que
+    # ces chaînes de build signent.
+    signatureOptionalPlugins: ""
     # DM_PACKAGE_SIGNING_REQUIRED. true : cette instance ne sert que des paquets
     # qu'elle a signés ; un composant qui ne détient pas la clé refuse l'import
     # au lieu de stocker un paquet non signé. À poser avec la clé ci-dessous.

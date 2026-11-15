@@ -28,6 +28,7 @@ from .versions import libreoffice_numeric_version, version_nature
 # Codes de refus (stables : renvoyés par l'API, affichés et testés).
 SIGNATURE_REQUIRED = "signature_required"
 SIGNATURE_INVALID = "signature_invalid"
+SIGNATURE_WAIVABLE = "signature_waivable"
 REF_NOT_ALLOWED = "ref_not_allowed"
 VERSION_MISMATCH = "version_mismatch"
 SIGNING_CONFIG = "signing_config"
@@ -209,8 +210,14 @@ def version_notes(version: str, filename: str, embedded: dict[str, str]) -> tupl
 
 
 def _check_build(data: bytes, envelope, *, slug: str, version: str, confirm_ref: bool, info: dict,
-                 slug_aliases=()) -> dict:
-    """Contrôle d'origine selon la politique. Lève PackageRefused."""
+                 slug_aliases=(), skip_signature: bool = False) -> dict:
+    """Contrôle d'origine selon la politique. Lève PackageRefused.
+
+    `skip_signature` : l'administrateur a décoché l'exigence de signature pour cet
+    envoi. Honoré seulement pour un plugin de la liste
+    `DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS`, et seulement pour un paquet SANS
+    signature : une signature fournie est toujours vérifiée.
+    """
     policy = package_signing.policy()
     if policy == package_signing.POLICY_OFF:
         return {"status": BUILD_UNCHECKED}
@@ -230,6 +237,17 @@ def _check_build(data: bytes, envelope, *, slug: str, version: str, confirm_ref:
     except package_signing.SignatureError as e:
         if e.code in _TAMPER_CODES:
             raise PackageRefused(SIGNATURE_INVALID, str(e), info) from e
+        waivable = (e.code == package_signing.NO_ENVELOPE
+                    and bool({slug, *slug_aliases} & package_signing.optional_plugins()))
+        if policy == package_signing.POLICY_REQUIRE and waivable:
+            if not skip_signature:
+                raise PackageRefused(
+                    SIGNATURE_WAIVABLE,
+                    "Aucune signature d'origine n'accompagne ce paquet. Ce plugin fait partie de ceux dont "
+                    "la chaîne de build ne signe pas encore : pour l'importer sans signature, décochez "
+                    "« Exiger la signature d'origine » puis validez.", info) from e
+            return {"status": BUILD_UNSIGNED, "code": e.code, "waived": True,
+                    "message": "Importé sans signature d'origine, exigence levée par l'administrateur."}
         if policy == package_signing.POLICY_REQUIRE:
             raise PackageRefused(
                 SIGNATURE_REQUIRED,
@@ -262,7 +280,8 @@ def _check_build(data: bytes, envelope, *, slug: str, version: str, confirm_ref:
 
 def import_package(data: bytes, *, slug: str = "", version: str = "", filename: str = "",
                    build_signature=None, keep_bootstrap: bool = False,
-                   confirm_ref: bool = False, slug_aliases=()) -> tuple[bytes, dict]:
+                   confirm_ref: bool = False, slug_aliases=(),
+                   skip_signature: bool = False) -> tuple[bytes, dict]:
     """Paquet tel qu'il sera stocké et servi, et relevé complet de l'import.
 
     Le relevé reprend celui de `package_bootstrap.prepare` (liste de DM) et y
@@ -281,7 +300,8 @@ def import_package(data: bytes, *, slug: str = "", version: str = "", filename: 
     # Le contrôle d'origine porte sur les octets reçus, avant toute lecture de
     # l'archive : une archive qui se lit mal ne doit pas le faire sauter.
     build = _check_build(data, build_signature, slug=slug, version=version,
-                         confirm_ref=confirm_ref, info=info, slug_aliases=slug_aliases)
+                         confirm_ref=confirm_ref, info=info, slug_aliases=slug_aliases,
+                         skip_signature=skip_signature)
 
     try:
         trust = package_signing.trust_document()
@@ -373,9 +393,12 @@ def preview(data: bytes, *, slug: str = "", version: str = "", filename: str = "
                                     confirm_ref=False, info={}, slug_aliases=slug_aliases)
     except PackageRefused as e:
         out["build"] = e.info.get("build")
-        out["refusal"] = {"code": e.code, "message": str(e), "confirmable": e.code == REF_NOT_ALLOWED}
+        out["refusal"] = {"code": e.code, "message": str(e), "confirmable": e.code == REF_NOT_ALLOWED,
+                          # Refus que l'administrateur lève en décochant l'exigence de signature.
+                          "waivable": e.code == SIGNATURE_WAIVABLE}
     version_refusal, out["notes"] = version_notes(version, filename, embedded)
-    if version_refusal and not (out["refusal"] and not out["refusal"]["confirmable"]):
+    if version_refusal and not (out["refusal"] and not out["refusal"]["confirmable"]
+                                and not out["refusal"].get("waivable")):
         out["refusal"] = {"code": VERSION_MISMATCH, "message": version_refusal, "confirmable": False}
     return out
 
