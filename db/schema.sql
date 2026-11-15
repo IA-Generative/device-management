@@ -140,6 +140,8 @@ CREATE TABLE IF NOT EXISTS plugins (
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+-- Annoncer la version candidate au catalogue public (bloc « Préversion »).
+ALTER TABLE plugins ADD COLUMN IF NOT EXISTS show_candidate BOOLEAN NOT NULL DEFAULT false;
 -- Slug must be unique among non-removed plugins (allows re-using a slug after deletion)
 CREATE UNIQUE INDEX IF NOT EXISTS uq_plugins_slug_active ON plugins(slug) WHERE status <> 'removed';
 CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins(status);

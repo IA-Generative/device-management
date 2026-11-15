@@ -2731,6 +2731,88 @@ async def catalog_version_status(request: Request, plugin_id: int,
         conn.close()
 
 
+@router.post("/catalog/{plugin_id}/candidate-visibility")
+@require_admin_or_service_token
+async def catalog_plugin_candidate_visibility(request: Request, plugin_id: int,
+                                              show: str = Form("")):
+    """Annonce (ou non) la version candidate du plugin au catalogue public."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE plugins SET show_candidate = %s, updated_at = NOW() WHERE id = %s RETURNING id",
+                        (_form_truthy(show), plugin_id))
+            if not cur.fetchone():
+                raise HTTPException(404, "Plugin introuvable")
+            audit_log(cur, actor=getattr(request.state, "admin_session", {}),
+                      action="plugin.candidate_visibility", resource_type="plugin",
+                      resource_id=str(plugin_id), payload={"show": _form_truthy(show)},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/versions/{version_id}/invite")
+@require_admin_or_service_token
+async def catalog_version_invite(request: Request, plugin_id: int, version_id: int,
+                                 emails: str = Form("")):
+    """Ajoute des personnes à la cohorte de l'essai en cours de cette version.
+
+    Leur plugin passera sur cette version à son prochain démarrage. La cohorte
+    est celle de la campagne d'expérimentation active de la version ; une
+    cohorte qui n'est pas une liste de personnes (pourcentage, motif d'adresse,
+    groupe Keycloak) n'est pas acceptée : ses membres ne sont pas lus.
+    """
+    addresses = [e.strip().lower() for e in re.split(r"[\s,;]+", emails or "") if e.strip()]
+    invalid = [e for e in addresses if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", e)]
+    if not addresses or invalid:
+        raise HTTPException(400, "Adresses attendues, séparées par des virgules ou des retours à la ligne"
+                                 + (f" (refusées : {', '.join(invalid[:5])})" if invalid else "") + ".")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT c.id, c.target_cohort_id, co.type
+                FROM campaigns c JOIN cohorts co ON co.id = c.target_cohort_id
+                WHERE c.plugin_id = %s AND c.version_id = %s AND c.status = 'active'
+                  AND COALESCE(c.is_experiment, false)
+                ORDER BY c.created_at DESC LIMIT 1
+            """, (plugin_id, version_id))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(409, "Cette version n'a pas de campagne d'essai active sur une cohorte : "
+                                         "créez-la d'abord, ou envoyez le lien d'essai.")
+            campaign_id, cohort_id, cohort_type = row
+            # Seule une cohorte « manuelle » se lit dans la liste de ses membres. Y
+            # ajouter quelqu'un pour un autre type (pourcentage, motif d'adresse,
+            # groupe Keycloak) n'aurait aucun effet, et l'écran dirait le contraire.
+            if cohort_type != "manual":
+                raise HTTPException(409, "La cohorte de cet essai n'est pas une liste de personnes "
+                                         f"(type « {cohort_type} ») : on n'y ajoute personne nommément. "
+                                         "Envoyez le lien d'essai, ou changez la règle de la cohorte.")
+            added = cohorts_svc.add_members(cur, cohort_id, [("email", e) for e in addresses])
+            audit_log(cur, actor=getattr(request.state, "admin_session", {}),
+                      action="version.invite", resource_type="plugin_version",
+                      resource_id=str(version_id),
+                      payload={"plugin_id": plugin_id, "campaign_id": campaign_id,
+                               "cohort_id": cohort_id, "added": added},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions&invited={version_id}", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e)) from e
+    finally:
+        conn.close()
+
+
 @router.post("/catalog/{plugin_id}/general-version")
 @require_admin_or_service_token
 async def catalog_plugin_general_version(request: Request, plugin_id: int,

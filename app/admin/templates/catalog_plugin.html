@@ -464,6 +464,18 @@
     </form>
   </div>
 
+  {# Annoncer la version candidate au catalogue public (bloc « Preversion ») #}
+  <form method="post" action="/admin/catalog/{{ plugin.id }}/candidate-visibility"
+        style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;font-size:0.85rem;margin-bottom:0.75rem;">
+    <input type="hidden" name="show" value="{{ '0' if plugin.show_candidate else '1' }}">
+    <span>
+      Version candidate au catalogue public :
+      <strong>{% if plugin.show_candidate %}annoncee a tous, dans un bloc « Preversion »{% else %}visible par son lien seulement{% endif %}</strong>.
+      Les versions d'essai ne sont jamais listees.
+    </span>
+    <button class="dm-btn dm-btn--secondary dm-btn--sm">{% if plugin.show_candidate %}Ne plus l'annoncer{% else %}L'annoncer a tous{% endif %}</button>
+  </form>
+
   {# Version history table #}
   <div style="overflow-x:auto;">
   <table>
@@ -560,6 +572,10 @@
         <td>{{ v.published_at.strftime('%d/%m/%Y') if v.published_at else v.created_at.strftime('%d/%m/%Y') }}</td>
         <td>{{ v.install_count or 0 }}</td>
         <td style="display:flex;gap:0.25rem;flex-wrap:wrap;">
+          {% if v.status == 'experimental' %}
+          <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm"
+                  onclick="dmToggleInvite({{ v.id }})" aria-expanded="false" aria-controls="invite-{{ v.id }}">Inviter</button>
+          {% endif %}
           {% if v.status == 'published' %}
           <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/status" style="display:inline;">
             <input type="hidden" name="status" value="deprecated">
@@ -581,6 +597,58 @@
           {% endif %}
         </td>
       </tr>
+      {% if v.status == 'experimental' %}
+      {# Inviter quelqu'un a essayer cette version : un lien a envoyer, ou l'ajout a la cohorte de l'essai #}
+      {% set trial = (v.diffusion | selectattr('is_experiment') | selectattr('cohort_id') | selectattr('status', 'equalto', 'active') | list | first) %}
+      <tr id="invite-{{ v.id }}" class="dm-invite-row" {% if request.query_params.get('invited') != (v.id | string) %}hidden{% endif %}>
+        <td colspan="8" style="background:#F5F5FE;padding:1rem;">
+          {% if request.query_params.get('invited') == (v.id | string) %}
+          <div class="dm-flash dm-flash--success" role="status">Personnes ajoutees a la cohorte. Leur plugin passera sur la version {{ v.version }} a son prochain demarrage.</div>
+          {% endif %}
+          <div class="dm-grid-2" style="gap:1.5rem;">
+            <div>
+              <strong>Envoyer un lien</strong>
+              <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0.5rem 0;">La personne ouvre la page de l'essai et installe elle-meme. Convient pour un avis ponctuel, ou pour quelqu'un qui n'a pas encore le plugin.</p>
+              {% if v.trial_link %}
+              <div style="display:flex;gap:0.5rem;align-items:center;">
+                <input type="text" readonly class="dm-input" id="invite-link-{{ v.id }}" value="{{ v.trial_link }}" style="font-family:monospace;font-size:0.8rem;">
+                <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" onclick="dmCopy('invite-link-{{ v.id }}', this)">Copier</button>
+              </div>
+              <textarea readonly class="dm-input" id="invite-msg-{{ v.id }}" rows="5" style="font-size:0.8rem;margin-top:0.5rem;">Bonjour,
+
+Peux-tu essayer la version d'essai {{ v.version }} de {{ plugin.name }} ?{% if v.hypotheses %}
+Ce que nous cherchons a savoir :{% for q in v.hypotheses %}
+- {{ q }}{% endfor %}{% endif %}
+
+Le lien : {{ v.trial_link }}
+
+Tu recevras ensuite la version generale a sa sortie, sans rien faire.</textarea>
+              <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" style="margin-top:0.5rem;" onclick="dmCopy('invite-msg-{{ v.id }}', this)">Copier le message</button>
+              {% else %}
+              <p style="font-size:0.85rem;">Cette version n'a pas d'etiquette d'essai : elle n'a pas de lien reserve. Renvoyez-la avec un « tag experimental ».</p>
+              {% endif %}
+            </div>
+            <div>
+              <strong>Ajouter a la cohorte de l'essai</strong>
+              <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0.5rem 0;">Le plugin de la personne passe sur cette version a son prochain demarrage, sans rien installer. Convient pour un essai suivi.</p>
+              {% if trial and trial.cohort_type == 'manual' %}
+              <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/invite">
+                <label class="dm-label" for="invite-emails-{{ v.id }}">Adresses, une par ligne ou separees par des virgules</label>
+                <textarea name="emails" id="invite-emails-{{ v.id }}" class="dm-input" rows="3" required placeholder="prenom.nom@exemple.fr"></textarea>
+                <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0.5rem 0;">Cohorte « {{ trial.cohort_name }} ». Une personne ne doit appartenir qu'a un seul essai de ce plugin a la fois.</p>
+                <button class="dm-btn dm-btn--primary dm-btn--sm">Ajouter a la cohorte</button>
+              </form>
+              {% elif trial %}
+              <p style="font-size:0.85rem;">La cohorte « {{ trial.cohort_name }} » de cet essai n'est pas une liste de personnes (type {{ trial.cohort_type }}) : on n'y ajoute personne nommement. Envoyez le lien, ou changez la regle de la cohorte.</p>
+              {% else %}
+              <p style="font-size:0.85rem;">Aucune campagne d'essai active sur une cohorte pour cette version.
+                <a href="/admin/campaigns/new">Creer la campagne</a>, puis revenez ici.</p>
+              {% endif %}
+            </div>
+          </div>
+        </td>
+      </tr>
+      {% endif %}
       {% if v.release_notes %}
       <tr><td colspan="8" style="background:#f9f9f9;font-size:0.85rem;color:#555;padding:0.5rem 0.75rem;white-space:pre-line;">{{ v.release_notes }}</td></tr>
       {% endif %}
@@ -674,6 +742,45 @@ function dmEsc(text) {
   return String(text == null ? '' : text).replace(/[&<>"']/g,
     c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 }
+function dmToggleInvite(id) {
+  const row = document.getElementById('invite-' + id);
+  if (!row) return;
+  row.hidden = !row.hidden;
+  const btn = document.querySelector('[aria-controls="invite-' + id + '"]');
+  if (btn) btn.setAttribute('aria-expanded', String(!row.hidden));
+}
+function dmCopy(id, btn) {
+  const field = document.getElementById(id);
+  if (!field) return;
+  const done = () => { const old = btn.textContent; btn.textContent = 'Copie'; setTimeout(() => { btn.textContent = old; }, 1500); };
+  const fallback = () => { field.focus(); field.select(); try { document.execCommand('copy'); done(); } catch (e) {} };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(field.value).then(done, fallback);
+  } else {
+    fallback();
+  }
+}
+
+function nvGoStep(n) {
+  for (let i = 1; i <= 3; i++) {
+    document.getElementById('nv-step-' + i).style.display = i === n ? 'block' : 'none';
+    const si = document.getElementById('nv-si-' + i);
+    si.classList.remove('dm-step--active', 'dm-step--done');
+    if (i < n) si.classList.add('dm-step--done');
+    if (i === n) si.classList.add('dm-step--active');
+  }
+  if (n === 3) { nvUpdateEnvUI(); nvPreview(); }
+}
+
+function resetNvForm() {
+  document.getElementById('nv-import-preview').innerHTML = '';
+  nvRefusal = null; nvConfirmRef = false; nvConfirmPrerelease = false;
+  document.getElementById('nv-file-analysis').innerHTML = '';
+  document.getElementById('nv-detected-info').style.display = 'none';
+  document.getElementById('nv-btn-step2').disabled = true;
+  nvGoStep(1);
+}
+
 // Apercu de l'import (ADR-0006, issues #106 et #107) : nature, origine, configuration.
 let nvRefusal = null;
 function nvRenderImportPreview(data) {
