@@ -55,6 +55,7 @@ from .admin.services import catalog as _catalog_svc
 from .admin.services import communications as _comms_svc
 from .postgres_queue import PostgresQueue, QueueJob
 from .s3 import s3_client
+from .services import api_keys as _api_keys
 from .services import health as _health
 from .services import links as _links
 from .services import package_bootstrap as _package_bootstrap
@@ -3763,8 +3764,31 @@ async def ack_communication_endpoint(comm_id: int, request: Request):
 # ── Campaign REST API ───────────────────────────────────────────────────
 
 
+def _unauthorized(request: Request) -> JSONResponse:
+    """Refus d'un appel à l'API. Pour une clé d'API, la raison est dite (expirée,
+    révoquée, portée ou plugin) : c'est ce qu'il faut à qui tient la clé pour agir."""
+    reason = getattr(request.state, "api_key_refusal", "")
+    if reason:
+        status = 403 if reason in (_api_keys.SCOPE, _api_keys.PLUGIN) else 401
+        return JSONResponse({"ok": False, "error": _api_keys.REASON_MESSAGES.get(reason, "Unauthorized"),
+                             "code": reason}, status_code=status)
+    return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+
 def _verify_admin_token(request: Request) -> bool:
-    """Check X-Admin-Token header against DM_QUEUE_ADMIN_TOKEN."""
+    """Jeton de service (X-Admin-Token == DM_QUEUE_ADMIN_TOKEN) ou clé d'API personnelle.
+
+    Clé d'API (`Authorization: Bearer dmk_…` ou `X-Admin-Token: dmk_…`) : portée,
+    plugins et échéance sont contrôlés pour CET appel ; l'identité du titulaire
+    est posée dans `request.state.api_actor`, pour l'audit.
+    """
+    key = _api_keys.token_from_headers(request.headers)
+    if key:
+        from app.admin.auth import authenticate_api_key as _authenticate_api_key
+        actor, reason = _authenticate_api_key(request, key, plugin=request.path_params.get("slug"))
+        request.state.api_actor = actor
+        request.state.api_key_refusal = reason
+        return actor is not None
     expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "")
     if not expected:
         return False
@@ -3807,7 +3831,7 @@ async def api_plugin_deploy(slug: str, request: Request):
         instance (issue #107). « false » garde celles du paquet.
     """
     if not _verify_admin_token(request):
-        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+        return _unauthorized(request)
 
     form = await request.form()
     binary = form.get("binary")
@@ -3845,6 +3869,7 @@ async def api_plugin_deploy(slug: str, request: Request):
         _deploy_plugin_db_work, slug, data, orig_filename, version, strategy, urgency, cohort_id, db_url,
         make_general, overwrite, keep_bootstrap, build_signature, confirm_ref, adapt_config,
         confirm_prerelease, restart_required, skip_signature,
+        getattr(request.state, "api_actor", None),
     )
 
 
@@ -3858,13 +3883,14 @@ async def _form_file_bytes(form, field: str) -> bytes | None:
 
 
 def _audit_package_import(cur, *, route: str, artifact_id, slug: str, version: str, checksum: str,
-                          provenance: dict | None, signed: bool) -> None:
+                          provenance: dict | None, signed: bool, actor: dict | None = None) -> None:
     """Trace d'audit d'un import par l'API (jeton de service) : origine contrôlée ou non,
     référence confirmée hors liste, paquet signé ou non. Jamais l'enveloppe elle-même."""
     try:
         from app.admin.helpers import audit_log as _audit_log
         build = (provenance or {}).get("build") or {}
-        _audit_log(cur, actor={"email": "api-token", "sub": "service-token"}, action="package.import",
+        # Clé d'API : l'appel est attribué à son titulaire ; jeton de service : anonyme.
+        _audit_log(cur, actor=actor or {"email": "api-token", "sub": "service-token"}, action="package.import",
                    resource_type="artifact", resource_id=str(artifact_id), plugin=slug or None,
                    payload={"route": route, "version": version, "checksum": checksum, "signed": signed,
                             "upstream_sha256": ((provenance or {}).get("upstream") or {}).get("sha256"),
@@ -3887,6 +3913,7 @@ def _deploy_plugin_db_work(
     make_general: bool = False, overwrite: bool = False, keep_bootstrap: bool = False,
     build_signature: bytes | None = None, confirm_ref: bool = False, adapt_config: bool = True,
     confirm_prerelease: bool = False, restart_required: bool = False, skip_signature: bool = False,
+    actor: dict | None = None,
 ):
     """Partie bloquante de POST /api/plugins/{slug}/deploy (DB + zip + persist
     binaire) — exécutée en threadpool par l'endpoint async."""
@@ -4020,7 +4047,7 @@ def _deploy_plugin_db_work(
             bootstrap_info, package_signature, package_provenance = _package_import.split_info(bootstrap_info)
             _audit_package_import(cur, route="api.plugin_deploy", artifact_id=artifact_id, slug=slug,
                                   version=version, checksum=checksum, provenance=package_provenance,
-                                  signed=package_signature is not None)
+                                  signed=package_signature is not None, actor=actor)
 
             # 6. Deprecate old versions + upsert new version
             cur.execute("UPDATE plugin_versions SET status = 'deprecated' WHERE plugin_id = %s AND status = 'published' AND version <> %s", (plugin_id, version))
@@ -4100,7 +4127,7 @@ def _deploy_plugin_db_work(
             cur.execute("""
                 INSERT INTO campaigns (name, type, artifact_id, plugin_id, version_id,
                     target_cohort_id, urgency, status, rollout_config, created_by, restart_required)
-                VALUES (%s, 'plugin_update', %s, %s, %s, %s, %s, 'active', %s, 'api', %s)
+                VALUES (%s, 'plugin_update', %s, %s, %s, %s, %s, 'active', %s, %s, %s)
                 RETURNING id
             """, (
                 f"Release {plugin_name} v{version}",
@@ -4108,6 +4135,7 @@ def _deploy_plugin_db_work(
                 int(cohort_id) if cohort_id else None,
                 urgency,
                 json.dumps(rollout_config) if rollout_config else None,
+                (actor or {}).get("email") or "api",
                 restart_required,
             ))
             campaign_id = cur.fetchone()[0]
@@ -4143,7 +4171,7 @@ def _deploy_plugin_db_work(
 async def api_create_campaign(request: Request):
     """Create a new campaign via REST API."""
     if not _verify_admin_token(request):
-        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+        return _unauthorized(request)
     try:
         body = await request.json()
     except Exception:
@@ -4232,7 +4260,7 @@ async def api_list_campaigns(request: Request, plugin: str | None = None,
     ``?limit=`` (défaut 100, max 500). Les plus récentes d'abord.
     """
     if not _verify_admin_token(request):
-        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+        return _unauthorized(request)
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
         return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
@@ -4262,28 +4290,28 @@ def _list_campaigns_db_work(plugin, status, limit, db_url: str):
 @app.patch("/api/campaigns/{campaign_id}/start")
 async def api_start_campaign(campaign_id: int, request: Request):
     if not _verify_admin_token(request):
-        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+        return _unauthorized(request)
     return _api_campaign_action(campaign_id, "active")
 
 
 @app.patch("/api/campaigns/{campaign_id}/pause")
 async def api_pause_campaign(campaign_id: int, request: Request):
     if not _verify_admin_token(request):
-        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+        return _unauthorized(request)
     return _api_campaign_action(campaign_id, "paused")
 
 
 @app.patch("/api/campaigns/{campaign_id}/resume")
 async def api_resume_campaign(campaign_id: int, request: Request):
     if not _verify_admin_token(request):
-        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+        return _unauthorized(request)
     return _api_campaign_action(campaign_id, "active")
 
 
 @app.patch("/api/campaigns/{campaign_id}/abort")
 async def api_abort_campaign(campaign_id: int, request: Request):
     if not _verify_admin_token(request):
-        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+        return _unauthorized(request)
     return _api_campaign_action(campaign_id, "rolled_back")
 
 
@@ -4312,7 +4340,7 @@ def _api_campaign_action(campaign_id: int, new_status: str):
 @app.get("/api/campaigns/{campaign_id}/progress")
 async def api_campaign_progress(campaign_id: int, request: Request):
     if not _verify_admin_token(request):
-        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+        return _unauthorized(request)
 
     db_url = _db_url()
     if not db_url:
@@ -4386,7 +4414,7 @@ async def api_campaign_progress(campaign_id: int, request: Request):
 async def api_upload_artifact(request: Request):
     """Upload an artifact binary via REST API."""
     if not _verify_admin_token(request):
-        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+        return _unauthorized(request)
 
     form = await request.form()
     device_type = form.get("device_type", "libreoffice")
@@ -4459,7 +4487,8 @@ async def api_upload_artifact(request: Request):
             bootstrap_info = _bootstrap
             _audit_package_import(cur, route="api.artifacts", artifact_id=artifact_id, slug=device_type,
                                   version=version, checksum=checksum, provenance=_provenance,
-                                  signed=_signature is not None)
+                                  signed=_signature is not None,
+                                  actor=getattr(request.state, "api_actor", None))
         conn.close()
         return JSONResponse({
             "ok": True, "artifact_id": artifact_id, "checksum": checksum,

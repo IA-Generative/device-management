@@ -131,6 +131,9 @@
         <a href="/admin/flags" class="{% if '/admin/flags' in request.url.path %}active{% endif %}">Feature flags</a>
       </li>
       <li class="dm-nav__item">
+        <a href="/admin/api-keys" class="{% if '/admin/api-keys' in request.url.path %}active{% endif %}">Cles d'API</a>
+      </li>
+      <li class="dm-nav__item">
         <a href="/admin/audit" class="{% if '/admin/audit' in request.url.path %}active{% endif %}">Journal d'audit</a>
       </li>
       <li class="dm-nav__item">
@@ -189,6 +192,8 @@ document.addEventListener('submit', function(e) {
   if (!form || form.method.toLowerCase() !== 'post') return;
   // Skip forms that already handle their own submit (catalog-form, nv-form)
   if (form.id === 'catalog-form' || form.id === 'nv-form') return;
+  // data-native : la reponse EST la page a afficher (ex. la cle d'API montree une seule fois).
+  if (form.dataset.native) return;
 
   e.preventDefault();
   const fd = new FormData(form);

@@ -28,6 +28,7 @@ from app.pathsafe import safe_path_join, safe_segment
 from app.resilience import retry_transient
 
 from .. import runtime_config as rcfg
+from ..services import api_keys as api_keys_svc
 from ..services import binaries as binaries_svc
 from ..services import github_releases as github_svc
 from ..services import package_bootstrap, package_config, package_import
@@ -732,6 +733,145 @@ async def api_device_activity(request: Request, client_uuid: str):
 
 
 # ─── Cohorts ──────────────────────────────────────────────────────────────
+
+# ─── Clés d'API personnelles ─────────────────────────────────────────────
+
+def _api_keys_page(request: Request, *, new_token: str = "", new_key: dict | None = None,
+                   error: str = "", form: dict | None = None, status_code: int = 200):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            keys = api_keys_svc.list_keys(cur)
+            cur.execute("SELECT slug FROM plugins WHERE status = 'active' ORDER BY slug")
+            plugin_slugs = [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+    session = getattr(request.state, "admin_session", {}) or {}
+    response = templates.TemplateResponse(request, "api_keys.html", {
+        "request": request, "keys": keys, "plugin_slugs": plugin_slugs,
+        "new_token": new_token, "new_key": new_key, "error": error,
+        "form": form or {"owner_email": session.get("email", ""), "ttl_days": api_keys_svc.DEFAULT_TTL_DAYS,
+                         "scopes": ["read", "write"], "plugins": "", "label": ""},
+        "max_ttl_days": api_keys_svc.MAX_TTL_DAYS,
+        "public_base": (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/"),
+    }, status_code=status_code)
+    # La page peut porter une clé en clair : elle ne doit rester dans aucun cache.
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/api-keys", response_class=HTMLResponse)
+@require_admin
+async def api_keys_list(request: Request):
+    return _api_keys_page(request)
+
+
+@router.post("/api-keys", response_class=HTMLResponse)
+@require_admin
+async def api_keys_create(request: Request, label: str = Form(""), owner_email: str = Form(""),
+                          ttl_days: str = Form(""), plugins: str = Form(""),
+                          scope_read: str = Form(""), scope_write: str = Form("")):
+    """Crée une clé et l'affiche UNE fois. Session d'administration seulement :
+    une clé d'API ne peut pas en créer une autre."""
+    scopes = [s for s, on in (("read", scope_read), ("write", scope_write)) if _form_truthy(on)]
+    # La page envoie le formulaire par fetch (les POST natifs peuvent être filtrés en
+    # amont) et affiche elle-même la clé ; sans script, la page est rendue par le serveur.
+    wants_json = "application/json" in (request.headers.get("accept") or "")
+    form = {"label": label, "owner_email": owner_email, "ttl_days": ttl_days, "plugins": plugins, "scopes": scopes}
+    actor = getattr(request.state, "admin_session", {}) or {}
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            try:
+                token, row = api_keys_svc.create(
+                    cur, label=label, owner_email=owner_email, scopes=scopes, plugins=plugins,
+                    ttl_days=ttl_days or api_keys_svc.DEFAULT_TTL_DAYS, created_by=actor.get("email") or "")
+            except api_keys_svc.ApiKeyInputError as e:
+                conn.rollback()
+                if wants_json:
+                    return JSONResponse({"error": str(e)}, status_code=400)
+                return _api_keys_page(request, error=str(e), form=form, status_code=400)
+            audit_log(cur, actor=actor, action="api_key.create", resource_type="api_key",
+                      resource_id=str(row["id"]),
+                      payload={"key_id": row["key_id"], "label": row["label"], "owner_email": row["owner_email"],
+                               "scopes": row["scopes"], "plugins": row["plugins"],
+                               "expires_at": row["expires_at"].isoformat()},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error("api key create failed: %s", e)
+        raise HTTPException(400, "Création de la clé impossible.") from e
+    finally:
+        conn.close()
+    if wants_json:
+        return JSONResponse({"token": token, "label": row["label"],
+                             "expires_at": row["expires_at"].strftime("%d/%m/%Y")},
+                            headers={"Cache-Control": "no-store"})
+    return _api_keys_page(request, new_token=token, new_key=row)
+
+
+@router.post("/api-keys/{key_pk}/renew")
+@require_admin
+async def api_keys_renew(request: Request, key_pk: int, ttl_days: str = Form(""), rotate: str = Form("")):
+    """Renouvelle une clé : nouvelle échéance, et nouveau secret si demandé (affiché UNE fois).
+
+    Répond en JSON : la page affiche elle-même la nouvelle clé.
+    """
+    actor = getattr(request.state, "admin_session", {}) or {}
+    do_rotate = _form_truthy(rotate)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            try:
+                token, row = api_keys_svc.renew(
+                    cur, key_pk, ttl_days=ttl_days or api_keys_svc.DEFAULT_TTL_DAYS, rotate=do_rotate,
+                    renewed_by=actor.get("email") or "")
+            except api_keys_svc.ApiKeyInputError as e:
+                conn.rollback()
+                return JSONResponse({"error": str(e)}, status_code=400)
+            if row is None:
+                conn.rollback()
+                return JSONResponse({"error": "Clé introuvable."}, status_code=404)
+            audit_log(cur, actor=actor, action="api_key.renew", resource_type="api_key",
+                      resource_id=str(key_pk),
+                      payload={"key_id": row["key_id"], "label": row["label"], "owner_email": row["owner_email"],
+                               "rotated": do_rotate, "expires_at": row["expires_at"].isoformat()},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error("api key renew failed: %s", e)
+        raise HTTPException(400, "Renouvellement de la clé impossible.") from e
+    finally:
+        conn.close()
+    return JSONResponse({"token": token, "label": row["label"], "rotated": do_rotate,
+                         "expires_at": row["expires_at"].strftime("%d/%m/%Y")},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.post("/api-keys/{key_pk}/revoke")
+@require_admin
+async def api_keys_revoke(request: Request, key_pk: int):
+    actor = getattr(request.state, "admin_session", {}) or {}
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            row = api_keys_svc.revoke(cur, key_pk, revoked_by=actor.get("email") or "")
+            if not row:
+                raise HTTPException(404, "Clé introuvable")
+            audit_log(cur, actor=actor, action="api_key.revoke", resource_type="api_key",
+                      resource_id=str(key_pk),
+                      payload={"key_id": row["key_id"], "label": row["label"], "owner_email": row["owner_email"]},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse("/admin/api-keys?revoked=1", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
 
 @router.get("/cohorts", response_class=HTMLResponse)
 @require_admin
