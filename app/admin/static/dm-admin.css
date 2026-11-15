@@ -209,3 +209,10 @@
   background: #f6f6f6; border: 1px solid #e5e5e5; border-radius: 4px; padding: 1rem;
   font-size: 0.8rem; line-height: 1.5; overflow-x: auto; max-height: 500px; white-space: pre-wrap; word-break: break-all;
 }
+
+/* Nature d'une version (issue #106) : générale, candidate, essai. Couleur ET libellé. */
+.dm-nature { display: inline-block; padding: 0.125rem 0.6rem; border-radius: 99px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+.dm-nature--general { background: #DFF3EA; color: #0B5F3A; }
+.dm-nature--rc      { background: #FCEFCF; color: #7A4B00; }
+.dm-nature--dev     { background: #EBE5FB; color: #4A2FA0; }
+.dm-nature--other   { background: #EEE; color: #444; }

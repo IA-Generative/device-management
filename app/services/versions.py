@@ -95,3 +95,66 @@ def unorderable_version_message(v) -> str | None:
     if version_sort_key(v) is not None:
         return None
     return UNORDERABLE_VERSION_HELP.format(version=str(v or "").strip())
+
+
+# ── Nature d'une version (issue #106) ────────────────────────────────────────
+NATURE_GENERAL = "general"      # X.Y.Z
+NATURE_CANDIDATE = "rc"         # X.Y.Z-rc.N
+NATURE_TRIAL = "dev"            # X.Y.Z-dev.N
+NATURE_OTHER = "other"          # autre suffixe, ou forme non reconnue
+
+_NATURE_LABELS = {
+    NATURE_GENERAL: "Générale",
+    NATURE_CANDIDATE: "Candidate",
+    NATURE_TRIAL: "Essai",
+    NATURE_OTHER: "Pré-version",
+}
+
+
+def version_nature(v) -> str:
+    """Nature d'une version d'après son numéro : générale, candidate, essai, autre.
+
+    Convention : « X.Y.Z » générale, « X.Y.Z-rc.N » candidate, « X.Y.Z-dev.N »
+    essai. Tout autre suffixe est une pré-version sans nature précise.
+    """
+    text = str(v or "").strip().split("+", 1)[0]
+    core, sep, pre = text.partition("-")
+    if try_parse_version_tuple(core) is None:
+        return NATURE_OTHER
+    if not sep:
+        return NATURE_GENERAL
+    head = pre.split(".", 1)[0].lower()
+    if re.fullmatch(r"rc\d*", head):
+        return NATURE_CANDIDATE
+    if re.fullmatch(r"dev\d*", head):
+        return NATURE_TRIAL
+    return NATURE_OTHER
+
+
+def nature_label(nature: str) -> str:
+    return _NATURE_LABELS.get(nature, _NATURE_LABELS[NATURE_OTHER])
+
+
+def is_prerelease(v) -> bool:
+    return version_nature(v) != NATURE_GENERAL
+
+
+PRERELEASE_ORDINARY_CODE = "prerelease_ordinary"
+
+
+def prerelease_campaign_message(v, app_env: str) -> str | None:
+    """Message si `v` est une pré-version qu'une campagne ordinaire pousserait en production.
+
+    Issue #106 : sur une instance de production, une candidate ou un essai se
+    diffuse par une campagne d'expérimentation, sur une cohorte. Une campagne
+    ordinaire la proposerait à tout poste en version antérieure : c'est
+    l'exception, elle demande une confirmation et laisse une trace.
+    """
+    if str(app_env or "").strip().lower() not in ("prod", "production"):
+        return None
+    if not is_prerelease(v):
+        return None
+    return (f"« {str(v).strip()} » est une pré-version ({nature_label(version_nature(v)).lower()}). "
+            "Sur cette instance de production, une campagne ordinaire la proposerait à tous les "
+            "postes en version antérieure. Préférez une expérimentation sur une cohorte, ou "
+            "confirmez ce déploiement.")

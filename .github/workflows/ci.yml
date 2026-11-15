@@ -86,6 +86,7 @@ jobs:
             tests/test_libreoffice_update_feed_pg.py \
             tests/test_admin_forms_pg.py \
             tests/test_package_bootstrap_pg.py \
+            tests/test_package_trust_pg.py \
             tests/test_plugin_installations_fk.py
 
   # ADR-0004 : l'image porte son journal (/app/version.json servi sur /__version__, format
