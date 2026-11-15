@@ -26,4 +26,10 @@ services:
     ports: ["18090:3001"]
     volumes: ["api-data:/data"]
     depends_on: [admin]
+  faux-github:   # sert out/github comme l'API des releases (scripts/faux_github.py)
+    image: dm-banc:local
+    command: ["python", "/srv/faux_github.py", "--dir", "/srv/releases", "--host", "0.0.0.0", "--port", "8765",
+              "--url-publique", "http://faux-github:8765"]
+    volumes: ["../faux_github.py:/srv/faux_github.py:ro", "./out/github:/srv/releases:ro"]
+    depends_on: [admin]
 volumes: {admin-data: {}, api-data: {}}

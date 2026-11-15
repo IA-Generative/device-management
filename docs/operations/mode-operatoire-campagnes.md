@@ -87,6 +87,57 @@ INSERT INTO artifacts (
 -- noter l'id retourné : <artifact_id>
 ```
 
+### 1.4 Tirer une version depuis GitHub
+
+Plutôt que de télécharger le paquet d'une release puis de le téléverser à la main, le DM peut
+relever lui-même les releases du dépôt du plugin et tirer celle qu'on lui désigne. **Rien n'est
+publié ni déployé automatiquement** : une version tirée arrive dans l'assistant « Nouvelle
+version », et la suite (publier, déployer, version d'essai) reste un geste de l'administrateur.
+
+**1. Déclarer la source** — fiche du plugin, onglet **Versions**, bloc « Versions disponibles sur
+GitHub » → « Déclarer une source GitHub » :
+
+| Champ | Exemple | Rôle |
+|---|---|---|
+| Dépôt | `IA-Generative/iassistant-matisse` | `organisation/depot` (une adresse complète est acceptée) |
+| Composant release-please | `IAssistant-tb60` | tags `IAssistant-tb60-vX.Y.Z` ; vide = tags `vX.Y.Z` |
+| Motif du fichier | `mirai-matisse-*.xpi` | nom du paquet dans la release ; sa signature `<fichier>.sig.json` est cherchée à côté |
+| Canal suivi | versions générales seulement | ou générales et candidates (`-rc.N`), ou toutes (`-dev.N` compris) |
+
+Le jeton d'accès (dépôt privé, ou limite de débit) ne se saisit pas ici : c'est une variable du
+serveur (`DM_GITHUB_TOKEN`, voir `docs/operations/developer-readme.md`).
+
+**2. Lire le relevé** — le worker interroge le dépôt toutes les 15 minutes (réglable) ; « Vérifier
+maintenant » lui demande de le faire sans attendre (pris en compte sous 15 secondes, la page se
+recharge d'elle-même). Chaque release du composant porte un état :
+
+| État | Sens |
+|---|---|
+| Disponible | importable ; une remarque signale un drapeau « pré-version » qui contredit le numéro, ou une signature absente |
+| Importée | cette version est déjà au catalogue |
+| Ignorée | hors du canal suivi, ou aucun fichier ne correspond au motif (la raison est écrite) |
+| Refusée | un import a été refusé par les contrôles d'envoi (signature, numéro discordant…) ; « Réessayer » après correction |
+
+C'est le **numéro de version** qui décide de la nature (générale, candidate, essai), pas le drapeau
+« pré-version » de GitHub.
+
+**3. Importer** — « Importer » télécharge le paquet et son `.sig.json`, puis ouvre l'assistant
+pré-rempli (version, notes de la release, signature). L'aperçu est celui d'un fichier choisi à la
+main : nature, origine vérifiée, adaptation de la configuration. Les contrôles sont les mêmes que
+pour un envoi manuel — un paquet refusé à la main est refusé au tirage. Après publication, la
+version indique « Tirée de GitHub » avec le tag, et l'artefact garde sa provenance
+(`artifacts.provenance.github` : dépôt, tag, fichier, adresse et date de la release).
+
+**Sans accès à GitHub** (site isolé, proxy de sortie qui refuse, délai dépassé, jeton refusé) : le
+bloc l'indique avec la cause, le relevé espace ses essais (30 min, 1 h, 2 h… plafonnés à 6 h) et
+n'écrit au journal qu'au changement d'état. **L'envoi manuel reste la voie** ; rien d'autre ne
+change. Mettre `DM_GITHUB_POLL_INTERVAL=0` coupe le relevé périodique sur un site sans sortie.
+
+> **Qui sort sur le réseau.** Le relevé périodique tourne dans le **worker** ; le téléchargement
+> d'un paquet à l'import part du composant d'**administration**. Les deux ont donc besoin du proxy
+> de sortie (variables `HTTPS_PROXY` / `NO_PROXY` habituelles) et, pour un dépôt privé, du jeton.
+> L'API publique ne contacte jamais GitHub.
+
 ---
 
 ## 2. Créer et gérer les cohortes

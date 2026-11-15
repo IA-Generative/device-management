@@ -223,6 +223,29 @@ Rollout complet 6 services : ~12s.
 | `KEYCLOAK_REALM` | `openwebui` |
 | `KEYCLOAK_CLIENT_ID` | `bootstrap-iassistant` |
 
+### Releases GitHub des plugins
+
+Le DM peut relever les releases du dépôt d'un plugin et en tirer les paquets (mode opératoire :
+`mode-operatoire-campagnes.md`, § 1.4). À poser sur le **worker** (relevé périodique) et sur
+l'**admin** (téléchargement à l'import), avec les variables de proxy habituelles.
+
+| Variable | Defaut | Role |
+|----------|--------|------|
+| `DM_GITHUB_API_URL` | `https://api.github.com` | Adresse de l'API (miroir, ou `scripts/faux_github.py` sur un banc) |
+| `DM_GITHUB_POLL_INTERVAL` | `900` | Secondes entre deux releves ; `0` = releve periodique desactive (« Verifier maintenant » reste servi) |
+| `DM_GITHUB_TOKEN` | *(vide)* | Jeton de lecture, facultatif pour un depot public. Secret : jamais en base, jamais renvoye ni journalise |
+
+Sans jeton, GitHub limite a 60 appels par heure et par adresse de sortie : un depot riche en
+releases, releve pour plusieurs plugins, peut l'atteindre. Le DM le dit sur la fiche et espace ses
+essais.
+
+Banc local sans acces a GitHub :
+
+```bash
+python3 scripts/faux_github.py --dir ./releases --port 8765   # <org>/<depot>/<tag>/<fichiers>
+export DM_GITHUB_API_URL=http://localhost:8765
+```
+
 ### LLM (catalogue IA)
 
 | Variable | Description |
