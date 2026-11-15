@@ -437,6 +437,16 @@
           </label>
         </div>
 
+        <div class="dm-form-row">
+          <label style="display:flex;gap:0.5rem;align-items:flex-start;font-size:0.9rem;">
+            <input type="checkbox" name="restart_required" id="nv-restart-required" value="1">
+            <span>Demander le <strong>redemarrage du logiciel</strong> apres l'installation. Le plugin le propose a
+            l'utilisateur (« maintenant » ou « plus tard »), il ne force rien. A reserver aux versions qui en ont
+            besoin : une mise a jour installee a chaud garde des restes de l'ancienne version jusqu'au redemarrage.
+            <br><em>Sans effet sur un poste dont la version installee ne connait pas encore cette demande.</em></span>
+          </label>
+        </div>
+
         {# Ce qui va se passer, avant de valider (issue #132) #}
         <div id="nv-preview" aria-live="polite"
              style="border-left:4px solid #ccc;background:#fff;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.9rem;">
@@ -558,7 +568,7 @@
           {% for d in v.diffusion %}
           <div>
             <a href="/admin/campaigns/{{ d.campaign_id }}">{% if d.is_experiment %}Essai{% else %}Campagne ordinaire{% endif %}</a>{% if d.status == 'paused' %} (en pause){% endif %} :
-            {% if d.cohort_name %}cohorte « {{ d.cohort_name }} »{% else %}tout le parc{% endif %}
+            {% if d.cohort_name %}cohorte « {{ d.cohort_name }} »{% else %}tout le parc{% endif %}{% if d.restart_required %}, redemarrage demande{% endif %}
           </div>
           {% endfor %}
           {% if not v.diffusion %}

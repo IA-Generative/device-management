@@ -475,6 +475,7 @@ liste commune.
 | `deadline_at` | ISO8601 ou `null` | si non null : forcer update avant cette date |
 | `campaign_id` | int | pour le tracking dans `campaign_device_status` |
 | `plugin_slug` | slug ou `null` | plugin résolu par le serveur ; `null` si le device n'a pas pu être rattaché à une fiche catalogue |
+| `restart_required` | `true`, ou clé absente | le déploiement demande le redémarrage du logiciel hôte après l'installation : le plugin le propose à l'utilisateur (« maintenant » / « plus tard »), sans le forcer. Seul `true` est émis. Sans effet si la version installée ne connaît pas ce champ |
 
 **Formes d'`artifact_url`** — trois formes possibles, toutes des chemins relatifs à la base
 publique. Le client les suit sans les interpréter (la 1re et la 2e redirigent en 302) :

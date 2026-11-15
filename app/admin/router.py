@@ -2481,6 +2481,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                     _v["diffusion"].append({
                         "campaign_id": d["id"], "status": d["status"],
                         "is_experiment": bool(d.get("is_experiment")),
+                        "restart_required": bool(d.get("restart_required")),
                         "cohort_id": d.get("target_cohort_id"), "cohort_name": d.get("cohort_name"),
                         "cohort_type": d.get("cohort_type"),
                     })
@@ -3069,6 +3070,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         confirm_ref = body.get("confirm_ref", False)
         adapt_config = body.get("adapt_config", True)
         confirm_prerelease = body.get("confirm_prerelease", False)
+        restart_required = body.get("restart_required", False)
         build_signature = await _signature_input(body.get("signature"))
         campaign_kind = body.get("campaign_kind", "ordinary")
         upload_id = body.get("upload_id", "")
@@ -3102,6 +3104,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         confirm_ref = form.get("confirm_ref", "")
         adapt_config = form.get("adapt_config", "1")
         confirm_prerelease = form.get("confirm_prerelease", "")
+        restart_required = form.get("restart_required", "")
         build_signature = await _signature_input(form.get("signature"))
         campaign_kind = form.get("campaign_kind", "ordinary")
         binary = form.get("binary")
@@ -3359,14 +3362,16 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 )
                 # Set environment and plugin_id on campaign
                 cur.execute(
-                    "UPDATE campaigns SET environment = %s, plugin_id = %s, version_id = %s WHERE id = %s",
-                    (environment, plugin_id, vid, campaign_id),
+                    "UPDATE campaigns SET environment = %s, plugin_id = %s, version_id = %s, "
+                    "restart_required = %s WHERE id = %s",
+                    (environment, plugin_id, vid, _form_truthy(restart_required), campaign_id),
                 )
                 audit_log(cur, actor=actor, action="deploy.create",
                           resource_type="campaign", resource_id=str(campaign_id),
                           payload={"plugin_id": plugin_id, "version": version,
                                    "environment": environment, "strategy": deploy_strategy,
                                    "is_experiment": experiment_campaign,
+                                   "restart_required": _form_truthy(restart_required),
                                    "prerelease_confirmed": bool(prerelease_warning)},
                           ip=request.client.host if request.client else None)
 
