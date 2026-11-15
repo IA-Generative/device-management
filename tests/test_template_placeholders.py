@@ -34,3 +34,11 @@ def test_governed_secrets_and_plain_settings_are_still_resolved(mod, monkeypatch
     assert mod._substitute_env_in_str("${{LLM_API_TOKEN}}|${{KEYCLOAK_CLIENT_ID}}|${{UN_REGLAGE_ORDINAIRE}}") \
         == "jeton-llm|client|valeur"
     assert mod._substitute_env_in_str("${{INCONNUE_DU_SERVEUR}}") == ""
+
+
+def test_telemetry_tokens_of_the_documented_templates_are_still_resolved(mod, monkeypatch):
+    """Le chart les décrit comme des repères de gabarit : les vider couperait la télémétrie des postes."""
+    monkeypatch.setenv("TELEMETRY_KEY", "cle-de-gabarit")
+    monkeypatch.setenv("TELEMETRY_SALT", "sel-de-gabarit")
+    assert mod._substitute_env_in_str("${{TELEMETRY_KEY}}|${{TELEMETRY_SALT}}") == "cle-de-gabarit|sel-de-gabarit"
+    assert mod._substitute_env_in_str("${TELEMETRY_SALT}") == "sel-de-gabarit"
