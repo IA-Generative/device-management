@@ -124,14 +124,26 @@ Durées de vie, rotation et règles de renouvellement :
 
 ### Règle de priorité d'identification
 
+L'adresse de l'appelant décide des cohortes, donc des campagnes, des flags, des
+communications et de la liste d'attente. Sur `/config` :
+
+1. **Paire relais valide** (`X-Relay-Client` / `X-Relay-Key`) : l'adresse est celle du jeton
+   présenté à l'enrôlement (`relay_clients.email`). Elle est vérifiée et prime toujours.
+2. **Sinon**, l'en-tête `X-User-Email` sert de repli. Rien ne le vérifie : un poste peut y
+   déclarer l'adresse d'un autre.
+3. **`DM_REQUIRE_VERIFIED_EMAIL=true`** retire ce repli : un appelant sans paire relais n'a pas
+   d'adresse, et n'entre dans aucune cohorte par adresse.
+
+Les adresses se comparent sans tenir compte de la casse.
+
 ```mermaid
 flowchart LR
-    A[Requête reçue] --> B{JWT présent ?}
-    B -- oui --> C[email = JWT.email\ngroups = JWT.groups]
-    B -- non --> D{Relay auth ?}
-    D -- oui --> E[email = relay_clients.email\ngroups = vide]
-    D -- non --> F[email = null\ngroups = vide\nconfig non secrète]
-    C --> G[Résolution cohortes]
+    A[Requête /config] --> B{Paire relais valide ?}
+    B -- oui --> C[adresse = relay_clients.email\nvérifiée]
+    B -- non --> D{DM_REQUIRE_VERIFIED_EMAIL ?}
+    D -- non --> E[adresse = X-User-Email\nnon vérifiée]
+    D -- oui --> F[pas d'adresse]
+    C --> G[Résolution des cohortes]
     E --> G
     F --> G
 ```
