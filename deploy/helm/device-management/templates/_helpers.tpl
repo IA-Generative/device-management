@@ -266,6 +266,39 @@ Usage: {{ include "device-management.cnpgSuperuserAdminUrlOverride" . }}
 {{- end -}}
 
 {{/*
+DATABASE_URL/DATABASE_ADMIN_URL for the components that run the FastAPI app
+(api/admin/telemetryRelay/llmProxy). Same values as
+device-management.databaseEnv followed by
+device-management.cnpgSuperuserAdminUrlOverride, but each variable is emitted
+ONCE: with the superuser stopgap active, DATABASE_ADMIN_URL points straight at
+CNPG's `<cluster>-superuser` Secret instead of being declared twice and
+relying on "the last entry wins". A duplicated name in an env: list is
+accepted by Kubernetes but breaks server-side apply and strategic merge
+patches (Argo CD reports a permanent diff or refuses to sync after a manual
+patch of that variable).
+Never use this on the migration Job or the worker: they keep
+device-management.databaseEnv (application role).
+Usage: {{ include "device-management.databaseEnvForApp" . }}
+*/}}
+{{- define "device-management.databaseEnvForApp" -}}
+{{- if and .Values.postgres.cnpg.enabled .Values.postgres.cnpg.temporaryStartupBootstrapNeedsSuperuser -}}
+{{- $cluster := include "device-management.cnpgClusterName" . -}}
+- name: DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ $cluster }}-app
+      key: uri
+- name: DATABASE_ADMIN_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ $cluster }}-superuser
+      key: uri
+{{- else -}}
+{{- include "device-management.databaseEnv" . -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Maps an ingress path's `service` key (api|admin|telemetryRelay|llmProxy,
 matching the values.yaml top-level component keys) to the kebab-case
 component suffix used in resource names (api|admin|telemetry-relay|llm-proxy).
