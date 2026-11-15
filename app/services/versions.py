@@ -175,7 +175,9 @@ def prerelease_campaign_message(v, app_env: str) -> str | None:
 # Ordre obtenu : 0.3.1 < 0.4.0-dev.7 (0.3.99999.1.7) < 0.4.0-rc.12 (0.3.99999.2.12) < 0.4.0.
 _LO_MAX = 99999
 _LO_RANK = {NATURE_TRIAL: 1, NATURE_CANDIDATE: 2}
-_LO_PRE_RE = re.compile(r"(?:rc|dev)\.?(\d+)", re.IGNORECASE)
+# La forme de la convention seulement (« rc.N », « dev.N ») : un libellé plus ancien
+# comme « 1.3.0-rc1 » continue d'être annoncé tel quel, comme son paquet le porte.
+_LO_PRE_RE = re.compile(r"(?:rc|dev)\.(\d+)", re.IGNORECASE)
 
 
 def libreoffice_numeric_version(v) -> str | None:

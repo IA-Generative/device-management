@@ -418,6 +418,7 @@ def test_a_host_that_only_takes_numeric_versions_is_noted_not_refused():
     ("0.4.0", "0.4.0"), ("0.4.0-rc.12", "0.3.99999.2.12"), ("0.4.0-dev.7", "0.3.99999.1.7"),
     ("0.3.1-rc.5", "0.3.0.2.5"), ("1.0.0-rc.1", "0.99999.99999.2.1"),
     ("0.0.0-rc.1", None), ("0.4.0-test3", None), ("0.23.0.154", None), ("", None),
+    ("1.3.0-rc1", None),   # libellé hors convention : annoncé tel quel
 ])
 def test_libreoffice_numeric_version(version, numeric):
     from app.services.versions import libreoffice_numeric_version
