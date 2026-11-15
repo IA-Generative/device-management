@@ -1,0 +1,29 @@
+# Banc d'essai « chaîne de confiance des paquets » : topologie de production en petit.
+# admin = seul composant qui importe et détient la clé de signature ; api = sert, sans clé,
+# avec son propre volume (cache alimenté depuis admin).
+name: dm-banc
+services:
+  pg:
+    image: postgres:18-alpine
+    environment: {POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: bootstrap}
+    healthcheck: {test: ["CMD", "pg_isready", "-U", "postgres"], interval: 2s, timeout: 3s, retries: 20}
+  droits:   # les volumes nommés naissent en root ; l'image tourne en uid 10001
+    image: busybox:1.37
+    command: ["sh", "-c", "chown -R 10001:10001 /a /b"]
+    volumes: ["admin-data:/a", "api-data:/b"]
+  admin:
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile}
+    image: dm-banc:local
+    env_file: [common.env, admin.env]
+    environment: {DM_RUNTIME_MODE: all, DM_DEV_AUTOLOGIN: "1"}
+    ports: ["18091:3001"]
+    volumes: ["admin-data:/data"]
+    depends_on: {pg: {condition: service_healthy}, droits: {condition: service_completed_successfully}}
+  api:
+    image: dm-banc:local
+    env_file: [common.env]
+    environment: {DM_RUNTIME_MODE: api, DM_ADMIN_INTERNAL_URL: "http://admin:3001"}
+    ports: ["18090:3001"]
+    volumes: ["api-data:/data"]
+    depends_on: [admin]
+volumes: {admin-data: {}, api-data: {}}
