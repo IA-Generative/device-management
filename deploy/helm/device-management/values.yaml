@@ -732,6 +732,39 @@ config:
 
   # S3-backed storage for enrollment payloads and distributed binaries
   # (default since horizontal scaling requires no RWO PVC on api/worker).
+  # Chaîne de confiance des paquets de plugin (ADR-0006). Tout est inactif par
+  # défaut : sans réglage, l'import et la directive de mise à jour sont
+  # inchangés.
+  packageTrust:
+    # DM_PACKAGE_SIGNATURE_POLICY. "off" (défaut) : la signature d'origine d'un
+    # paquet n'est pas contrôlée. "warn" : contrôlée si elle est fournie,
+    # résultat affiché et tracé. "require" : un paquet sans signature d'origine
+    # valide est refusé, téléversement manuel compris.
+    signaturePolicy: "off"
+    # DM_PACKAGE_SIGNING_REQUIRED. true : cette instance ne sert que des paquets
+    # qu'elle a signés ; un composant qui ne détient pas la clé refuse l'import
+    # au lieu de stocker un paquet non signé. À poser avec la clé ci-dessous.
+    signingRequired: false
+    # DM_PACKAGE_ALLOWED_REFS. Références Git acceptées sans confirmation, en
+    # motifs séparés par des virgules (ex. "refs/heads/main,refs/tags/*").
+    # Vide : pas de restriction. Hors liste : confirmation tracée à l'import.
+    allowedRefs: ""
+    # DM_PACKAGE_ALLOWED_REPOSITORIES. Dépôts acceptés, mêmes règles
+    # (ex. "IA-Generative/*").
+    allowedRepositories: ""
+    # DM_PACKAGE_PUBLISHER_KEYS. Clés PUBLIQUES (PEM, P-256) des chaînes de
+    # build dont les paquets sont acceptés. Plusieurs blocs PEM à la suite.
+    publisherKeys: ""
+    # DM_PACKAGE_TRUST_ROOTS. Clés PUBLIQUES (PEM, P-256) de la racine de
+    # l'organisation, déposées dans chaque paquet servi (dm-trust.json). Vide :
+    # l'ancre est la clé publique de ce DM (mode simple, sans délégation).
+    trustRoots: ""
+    # La clé PRIVÉE de signature et la délégation ne se mettent pas ici : ce
+    # sont deux clés du Secret de l'application, lues par le seul composant
+    # d'administration : DM_PACKAGE_SIGNING_KEY (PEM) et
+    # DM_PACKAGE_SIGNING_DELEGATION (JSON produit par
+    # scripts/package-signing/dm-package-keys.py delegate).
+
   storage:
     # DM_STORE_ENROLL_LOCALLY. Optional, default false (S3 mode). Set true
     # only for the local/no-S3 fallback (mounts an emptyDir, see

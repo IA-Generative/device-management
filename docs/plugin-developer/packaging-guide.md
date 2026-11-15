@@ -467,6 +467,36 @@ Pour la distribution via DM, le `.crx` ou `.zip` est identique au format Chrome.
 
 ---
 
+## Nom du fichier, numéro de version, signature
+
+**Un numéro, partout le même.** Le fichier publié s'appelle `<slug>-X.Y.Z[-rc.N|-dev.N].<ext>`,
+et ce numéro est aussi celui du manifeste que lit le logiciel hôte (`install.rdf`,
+`manifest.json`, `description.xml`) et de `dm-manifest.json`. Le DM refuse un paquet dont le
+manifeste natif annonce un autre numéro que celui sous lequel on l'enregistre.
+
+| Nature | Numéro | Branche d'origine |
+|---|---|---|
+| Générale | `X.Y.Z` | `main` |
+| Candidate | `X.Y.Z-rc.N` | `develop` |
+| Essai | `X.Y.Z-dev.N` | `exp/<sujet>` |
+
+`X.Y.Z` est la prochaine version de `main` ; `N` est un numéro qui ne se répète pas dans le
+dépôt (le numéro du run de CI). Plus d'environnement dans le nom : le paquet est **neutre**.
+
+**Un paquet neutre.** Aucune valeur d'organisation : la liste de DM porte une adresse
+d'exemple (`https://dm.example.invalid`), `dm-config.json` des repères `${{VAR}}` ou rien pour
+les réglages que le DM gouverne. Chaque DM y inscrit ses valeurs à l'import ; le même fichier
+sert toutes les instances.
+
+**Une signature à côté du paquet.** La chaîne de build publie `<fichier>.sig.json`, au format
+de l'[ADR-0006](../architecture/adr-0006-chaine-confiance-paquets.md) (`kind: "build"`). Le
+DM la vérifie à l'import et, selon son réglage, refuse un paquet qui n'en a pas. Pour signer
+et vérifier à la main : `scripts/package-signing/dm-package-keys.py sign-build` et `verify`.
+
+**Un identifiant d'extension stable.** Le DM signe le paquet servi avec l'identifiant qu'il y
+lit (`em:id`, `gecko.id`, `identifier`) ; le plugin installé le compare au sien. Le changer
+entre deux versions casse la mise à jour.
+
 ## Upload dans Device Management
 
 ### Via l'admin UI

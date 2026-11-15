@@ -88,6 +88,21 @@ spec:
                   name: {{ include "device-management.secretName" . }}
                   key: DM_RELAY_SECRET_PEPPER
                   optional: true
+            # Signature des paquets servis (ADR-0006). Ce composant est le seul à
+            # importer, donc le seul à détenir la clé : les pods de service ne
+            # peuvent que relayer une enveloppe déjà produite.
+            - name: DM_PACKAGE_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_PACKAGE_SIGNING_KEY
+                  optional: true
+            - name: DM_PACKAGE_SIGNING_DELEGATION
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_PACKAGE_SIGNING_DELEGATION
+                  optional: true
             # LLM (debug page).
             - name: LLM_API_TOKEN
               valueFrom:

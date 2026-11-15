@@ -543,6 +543,19 @@ curl -X POST -H "x-admin-token: $DM_QUEUE_ADMIN_TOKEN" https://<host>/api/files/
 
 ---
 
+## 9 bis. Natures de version
+
+**Trois natures, lues dans le numéro.** `X.Y.Z` est une version générale, `X.Y.Z-rc.N` une
+candidate, `X.Y.Z-dev.N` un essai. La fiche du plugin l'affiche pour chaque version, avec
+l'origine du paquet et qui la reçoit. Une candidate ou un essai se diffuse par une campagne
+d'expérimentation sur une cohorte ; sur une instance de production, une campagne ordinaire
+qui viserait une pré-version demande une confirmation.
+
+**Signature et origine des paquets** : voir
+[chaine-confiance-paquets.md](chaine-confiance-paquets.md).
+
+---
+
 ## 10. Diagnostics rapides
 
 ### Plugin ne reçoit pas l'update

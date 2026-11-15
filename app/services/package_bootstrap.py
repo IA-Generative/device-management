@@ -311,16 +311,29 @@ def _replacements(zf: zipfile.ZipFile, carriers: list[dict], urls: list[str]) ->
     return out, notes
 
 
-def _rebuild(src: zipfile.ZipFile, replacements: dict[str, bytes]) -> bytes:
+def _rebuild(src: zipfile.ZipFile, replacements: dict[str, bytes],
+             extra_files: dict[str, bytes] | None = None) -> bytes:
+    """Archive servie : entrées retirées, remplacées, et `extra_files` déposés à la racine."""
+    extra = dict(extra_files or {})
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
         for item in src.infolist():
             if item.filename.lower() in STRIP_NAMES:
                 continue
-            if item.filename in replacements:
+            if item.filename in extra:
+                # Un fichier du même nom venu du paquet ne fait jamais foi : celui du DM le remplace.
+                dst.writestr(item, extra.pop(item.filename))
+            elif item.filename in replacements:
                 dst.writestr(item, replacements[item.filename])
             else:
                 dst.writestr(item, src.read(item.filename))
+        for name, content in extra.items():
+            # Date fixe : réimporter le même paquet doit redonner les mêmes octets,
+            # donc la même empreinte (sinon « ce numéro existe avec un autre binaire »).
+            entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            entry.external_attr = 0o644 << 16
+            dst.writestr(entry, content)
     return buf.getvalue()
 
 
@@ -328,13 +341,19 @@ def _join(urls) -> str:
     return ", ".join(urls) if urls else "aucune adresse"
 
 
-def prepare(data: bytes, *, keep: bool = False, instance: list[str] | None = None) -> tuple[bytes, dict]:
+def prepare(data: bytes, *, keep: bool = False, instance: list[str] | None = None,
+            extra_files: dict[str, bytes] | None = None) -> tuple[bytes, dict]:
     """Paquet tel qu'il sera stocké et servi, et relevé de sa liste de DM.
 
     Retire dm-config.json / dm-manifest.json, puis inscrit la liste de
     l'instance si celle du paquet diffère. Lève ``zipfile.BadZipFile`` si
     l'archive est illisible, ``SignedPackageMismatch`` pour un paquet signé
     dont la liste diffère (sauf ``keep``).
+
+    ``extra_files`` : fichiers que le DM dépose à la racine de l'archive (ancre
+    de confiance, ADR-0006). Ils ne sont pas déposés dans une archive à
+    signature embarquée, qu'on ne peut pas modifier sans la casser.
+    ``info["changed_files"]`` liste ce que le DM a retiré, réécrit ou ajouté.
     """
     instance = clean_urls(instance if instance is not None else instance_urls())
     src = zipfile.ZipFile(io.BytesIO(data))
@@ -390,7 +409,10 @@ def prepare(data: bytes, *, keep: bool = False, instance: list[str] | None = Non
         info["message"] = (
             f"Le paquet envoyé nommait {_join(package_urls)}. Sa liste de DM a été réécrite : le "
             f"paquet servi envoie les postes vers {_join(instance)}.")
-    return _rebuild(src, replacements), info
+    extra = {} if signed else dict(extra_files or {})
+    stripped = [n for n in src.namelist() if n.lower() in STRIP_NAMES]
+    info["changed_files"] = sorted(set(stripped) | set(replacements) | set(extra))
+    return _rebuild(src, replacements, extra), info
 
 
 _FILE_MEMO: dict[str, tuple[tuple, dict]] = {}

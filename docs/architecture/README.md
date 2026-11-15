@@ -13,6 +13,7 @@ Les ADR (Architecture Decision Records) consignent les décisions structurantes 
 | [adr-0003-modele-embedding.md](adr-0003-modele-embedding.md) | Modèle d'embedding de la recherche RAG du plugin (0.9.1) : lequel, et par quel canal il est servi et désigné | Accepté |
 | [adr-0004-branches-experimentation.md](adr-0004-branches-experimentation.md) | Branches d'expérimentation (0.9.14) : campagnes coexistantes par cohorte + mode PIN (push), canal `experimental`/`tag`/`hypotheses` au catalogue (pull), invalidation du cache binaire | En vigueur |
 | [adr-0005-build-in-cluster.md](adr-0005-build-in-cluster.md) | Build in-cluster (0.9.15) : BuildKit rootless remplace Kaniko, archivé — un seul moteur pour les deux voies de build, pod sans root, cache partagé avec buildx | En vigueur |
+| [adr-0006-chaine-confiance-paquets.md](adr-0006-chaine-confiance-paquets.md) | Chaîne de confiance des paquets : build neutre, signature d'origine vérifiée à l'import, paquet adapté puis signé par le DM, vérification par le plugin avant installation | Proposé |
 | [adr-dgx-deployment.md](adr-dgx-deployment.md) | Stratégie de déploiement on-premise DGX (proxy, WAF, registry mirror, secrets) | Accepté |
 
 **Par où commencer** : lire [adr-0001](adr-0001-vue-densemble.md) pour la vue d'ensemble, puis
