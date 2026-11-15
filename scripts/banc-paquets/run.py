@@ -234,5 +234,31 @@ if c:
     z = zipfile.ZipFile(io.BytesIO(c["pkg"]))
     check("OXT : config et flux natif réécrits", "localhost:18090" in z.read("config.default.json").decode() and "localhost:18090" in z.read("description.xml").decode())
 
+section("8. Import depuis les releases GitHub (faux serveur)")
+source = {"repository": "IA-Generative/banc-plugin", "component": "banc", "asset_pattern": "banc-tb-*.xpi", "channel": "general"}
+psql(f"UPDATE plugins SET github_source = '{json.dumps(source)}'::jsonb WHERE id = {int(PID)}")
+r = httpx.post(f"{ADMIN}/admin/catalog/{PID}/github/check", follow_redirects=False, timeout=30)
+check("« Vérifier maintenant » accepté", r.status_code in (200, 303), f"{r.status_code} {r.text[:200]}")
+for _ in range(40):
+    if psql(f"SELECT count(*) FROM plugin_github_releases WHERE plugin_id = {int(PID)}") == "2":
+        break
+    __import__("time").sleep(1)
+rows = dict(line.split("|") for line in psql(
+    f"SELECT version, state FROM plugin_github_releases WHERE plugin_id = {int(PID)} ORDER BY version").splitlines())
+check("relevé par le worker : générale disponible, candidate hors canal", rows == {"0.27.0": "available", "0.27.1-rc.5": "ignored"}, str(rows))
+r = httpx.post(f"{ADMIN}/admin/catalog/{PID}/github/import", json={"tag": "banc-v0.27.0"}, timeout=60)
+j = r.json() if r.status_code == 200 else {}
+check("paquet et signature tirés côté serveur", r.status_code == 200 and j.get("upload_id") and j.get("signature") and not j.get("refusal"), r.text[:300])
+r = httpx.post(f"{ADMIN}/admin/catalog/{PID}/versions/upload", follow_redirects=False, timeout=60,
+               json={"version": "0.27.0", "upload_id": j.get("upload_id"), "signature": j.get("signature"), "action": "publish_only"})
+check("envoi par l'assistant avec le dépôt tiré de GitHub", r.status_code == 303, f"{r.status_code} {r.text[:300]}")
+prov = json.loads(psql("SELECT provenance FROM artifacts WHERE version = '0.27.0'") or "{}")
+check("provenance : origine vérifiée et release GitHub", (prov.get("build") or {}).get("status") == "verified"
+      and (prov.get("github") or {}).get("tag") == "banc-v0.27.0", json.dumps(prov)[:300])
+check("relevé : release marquée importée", psql(
+    f"SELECT state FROM plugin_github_releases WHERE plugin_id = {int(PID)} AND version = '0.27.0'") == "imported")
+check("aucune campagne créée par l'import", psql(
+    "SELECT count(*) FROM campaigns c JOIN artifacts a ON a.id = c.artifact_id WHERE a.version = '0.27.0'") == "0")
+
 print(f"\n{sum(1 for _, ok, _ in RES if ok)}/{len(RES)} contrôles passés")
 sys.exit(0 if all(ok for _, ok, _ in RES) else 1)

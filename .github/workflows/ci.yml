@@ -87,7 +87,8 @@ jobs:
             tests/test_admin_forms_pg.py \
             tests/test_package_bootstrap_pg.py \
             tests/test_package_trust_pg.py \
-            tests/test_plugin_installations_fk.py
+            tests/test_plugin_installations_fk.py \
+            tests/test_github_releases_pg.py
 
   # ADR-0004 : l'image porte son journal (/app/version.json servi sur /__version__, format
   # Dockerflow). Ce job construit l'image sans la pousser et vérifie qu'elle dit la même

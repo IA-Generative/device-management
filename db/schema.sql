@@ -142,6 +142,9 @@ CREATE TABLE IF NOT EXISTS plugins (
 );
 -- Annoncer la version candidate au catalogue public (bloc « Préversion »).
 ALTER TABLE plugins ADD COLUMN IF NOT EXISTS show_candidate BOOLEAN NOT NULL DEFAULT false;
+-- Source GitHub des paquets (issue #108) : {repository, component, asset_pattern, channel}.
+-- Le jeton d'accès n'est jamais en base (DM_GITHUB_TOKEN, environnement).
+ALTER TABLE plugins ADD COLUMN IF NOT EXISTS github_source JSONB;
 -- Slug must be unique among non-removed plugins (allows re-using a slug after deletion)
 CREATE UNIQUE INDEX IF NOT EXISTS uq_plugins_slug_active ON plugins(slug) WHERE status <> 'removed';
 CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins(status);
@@ -181,6 +184,44 @@ CREATE TABLE IF NOT EXISTS plugin_waitlist (
     UNIQUE (plugin_id, email)
 );
 CREATE INDEX IF NOT EXISTS idx_wl ON plugin_waitlist(plugin_id, status);
+
+-- Relevé des releases GitHub d'un plugin (issue #108), tenu par le worker.
+-- state : available (importable), imported (déjà au catalogue), refused
+-- (import refusé, raison dans reason), ignored (hors canal, sans artefact…).
+CREATE TABLE IF NOT EXISTS plugin_github_releases (
+    id BIGSERIAL PRIMARY KEY,
+    plugin_id INT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+    tag VARCHAR(200) NOT NULL,
+    version VARCHAR(100) NOT NULL,
+    prerelease BOOLEAN NOT NULL DEFAULT false,
+    nature VARCHAR(20) NOT NULL DEFAULT 'other',
+    asset_name TEXT,
+    asset_api_url TEXT,
+    signature_api_url TEXT,
+    release_url TEXT,
+    release_notes TEXT,
+    published_at TIMESTAMPTZ,
+    state VARCHAR(20) NOT NULL DEFAULT 'available'
+        CHECK (state IN ('available','imported','refused','ignored')),
+    reason TEXT,
+    checked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (plugin_id, tag)
+);
+
+-- État du relevé par plugin : dernier essai, dernier succès, erreur lisible,
+-- compteur d'échecs (espace les essais), demande « Vérifier maintenant »
+-- déposée par l'administration et relevée par le worker.
+CREATE TABLE IF NOT EXISTS plugin_github_state (
+    plugin_id INT PRIMARY KEY REFERENCES plugins(id) ON DELETE CASCADE,
+    checked_at TIMESTAMPTZ,
+    succeeded_at TIMESTAMPTZ,
+    status VARCHAR(20),
+    error_code VARCHAR(40),
+    message TEXT,
+    failures INT NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ,
+    requested_at TIMESTAMPTZ
+);
 
 CREATE TABLE IF NOT EXISTS alias_access_log (
     id BIGSERIAL PRIMARY KEY,

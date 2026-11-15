@@ -380,9 +380,10 @@ def split_info(info: dict | None) -> tuple[dict | None, dict | None, dict | None
     """(relevé de la liste de DM, enveloppe du paquet servi, provenance) pour le stockage."""
     if not info:
         return None, None, None
+    # `github` : release dont le paquet a été tiré (issue #108), posée par la route d'envoi.
     provenance = {k: info[k] for k in ("nature", "upstream", "build", "versions",
-                                       "changed_files", "trust_anchor", "config") if k in info}
+                                       "changed_files", "trust_anchor", "config", "github") if k in info}
     bootstrap = {k: v for k, v in info.items()
                  if k not in ("signature", "upstream", "build", "versions", "nature",
-                              "trust_anchor", "config")}
+                              "trust_anchor", "config", "github")}
     return bootstrap, info.get("signature"), provenance or None
