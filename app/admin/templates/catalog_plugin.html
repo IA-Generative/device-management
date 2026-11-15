@@ -949,11 +949,13 @@ async function nvSubmit(action) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
       credentials: 'same-origin',
-      redirect: 'manual',
+      redirect: 'follow',
     });
 
-    if (resp.type === 'opaqueredirect' || resp.status === 303 || resp.status === 302) {
-      window.location.href = resp.headers.get('Location') || window.location.href;
+    // Redirection suivie : resp.url est la page d'arrivee (onglet, bandeau de retour).
+    // En 'manual' elle etait opaque et la page se rechargeait sur place.
+    if (resp.redirected) {
+      window.location.href = resp.url;
     } else if (resp.ok) {
       window.location.reload();
     } else {

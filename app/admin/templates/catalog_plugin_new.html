@@ -649,12 +649,13 @@ document.getElementById('catalog-form').addEventListener('submit', async functio
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
       credentials: 'same-origin',
-      redirect: 'manual',
+      redirect: 'follow',
     });
 
-    if (resp.type === 'opaqueredirect' || resp.status === 303 || resp.status === 302) {
-      const location = resp.headers.get('Location') || '/admin/catalog';
-      window.location.href = location;
+    // Redirection suivie : resp.url est la fiche du plugin cree. En 'manual' elle
+    // etait opaque, et l'on retombait toujours sur la liste du catalogue.
+    if (resp.redirected) {
+      window.location.href = resp.url;
     } else if (resp.ok) {
       window.location.href = '/admin/catalog';
     } else {
