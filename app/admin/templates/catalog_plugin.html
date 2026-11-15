@@ -220,6 +220,8 @@
 
       {# Step 1: Upload #}
       <div id="nv-step-1">
+        {# Paquet tire d'une release GitHub (issue #108) : il remplace le fichier a choisir #}
+        <div id="nv-github-banner" class="dm-flash dm-flash--success" style="display:none;margin-bottom:0.75rem;"></div>
         <div class="dm-form-row">
           <label class="dm-label">Fichier du plugin (.oxt, .xpi, .crx)</label>
           <input type="file" name="binary" required class="dm-input" accept=".oxt,.xpi,.crx" id="nv-file-input">
@@ -486,6 +488,144 @@
     <button class="dm-btn dm-btn--secondary dm-btn--sm">{% if plugin.show_candidate %}Ne plus l'annoncer{% else %}L'annoncer a tous{% endif %}</button>
   </form>
 
+  {# ── Versions disponibles sur GitHub (issue #108) : releve tenu par le worker ── #}
+  {% if github is not none %}
+  {% set gh_state = github.state %}
+  {% set gh_notice = request.query_params.get('github') %}
+  {% set gh_failed = gh_state and gh_state.status == 'error' %}
+  <details id="github-releases" {% if github.new_count or gh_notice %}open{% endif %}
+           style="border:1px solid #e5e5e5;border-radius:8px;padding:0.75rem 1rem;margin-bottom:1rem;">
+    <summary style="cursor:pointer;font-weight:600;">
+      Versions disponibles sur GitHub
+      {% if not github.source %}<span style="font-weight:400;color:#666;">— aucune source declaree</span>
+      {% elif github.new_count %}<span class="dm-badge dm-badge--info">{{ github.new_count }} nouvelle(s)</span>
+      {% elif gh_failed %}<span class="dm-badge dm-badge--warning">releve en echec</span>
+      {% else %}<span style="font-weight:400;color:#666;">— rien de nouveau</span>{% endif %}
+    </summary>
+
+    {% if github.source_error %}
+    <div class="dm-flash dm-flash--error" style="margin:0.75rem 0;">Source GitHub invalide : {{ github.source_error }}</div>
+    {% endif %}
+
+    {% if github.source %}
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;margin:0.75rem 0;font-size:0.85rem;">
+      <div>
+        <div>
+          Depot <code>{{ github.source.repository }}</code>{% if github.source.component %}, composant <code>{{ github.source.component }}</code>{% endif %},
+          fichier <code>{{ github.source.asset_pattern }}</code>,
+          canal : {% for c in github.channels if c.id == github.source.channel %}{{ c.label }}{% endfor %}.
+        </div>
+        <div style="color:#666;margin-top:0.25rem;" id="github-last-check">
+          Derniere verification : {{ timeago(gh_state.checked_at) if gh_state and gh_state.checked_at else 'jamais' }}{% if gh_failed and gh_state.succeeded_at %} (dernier releve reussi : {{ timeago(gh_state.succeeded_at) }}){% endif %}.
+          {% if github.poll_interval %}Releve automatique toutes les {{ (github.poll_interval / 60) | round | int }} min.{% else %}Releve automatique desactive sur cette instance.{% endif %}
+          Jeton d'acces : {% if github.token %}fourni a cette instance{% else %}aucun (depot public seulement){% endif %}.
+        </div>
+      </div>
+      <form method="post" action="/admin/catalog/{{ plugin.id }}/github/check">
+        <button type="submit" class="dm-btn dm-btn--secondary dm-btn--sm">Verifier maintenant</button>
+      </form>
+    </div>
+
+    {% if gh_state and gh_state.requested_at %}
+    <div class="dm-flash dm-flash--success" id="github-pending" style="margin-bottom:0.75rem;">
+      Verification demandee : le worker la fait a son prochain reveil (sous 15 secondes). Cette page se recharge d'elle-meme.
+    </div>
+    {% endif %}
+
+    {% if gh_failed %}
+    <div class="dm-flash dm-flash--warning" id="github-error" style="margin-bottom:0.75rem;">
+      <strong>{% if gh_state.error_code in ('network', 'timeout', 'proxy') %}Ce DM n'a pas d'acces a GitHub : l'envoi manuel reste la voie.{% else %}Le releve des releases a echoue : l'envoi manuel reste la voie.{% endif %}</strong>
+      <div>{{ gh_state.message }}</div>
+      <div style="font-size:0.8rem;margin-top:0.25rem;">
+        {{ gh_state.failures }} echec(s) de suite{% if github.poll_interval and gh_state.next_attempt_at %} ; prochain essai automatique vers {{ gh_state.next_attempt_at.strftime('%d/%m %H:%M') }} UTC (les essais s'espacent){% endif %}.
+      </div>
+    </div>
+    {% endif %}
+
+    <div id="gh-import-error" class="dm-flash dm-flash--error" style="display:none;margin-bottom:0.75rem;"></div>
+
+    {% if github.releases %}
+    <div style="overflow-x:auto;">
+    <table>
+      <thead><tr><th>Version</th><th>Nature</th><th>Publiee le</th><th>Etat</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for r in github.releases %}
+        <tr{% if r.state == 'ignored' %} style="color:#666;"{% endif %}>
+          <td>
+            <strong>{{ r.version }}</strong>
+            <div style="font-size:0.75rem;color:#666;">
+              {% if r.release_url %}<a href="{{ r.release_url }}" target="_blank" rel="noopener noreferrer">{{ r.tag }}</a>{% else %}{{ r.tag }}{% endif %}
+              {% if r.asset_name %}· {{ r.asset_name }}{% endif %}
+            </div>
+          </td>
+          <td><span class="dm-nature dm-nature--{{ r.nature }}">{{ r.nature_label }}</span></td>
+          <td>{{ r.published_at.strftime('%d/%m/%Y') if r.published_at else '-' }}</td>
+          <td style="font-size:0.85rem;max-width:32rem;">
+            {% if r.state == 'available' %}<span class="dm-badge dm-badge--info">Disponible</span>
+            {% elif r.state == 'imported' %}<span class="dm-badge dm-badge--success">Importee</span>
+            {% elif r.state == 'refused' %}<span class="dm-badge dm-badge--error">Refusee</span>
+            {% else %}<span class="dm-badge dm-badge--neutral">Ignoree</span>{% endif %}
+            {% if r.reason %}<div style="margin-top:0.25rem;{% if r.state == 'refused' %}color:#CE0500;{% elif r.state == 'available' %}color:#B34000;{% endif %}">{{ r.reason }}</div>{% endif %}
+          </td>
+          <td>
+            {% if r.state in ('available', 'refused') and r.asset_name %}
+            <button type="button" class="dm-btn dm-btn--primary dm-btn--sm" data-tag="{{ r.tag }}"
+                    onclick="nvImportFromGithub(this.dataset.tag, this)"
+                    title="Telecharge le paquet et sa signature, puis ouvre l'assistant « Nouvelle version » pre-rempli. Rien n'est publie ni deploye sans vous.">{% if r.state == 'refused' %}Reessayer{% else %}Importer{% endif %}</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% elif gh_state and gh_state.succeeded_at %}
+    <p style="font-size:0.85rem;color:#666;">Aucune release de ce composant sur le depot.</p>
+    {% endif %}
+    {% endif %}
+
+    {# Source : d'ou viennent les paquets de ce plugin. Le jeton ne se saisit pas ici. #}
+    <details id="github-source" {% if not github.source %}open{% endif %} style="margin-top:0.75rem;">
+      <summary style="cursor:pointer;font-size:0.85rem;color:#000091;">{% if github.source %}Modifier la source GitHub{% else %}Declarer une source GitHub{% endif %}</summary>
+      <form method="post" action="/admin/catalog/{{ plugin.id }}/github-source" style="margin-top:0.75rem;">
+        <div class="dm-grid-2">
+          <div class="dm-form-row">
+            <label class="dm-label" for="gh-repository">Depot</label>
+            <input type="text" name="repository" id="gh-repository" class="dm-input" placeholder="IA-Generative/iassistant-matisse"
+                   value="{{ github.source.repository if github.source else '' }}">
+            <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0 0;">Vide = retirer la source.</p>
+          </div>
+          <div class="dm-form-row">
+            <label class="dm-label" for="gh-component">Composant release-please</label>
+            <input type="text" name="component" id="gh-component" class="dm-input" placeholder="IAssistant-tb60"
+                   value="{{ github.source.component if github.source else '' }}">
+            <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0 0;">Tags <code>&lt;composant&gt;-vX.Y.Z</code>. Vide = tags <code>vX.Y.Z</code>.</p>
+          </div>
+          <div class="dm-form-row">
+            <label class="dm-label" for="gh-pattern">Motif du fichier</label>
+            <input type="text" name="asset_pattern" id="gh-pattern" class="dm-input" placeholder="{{ plugin.slug }}-*.xpi"
+                   value="{{ github.source.asset_pattern if github.source else '' }}">
+            <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0 0;">Nom du paquet dans la release, <code>*</code> pour la version. Sa signature <code>&lt;fichier&gt;.sig.json</code> est cherchee a cote.</p>
+          </div>
+          <div class="dm-form-row">
+            <label class="dm-label" for="gh-channel">Canal suivi</label>
+            <select name="channel" id="gh-channel" class="dm-select" style="width:100%;">
+              {% for c in github.channels %}
+              <option value="{{ c.id }}" {% if github.source and github.source.channel == c.id %}selected{% endif %}>{{ c.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <p style="font-size:0.8rem;color:#666;margin:0 0 0.5rem 0;">
+          Le jeton d'acces (depot prive) se regle sur le serveur, jamais ici. Aucune version n'est publiee ni deployee
+          automatiquement : « Importer » ouvre l'assistant, et vous decidez de la suite.
+        </p>
+        <button type="submit" class="dm-btn dm-btn--secondary dm-btn--sm">Enregistrer la source</button>
+      </form>
+    </details>
+  </details>
+  {% endif %}
+
   {# Version history table #}
   <div style="overflow-x:auto;">
   <table>
@@ -545,6 +685,12 @@
             <div style="margin-top:0.25rem;color:#444;" title="{{ v.origin.repository }}">
               <code>{{ v.origin.ref }}</code>{% if v.origin.commit %} @ <code>{{ v.origin.commit }}</code>{% endif %}
               {% if v.origin.ref_confirmed %}<span title="Reference hors de la liste acceptee par cette instance, importee sur confirmation">(sur confirmation)</span>{% endif %}
+            </div>
+            {% endif %}
+            {% if v.origin.github %}
+            <div style="margin-top:0.25rem;color:#444;" title="{{ v.origin.github.repository }} · {{ v.origin.github.asset }}">
+              Tiree de GitHub :
+              {% if v.origin.github.release_url %}<a href="{{ v.origin.github.release_url }}" target="_blank" rel="noopener noreferrer">{{ v.origin.github.tag }}</a>{% else %}<code>{{ v.origin.github.tag }}</code>{% endif %}
             </div>
             {% endif %}
             <div style="margin-top:0.25rem;color:#666;">
@@ -784,6 +930,7 @@ function nvGoStep(n) {
 
 function resetNvForm() {
   document.getElementById('nv-import-preview').innerHTML = '';
+  nvDropGithub();
   nvRefusal = null; nvConfirmRef = false; nvConfirmPrerelease = false;
   document.getElementById('nv-file-analysis').innerHTML = '';
   document.getElementById('nv-detected-info').style.display = 'none';
@@ -834,29 +981,90 @@ function nvRenderImportPreview(data) {
     ? '<div style="background:#fff;border:1px solid #e5e5e5;border-radius:6px;padding:0.75rem;font-size:0.85rem;">' + lines.join('') + '</div>'
     : '';
 }
+// Paquet tire d'une release GitHub (issue #108) : {upload_id, filename, version, tag,
+// signature, release_notes, refusal}, ou null. Il tient lieu de fichier choisi : meme
+// apercu, meme envoi, le paquet etant deja depose cote serveur.
+let nvGithub = null;
+function nvDropGithub() {
+  nvGithub = null;
+  const banner = document.getElementById('nv-github-banner');
+  banner.style.display = 'none';
+  banner.innerHTML = '';
+}
+async function nvImportFromGithub(tag, btn) {
+  const err = document.getElementById('gh-import-error');
+  const label = btn.textContent;
+  err.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Telechargement...';
+  try {
+    const resp = await fetch('/admin/catalog/' + PLUGIN_ID + '/github/import', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      body: JSON.stringify({tag: tag}),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const d = data.detail;
+      throw new Error((d && d.message) || (typeof d === 'string' && d) || ('Erreur ' + resp.status));
+    }
+    // L'assistant s'ouvre pre-rempli ; un fichier deja choisi a la main est oublie.
+    document.getElementById('new-version-form').style.display = 'block';
+    document.getElementById('nv-file-input').value = '';
+    document.getElementById('nv-signature-input').value = '';
+    resetNvForm();
+    nvGithub = data;
+    const banner = document.getElementById('nv-github-banner');
+    banner.innerHTML = 'Paquet tire de GitHub : <strong>' + dmEsc(data.filename) + '</strong> (release <code>' + dmEsc(data.tag) + '</code>)' +
+      (data.signature ? ', avec sa signature d\'origine.' : ', sans signature d\'origine.') +
+      ' Choisir un fichier ci-dessous l\'abandonne.';
+    banner.style.display = 'block';
+    document.getElementById('nv-version-input').value = data.version || '';
+    const rn = document.querySelector('textarea[name="release_notes"]');
+    if (rn) rn.value = data.release_notes || '';
+    nvAnalyze();
+    document.getElementById('new-version-form').scrollIntoView({behavior: 'smooth', block: 'start'});
+  } catch (e) {
+    err.textContent = 'Import impossible : ' + e.message + ' L\'envoi manuel du fichier reste possible.';
+    err.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
 document.getElementById('nv-signature-input').addEventListener('change', function() {
   // Rejouer l'analyse avec la signature : le controle d'origine en depend.
-  const fileInput = document.getElementById('nv-file-input');
-  if (fileInput.files[0]) fileInput.dispatchEvent(new Event('change'));
+  if (document.getElementById('nv-file-input').files[0] || nvGithub) nvAnalyze();
 });
 
-// File upload analysis
+// Un fichier choisi a la main remplace le paquet tire de GitHub.
 document.getElementById('nv-file-input').addEventListener('change', function() {
-  const file = this.files[0];
+  if (this.files[0]) nvDropGithub();
+  nvAnalyze();
+});
+
+// Analyse du paquet : le fichier choisi, ou le paquet tire de GitHub (deja sur le serveur).
+function nvAnalyze() {
+  const file = document.getElementById('nv-file-input').files[0];
+  const github = file ? null : nvGithub;
   const box = document.getElementById('nv-file-analysis');
   const info = document.getElementById('nv-detected-info');
   const btn = document.getElementById('nv-btn-step2');
 
-  if (!file) { box.innerHTML = ''; info.style.display = 'none'; btn.disabled = true; return; }
+  if (!file && !github) { box.innerHTML = ''; info.style.display = 'none'; btn.disabled = true; return; }
 
   box.innerHTML = '<div style="display:flex;align-items:center;gap:0.5rem;color:#666;"><span class="dm-spinner" style="width:16px;height:16px;border-width:2px;"></span>Analyse du fichier...</div>';
   btn.disabled = true;
 
   const fd = new FormData();
-  fd.append('binary', file);
+  if (file) fd.append('binary', file); else fd.append('upload_id', github.upload_id);
   fd.append('plugin_id', PLUGIN_ID);
   const sigFile = document.getElementById('nv-signature-input').files[0];
   if (sigFile) fd.append('signature', sigFile);
+  else if (github && github.signature) {
+    fd.append('signature', new Blob([github.signature], {type: 'application/json'}), github.filename + '.sig.json');
+  }
   document.getElementById('nv-import-preview').innerHTML = '';
   fetch('/admin/api/deploy/extract-version', {method: 'POST', body: fd, credentials: 'same-origin'})
     .then(r => r.json())
@@ -897,6 +1105,22 @@ document.getElementById('nv-file-input').addEventListener('change', function() {
       }
       info.style.display = 'block';
       nvRenderImportPreview(data);
+      if (github) {
+        // La release fait foi pour le numero : un paquet qui en annonce un autre est refuse.
+        if (github.version) {
+          document.getElementById('nv-version-input').value = github.version;
+          document.getElementById('nv-detected-version').textContent = github.version;
+        }
+        if (!data.release_notes && github.release_notes) {
+          const rn = document.querySelector('textarea[name="release_notes"]');
+          if (rn) rn.value = github.release_notes;
+        }
+        if (github.refusal && !nvRefusal) {
+          nvRefusal = github.refusal;
+          document.getElementById('nv-import-preview').insertAdjacentHTML('beforeend',
+            '<div style="color:#CE0500;font-weight:600;margin-top:0.5rem;">&#10007; ' + dmEsc(github.refusal.message) + '</div>');
+        }
+      }
       // Un refus sans appel (signature absente ou invalide, version discordante) arrete ici.
       btn.disabled = !!(nvRefusal && !nvRefusal.confirmable);
     })
@@ -904,7 +1128,23 @@ document.getElementById('nv-file-input').addEventListener('change', function() {
       box.innerHTML = '<div class="dm-flash dm-flash--warning" style="margin-bottom:0;">Analyse impossible — saisie manuelle</div>';
       btn.disabled = false;
     });
-});
+}
+
+// Verification GitHub demandee : la page se recharge seule quelques fois, le temps
+// que le worker releve — sauf si l'assistant est ouvert (une saisie serait perdue).
+(function() {
+  if (!document.getElementById('github-pending')) return;
+  const url = new URL(window.location.href);
+  const tries = parseInt(url.searchParams.get('gh_wait') || '0', 10) || 0;
+  if (tries >= 5) return;
+  url.searchParams.set('gh_wait', String(tries + 1));
+  url.searchParams.set('tab', 'versions');
+  url.searchParams.set('github', 'asked');
+  setTimeout(function() {
+    if (document.getElementById('new-version-form').style.display === 'block') return;
+    window.location.replace(url.toString());
+  }, 6000);
+})();
 
 // Environment card selection
 document.getElementById('nv-env-cards').addEventListener('click', function(e) {
@@ -1092,9 +1332,10 @@ async function nvSubmit(action) {
     return;
   }
 
-  // Validate file
+  // Validate file (ou paquet tire de GitHub, deja depose cote serveur)
   const file = document.getElementById('nv-file-input').files[0];
-  if (!file) {
+  const github = file ? null : nvGithub;
+  if (!file && !github) {
     errBox.textContent = 'Le fichier du plugin est requis.';
     errBox.style.display = 'block';
     nvGoStep(1);
@@ -1138,8 +1379,8 @@ async function nvSubmit(action) {
     'Upload du fichier...';
 
   try {
-    // 1. Upload file in chunks (WAF bypass)
-    const uploadId = await nvUploadFileChunked(file);
+    // 1. Upload file in chunks (WAF bypass) — rien a envoyer pour un paquet tire de GitHub
+    const uploadId = github ? github.upload_id : await nvUploadFileChunked(file);
 
     // 2. Collect form fields as JSON payload
     const form = document.getElementById('nv-form');
@@ -1158,6 +1399,7 @@ async function nvSubmit(action) {
     // Signature d'origine (ADR-0006) : le contenu du .sig.json, joint au corps JSON.
     const sigFile = document.getElementById('nv-signature-input').files[0];
     if (sigFile) payload.signature = await sigFile.text();
+    else if (github && github.signature) payload.signature = github.signature;
 
     document.getElementById('nv-btn-deploy').innerHTML =
       '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +

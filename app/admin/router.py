@@ -29,6 +29,7 @@ from app.resilience import retry_transient
 
 from .. import runtime_config as rcfg
 from ..services import binaries as binaries_svc
+from ..services import github_releases as github_svc
 from ..services import package_bootstrap, package_config, package_import
 from ..services.crypto import encrypt_secret, secrets_encryption_available
 from ..services.versions import (
@@ -260,6 +261,8 @@ def _origin_view(provenance: dict | None, signed: bool) -> dict:
         "repository": build.get("repository") or "",
         "ref_confirmed": bool(build.get("ref_confirmed")),
         "signed": bool(signed),
+        # Release GitHub dont le paquet a été tiré (issue #108), s'il en vient.
+        "github": (provenance or {}).get("github") or None,
     }
 
 
@@ -293,6 +296,8 @@ def _bootstrap_audit(info: dict | None) -> dict:
                                                     "ref_allowed", "ref_confirmed") if build.get(k) is not None}
     if info.get("upstream"):
         out["upstream_sha256"] = info["upstream"].get("sha256")
+    if info.get("github"):
+        out["github"] = {k: info["github"].get(k) for k in ("repository", "tag", "asset")}
     out["signed"] = info.get("signature") is not None
     return out
 
@@ -1348,23 +1353,35 @@ async def deploy_wizard(request: Request):
 
 @router.post("/api/deploy/extract-version")
 @require_admin
-async def api_extract_version(request: Request, binary: UploadFile = File(...),
+async def api_extract_version(request: Request, binary: UploadFile | None = File(None),
                               signature: UploadFile | None = File(None),
-                              plugin_id: str = Form("")):
+                              plugin_id: str = Form(""), upload_id: str = Form("")):
     """Extract version from plugin package (ZIP: .xpi, .oxt, .crx).
 
     Rend aussi l'aperçu de l'import (clé `package` : nature, contrôle d'origine,
     refus éventuel) et ce que l'adaptation de la configuration remplacerait
     (clé `config`), sans rien stocker.
+
+    Le paquet est le fichier joint (`binary`) ou, à défaut, un dépôt déjà fait
+    côté serveur (`upload_id` : paquet tiré d'une release GitHub, issue #108),
+    lu sans être consommé.
     """
     import io
     import re
     import zipfile
 
-    data = await binary.read()
+    if binary is not None:
+        data = await binary.read()
+        filename = binary.filename or ""
+    elif upload_id:
+        deposited = _read_upload(upload_id, consume=False)
+        if not deposited:
+            raise HTTPException(404, "Paquet introuvable : relancez l'import depuis GitHub.")
+        data, filename = deposited
+    else:
+        raise HTTPException(400, "Missing binary file")
     version = None
     dm_manifest = None
-    filename = binary.filename or ""
 
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -1911,16 +1928,35 @@ async def api_upload_chunk(request: Request,
     })
 
 
-def _reassemble_upload(upload_id: str) -> tuple[bytes, str] | None:
-    """Reassemble chunks into a single file. Returns (data, filename) or None."""
-    upload_dir = os.path.join(_CHUNK_DIR, upload_id)
-    if not os.path.isdir(upload_dir):
-        return None
-    meta_path = os.path.join(upload_dir, "_meta.json")
+def _upload_dir(upload_id) -> str:
+    """Dossier d'un dépôt. `upload_id` vient du client : validé avant de servir de chemin."""
+    return safe_path_join(_CHUNK_DIR, safe_segment(str(upload_id or ""), "upload_id"))
+
+
+def _upload_meta(upload_id) -> dict | None:
+    """Métadonnées d'un dépôt (écrites par le serveur), ou None s'il n'existe pas."""
+    meta_path = os.path.join(_upload_dir(upload_id), "_meta.json")
     if not os.path.isfile(meta_path):
         return None
-    with open(meta_path) as f:
-        meta = json.load(f)
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def _read_upload(upload_id, *, consume: bool) -> tuple[bytes, str] | None:
+    """(octets, nom du fichier) d'un dépôt complet, ou None.
+
+    `consume` : le dépôt est supprimé après lecture — sauf un dépôt « persistant »
+    (paquet tiré de GitHub), qui doit survivre à l'aperçu et à un envoi refusé puis
+    confirmé ; celui-là est retiré par `_discard_upload` une fois l'import abouti.
+    """
+    upload_dir = _upload_dir(upload_id)
+    meta = _upload_meta(upload_id)
+    if meta is None:
+        return None
 
     chunks = sorted([f for f in os.listdir(upload_dir) if f != "_meta.json"])
     if len(chunks) < meta.get("total_chunks", 1):
@@ -1931,11 +1967,91 @@ def _reassemble_upload(upload_id: str) -> tuple[bytes, str] | None:
         with open(os.path.join(upload_dir, chunk_name), "rb") as f:
             data += f.read()
 
-    # Cleanup
-    import shutil
-    shutil.rmtree(upload_dir, ignore_errors=True)
+    if consume and not meta.get("persistent"):
+        _discard_upload(upload_id)
 
     return data, meta.get("filename", "upload.bin")
+
+
+def _reassemble_upload(upload_id: str) -> tuple[bytes, str] | None:
+    """Reassemble chunks into a single file. Returns (data, filename) or None."""
+    return _read_upload(upload_id, consume=True)
+
+
+def _discard_upload(upload_id) -> None:
+    import shutil
+    shutil.rmtree(_upload_dir(upload_id), ignore_errors=True)
+
+
+def _deposit_upload(data: bytes, filename: str, **extra) -> str:
+    """Dépose côté serveur un paquet complet, là où `_reassemble_upload` le retrouvera.
+
+    Sert l'import depuis GitHub (issue #108) : le paquet téléchargé par le DM suit
+    ensuite la chaîne de l'envoi manuel, avec le même `upload_id`. Les octets sont
+    écrits tels quels. `extra` (origine du paquet) reste côté serveur : ce que le
+    navigateur renverra n'y change rien.
+    """
+    _purge_stale_deposits()
+    upload_id = uuid.uuid4().hex
+    upload_dir = _upload_dir(upload_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    with open(os.path.join(upload_dir, "000000"), "wb") as f:
+        f.write(data)
+    meta = {"filename": filename, "total_chunks": 1, "upload_id": upload_id,
+            "persistent": True, **extra}
+    with open(os.path.join(upload_dir, "_meta.json"), "w") as f:
+        json.dump(meta, f)
+    return upload_id
+
+
+def _purge_stale_deposits() -> None:
+    """Retire les dépôts persistants abandonnés (assistant fermé sans envoyer)."""
+    import shutil
+    try:
+        names = os.listdir(_CHUNK_DIR)
+    except OSError:
+        return
+    limit = time.time() - _UPLOAD_MAX_AGE
+    for name in names:
+        meta_path = os.path.join(_CHUNK_DIR, name, "_meta.json")
+        try:
+            if os.path.getmtime(meta_path) >= limit:
+                continue
+            with open(meta_path) as f:
+                persistent = bool(json.load(f).get("persistent"))
+        except (OSError, ValueError, AttributeError):
+            continue
+        if persistent:
+            shutil.rmtree(os.path.join(_CHUNK_DIR, name), ignore_errors=True)
+
+
+def _upload_github_origin(upload_id, plugin_id: int) -> dict | None:
+    """Release GitHub d'où vient ce dépôt, si le DM l'a tiré lui-même pour ce plugin.
+
+    L'origine est lue dans les métadonnées écrites par le serveur à l'import, pas
+    dans le corps de la requête : la provenance enregistrée ne se déclare pas.
+    """
+    meta = _upload_meta(upload_id) or {}
+    origin = meta.get("github")
+    if not isinstance(origin, dict):
+        return None
+    if meta.get("plugin_id") != plugin_id:
+        raise HTTPException(400, "Ce paquet a été tiré de GitHub pour un autre plugin.")
+    return origin
+
+
+def _note_github_refusal(plugin_id: int, tag: str, message: str) -> None:
+    """Rend visible sur la fiche le refus d'un paquet tiré de GitHub. Jamais bloquant."""
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                github_svc.mark_release(cur, plugin_id, tag, github_svc.STATE_REFUSED, message)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("refus d'import GitHub non noté pour le plugin %s", plugin_id, exc_info=True)
 
 
 @router.post("/api/catalog/suggest")
@@ -2426,6 +2542,15 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             # Aliases
             cur.execute("SELECT alias FROM plugin_aliases WHERE plugin_id = %s ORDER BY alias", (plugin_id,))
             aliases = [r[0] for r in cur.fetchall()]
+            # Releases disponibles sur GitHub (issue #108) : lecture du relevé tenu
+            # par le worker, aucun appel réseau ici.
+            try:
+                github = github_svc.view(cur, plugin)
+            except Exception:
+                # Schéma pas encore à jour (tables absentes) : la page reste lisible.
+                conn.rollback()
+                logger.warning("relevé GitHub indisponible pour le plugin %s", plugin_id, exc_info=True)
+                github = None
         features = plugin.get("key_features") or []
         if isinstance(features, str):
             features = json.loads(features)
@@ -2521,6 +2646,7 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             "deploy_environments": deploy_environments,
             "cohorts": cohort_list,
             "deployments": deployments,
+            "github": github,
             "tab": tab, "timeago": timeago,
         })
     finally:
@@ -3076,6 +3202,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         upload_id = body.get("upload_id", "")
         if not upload_id:
             raise HTTPException(400, "Missing upload_id in JSON body")
+        # Paquet tiré d'une release GitHub par ce DM (issue #108) : son origine.
+        github_origin = _upload_github_origin(upload_id, plugin_id)
         result = _reassemble_upload(upload_id)
         if not result:
             raise HTTPException(400, "Upload not found or incomplete")
@@ -3107,6 +3235,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         restart_required = form.get("restart_required", "")
         build_signature = await _signature_input(form.get("signature"))
         campaign_kind = form.get("campaign_kind", "ordinary")
+        upload_id, github_origin = "", None
         binary = form.get("binary")
         if not binary or not hasattr(binary, "read"):
             raise HTTPException(400, "Missing binary file")
@@ -3182,11 +3311,22 @@ async def catalog_version_upload(request: Request, plugin_id: int):
             # 3. Import du paquet (issue #133, ADR-0006) : signature d'origine
             # vérifiée, dm-config.json retiré, liste de DM de l'instance inscrite,
             # paquet signé. L'empreinte porte sur le paquet tel qu'il sera servi.
-            data, bootstrap_info = _prepare_package(
-                data, keep_bootstrap, slug=_slug, version=version,
-                filename=f"{_slug}-{version}{_suffix}{_ext}",
-                build_signature=build_signature, confirm_ref=confirm_ref,
-                slug_aliases=_plugin_aliases(cur, plugin_id))
+            try:
+                data, bootstrap_info = _prepare_package(
+                    data, keep_bootstrap, slug=_slug, version=version,
+                    filename=f"{_slug}-{version}{_suffix}{_ext}",
+                    build_signature=build_signature, confirm_ref=confirm_ref,
+                    slug_aliases=_plugin_aliases(cur, plugin_id))
+            except HTTPException as refused:
+                # Un paquet tiré de GitHub et refusé sans appel : le refus se voit
+                # sur la fiche, à la ligne de la release (issue #108).
+                if github_origin and refused.status_code == 422:
+                    detail = refused.detail
+                    _note_github_refusal(plugin_id, str(github_origin.get("tag") or ""),
+                                         detail.get("message") if isinstance(detail, dict) else str(detail))
+                raise
+            if github_origin:
+                bootstrap_info["github"] = github_origin
             _note_config_report(bootstrap_info, config_report)
             checksum = artifacts_svc.compute_checksum(data)
 
@@ -3375,7 +3515,16 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                                    "prerelease_confirmed": bool(prerelease_warning)},
                           ip=request.client.host if request.client else None)
 
+            # Le relevé GitHub retient que cette release est au catalogue (issue #108).
+            if github_origin:
+                github_svc.mark_release(cur, plugin_id, str(github_origin.get("tag") or ""),
+                                        github_svc.STATE_IMPORTED)
+
             conn.commit()
+
+        # Le paquet tiré de GitHub a servi : son dépôt n'a plus lieu d'être.
+        if github_origin:
+            _discard_upload(upload_id)
 
         # Un écart de liste de DM se dit dès le retour sur la fiche (issue #133).
         _notice = f"&bootstrap_notice={vid}" if bootstrap_info.get("message") else ""
@@ -3388,6 +3537,164 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         conn.rollback()
         logger.error("catalog version upload failed: %s", e)
         raise HTTPException(400, str(e)) from e
+    finally:
+        conn.close()
+
+
+# ─── Releases GitHub d'un plugin (issue #108) ───────────────────────
+
+@router.post("/catalog/{plugin_id}/github-source")
+@require_admin
+async def catalog_github_source(request: Request, plugin_id: int,
+                                repository: str = Form(""), component: str = Form(""),
+                                asset_pattern: str = Form(""), channel: str = Form("general")):
+    """Déclare (ou retire, dépôt vide) la source GitHub des paquets du plugin.
+
+    Le jeton d'accès ne se saisit pas ici : il vient de l'environnement du DM.
+    """
+    try:
+        source = github_svc.normalize_source({"repository": repository, "component": component,
+                                              "asset_pattern": asset_pattern, "channel": channel})
+    except github_svc.SourceError as e:
+        raise HTTPException(400, str(e)) from e
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            plugin = catalog_svc.get_plugin(cur, plugin_id)
+            if not plugin:
+                raise HTTPException(404, "Plugin introuvable")
+            previous = plugin.get("github_source")
+            cur.execute("UPDATE plugins SET github_source = %s, updated_at = NOW() WHERE id = %s",
+                        (json.dumps(source) if source else None, plugin_id))
+            if source != previous:
+                # Autre source : l'ancien relevé ne vaut plus, et le worker est
+                # prié de relever la nouvelle sans attendre son tour.
+                github_svc.reset(cur, plugin_id, request=source is not None)
+            audit_log(cur, actor=getattr(request.state, "admin_session", {}),
+                      action="plugin.github_source", resource_type="plugin",
+                      resource_id=str(plugin_id), payload={"from": previous, "to": source},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions&github=saved", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/github/check")
+@require_admin
+async def catalog_github_check(request: Request, plugin_id: int):
+    """« Vérifier maintenant » : la demande est déposée en base, le worker la relève
+    à son prochain réveil. Aucun appel à GitHub depuis ce processus."""
+    from starlette.concurrency import run_in_threadpool
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            plugin = catalog_svc.get_plugin(cur, plugin_id)
+            if not plugin:
+                raise HTTPException(404, "Plugin introuvable")
+            if not plugin.get("github_source"):
+                raise HTTPException(400, "Ce plugin n'a pas de source GitHub.")
+        result = await run_in_threadpool(github_svc.request_check, plugin_id)
+        with conn.cursor() as cur:
+            audit_log(cur, actor=getattr(request.state, "admin_session", {}),
+                      action="plugin.github_check", resource_type="plugin",
+                      resource_id=str(plugin_id), payload=result,
+                      ip=request.client.host if request.client else None)
+        conn.commit()
+    finally:
+        conn.close()
+    if result.get("statut") != "demande_transmise":
+        raise HTTPException(503, "La demande de vérification n'a pas pu être déposée.")
+    return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=versions&github=asked", status_code=303)
+
+
+@router.post("/catalog/{plugin_id}/github/import")
+@require_admin
+async def catalog_github_import(request: Request, plugin_id: int):
+    """Tire d'une release GitHub le paquet et son enveloppe .sig.json, et les dépose
+    pour l'assistant « Nouvelle version ».
+
+    Rien n'est publié ni déployé ici : la réponse ({upload_id, filename, version,
+    signature, release_notes}) pré-remplit l'assistant, et l'envoi passe par
+    `catalog_version_upload`, comme un fichier choisi à la main.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    try:
+        body = await request.json()
+    except ValueError as e:
+        raise HTTPException(400, "Corps JSON attendu.") from e
+    tag = str((body if isinstance(body, dict) else {}).get("tag") or "").strip()
+    if not tag:
+        raise HTTPException(400, "Missing tag")
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            plugin = catalog_svc.get_plugin(cur, plugin_id)
+            if not plugin:
+                raise HTTPException(404, "Plugin introuvable")
+            try:
+                source = github_svc.normalize_source(plugin.get("github_source"))
+            except github_svc.SourceError as e:
+                raise HTTPException(400, str(e)) from e
+            if not source:
+                raise HTTPException(400, "Ce plugin n'a pas de source GitHub.")
+            release = github_svc.get_release(cur, plugin_id, tag)
+        if not release:
+            raise HTTPException(404, "Release inconnue du relevé : vérifiez d'abord les versions disponibles.")
+        if release["state"] not in (github_svc.STATE_AVAILABLE, github_svc.STATE_REFUSED) \
+                or not release.get("asset_api_url"):
+            raise HTTPException(409, release.get("reason") or "Cette release n'est pas importable.")
+        filename = os.path.basename(release["asset_name"] or "")
+        error = artifacts_svc.validate_upload(filename, 0)
+        if error:
+            raise HTTPException(400, error)
+
+        try:
+            data, signature = await run_in_threadpool(
+                github_svc.download_release, release, max_size=artifacts_svc.MAX_UPLOAD_SIZE)
+        except github_svc.GithubError as e:
+            raise HTTPException(502, {"code": e.code, "message": str(e)}) from e
+
+        published_at = release.get("published_at")
+        origin = {"repository": source["repository"], "tag": tag, "asset": filename,
+                  "release_url": release.get("release_url"),
+                  "published_at": published_at.isoformat() if published_at else None}
+        upload_id = _deposit_upload(data, filename, github=origin, plugin_id=plugin_id)
+
+        # Ce que l'import dira de ce paquet : un refus sans appel se note tout de
+        # suite sur le relevé (visible sur la fiche), sans attendre l'envoi.
+        package_preview, _config = _import_preview(
+            data, version=release["version"], filename=filename, plugin_id=str(plugin_id),
+            build_signature=signature)
+        refusal = (package_preview or {}).get("refusal")
+        final_refusal = refusal if refusal and not refusal.get("confirmable") else None
+        with conn.cursor() as cur:
+            if final_refusal:
+                github_svc.mark_release(cur, plugin_id, tag, github_svc.STATE_REFUSED,
+                                        final_refusal.get("message"))
+            elif release["state"] == github_svc.STATE_REFUSED:
+                github_svc.mark_release(cur, plugin_id, tag, github_svc.STATE_AVAILABLE)
+            audit_log(cur, actor=getattr(request.state, "admin_session", {}),
+                      action="plugin.github_import", resource_type="plugin",
+                      resource_id=str(plugin_id),
+                      payload={"repository": source["repository"], "tag": tag, "asset": filename,
+                               "version": release["version"], "size": len(data),
+                               "sha256": artifacts_svc.compute_checksum(data),
+                               "signature": signature is not None,
+                               "refusal": (final_refusal or {}).get("code")},
+                      ip=request.client.host if request.client else None)
+        conn.commit()
+        return JSONResponse({
+            "upload_id": upload_id, "filename": filename, "version": release["version"],
+            "tag": tag, "signature": signature, "release_notes": release.get("release_notes") or "",
+            "release_url": release.get("release_url"), "refusal": final_refusal,
+        })
     finally:
         conn.close()
 
