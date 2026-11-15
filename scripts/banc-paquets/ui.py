@@ -172,6 +172,35 @@ with sync_playwright() as p:
     page.wait_for_selector("#nv-import-preview div", timeout=15000)
     check("plugin hors liste : aucune case, « Suivant » désactivé", page.locator("#nv-require-signature").count() == 0 and page.is_disabled("#nv-btn-step2"))
 
+    print("\n== U7. Clés d'API : créer, voir une fois, appeler l'API, révoquer")
+    import httpx
+    page.goto(f"{ADMIN}/admin/api-keys")
+    page.wait_for_load_state("networkidle")
+    check("menu « Cles d'API » présent", page.locator("a[href='/admin/api-keys']").count() > 0)
+    page.click("summary:has-text('Creer une cle')")
+    page.fill("#ak-label", "CI du banc")
+    page.fill("#ak-owner", "ci@banc.test")
+    page.fill("#ak-plugins", "banc-tb")
+    page.click("#api-key-form button[type=submit]")
+    page.wait_for_selector("#new-key:not([hidden])", timeout=15000)
+    key = page.input_value("#new-key-value")
+    check("clé affichée après la création", key.startswith("dmk_") and "CI du banc" in page.inner_text("#new-key"))
+    page.screenshot(path=f"{SHOTS}/12-cle-api-creee.png", full_page=True)
+    bearer = {"Authorization": f"Bearer {key}"}
+    check("la clé lit l'API", httpx.get(f"{ADMIN}/api/campaigns", headers=bearer).status_code == 200)
+    r = httpx.post(f"{ADMIN}/api/plugins/banc-lo/deploy", headers=bearer, data={"strategy": "immediate"},
+                   files={"binary": ("banc-lo-0.3.2.oxt", open(f("banc-lo-0.3.2.oxt"), "rb").read())})
+    check("clé bornée à banc-tb refusée sur banc-lo : 403", r.status_code == 403 and r.json().get("code") == "plugin_not_allowed", r.text[:200])
+    page.click("text=J'ai copie la cle")
+    page.wait_for_load_state("networkidle")
+    listing = page.inner_text("table")
+    check("la liste montre la clé sans son secret", "CI du banc" in listing and "ci@banc.test" in listing and key not in page.content())
+    page.screenshot(path=f"{SHOTS}/13-cles-api-liste.png", full_page=True)
+    page.click("button:has-text('Revoquer')")
+    page.wait_for_selector("text=Cle revoquee", timeout=15000)
+    r = httpx.get(f"{ADMIN}/api/campaigns", headers=bearer)
+    check("clé révoquée : 401 revoked_key", r.status_code == 401 and r.json().get("code") == "revoked_key", r.text[:200])
+
     check("aucune erreur de script dans les pages", not errors, str(errors)[:400])
     browser.close()
 

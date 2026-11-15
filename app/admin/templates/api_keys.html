@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}Cles d'API{% endblock %}
+{% block content %}
+<h1 class="dm-page-title">Cles d'API</h1>
+<p style="max-width:70ch;color:#444;">
+  Une cle d'API permet a une personne ou a un automate d'appeler l'API du Device Management :
+  envoyer une version, creer ou suivre une campagne. Chaque appel est attribue a son titulaire
+  dans le journal d'audit. Une cle se revoque a tout moment, et expire d'elle-meme.
+</p>
+
+{# Bloc de la cle creee : rempli par le serveur (sans script) ou par le script apres l'envoi. #}
+<div id="new-key" role="status" {% if not new_token %}hidden{% endif %}
+     style="background:#E8F5E9;border:1px solid #18753C;border-left-width:4px;border-radius:6px;padding:1rem;margin:1rem 0;">
+  <strong>Cle « <span id="new-key-label">{{ new_key.label if new_key else '' }}</span> » creee. Copiez-la maintenant : elle ne sera plus jamais affichee.</strong>
+  <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem;">
+    <input type="text" readonly class="dm-input" id="new-key-value" value="{{ new_token }}"
+           style="font-family:monospace;font-size:0.85rem;" aria-label="Cle d'API">
+    <button type="button" class="dm-btn dm-btn--primary dm-btn--sm" id="new-key-copy">Copier</button>
+  </div>
+  <p style="font-size:0.85rem;margin:0.75rem 0 0.25rem 0;">Pour l'utiliser :</p>
+  <pre style="background:#fff;border:1px solid #e5e5e5;border-radius:4px;padding:0.75rem;font-size:0.8rem;overflow-x:auto;margin:0;">curl -H "Authorization: Bearer $DM_API_KEY" {{ public_base or 'https://<votre-dm>' }}/api/campaigns</pre>
+  <p style="font-size:0.8rem;color:#444;margin:0.5rem 0 0.75rem 0;">
+    Rangez-la dans un coffre ou un secret de CI, jamais dans un depot ni un message.
+    Valable jusqu'au <span id="new-key-expiry">{{ new_key.expires_at.strftime('%d/%m/%Y') if new_key else '' }}</span>.
+  </p>
+  <a href="/admin/api-keys" class="dm-btn dm-btn--secondary dm-btn--sm">J'ai copie la cle</a>
+</div>
+<div id="api-key-error" class="dm-flash dm-flash--error" role="alert" hidden></div>
+{% if request.query_params.get('revoked') == '1' %}
+<div class="dm-flash dm-flash--success" role="status">Cle revoquee. Elle ne fonctionne plus.</div>
+{% endif %}
+{% if error %}
+<div class="dm-flash dm-flash--error" role="alert">{{ error }}</div>
+{% endif %}
+
+<details style="margin:1.5rem 0;border:1px solid #e5e5e5;border-radius:4px;padding:1rem;" {% if error %}open{% endif %}>
+  <summary style="cursor:pointer;font-weight:600;">+ Creer une cle</summary>
+  {# data-native : ce formulaire a son propre envoi (script en bas de page), le script global n'y touche pas. #}
+  <form method="post" action="/admin/api-keys" id="api-key-form" data-native="1" style="margin-top:1rem;">
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <label class="dm-label" for="ak-label">Nom de la cle</label>
+        <input class="dm-input" id="ak-label" name="label" required maxlength="100" value="{{ form.label }}"
+               placeholder="ex : CI du plugin Thunderbird">
+        <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0 0;">A quoi sert-elle ? C'est ce nom qu'on lira dans la liste.</p>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label" for="ak-owner">Titulaire (adresse)</label>
+        <input class="dm-input" id="ak-owner" name="owner_email" type="email" required value="{{ form.owner_email }}">
+        <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0 0;">Les appels faits avec la cle lui seront attribues dans l'audit.</p>
+      </div>
+    </div>
+    <div class="dm-grid-2">
+      <div class="dm-form-row">
+        <span class="dm-label">Portee</span>
+        <label style="display:block;margin-bottom:0.35rem;">
+          <input type="checkbox" name="scope_read" value="1" {% if 'read' in form.scopes %}checked{% endif %}>
+          <strong>Lecture</strong> — consulter les campagnes et leur avancement
+        </label>
+        <label style="display:block;">
+          <input type="checkbox" name="scope_write" value="1" {% if 'write' in form.scopes %}checked{% endif %}>
+          <strong>Ecriture</strong> — envoyer une version, creer et piloter une campagne
+        </label>
+      </div>
+      <div class="dm-form-row">
+        <label class="dm-label" for="ak-ttl">Validite, en jours</label>
+        <input class="dm-input" id="ak-ttl" name="ttl_days" type="number" min="1" max="{{ max_ttl_days }}"
+               value="{{ form.ttl_days }}" style="max-width:120px;">
+        <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0 0;">{{ max_ttl_days }} jours au plus. Une cle sans echeance n'est pas proposee.</p>
+      </div>
+    </div>
+    <div class="dm-form-row">
+      <label class="dm-label" for="ak-plugins">Plugins autorises (facultatif)</label>
+      <input class="dm-input" id="ak-plugins" name="plugins" value="{{ form.plugins }}" list="ak-plugin-list"
+             placeholder="vide = tous les plugins ; sinon noms separes par des virgules">
+      <datalist id="ak-plugin-list">{% for slug in plugin_slugs %}<option value="{{ slug }}">{% endfor %}</datalist>
+      <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0 0;">
+        Une cle bornee a des plugins ne peut ecrire que sur les routes qui nomment l'un d'eux
+        (par exemple <code>/api/plugins/&lt;nom&gt;/deploy</code>).
+      </p>
+    </div>
+    <button class="dm-btn dm-btn--primary" type="submit">Creer la cle</button>
+  </form>
+</details>
+
+<div style="overflow-x:auto;">
+<table>
+  <thead><tr><th>Nom</th><th>Titulaire</th><th>Portee</th><th>Plugins</th><th>Creee</th><th>Expire</th><th>Dernier usage</th><th>Etat</th><th></th></tr></thead>
+  <tbody>
+    {% for k in keys %}
+    <tr>
+      <td><strong>{{ k.label }}</strong><div style="font-size:0.75rem;color:#666;font-family:monospace;">dmk_{{ k.key_id }}_…</div></td>
+      <td>{{ k.owner_email }}{% if k.created_by and k.created_by != k.owner_email %}<div style="font-size:0.75rem;color:#666;">creee par {{ k.created_by }}</div>{% endif %}</td>
+      <td>{% if 'write' in k.scopes %}Lecture et ecriture{% else %}Lecture{% endif %}</td>
+      <td>{% if k.plugins %}{{ k.plugins | join(', ') }}{% else %}<span style="color:#666;">tous</span>{% endif %}</td>
+      <td>{{ k.created_at.strftime('%d/%m/%Y') }}</td>
+      <td>{{ k.expires_at.strftime('%d/%m/%Y') }}</td>
+      <td>{% if k.last_used_at %}{{ k.last_used_at.strftime('%d/%m/%Y %H:%M') }}{% if k.last_used_ip %}<div style="font-size:0.75rem;color:#666;">{{ k.last_used_ip }}</div>{% endif %}{% else %}<span style="color:#666;">jamais</span>{% endif %}</td>
+      <td>
+        {% if k.revoked_at %}<span class="dm-badge dm-badge--error" title="Revoquee le {{ k.revoked_at.strftime('%d/%m/%Y') }}{% if k.revoked_by %} par {{ k.revoked_by }}{% endif %}">Revoquee</span>
+        {% elif not k.active %}<span class="dm-badge dm-badge--neutral">Expiree</span>
+        {% else %}<span class="dm-badge dm-badge--success">Valide</span>{% endif %}
+      </td>
+      <td>
+        {% if k.active %}
+        <form method="post" action="/admin/api-keys/{{ k.id }}/revoke" style="display:inline;"
+              onsubmit="return confirm('Revoquer la cle « {{ k.label }} » ? Les appels qui l\'utilisent echoueront aussitot.');">
+          <button class="dm-btn dm-btn--danger dm-btn--sm">Revoquer</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not keys %}
+    <tr><td colspan="9" style="color:#666;text-align:center;">Aucune cle. Creez la premiere ci-dessus.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+</div>
+
+<script>
+(function () {
+  var copyBtn = document.getElementById('new-key-copy');
+  copyBtn.addEventListener('click', function () {
+    var field = document.getElementById('new-key-value');
+    var done = function () { copyBtn.textContent = 'Copiee'; };
+    var fallback = function () { field.focus(); field.select(); try { document.execCommand('copy'); done(); } catch (e) {} };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(field.value).then(done, fallback);
+    } else { fallback(); }
+  });
+
+  // Envoi par fetch : la cle revient en JSON et s'affiche ici, une seule fois.
+  var form = document.getElementById('api-key-form');
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var errBox = document.getElementById('api-key-error');
+    var submit = form.querySelector('button[type="submit"]');
+    errBox.hidden = true;
+    submit.disabled = true;
+    fetch(form.action, {method: 'POST', body: new FormData(form), credentials: 'same-origin',
+                        headers: {'Accept': 'application/json'}})
+      .then(function (resp) { return resp.json().then(function (data) { return {ok: resp.ok, data: data}; }); })
+      .then(function (res) {
+        submit.disabled = false;
+        if (!res.ok || !res.data.token) {
+          errBox.textContent = res.data.error || res.data.detail || 'Creation de la cle impossible.';
+          errBox.hidden = false;
+          return;
+        }
+        document.getElementById('new-key-label').textContent = res.data.label;
+        document.getElementById('new-key-expiry').textContent = res.data.expires_at;
+        document.getElementById('new-key-value').value = res.data.token;
+        copyBtn.textContent = 'Copier';
+        document.getElementById('new-key').hidden = false;
+        form.closest('details').open = false;
+        form.reset();
+        document.getElementById('new-key').scrollIntoView({block: 'center'});
+      })
+      .catch(function (err) {
+        submit.disabled = false;
+        errBox.textContent = 'Erreur reseau : ' + err.message;
+        errBox.hidden = false;
+      });
+  });
+})();
+</script>
+{% endblock %}

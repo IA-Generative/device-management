@@ -1,7 +1,7 @@
 {
- "root_keyid": "92404c7ab9d94a94",
- "dm_keyid": "33119911d6032538",
- "publisher_keyid": "82689ceda999735d",
+ "root_keyid": "47b5db263fc91c2f",
+ "dm_keyid": "46a6debfcfd6f118",
+ "publisher_keyid": "735081d777ff8c44",
  "mode": "delegation",
  "instance": "http://localhost:18090"
 }
