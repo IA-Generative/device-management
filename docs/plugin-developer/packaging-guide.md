@@ -483,6 +483,22 @@ manifeste natif annonce un autre numéro que celui sous lequel on l'enregistre.
 `X.Y.Z` est la prochaine version de `main` ; `N` est un numéro qui ne se répète pas dans le
 dépôt (le numéro du run de CI). Plus d'environnement dans le nom : le paquet est **neutre**.
 
+**LibreOffice : une pré-version s'écrit en chiffres dans `description.xml`.** LibreOffice
+accepte un suffixe dans `<version value="…">` mais le range mal : `0.4.0-rc.12` y passe pour
+plus récent que `0.4.0`. Le paquet y inscrit donc une écriture numérique qui se range
+correctement, et le plugin annonce au DM le numéro complet (`X-Plugin-Version`) :
+
+| Numéro (DM, nom du fichier, signature) | `<version value>` de `description.xml` |
+|---|---|
+| `X.Y.Z` | `X.Y.Z` |
+| `X.Y.Z-dev.N` | `P.1.N` |
+| `X.Y.Z-rc.N` | `P.2.N` |
+
+`P` est le plus grand numéro à trois éléments avant `X.Y.Z` : `X.Y.(Z-1)` ; `X.(Y-1).99999`
+si Z vaut 0 ; `(X-1).99999.99999` si Y vaut 0 aussi. Exemple : `0.4.0-rc.12` s'écrit
+`0.3.99999.2.12`. Le DM accepte cette écriture à l'import et l'annonce dans le flux natif
+`update.xml` ; le fichier téléchargé garde le numéro complet.
+
 **Un paquet neutre.** Aucune valeur d'organisation : la liste de DM porte une adresse
 d'exemple (`https://dm.example.invalid`), `dm-config.json` des repères `${{VAR}}` ou rien pour
 les réglages que le DM gouverne. Chaque DM y inscrit ses valeurs à l'import ; le même fichier

@@ -105,6 +105,7 @@ from .services.db import (
 from .services.db import (
     wait_for_db as _svc_wait_for_db,
 )
+from .services.versions import libreoffice_numeric_version as _libreoffice_numeric_version
 from .services.versions import parse_version_tuple as _parse_version_tuple
 from .services.versions import version_nature as _version_nature
 from .settings import settings
@@ -5389,7 +5390,9 @@ def catalog_libreoffice_update_xml(slug: str, version: str | None = None):
         f'<description xmlns="{_LO_UPDATE_NS}"\n'
         '             xmlns:xlink="http://www.w3.org/1999/xlink">\n'
         f"  <identifier value={_xml_attr(extension_id)}/>\n"
-        f"  <version value={_xml_attr(announced)}/>\n"
+        # Écriture numérique d'une pré-version : LibreOffice rangerait « X.Y.Z-rc.N »
+        # après « X.Y.Z » et la reproposerait sans fin. Le fichier garde le numéro du DM.
+        f"  <version value={_xml_attr(_libreoffice_numeric_version(announced) or announced)}/>\n"
         "  <update-download>\n"
         f"    <src xlink:href={_xml_attr(download)}/>\n"
         "  </update-download>\n"

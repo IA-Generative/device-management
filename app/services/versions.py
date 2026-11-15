@@ -158,3 +158,50 @@ def prerelease_campaign_message(v, app_env: str) -> str | None:
             "Sur cette instance de production, une campagne ordinaire la proposerait à tous les "
             "postes en version antérieure. Préférez une expérimentation sur une cohorte, ou "
             "confirmez ce déploiement.")
+
+
+# ── Écriture numérique d'une pré-version pour LibreOffice ────────────────────
+# LibreOffice accepte un suffixe dans <version value="…"> de description.xml,
+# mais le range mal : il compare élément par élément, le plus long d'abord, si
+# bien que « 0.4.0-rc.12 » passe pour plus récent que « 0.4.0 » et que « 0.4.1 ».
+# Un poste en candidate ne se verrait jamais proposer la finale par le flux natif.
+# Le paquet inscrit donc dans son manifeste une écriture purement numérique, qui
+# se range correctement, et annonce au DM le numéro complet.
+#
+#   X.Y.Z        → X.Y.Z
+#   X.Y.Z-dev.N  → P.1.N      P = le plus grand numéro à trois éléments avant X.Y.Z :
+#   X.Y.Z-rc.N   → P.2.N      X.Y.(Z-1) ; X.(Y-1).99999 si Z = 0 ; (X-1).99999.99999 si Y = 0 aussi.
+#
+# Ordre obtenu : 0.3.1 < 0.4.0-dev.7 (0.3.99999.1.7) < 0.4.0-rc.12 (0.3.99999.2.12) < 0.4.0.
+_LO_MAX = 99999
+_LO_RANK = {NATURE_TRIAL: 1, NATURE_CANDIDATE: 2}
+_LO_PRE_RE = re.compile(r"(?:rc|dev)\.?(\d+)", re.IGNORECASE)
+
+
+def libreoffice_numeric_version(v) -> str | None:
+    """Écriture numérique de `v` pour le manifeste et le flux natif de LibreOffice.
+
+    None si `v` n'a pas la forme X.Y.Z, X.Y.Z-rc.N ou X.Y.Z-dev.N, ou si elle
+    n'a pas de prédécesseur (0.0.0-rc.N).
+    """
+    text = str(v or "").strip().split("+", 1)[0]
+    core_text, sep, pre = text.partition("-")
+    core = try_parse_version_tuple(core_text)
+    if core is None or len(core) != 3 or any(part < 0 or part >= _LO_MAX for part in core):
+        return None
+    if not sep:
+        return core_text
+    rank = _LO_RANK.get(version_nature(text))
+    match = _LO_PRE_RE.fullmatch(pre)
+    if rank is None or not match:
+        return None
+    x, y, z = core
+    if z > 0:
+        previous = (x, y, z - 1)
+    elif y > 0:
+        previous = (x, y - 1, _LO_MAX)
+    elif x > 0:
+        previous = (x - 1, _LO_MAX, _LO_MAX)
+    else:
+        return None
+    return ".".join(str(part) for part in (*previous, rank, int(match.group(1))))

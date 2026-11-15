@@ -23,7 +23,7 @@ import zipfile
 import zlib
 
 from . import package_bootstrap, package_signing
-from .versions import version_nature
+from .versions import libreoffice_numeric_version, version_nature
 
 # Codes de refus (stables : renvoyés par l'API, affichés et testés).
 SIGNATURE_REQUIRED = "signature_required"
@@ -183,6 +183,10 @@ def version_notes(version: str, filename: str, embedded: dict[str, str]) -> tupl
     for source in _NATIVE_SOURCES:
         found = embedded.get(source)
         if not found or found == version:
+            continue
+        if source == "description.xml" and found == libreoffice_numeric_version(version):
+            # LibreOffice range mal un suffixe : le manifeste d'une pré-version porte
+            # son écriture numérique, et le plugin annonce au DM le numéro complet.
             continue
         if found == core and core != version and source != "install.rdf":
             # Certains logiciels hôtes n'acceptent qu'un numéro purement numérique
