@@ -315,18 +315,23 @@ def _rebuild(src: zipfile.ZipFile, replacements: dict[str, bytes],
              extra_files: dict[str, bytes] | None = None) -> bytes:
     """Archive servie : entrées retirées, remplacées, et `extra_files` déposés à la racine."""
     extra = dict(extra_files or {})
+    # Un fichier venu du paquet sous le nom d'un fichier du DM ne fait jamais foi :
+    # toutes ses occurrences sont écartées (doublons et variantes de casse compris,
+    # un lecteur de ZIP rend la DERNIÈRE entrée d'un nom), et celui du DM est
+    # déposé une seule fois, à la fin.
+    reserved = {name.lower() for name in extra}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
         for item in src.infolist():
-            if item.filename.lower() in STRIP_NAMES:
+            low = item.filename.lower()
+            if low in STRIP_NAMES or low in reserved:
                 continue
-            if item.filename in extra:
-                # Un fichier du même nom venu du paquet ne fait jamais foi : celui du DM le remplace.
-                dst.writestr(item, extra.pop(item.filename))
-            elif item.filename in replacements:
+            if item.filename in replacements:
                 dst.writestr(item, replacements[item.filename])
             else:
-                dst.writestr(item, src.read(item.filename))
+                # Lecture par l'entrée, pas par le nom : deux entrées de même nom
+                # gardent chacune leur contenu.
+                dst.writestr(item, src.read(item))
         for name, content in extra.items():
             # Date fixe : réimporter le même paquet doit redonner les mêmes octets,
             # donc la même empreinte (sinon « ce numéro existe avec un autre binaire »).

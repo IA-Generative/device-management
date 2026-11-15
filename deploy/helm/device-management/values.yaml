@@ -759,11 +759,15 @@ config:
     # l'organisation, déposées dans chaque paquet servi (dm-trust.json). Vide :
     # l'ancre est la clé publique de ce DM (mode simple, sans délégation).
     trustRoots: ""
-    # La clé PRIVÉE de signature et la délégation ne se mettent pas ici : ce
-    # sont deux clés du Secret de l'application, lues par le seul composant
-    # d'administration : DM_PACKAGE_SIGNING_KEY (PEM) et
-    # DM_PACKAGE_SIGNING_DELEGATION (JSON produit par
-    # scripts/package-signing/dm-package-keys.py delegate).
+    # DM_PACKAGE_SIGNING_DELEGATION. Délégation de la clé de ce DM, signée par
+    # la racine (JSON produit par scripts/package-signing/dm-package-keys.py
+    # delegate). Ce n'est pas un secret. Tous les composants la lisent : elle
+    # est jointe à chaque enveloppe AU MOMENT DE SERVIR, donc la renouveler ici
+    # suffit, sans réimporter les paquets. Vide en mode simple.
+    signingDelegation: ""
+    # La clé PRIVÉE de signature ne se met pas ici : c'est la clé
+    # DM_PACKAGE_SIGNING_KEY (PEM) du Secret de l'application, lue par le seul
+    # composant d'administration.
 
   storage:
     # DM_STORE_ENROLL_LOCALLY. Optional, default false (S3 mode). Set true

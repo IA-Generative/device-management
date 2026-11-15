@@ -1511,6 +1511,7 @@ async def deploy_create(request: Request,
                         confirm_overwrite: str = Form(""),
                         keep_bootstrap: str = Form(""),
                         confirm_ref: str = Form(""),
+                        confirm_prerelease: str = Form(""),
                         adapt_config: str = Form("1"),
                         signature: UploadFile | None = File(None),
                         binary: UploadFile = File(...)):
@@ -1569,6 +1570,10 @@ async def deploy_create(request: Request,
             unreadable = unorderable_version_message(version)
             if unreadable:
                 raise HTTPException(400, unreadable)
+            # Pré-version en campagne ordinaire sur une production (issue #106).
+            prerelease_warning = prerelease_campaign_message(version, os.getenv("DM_APP_ENV", ""))
+            if prerelease_warning and not _form_truthy(confirm_prerelease):
+                raise HTTPException(409, {"code": PRERELEASE_ORDINARY_CODE, "message": prerelease_warning})
             try:
                 overwritten = artifacts_svc.check_overwrite(
                     cur, device_type=device_type, platform_variant="", version=version,
@@ -2342,6 +2347,10 @@ async def catalog_create(request: Request):
                         status="published",
                     )
                     version_created = initial_version
+                except (package_import.PackageRefused, package_bootstrap.SignedPackageMismatch) as refused:
+                    # Un paquet refusé n'est pas une panne : rien n'est créé, et
+                    # l'administrateur lit pourquoi (au lieu d'un plugin sans version).
+                    raise HTTPException(422, str(refused)) from refused
                 except Exception as ver_err:
                     logger.warning("auto-version creation failed: %s", ver_err)
 
@@ -2352,6 +2361,9 @@ async def catalog_create(request: Request):
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/catalog/{plugin_id}?created=1", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         logger.error("plugin create failed: %s", e)
@@ -2753,7 +2765,8 @@ async def catalog_version_invite(request: Request, plugin_id: int, version_id: i
 
     Leur plugin passera sur cette version à son prochain démarrage. La cohorte
     est celle de la campagne d'expérimentation active de la version ; une
-    cohorte « pourcentage » n'a pas de membres et n'est pas acceptée.
+    cohorte qui n'est pas une liste de personnes (pourcentage, motif d'adresse,
+    groupe Keycloak) n'est pas acceptée : ses membres ne sont pas lus.
     """
     addresses = [e.strip().lower() for e in re.split(r"[\s,;]+", emails or "") if e.strip()]
     invalid = [e for e in addresses if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", e)]
@@ -2775,9 +2788,13 @@ async def catalog_version_invite(request: Request, plugin_id: int, version_id: i
                 raise HTTPException(409, "Cette version n'a pas de campagne d'essai active sur une cohorte : "
                                          "créez-la d'abord, ou envoyez le lien d'essai.")
             campaign_id, cohort_id, cohort_type = row
-            if cohort_type == "percentage":
-                raise HTTPException(409, "La cohorte de cet essai est un pourcentage du parc : on n'y ajoute "
-                                         "pas de personnes nommément.")
+            # Seule une cohorte « manuelle » se lit dans la liste de ses membres. Y
+            # ajouter quelqu'un pour un autre type (pourcentage, motif d'adresse,
+            # groupe Keycloak) n'aurait aucun effet, et l'écran dirait le contraire.
+            if cohort_type != "manual":
+                raise HTTPException(409, "La cohorte de cet essai n'est pas une liste de personnes "
+                                         f"(type « {cohort_type} ») : on n'y ajoute personne nommément. "
+                                         "Envoyez le lien d'essai, ou changez la règle de la cohorte.")
             added = cohorts_svc.add_members(cur, cohort_id, [("email", e) for e in addresses])
             audit_log(cur, actor=getattr(request.state, "admin_session", {}),
                       action="version.invite", resource_type="plugin_version",
