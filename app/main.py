@@ -929,12 +929,13 @@ from app.pathsafe import safe_path_join as _safe_path_join  # noqa: E402 (alias 
 from app.pathsafe import safe_segment as _safe_segment  # noqa: E402 (alias historique placé près des appelants)
 
 # Secrets qu'un gabarit de configuration a le droit de désigner : ceux que le DM
-# distribue à dessein (ils sont ensuite retirés pour un appelant sans paire relais).
+# distribue à dessein (ils sont ensuite retirés pour un appelant sans paire relais),
+# et les deux repères de télémétrie que le chart documente comme repères de gabarit.
 _TEMPLATE_SECRET_ALLOWLIST = frozenset(
     m.group(1) or m.group(2)
     for placeholder in _package_config.GOVERNED.values()
     for m in [_TEMPLATE_VAR_RE.search(placeholder)] if m
-)
+) | {"TELEMETRY_KEY", "TELEMETRY_SALT"}
 _TEMPLATE_VARS_REFUSED: set[str] = set()
 
 
