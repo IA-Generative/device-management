@@ -38,6 +38,7 @@ common = {
     "DM_RELAY_SECRET_PEPPER": "banc-pepper", "DM_LLM_TOKEN_SIGNING_KEY": "banc-llm-key",
     "ADMIN_SESSION_SECRET": "banc-session-secret", "DM_ALLOW_ORIGINS": "*",
     "KEYCLOAK_CLIENT_ID": "client-du-banc",
+    "DM_GITHUB_API_URL": "http://faux-github:8765", "DM_GITHUB_POLL_INTERVAL": "5",
     "DM_PACKAGE_SIGNATURE_POLICY": "require",
     "DM_PACKAGE_SIGNING_REQUIRED": "true",
     "DM_PACKAGE_PUBLISHER_KEYS": pub(publisher),
@@ -46,8 +47,10 @@ common = {
 }
 admin = {"DM_PACKAGE_SIGNING_KEY": priv(dm)}
 if mode == "delegation":
-    admin["DM_PACKAGE_SIGNING_DELEGATION"] = json.dumps(deleg)
-    admin["DM_PACKAGE_TRUST_ROOTS"] = pub(root)
+    # Ni la délégation ni la racine ne sont secrètes : tous les composants les lisent
+    # (la délégation en vigueur est jointe à l'enveloppe au moment de servir).
+    common["DM_PACKAGE_SIGNING_DELEGATION"] = json.dumps(deleg)
+    common["DM_PACKAGE_TRUST_ROOTS"] = pub(root)
 open(os.path.join(HERE, "common.env"), "w").writelines(envline(k, v) for k, v in common.items())
 open(os.path.join(HERE, "admin.env"), "w").writelines(envline(k, v) for k, v in admin.items())
 json.dump({"root_keyid": ps.key_id(root.public_key()), "dm_keyid": ps.key_id(dm.public_key()),
@@ -110,6 +113,16 @@ data = xpi("0.24.2")
 name = "banc-tb-0.24.2.xpi"
 open(os.path.join(OUT, name), "wb").write(data)
 json.dump(envelope(data, "nom-du-depot", "0.24.2", name, "refs/heads/main"), open(os.path.join(OUT, name + ".sig.json"), "w"))
+# Releases « GitHub » servies par le faux serveur : une générale et une candidate.
+for version, ref, prerelease in (("0.27.0", "refs/heads/main", False), ("0.27.1-rc.5", "refs/heads/develop", True)):
+    folder = os.path.join(OUT, "github", "IA-Generative", "banc-plugin", f"banc-v{version}")
+    os.makedirs(folder, exist_ok=True)
+    data = xpi(version)
+    name = f"banc-tb-{version}.xpi"
+    open(os.path.join(folder, name), "wb").write(data)
+    json.dump(envelope(data, "banc-tb", version, name, ref), open(os.path.join(folder, name + ".sig.json"), "w"))
+    json.dump({"prerelease": prerelease, "body": f"Notes de la {version}"}, open(os.path.join(folder, "release.json"), "w"))
+
 # Cas d'attaque
 data = xpi("0.24.1")
 name = "banc-tb-0.24.1.xpi"

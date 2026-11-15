@@ -104,6 +104,14 @@ spec:
                   optional: true
             {{- include "device-management.awsEnv" . | nindent 12 }}
             {{- include "device-management.databaseEnv" . | nindent 12 }}
+            # Jeton de lecture des releases GitHub (issue #108), facultatif : requis
+            # pour un dépôt privé, et pour dépasser la limite des appels anonymes.
+            - name: DM_GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "device-management.secretName" . }}
+                  key: DM_GITHUB_TOKEN
+                  optional: true
             # Required by the prod startup guard (validate_security_config in
             # app/main.py): it runs at module-import time, and worker_main.py
             # imports app.main too — so the worker is subject to the same

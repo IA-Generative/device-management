@@ -732,6 +732,18 @@ config:
 
   # S3-backed storage for enrollment payloads and distributed binaries
   # (default since horizontal scaling requires no RWO PVC on api/worker).
+  # Relevé des releases GitHub des plugins (issue #108). Le DM lit les versions
+  # disponibles ; l'import reste un geste de l'administrateur. Sans accès
+  # sortant vers l'API, la fiche du plugin le dit et l'envoi manuel reste la voie.
+  github:
+    # DM_GITHUB_API_URL. Défaut : l'API publique. À changer pour un miroir.
+    apiUrl: "https://api.github.com"
+    # DM_GITHUB_POLL_INTERVAL, en secondes. 0 coupe le relevé périodique
+    # (« Vérifier maintenant » reste servi). Défaut 900.
+    pollInterval: 900
+    # Le jeton ne se met pas ici : clé DM_GITHUB_TOKEN du Secret de
+    # l'application, lue par le worker et l'administration seulement.
+
   # Chaîne de confiance des paquets de plugin (ADR-0006). Tout est inactif par
   # défaut : sans réglage, l'import et la directive de mise à jour sont
   # inchangés.

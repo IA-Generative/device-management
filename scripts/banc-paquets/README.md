@@ -33,7 +33,7 @@ WebCrypto comme le fera un plugin, joue toujours.
 | Fichier | Contenu |
 |---|---|
 | `gen.py` | clés jetables, fichiers d'environnement, paquets neutres (Thunderbird, LibreOffice) et leurs signatures d'origine, cas d'attaque |
-| `run.py` | scénario HTTP : refus à l'import, version générale, directive et vérification côté poste, composant sans clé, cohabitation générale + candidate + deux essais, sortie de la finale, LibreOffice |
+| `run.py` | scénario HTTP : refus à l'import, version générale, directive et vérification côté poste, composant sans clé, cohabitation générale + candidate + deux essais, sortie de la finale, LibreOffice, import depuis les releases GitHub (faux serveur `scripts/faux_github.py`) |
 | `ui.py` | scénario navigateur : fiche du plugin, aperçu de l'import, envoi d'un essai avec confirmation, invitation, catalogue public |
 | `verify.mjs` | vérificateur de référence indépendant du code du DM |
 
