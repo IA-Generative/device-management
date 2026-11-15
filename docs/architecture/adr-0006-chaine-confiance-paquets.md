@@ -109,6 +109,12 @@ l'un de ses alias.
   déposée est la clé publique du DM lui-même.
 - **La clé du DM n'est montée que sur le composant d'administration**, qui est le seul à
   importer. Les pods de service ne peuvent que relayer une enveloppe déjà produite.
+- **La délégation en vigueur est jointe au moment de servir** (directive et `.sig.json`),
+  pas figée à l'import : la renouveler ne demande pas de réimporter les paquets. Elle n'est
+  pas secrète, tous les composants la lisent.
+- **Une signature de build n'est jamais acceptée par délégation.** La délégation ne dit pas
+  pour quel usage elle vaut ; elle ne sert qu'à la signature d'un paquet servi. Une
+  déclaration de build doit nommer le plugin et la version.
 - **Règle de transition** : un plugin dont le paquet installé contient un `dm-trust.json`
   exige une signature valide pour toute mise à jour. Sans ce fichier (paquet antérieur),
   il garde le contrôle par empreinte. La confiance s'ancre donc à l'installation du

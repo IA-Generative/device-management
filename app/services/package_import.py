@@ -20,6 +20,7 @@ import io
 import json
 import re
 import zipfile
+import zlib
 
 from . import package_bootstrap, package_signing
 from .versions import version_nature
@@ -30,6 +31,9 @@ SIGNATURE_INVALID = "signature_invalid"
 REF_NOT_ALLOWED = "ref_not_allowed"
 VERSION_MISMATCH = "version_mismatch"
 SIGNING_CONFIG = "signing_config"
+UNREADABLE = "unreadable_archive"
+PLUGIN_REQUIRED = "plugin_required"
+FOREIGN_ANCHOR = "foreign_trust_anchor"
 
 # Statuts du contrôle d'origine (info["build"]["status"]).
 BUILD_VERIFIED = "verified"
@@ -73,11 +77,19 @@ def embedded_versions(source) -> dict[str, str]:
     names = set(zf.namelist())
 
     def text(name: str) -> str:
-        return zf.read(name).decode("utf-8", errors="replace")
+        # Une entrée illisible (CRC faux, chiffrée, compression inconnue) vaut « rien
+        # à lire » : elle ne doit pas faire sortir l'import avant ses contrôles.
+        try:
+            return zf.read(name).decode("utf-8", errors="replace")
+        except _ZIP_READ_ERRORS:
+            return ""
 
     if "manifest.json" in names:
         try:
-            value = json.loads(text("manifest.json")).get("version")
+            manifest = json.loads(text("manifest.json"))
+            # version_name : le numéro lisible d'une extension de navigateur, quand
+            # `version` doit rester purement numérique.
+            value = manifest.get("version_name") or manifest.get("version")
             if isinstance(value, str) and value.strip():
                 out["manifest.json"] = value.strip()
         except (ValueError, AttributeError):
@@ -105,6 +117,9 @@ def embedded_versions(source) -> dict[str, str]:
 
 
 _NATIVE_SOURCES = ("manifest.json", "install.rdf", "description.xml")
+# Lire une entrée d'archive peut échouer de bien des façons ; aucune ne doit
+# passer pour autre chose qu'une archive illisible.
+_ZIP_READ_ERRORS = (zipfile.BadZipFile, zlib.error, NotImplementedError, RuntimeError, KeyError, OSError, EOFError)
 
 _RDF_ID_RE = re.compile(r"<em:id>\s*([^<\s]+)\s*</em:id>|em:id=\"([^\"]+)\"")
 _RDF_TARGET_RE = re.compile(r"<em:targetApplication\b")
@@ -125,7 +140,10 @@ def embedded_identity(source) -> str:
     names = set(zf.namelist())
 
     def text(name: str) -> str:
-        return zf.read(name).decode("utf-8", errors="replace")
+        try:
+            return zf.read(name).decode("utf-8", errors="replace")
+        except _ZIP_READ_ERRORS:
+            return ""
 
     if "manifest.json" in names:
         try:
@@ -161,11 +179,22 @@ def version_notes(version: str, filename: str, embedded: dict[str, str]) -> tupl
     notes: list[str] = []
     if not version:
         return None, notes
+    core = version.split("+", 1)[0].split("-", 1)[0]
     for source in _NATIVE_SOURCES:
         found = embedded.get(source)
-        if found and found != version:
-            return (f"Le paquet se déclare en version {found} ({source}), pas {version}. Le poste "
-                    f"annoncerait {found} : enregistrez le paquet sous ce numéro, ou reconstruisez-le."), notes
+        if not found or found == version:
+            continue
+        if found == core and core != version and source != "install.rdf":
+            # Certains logiciels hôtes n'acceptent qu'un numéro purement numérique
+            # dans leur manifeste (extensions de navigateur, LibreOffice) : une
+            # pré-version y porte le cœur X.Y.Z. On l'accepte, en le disant.
+            notes.append(
+                f"Le manifeste du paquet ({source}) annonce {found}, le cœur de {version}. Si le poste "
+                f"renvoie {found} au DM, une campagne d'essai le remettra à jour à chaque interrogation : "
+                "le plugin doit annoncer le numéro complet.")
+            continue
+        return (f"Le paquet se déclare en version {found} ({source}), pas {version}. Le poste "
+                f"annoncerait {found} : enregistrez le paquet sous ce numéro, ou reconstruisez-le."), notes
     found = embedded.get("dm-manifest.json")
     if found and found != version:
         notes.append(f"La note de version du paquet (dm-manifest.json) annonce {found}, pas {version}.")
@@ -181,9 +210,19 @@ def _check_build(data: bytes, envelope, *, slug: str, version: str, confirm_ref:
     policy = package_signing.policy()
     if policy == package_signing.POLICY_OFF:
         return {"status": BUILD_UNCHECKED}
+    if policy == package_signing.POLICY_REQUIRE and not slug:
+        # Sans le nom du plugin, rien ne lie la signature à ce qu'on enregistre :
+        # un paquet signé pour un autre plugin passerait.
+        raise PackageRefused(
+            PLUGIN_REQUIRED,
+            "Cette instance exige une signature d'origine, et ce chemin d'envoi ne dit pas pour quel "
+            "plugin est le paquet. Envoyez-le par « Nouvelle version » de la fiche du plugin, ou par "
+            "POST /api/plugins/{slug}/deploy.", info)
     try:
         result = package_signing.verify_build(envelope, data, slug=slug, version=version,
                                               slug_aliases=slug_aliases)
+    except package_signing.SigningConfigError as e:
+        raise PackageRefused(SIGNING_CONFIG, f"Contrôle des signatures mal configuré : {e}", info) from e
     except package_signing.SignatureError as e:
         if e.code in _TAMPER_CODES:
             raise PackageRefused(SIGNATURE_INVALID, str(e), info) from e
@@ -230,16 +269,13 @@ def import_package(data: bytes, *, slug: str = "", version: str = "", filename: 
     Lève `zipfile.BadZipFile`, `package_bootstrap.SignedPackageMismatch` ou
     `PackageRefused`.
     """
-    embedded = embedded_versions(data)
     info: dict = {
         "nature": version_nature(version),
         "upstream": {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)},
-        "versions": embedded,
+        "versions": {},
     }
-    refusal, version_remarks = version_notes(version, filename, embedded)
-    if refusal:
-        raise PackageRefused(VERSION_MISMATCH, refusal, info)
-
+    # Le contrôle d'origine porte sur les octets reçus, avant toute lecture de
+    # l'archive : une archive qui se lit mal ne doit pas le faire sauter.
     build = _check_build(data, build_signature, slug=slug, version=version,
                          confirm_ref=confirm_ref, info=info, slug_aliases=slug_aliases)
 
@@ -247,11 +283,30 @@ def import_package(data: bytes, *, slug: str = "", version: str = "", filename: 
         trust = package_signing.trust_document()
     except package_signing.SigningConfigError as e:
         raise PackageRefused(SIGNING_CONFIG, f"Signature des paquets mal configurée : {e}", info) from e
+    # Dès qu'un contrôle est actif, une archive illisible ou ambiguë est refusée ;
+    # sans aucun réglage, elle est rendue à l'appelant comme avant (BadZipFile).
+    strict = (package_signing.policy() != package_signing.POLICY_OFF or trust is not None
+              or package_signing.signing_required())
+
+    embedded = info["versions"] = embedded_versions(data)
+    refusal, version_remarks = version_notes(version, filename, embedded)
+    if refusal:
+        raise PackageRefused(VERSION_MISMATCH, refusal, info)
+
     extra = {}
     if trust is not None:
         extra[package_signing.TRUST_FILE] = (json.dumps(trust, indent=2) + "\n").encode("utf-8")
 
-    served, bootstrap_info = package_bootstrap.prepare(data, keep=keep_bootstrap, extra_files=extra)
+    try:
+        if strict:
+            _check_archive(data, info, anchor_expected=trust is not None)
+        served, bootstrap_info = package_bootstrap.prepare(data, keep=keep_bootstrap, extra_files=extra)
+    except _ZIP_READ_ERRORS as e:
+        if strict:
+            raise PackageRefused(
+                UNREADABLE, "Archive illisible ou endommagée : elle ne peut être ni contrôlée ni signée.",
+                info) from e
+        raise zipfile.BadZipFile(str(e)) from e
     info.update(bootstrap_info)
     info["build"] = build
     info["notes"] = list(info.get("notes") or []) + version_remarks
@@ -273,6 +328,31 @@ def import_package(data: bytes, *, slug: str = "", version: str = "", filename: 
     return served, info
 
 
+def _check_archive(data: bytes, info: dict, *, anchor_expected: bool) -> None:
+    """Refuse une archive dont le contenu est ambigu. Lève PackageRefused ou une erreur de lecture.
+
+    - deux entrées de même nom : deux lecteurs n'y voient pas le même fichier ;
+    - une archive à signature embarquée qui apporte sa propre ancre de confiance :
+      le DM ne peut pas la remplacer sans casser la signature.
+    """
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        names = [n.lower() for n in zf.namelist()]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise PackageRefused(
+                UNREADABLE, "Archive refusée : plusieurs entrées portent le même nom "
+                f"({', '.join(duplicates[:3])}).", info)
+        if (anchor_expected and package_signing.TRUST_FILE in names
+                and package_bootstrap.is_signed(data, zf.namelist())):
+            raise PackageRefused(
+                FOREIGN_ANCHOR, "Cette archive porte une signature embarquée et sa propre ancre de "
+                f"confiance ({package_signing.TRUST_FILE}) : le DM ne peut pas y déposer la sienne.", info)
+        # Toute entrée doit se lire : sinon le logiciel hôte et le DM ne verraient pas le même paquet.
+        bad = zf.testzip()
+        if bad:
+            raise zipfile.BadZipFile(f"entrée illisible : {bad}")
+
+
 def preview(data: bytes, *, slug: str = "", version: str = "", filename: str = "",
             build_signature=None, slug_aliases=()) -> dict:
     """Ce que l'import dirait de ce paquet, sans rien stocker ni signer.
@@ -284,16 +364,15 @@ def preview(data: bytes, *, slug: str = "", version: str = "", filename: str = "
     embedded = embedded_versions(data)
     out: dict = {"nature": version_nature(version) if version else None, "versions": embedded,
                  "policy": package_signing.policy(), "notes": [], "refusal": None, "build": None}
-    refusal, out["notes"] = version_notes(version, filename, embedded)
-    if refusal:
-        out["refusal"] = {"code": VERSION_MISMATCH, "message": refusal, "confirmable": False}
-        return out
     try:
         out["build"] = _check_build(data, build_signature, slug=slug, version=version,
                                     confirm_ref=False, info={}, slug_aliases=slug_aliases)
     except PackageRefused as e:
         out["build"] = e.info.get("build")
         out["refusal"] = {"code": e.code, "message": str(e), "confirmable": e.code == REF_NOT_ALLOWED}
+    version_refusal, out["notes"] = version_notes(version, filename, embedded)
+    if version_refusal and not (out["refusal"] and not out["refusal"]["confirmable"]):
+        out["refusal"] = {"code": VERSION_MISMATCH, "message": version_refusal, "confirmable": False}
     return out
 
 
