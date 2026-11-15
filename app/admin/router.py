@@ -3003,7 +3003,10 @@ async def catalog_version_upload(request: Request, plugin_id: int):
             # 6. Store config_template if extracted
             if deploy_config_template:
                 try:
-                    catalog_svc.update_plugin(cur, plugin_id, config_template=deploy_config_template)
+                    # json.dumps : psycopg2 ne sait pas adapter un dict. Passé tel quel,
+                    # l'écriture échouait et le gabarit du paquet n'était jamais enregistré.
+                    catalog_svc.update_plugin(cur, plugin_id,
+                                              config_template=json.dumps(deploy_config_template))
                 except Exception as ct_err:
                     logger.warning("version upload: config_template store failed: %s", ct_err)
                 # Chemin d'import du template comme les autres → même contrat :
