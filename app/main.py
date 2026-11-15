@@ -750,6 +750,34 @@ def _apply_catalog_overrides(cfg: dict, *, plugin_id: int, profile: str, cur) ->
     return cfg
 
 
+def _require_verified_email() -> bool:
+    """Le ciblage par adresse n'accepte-t-il que l'adresse vérifiée à l'enrôlement ?"""
+    return os.getenv("DM_REQUIRE_VERIFIED_EMAIL", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _caller_email(request: Request, relay_ok: bool | None = None, relay_meta=None) -> tuple[str, bool]:
+    """(adresse de l'appelant, vérifiée ?) — issue #54.
+
+    L'adresse vérifiée est celle du jeton présenté à l'enrôlement, rattachée à
+    la paire relais (`relay_clients.email`) : elle prime toujours. L'en-tête
+    `X-User-Email`, que rien ne vérifie, n'est qu'un repli pour les postes sans
+    paire relais ; `DM_REQUIRE_VERIFIED_EMAIL` le retire, et l'adresse est alors
+    vide pour un appelant non authentifié.
+
+    `relay_ok` / `relay_meta` : résultat d'un contrôle relais déjà fait par
+    l'appelant, pour ne pas le refaire.
+    """
+    if relay_ok is None:
+        relay_ok, relay_meta = _relay_auth_from_request(request, target="config")
+    if relay_ok and isinstance(relay_meta, dict):
+        verified = str(relay_meta.get("email") or "").strip()
+        if verified:
+            return verified, True
+    if _require_verified_email():
+        return "", False
+    return request.headers.get("X-User-Email", "").strip(), False
+
+
 def _check_plugin_access(plugin_row: dict | None, request: Request, cur) -> bool:
     """Check if the caller has access to a restricted plugin. Returns True if access OK."""
     if not plugin_row:
@@ -776,12 +804,14 @@ def _check_plugin_access(plugin_row: dict | None, request: Request, cur) -> bool
         return False
 
     if access_mode == "waitlist":
-        email = request.headers.get("X-User-Email", "").strip()
+        # Adresse vérifiée d'abord (issue #54) ; comparaison sans casse, la
+        # colonne est un VARCHAR alors que relay_clients.email est un CITEXT.
+        email, _verified = _caller_email(request)
         if email:
             try:
                 cur.execute("""
                     SELECT 1 FROM plugin_waitlist
-                    WHERE plugin_id = %s AND email = %s AND status = 'approved'
+                    WHERE plugin_id = %s AND lower(email) = lower(%s) AND status = 'approved'
                 """, (plugin_row["id"], email))
                 return cur.fetchone() is not None
             except Exception:
@@ -1111,7 +1141,7 @@ def _resolve_device_cohorts(cur, *, email: str, client_uuid: str) -> list[int]:
                 SELECT DISTINCT cohort_id FROM cohort_members
                 WHERE cohort_id IN ({placeholders})
                   AND (
-                    (identifier_type = 'email' AND identifier_value = %s)
+                    (identifier_type = 'email' AND lower(identifier_value) = lower(%s))
                     OR (identifier_type = 'client_uuid' AND identifier_value = %s)
                   )
                 """,
@@ -3072,7 +3102,9 @@ def get_config(request: Request, profile: str | None = None, device: str | None 
     manifest_version_str = request.headers.get("X-Manifest-Version", "").strip()
     manifest_version: int | None = int(manifest_version_str) if manifest_version_str.isdigit() else None
     client_uuid = request.headers.get("X-Client-UUID", "").strip()
-    email = request.headers.get("X-User-Email", "").strip()
+    # Adresse vérifiée à l'enrôlement d'abord, en-tête en repli (issue #54) : elle
+    # décide des cohortes, donc des campagnes, des flags et des communications.
+    email, _email_verified = _caller_email(request, bool(relay_ok), relay_meta)
 
     # ---- Step 2: Infer platform_variant
     platform_variant = _infer_platform_variant(platform_type, platform_version, manifest_version)

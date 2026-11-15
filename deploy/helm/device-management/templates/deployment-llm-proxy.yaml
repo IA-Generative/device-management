@@ -71,8 +71,7 @@ spec:
             - name: DM_STORE_ENROLL_S3
               value: "false"
             {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.llmProxy.runtimeConfig.pollIntervalSeconds "editable" .Values.llmProxy.runtimeConfig.editable) | nindent 12 }}
-            {{- include "device-management.databaseEnv" . | nindent 12 }}
-            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
+            {{- include "device-management.databaseEnvForApp" . | nindent 12 }}
             # Required by the prod startup guard (validate_security_config in
             # app/main.py): it runs at module-import time regardless of
             # DM_RUNTIME_MODE, so llmProxy is subject to the same "insecure
