@@ -30,6 +30,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.resilience import retry_transient
+from app.services import api_keys
 
 logger = logging.getLogger("dm-admin-auth")
 
@@ -264,7 +265,10 @@ def require_admin(func):
             # seen on int 2026-09-04). An expired API call is a plain 401, no
             # cookies touched; the page decides what to do with it.
             accepte = request.headers.get("accept", "")
-            if (request.url.path.startswith("/admin/api")
+            # « /admin/api/ » avec sa barre finale : la page « /admin/api-keys » est une
+            # page, pas un appel d'API — sans la barre, une session expirée y recevait
+            # un 401 en JSON au lieu de repartir vers la connexion.
+            if (request.url.path.startswith("/admin/api/")
                     or request.headers.get("x-requested-with")
                     or ("application/json" in accepte and "text/html" not in accepte)):
                 return JSONResponse({"detail": "session expirée"}, status_code=401)
@@ -299,6 +303,35 @@ def require_admin(func):
     return wrapper
 
 
+def authenticate_api_key(request: Request, key: str, *, plugin: str | None = None,
+                         plugin_id=None) -> tuple[dict | None, str]:
+    """Identité portée par une clé d'API pour cette requête, ou (None, raison).
+
+    Une panne de base vaut un refus : une clé qu'on ne peut pas vérifier n'ouvre rien.
+    """
+    import psycopg2
+    try:
+        plugin_id = int(plugin_id) if plugin_id is not None else None
+    except (TypeError, ValueError):
+        plugin_id = None
+    try:
+        conn = psycopg2.connect(os.getenv("DATABASE_URL", ""))
+    except Exception:
+        logger.exception("clé d'API : base injoignable, appel refusé")
+        return None, api_keys.INVALID
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            return api_keys.authenticate(
+                cur, key, method=request.method, plugin=plugin, plugin_id=plugin_id,
+                ip=request.client.host if request.client else None)
+    except Exception:
+        logger.exception("clé d'API : vérification impossible, appel refusé")
+        return None, api_keys.INVALID
+    finally:
+        conn.close()
+
+
 def require_admin_or_service_token(func):
     """Like require_admin, but ALSO accepts a valid x-admin-token header
     (== DM_QUEUE_ADMIN_TOKEN) for non-interactive CI callers (e.g. the
@@ -312,6 +345,17 @@ def require_admin_or_service_token(func):
 
     @wraps(func)
     async def wrapper(request: Request, *args, **kwargs):
+        # Clé d'API personnelle (dmk_…) : même accès que le jeton de service, mais
+        # bornée (portée, plugins, échéance) et attribuée à son titulaire.
+        key = api_keys.token_from_headers(request.headers)
+        if key:
+            actor, reason = authenticate_api_key(request, key, plugin_id=kwargs.get("plugin_id"))
+            if actor is None:
+                status = 403 if reason in (api_keys.SCOPE, api_keys.PLUGIN) else 401
+                return JSONResponse({"detail": api_keys.REASON_MESSAGES.get(reason, "Clé d'API refusée."),
+                                     "code": reason}, status_code=status)
+            request.state.admin_session = actor
+            return await func(request, *args, **kwargs)
         tok = (request.headers.get("x-admin-token") or "").strip()
         expected = os.getenv("DM_QUEUE_ADMIN_TOKEN", "").strip()
         if expected and tok and hmac.compare_digest(tok, expected):

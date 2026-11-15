@@ -748,3 +748,27 @@ DO $$ BEGIN
   END IF;
 EXCEPTION WHEN insufficient_privilege THEN NULL;
 END $$;
+
+-- Clés d'API personnelles (migration 013) : appeler l'API au nom de quelqu'un.
+-- Seul le SHA-256 du secret est stocké ; la clé n'est montrée qu'à sa création.
+CREATE TABLE IF NOT EXISTS api_keys (
+    id BIGSERIAL PRIMARY KEY,
+    key_id VARCHAR(12) NOT NULL UNIQUE,
+    secret_hash CHAR(64) NOT NULL,
+    label VARCHAR(100) NOT NULL,
+    owner_email TEXT NOT NULL,
+    scopes TEXT[] NOT NULL DEFAULT '{}',
+    plugins TEXT[] NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by TEXT,
+    expires_at TIMESTAMPTZ NOT NULL,
+    last_used_at TIMESTAMPTZ,
+    last_used_ip TEXT,
+    renewed_at TIMESTAMPTZ,
+    renewed_by TEXT,
+    revoked_at TIMESTAMPTZ,
+    revoked_by TEXT
+);
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS renewed_at TIMESTAMPTZ;
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS renewed_by TEXT;
+CREATE INDEX IF NOT EXISTS api_keys_owner_idx ON api_keys (owner_email);

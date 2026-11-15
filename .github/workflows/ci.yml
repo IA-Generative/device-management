@@ -85,6 +85,7 @@ jobs:
             tests/test_general_version_pg.py \
             tests/test_libreoffice_update_feed_pg.py \
             tests/test_admin_forms_pg.py \
+            tests/test_api_keys_pg.py \
             tests/test_package_bootstrap_pg.py \
             tests/test_package_trust_pg.py \
             tests/test_plugin_installations_fk.py \
