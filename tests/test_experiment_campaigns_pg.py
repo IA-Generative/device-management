@@ -359,3 +359,17 @@ def test_plugin_stats_counts_distinct_versions_across_the_fleet(fixt):
     assert stats["active"] == 4
     assert stats["distinct_versions"] == 3, \
         f"3 versions distinctes attendues sur le parc actif, obtenu {stats['distinct_versions']}"
+
+
+# ─── Issue #54 : adresses comparées sans tenir compte de la casse ─────────────
+
+def test_manual_cohort_matches_an_email_whatever_its_case(fixt):
+    mod = _load_main()
+    cur, _ids = fixt
+    cur.execute("INSERT INTO cohorts (name, type) VALUES ('it-casse', 'manual') RETURNING id")
+    cohort_id = cur.fetchone()[0]
+    cur.execute("INSERT INTO cohort_members (cohort_id, identifier_type, identifier_value) "
+                "VALUES (%s, 'email', 'Prenom.Nom@Example.Test')", (cohort_id,))
+    assert cohort_id in mod._resolve_device_cohorts(cur, email="prenom.nom@example.test", client_uuid="")
+    assert cohort_id in mod._resolve_device_cohorts(cur, email="PRENOM.NOM@EXAMPLE.TEST", client_uuid="")
+    assert cohort_id not in mod._resolve_device_cohorts(cur, email="autre@example.test", client_uuid="")
