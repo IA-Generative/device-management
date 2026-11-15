@@ -60,8 +60,7 @@ spec:
               value: {{ printf "http://%s.%s.svc:%v" (include "device-management.componentName" (dict "root" . "component" "api")) .Release.Namespace .Values.api.service.port | quote }}
             {{- end }}
             {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.admin.runtimeConfig.pollIntervalSeconds "editable" .Values.admin.runtimeConfig.editable) | nindent 12 }}
-            {{- include "device-management.databaseEnv" . | nindent 12 }}
-            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
+            {{- include "device-management.databaseEnvForApp" . | nindent 12 }}
             - name: ADMIN_OIDC_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
