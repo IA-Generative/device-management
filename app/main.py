@@ -106,6 +106,7 @@ from .services.db import (
     wait_for_db as _svc_wait_for_db,
 )
 from .services.versions import parse_version_tuple as _parse_version_tuple
+from .services.versions import version_nature as _version_nature
 from .settings import settings
 
 # Apply persisted runtime-config overrides to os.environ + settings BEFORE the
@@ -5748,7 +5749,7 @@ def updates_manifest_json(request: Request, slug: str, target: str):
 
 
 @app.get("/catalog/{slug}", response_class=Response)
-def catalog_detail(request: Request, slug: str, exp: str | None = None):
+def catalog_detail(request: Request, slug: str, exp: str | None = None, v: str | None = None):
     """Public HTML — plugin detail page.
 
     ``?exp=<tag>`` révèle la section « Versions expérimentales » (branches
@@ -5803,6 +5804,25 @@ def catalog_detail(request: Request, slug: str, exp: str | None = None):
                     ORDER BY published_at DESC NULLS LAST
                 """, (p["id"], exp))
                 exp_rows = cur.fetchall()
+                # ?v=<version> : une seule version de l'étiquette. C'est le lien du bloc
+                # « Préversion », public : il ne doit montrer que la candidate, pas un
+                # essai rangé sous la même étiquette.
+                if v:
+                    exp_rows = [row for row in exp_rows if row[0] == v]
+
+            # Version candidate annoncée à tous (bloc « Préversion »), si
+            # l'administrateur l'a choisi. Les essais, eux, ne sont jamais listés.
+            candidate = None
+            if p.get("show_candidate"):
+                cur.execute("""
+                    SELECT version, tag FROM plugin_versions
+                    WHERE plugin_id = %s AND status = 'experimental' AND tag IS NOT NULL
+                    ORDER BY published_at DESC NULLS LAST, created_at DESC
+                """, (p["id"],))
+                for _cv, _ctag in cur.fetchall():
+                    if _version_nature(_cv) == "rc":
+                        candidate = {"version": _cv, "tag": _ctag}
+                        break
 
         kf = p.get("key_features") or []
         if isinstance(kf, str):
@@ -5859,6 +5879,9 @@ def catalog_detail(request: Request, slug: str, exp: str | None = None):
         return _catalog_templates.TemplateResponse(request, "catalog_detail.html", {
             "request": request, "plugin": plugin, "file_ext": file_ext,
             "experiments": experiments,
+            # Lien d'essai suivi (?exp=<tag>) : la page le dit d'emblée.
+            "trial_tag": exp if experiments else None,
+            "candidate": candidate,
         })
     finally:
         if pool_ctx is not None:

@@ -543,13 +543,25 @@ curl -X POST -H "x-admin-token: $DM_QUEUE_ADMIN_TOKEN" https://<host>/api/files/
 
 ---
 
-## 9 bis. Natures de version
+## 9 bis. Natures de version, invitation à un essai, préversion au catalogue
 
 **Trois natures, lues dans le numéro.** `X.Y.Z` est une version générale, `X.Y.Z-rc.N` une
 candidate, `X.Y.Z-dev.N` un essai. La fiche du plugin l'affiche pour chaque version, avec
 l'origine du paquet et qui la reçoit. Une candidate ou un essai se diffuse par une campagne
 d'expérimentation sur une cohorte ; sur une instance de production, une campagne ordinaire
 qui viserait une pré-version demande une confirmation.
+
+**Inviter quelqu'un à un essai** (bouton « Inviter » d'une version d'essai) :
+
+- *Envoyer un lien* : `/catalog/<slug>?exp=<tag>`, avec un message prêt à copier. La personne
+  installe elle-même.
+- *Ajouter à la cohorte* : ses adresses rejoignent la cohorte de la campagne d'essai active de
+  cette version ; son plugin bascule à son prochain démarrage. Une personne ne doit appartenir
+  qu'à un seul essai d'un plugin à la fois.
+
+**Préversion au catalogue.** Par défaut une candidate n'est visible que par son lien.
+« L'annoncer à tous » (onglet Versions) affiche sur la fiche publique un bloc « Préversion »
+qui mène à la candidate la plus récente. Les essais ne sont jamais listés.
 
 **Signature et origine des paquets** : voir
 [chaine-confiance-paquets.md](chaine-confiance-paquets.md).

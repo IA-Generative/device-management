@@ -179,8 +179,57 @@ def test_e2e_trial_from_an_unlisted_branch_needs_a_recorded_confirmation(site, c
     _verify_like_a_device(site.http.get(update["artifact_url"]).content, update["signature"], "1.1.0-dev.12")
     assert site.config_update("1.0.0", email="autre@example.test") is None
 
-    page = _page(site, f"/admin/catalog/{site.plugin_id}?tab=versions")
-    assert "(sur confirmation)" in page and "Essai" in page
+    # Inviter : la personne ajoutée à la cohorte de l'essai le reçoit à son tour.
+    version_id = site.sql("SELECT id FROM plugin_versions WHERE plugin_id = %s AND version = '1.1.0-dev.12'",
+                          (site.plugin_id,))[0][0]
+    res = site.http.post(f"/admin/catalog/{site.plugin_id}/versions/{version_id}/invite",
+                         data={"emails": "autre@example.test, pas-une-adresse"},
+                         headers={"x-admin-token": _TOKEN}, follow_redirects=False)
+    assert res.status_code == 400
+    # Une cohorte qui n'est pas une liste de personnes : l'ajout n'aurait aucun effet, il est refusé.
+    cohort_id = site.sql("SELECT target_cohort_id FROM campaigns WHERE plugin_id = %s AND is_experiment",
+                         (site.plugin_id,))[0][0]
+    site.sql("UPDATE cohorts SET type = 'email_pattern' WHERE id = %s", (cohort_id,))
+    res = site.http.post(f"/admin/catalog/{site.plugin_id}/versions/{version_id}/invite",
+                         data={"emails": "autre@example.test"},
+                         headers={"x-admin-token": _TOKEN}, follow_redirects=False)
+    assert res.status_code == 409
+    site.sql("UPDATE cohorts SET type = 'manual' WHERE id = %s", (cohort_id,))
+    res = site.http.post(f"/admin/catalog/{site.plugin_id}/versions/{version_id}/invite",
+                         data={"emails": "Autre@example.test"},
+                         headers={"x-admin-token": _TOKEN}, follow_redirects=False)
+    assert res.status_code == 303 and f"invited={version_id}" in res.headers["location"]
+    assert site.config_update("1.0.0", email="autre@example.test")["target_version"] == "1.1.0-dev.12"
+
+    page = _page(site, f"/admin/catalog/{site.plugin_id}?tab=versions&invited={version_id}")
+    assert "?exp=exp-essai" in page and "Est-ce plus clair ?" in page and "(sur confirmation)" in page
+
+
+def test_e2e_candidate_is_public_only_when_the_admin_says_so(site, chain):
+    assert _send(site, chain, "1.0.0").status_code == 303
+    res = _send(site, chain, "1.1.0-rc.3", ref="refs/heads/develop", action="experimental", tag="rc")
+    assert res.status_code == 303, res.text
+    res = _send(site, chain, "1.1.0-dev.9", ref="refs/heads/develop", action="experimental", tag="exp-secret")
+    assert res.status_code == 303, res.text
+
+    page = site.http.get(f"/catalog/{_SLUG}").text
+    assert "1.1.0-rc.3" not in page and "1.1.0-dev.9" not in page and "sur invitation" in page
+
+    res = site.http.post(f"/admin/catalog/{site.plugin_id}/candidate-visibility", data={"show": "1"},
+                         headers={"x-admin-token": _TOKEN}, follow_redirects=False)
+    assert res.status_code == 303
+    page = site.http.get(f"/catalog/{_SLUG}").text
+    assert "Preversion 1.1.0-rc.3" in page and "?exp=rc&amp;v=1.1.0-rc.3" in page
+    assert "1.1.0-dev.9" not in page and "exp-secret" not in page, "un essai n'est jamais listé"
+
+    # Un essai rangé par erreur sous l'étiquette de la candidate ne sort pas par le lien public.
+    res = _send(site, chain, "1.1.0-dev.4", ref="refs/heads/develop", action="experimental", tag="rc")
+    assert res.status_code == 303, res.text
+    page = site.http.get(f"/catalog/{_SLUG}?exp=rc&v=1.1.0-rc.3").text
+    assert "1.1.0-dev.4" not in page
+    assert "Version d'essai" in page and "Revenir a la version generale" in page
+    # Le bouton principal sert l'essai, pas la version générale.
+    assert "Telecharger la version d'essai 1.1.0-rc.3" in page and "Version generale 1.0.0" in page
 
 
 def test_e2e_prerelease_in_an_ordinary_campaign_is_confirmed_on_production(site, chain, monkeypatch):
