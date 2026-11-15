@@ -218,3 +218,18 @@ def test_e2e_renewal_limits(site, keys):
     assert res.status_code == 400 and "révoquée" in res.json()["error"]
     site.http.cookies.clear()
     assert site.http.get("/api/campaigns", headers=_bearer(token)).json()["code"] == "revoked_key"
+
+
+def test_e2e_the_keys_page_sends_an_expired_session_to_login_not_to_a_json_401(site, monkeypatch):
+    """« /admin/api-keys » commence comme « /admin/api/… » : sans session, c'est bien la
+    page de connexion qu'il faut, pas la réponse 401 réservée aux appels d'API."""
+    from app.admin import auth
+    monkeypatch.setattr(auth, "_get_oidc_config", lambda: {
+        "authorization_endpoint": "https://sso.example.test/auth", "token_endpoint": "https://sso.example.test/token"})
+    site.http.cookies.clear()
+    res = site.http.get("/admin/api-keys", headers={"Accept": "text/html"}, follow_redirects=False)
+    assert res.status_code in (302, 303, 307), res.text[:200]
+    assert res.headers["location"].startswith("https://sso.example.test/auth")
+    # Un véritable appel d'API sans session reçoit toujours son 401.
+    res = site.http.get("/admin/api/deploy/0/progress", headers={"Accept": "text/html"}, follow_redirects=False)
+    assert res.status_code == 401

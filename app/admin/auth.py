@@ -265,7 +265,10 @@ def require_admin(func):
             # seen on int 2026-09-04). An expired API call is a plain 401, no
             # cookies touched; the page decides what to do with it.
             accepte = request.headers.get("accept", "")
-            if (request.url.path.startswith("/admin/api")
+            # « /admin/api/ » avec sa barre finale : la page « /admin/api-keys » est une
+            # page, pas un appel d'API — sans la barre, une session expirée y recevait
+            # un 401 en JSON au lieu de repartir vers la connexion.
+            if (request.url.path.startswith("/admin/api/")
                     or request.headers.get("x-requested-with")
                     or ("application/json" in accepte and "text/html" not in accepte)):
                 return JSONResponse({"detail": "session expirée"}, status_code=401)
