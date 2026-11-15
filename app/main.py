@@ -6285,6 +6285,38 @@ def _shutdown_parc_export() -> None:
     _parc_export_thread = None
 
 
+# ---- Relevé des releases GitHub des plugins (issue #108) ---------------------
+_github_releases_stop: threading.Event | None = None
+_github_releases_thread: threading.Thread | None = None
+
+
+@app.on_event("startup")
+def _startup_github_releases() -> None:
+    """Boucle de relevé — seulement en mode all ; le worker dédié la porte dans
+    worker_main. Les rôles web (api, admin…) ne relèvent jamais périodiquement."""
+    global _github_releases_stop, _github_releases_thread
+    if psycopg2 is None or not _db_url_bootstrap():
+        return
+    if _github_releases_thread and _github_releases_thread.is_alive():
+        return
+    from .services import github_releases as _github_releases
+    if not _github_releases.runs_here(_RUNTIME_MODE):
+        return
+    _github_releases_stop = threading.Event()
+    _github_releases_thread = _github_releases.start_background(_github_releases_stop, _RUNTIME_MODE)
+
+
+@app.on_event("shutdown")
+def _shutdown_github_releases() -> None:
+    global _github_releases_stop, _github_releases_thread
+    if _github_releases_stop:
+        _github_releases_stop.set()
+    if _github_releases_thread and _github_releases_thread.is_alive():
+        _github_releases_thread.join(timeout=3)
+    _github_releases_stop = None
+    _github_releases_thread = None
+
+
 # ---- Runtime config sync (all FastAPI roles: api / admin / all) -------------
 _config_sync_stop: threading.Event | None = None
 _config_sync_threads: list[threading.Thread] = []

@@ -46,6 +46,11 @@ def main() -> None:
         # tout seul (flag runtime, verrou consultatif, garde « trop tôt »).
         from .services import parc_export
         parc_export.demarrer_fond(stop_event, mode)
+        # Relevé des releases GitHub des plugins (issue #108) : périodique, donc
+        # ici et jamais dans le processus web. Sans accès sortant, il espace ses
+        # essais et l'envoi manuel reste la voie.
+        from .services import github_releases
+        github_releases.start_background(stop_event, mode)
     else:
         runtime_config.snapshot_baseline()
         logger.info("Runtime config sync disabled (no DB); worker uses ENV baseline.")
