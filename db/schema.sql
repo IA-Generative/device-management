@@ -355,6 +355,8 @@ CREATE TABLE IF NOT EXISTS campaigns (
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+-- Demander le redémarrage du logiciel hôte après l'installation (directive restart_required).
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS restart_required BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS idx_camp_plugin ON campaigns(plugin_id, environment);
 CREATE INDEX IF NOT EXISTS idx_camp_experiment
     ON campaigns(plugin_id) WHERE is_experiment = true AND status = 'active';
