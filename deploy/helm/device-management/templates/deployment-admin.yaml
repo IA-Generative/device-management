@@ -97,12 +97,6 @@ spec:
                   name: {{ include "device-management.secretName" . }}
                   key: DM_PACKAGE_SIGNING_KEY
                   optional: true
-            - name: DM_PACKAGE_SIGNING_DELEGATION
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "device-management.secretName" . }}
-                  key: DM_PACKAGE_SIGNING_DELEGATION
-                  optional: true
             # Jeton de lecture des releases GitHub (issue #108), facultatif : requis
             # pour un dépôt privé, et pour dépasser la limite des appels anonymes.
             - name: DM_GITHUB_TOKEN

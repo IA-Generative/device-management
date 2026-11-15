@@ -26,6 +26,7 @@ import datetime
 import fnmatch
 import hashlib
 import json
+import logging
 import os
 
 from cryptography.exceptions import InvalidSignature
@@ -35,6 +36,8 @@ from cryptography.hazmat.primitives.asymmetric.utils import (
     decode_dss_signature,
     encode_dss_signature,
 )
+
+logger = logging.getLogger("device-management")
 
 ENVELOPE_SCHEMA = "dm-package-signature/1"
 STATEMENT_SCHEMA = "dm-package-statement/1"
@@ -201,15 +204,22 @@ def parse_envelope(source) -> dict:
 def _signed_payload(part: dict, keys: dict, what: str) -> tuple[bytes, str]:
     """Octets du payload de `part` si une de ses signatures est valide pour `keys`."""
     payload = _b64d(part.get("payload"), f"le payload de {what}")
+    signatures = part.get("signatures")
+    if not isinstance(signatures, list):
+        raise SignatureError(MALFORMED, f"Signatures de {what} illisibles : liste attendue.")
     known = False
-    for entry in part.get("signatures") or []:
+    for entry in signatures:
         if not isinstance(entry, dict) or entry.get("alg") != ALG:
             continue
         key = keys.get(str(entry.get("keyid") or ""))
         if key is None:
             continue
         known = True
-        if _verify_raw(key, _b64d(entry.get("sig"), f"la signature de {what}"), payload):
+        try:
+            raw = _b64d(entry.get("sig"), f"la signature de {what}")
+        except SignatureError:
+            continue  # une entrée illisible n'empêche pas d'essayer la suivante
+        if _verify_raw(key, raw, payload):
             return payload, str(entry["keyid"])
     if known:
         raise SignatureError(BAD_SIGNATURE, f"Signature de {what} invalide.")
@@ -257,15 +267,19 @@ def check_delegation(delegation: dict, roots: dict, now: datetime.datetime | Non
     return content
 
 
-def verify_envelope(envelope, roots: dict, now: datetime.datetime | None = None) -> tuple[dict, str]:
+def verify_envelope(envelope, roots: dict, now: datetime.datetime | None = None,
+                    allow_delegation: bool = True) -> tuple[dict, str]:
     """Déclaration signée et keyid du signataire.
 
-    Accepte une signature directe par une clé de `roots`, ou par une clé
-    couverte par une délégation valide d'une de ces clés.
+    Accepte une signature directe par une clé de `roots`, ou — si
+    `allow_delegation` — par une clé couverte par une délégation valide d'une
+    de ces clés. La délégation ne dit pas pour quel usage elle vaut : elle
+    n'est donc admise que là où elle a un sens (paquet servi par un DM), pas
+    pour une signature de build.
     """
     envelope = parse_envelope(envelope)
     keys = dict(roots)
-    if envelope.get("delegation"):
+    if allow_delegation and envelope.get("delegation"):
         try:
             content = check_delegation(envelope["delegation"], roots, now)
             keys[content["keyid"]] = content["_key"]
@@ -279,13 +293,34 @@ def verify_envelope(envelope, roots: dict, now: datetime.datetime | None = None)
 
 # ─── Signature d'origine (CI du plugin) ─────────────────────────────────────
 
+_POLICY_WARNED: set[str] = set()
+
+
 def policy() -> str:
-    value = os.environ.get("DM_PACKAGE_SIGNATURE_POLICY", POLICY_OFF).strip().lower()
-    return value if value in (POLICY_OFF, POLICY_WARN, POLICY_REQUIRE) else POLICY_OFF
+    """Politique de contrôle de la signature d'origine.
+
+    Vide ou absent : `off`. Une valeur inconnue (« required », « on »…) vaut
+    `require`, avec une erreur au journal : une faute de frappe ne doit pas
+    désactiver le contrôle sans bruit.
+    """
+    value = os.environ.get("DM_PACKAGE_SIGNATURE_POLICY", "").strip().lower()
+    if not value:
+        return POLICY_OFF
+    if value in (POLICY_OFF, POLICY_WARN, POLICY_REQUIRE):
+        return value
+    if value not in _POLICY_WARNED:
+        _POLICY_WARNED.add(value)
+        logger.error("DM_PACKAGE_SIGNATURE_POLICY=%r inconnu (attendu off, warn ou require) : "
+                     "traité comme « require ».", value)
+    return POLICY_REQUIRE
 
 
 def publisher_keys() -> dict:
-    return load_public_keys(_env_text("DM_PACKAGE_PUBLISHER_KEYS"))
+    """Clés d'éditeur configurées. Lève SigningConfigError si elles sont illisibles."""
+    try:
+        return load_public_keys(_env_text("DM_PACKAGE_PUBLISHER_KEYS"))
+    except ValueError as e:
+        raise SigningConfigError("DM_PACKAGE_PUBLISHER_KEYS illisible (clés publiques PEM attendues).") from e
 
 
 def _patterns(name: str) -> list[str]:
@@ -321,9 +356,13 @@ def verify_build(envelope, data: bytes, *, slug: str = "", version: str = "", sl
         raise SignatureError(NOT_CONFIGURED,
                              "Aucune clé d'éditeur configurée (DM_PACKAGE_PUBLISHER_KEYS) : "
                              "la signature d'origine ne peut pas être vérifiée.")
-    statement, signer = verify_envelope(envelope, keys)
+    statement, signer = verify_envelope(envelope, keys, allow_delegation=False)
     if statement.get("kind") != "build":
         raise SignatureError(WRONG_KIND, "Cette enveloppe n'est pas une signature de build.")
+    # Une déclaration qui ne nomme ni le plugin ni la version vaudrait pour tous.
+    for field in ("slug", "version", "sha256"):
+        if not isinstance(statement.get(field), str) or not statement[field].strip():
+            raise SignatureError(MALFORMED, f"Signature de build incomplète : champ « {field} » absent.")
     digest = hashlib.sha256(data).hexdigest()
     if str(statement.get("sha256") or "").lower() != digest:
         raise SignatureError(DIGEST_MISMATCH,
@@ -429,6 +468,42 @@ def sign_served(data: bytes, *, slug: str, version: str, filename: str, dm: str 
     if extension_id:
         statement["extension_id"] = extension_id
     return make_envelope(statement, key, delegation)
+
+
+def current_delegation() -> dict | None:
+    """Délégation configurée sur ce composant, si elle est lisible (elle n'est pas secrète)."""
+    raw = _env_text("DM_PACKAGE_SIGNING_DELEGATION").strip()
+    if not raw:
+        return None
+    try:
+        delegation = json.loads(raw)
+    except ValueError:
+        return None
+    return delegation if isinstance(delegation, dict) else None
+
+
+def with_current_delegation(envelope: dict | None) -> dict | None:
+    """Enveloppe à servir : la délégation en vigueur remplace celle du jour de l'import.
+
+    Une délégation a une échéance ; l'enveloppe, elle, est stockée une fois.
+    Servie avec la délégation de l'import, elle serait refusée par les postes
+    dès l'échéance, pour tous les paquets déjà importés. La délégation
+    courante n'est jointe que si elle couvre la clé qui a signé l'enveloppe ;
+    sinon l'enveloppe est servie telle qu'elle a été stockée.
+    """
+    if not isinstance(envelope, dict):
+        return envelope
+    delegation = current_delegation()
+    if not delegation:
+        return envelope
+    try:
+        content = json.loads(_b64d(delegation.get("payload"), "le payload de la délégation").decode("utf-8"))
+    except (SignatureError, ValueError, UnicodeDecodeError, AttributeError):
+        return envelope
+    signers = {str(s.get("keyid")) for s in envelope.get("signatures") or [] if isinstance(s, dict)}
+    if not isinstance(content, dict) or content.get("keyid") not in signers:
+        return envelope
+    return {**envelope, "delegation": delegation}
 
 
 def make_delegation(root_private_key, dm_public_key, *, dm: str,

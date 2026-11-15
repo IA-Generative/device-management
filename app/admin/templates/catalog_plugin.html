@@ -755,7 +755,7 @@
       </tr>
       {% if v.status == 'experimental' %}
       {# Inviter quelqu'un a essayer cette version : un lien a envoyer, ou l'ajout a la cohorte de l'essai #}
-      {% set trial = (v.diffusion | selectattr('is_experiment') | selectattr('cohort_id') | list | first) %}
+      {% set trial = (v.diffusion | selectattr('is_experiment') | selectattr('cohort_id') | selectattr('status', 'equalto', 'active') | list | first) %}
       <tr id="invite-{{ v.id }}" class="dm-invite-row" {% if request.query_params.get('invited') != (v.id | string) %}hidden{% endif %}>
         <td colspan="8" style="background:#F5F5FE;padding:1rem;">
           {% if request.query_params.get('invited') == (v.id | string) %}
@@ -787,7 +787,7 @@ Tu recevras ensuite la version generale a sa sortie, sans rien faire.</textarea>
             <div>
               <strong>Ajouter a la cohorte de l'essai</strong>
               <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0.5rem 0;">Le plugin de la personne passe sur cette version a son prochain demarrage, sans rien installer. Convient pour un essai suivi.</p>
-              {% if trial and trial.cohort_type != 'percentage' %}
+              {% if trial and trial.cohort_type == 'manual' %}
               <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/invite">
                 <label class="dm-label" for="invite-emails-{{ v.id }}">Adresses, une par ligne ou separees par des virgules</label>
                 <textarea name="emails" id="invite-emails-{{ v.id }}" class="dm-input" rows="3" required placeholder="prenom.nom@exemple.fr"></textarea>
@@ -795,7 +795,7 @@ Tu recevras ensuite la version generale a sa sortie, sans rien faire.</textarea>
                 <button class="dm-btn dm-btn--primary dm-btn--sm">Ajouter a la cohorte</button>
               </form>
               {% elif trial %}
-              <p style="font-size:0.85rem;">La cohorte de cet essai est un pourcentage du parc : on n'y ajoute pas de personnes nommement.</p>
+              <p style="font-size:0.85rem;">La cohorte « {{ trial.cohort_name }} » de cet essai n'est pas une liste de personnes (type {{ trial.cohort_type }}) : on n'y ajoute personne nommement. Envoyez le lien, ou changez la regle de la cohorte.</p>
               {% else %}
               <p style="font-size:0.85rem;">Aucune campagne d'essai active sur une cohorte pour cette version.
                 <a href="/admin/campaigns/new">Creer la campagne</a>, puis revenez ici.</p>

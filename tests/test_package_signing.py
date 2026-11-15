@@ -128,12 +128,76 @@ def test_ref_allowed_follows_both_lists(monkeypatch):
     assert not ps.ref_allowed({"ref": "refs/heads/main", "repository": "org/depot"})
 
 
-def test_policy_defaults_to_off_and_ignores_unknown_values(monkeypatch):
+def test_policy_defaults_to_off_and_a_typo_never_disables_the_check(monkeypatch):
+    assert ps.policy() == ps.POLICY_OFF
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "  ")
     assert ps.policy() == ps.POLICY_OFF
     monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "REQUIRE")
     assert ps.policy() == ps.POLICY_REQUIRE
-    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "n'importe quoi")
-    assert ps.policy() == ps.POLICY_OFF
+    for typo in ("required", "on", "true", "enforce"):
+        monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", typo)
+        assert ps.policy() == ps.POLICY_REQUIRE, "une faute de frappe ne désactive pas le contrôle"
+
+
+def test_a_build_statement_must_name_the_plugin_and_the_version(monkeypatch):
+    import hashlib
+    key = new_key()
+    monkeypatch.setenv("DM_PACKAGE_PUBLISHER_KEYS", public_pem(key))
+    for missing in ("slug", "version"):
+        statement = {"schema": ps.STATEMENT_SCHEMA, "kind": "build", "slug": "plugin", "version": "1.0.0",
+                     "sha256": hashlib.sha256(DATA).hexdigest()}
+        del statement[missing]
+        with pytest.raises(ps.SignatureError) as e:
+            ps.verify_build(ps.make_envelope(statement, key), DATA, slug="plugin", version="1.0.0")
+        assert e.value.code == ps.MALFORMED, "une déclaration sans nom vaudrait pour tous les plugins"
+
+
+def test_a_build_signature_is_never_accepted_through_a_delegation(monkeypatch):
+    root, dm = new_key(), new_key()
+    monkeypatch.setenv("DM_PACKAGE_PUBLISHER_KEYS", public_pem(root))
+    envelope = build_envelope(dm, DATA)
+    envelope["delegation"] = delegation(root, dm)
+    with pytest.raises(ps.SignatureError) as e:
+        ps.verify_build(envelope, DATA, slug="plugin", version="1.0.0")
+    assert e.value.code == ps.UNKNOWN_KEY, "la clé d'un DM délégué ne signe pas de build"
+
+
+def test_unreadable_publisher_keys_are_a_configuration_error(monkeypatch):
+    monkeypatch.setenv("DM_PACKAGE_PUBLISHER_KEYS", "-----BEGIN PUBLIC KEY-----\nnon\n-----END PUBLIC KEY-----")
+    with pytest.raises(ps.SigningConfigError):
+        ps.verify_build(build_envelope(new_key(), DATA), DATA)
+
+
+def test_mistyped_envelopes_are_refused_not_crashed_on():
+    key = new_key()
+    keys = ps.load_public_keys(public_pem(key))
+    envelope = ps.make_envelope({"schema": ps.STATEMENT_SCHEMA, "kind": "build"}, key)
+    for bad in (5, "x", {"keyid": "a"}, None):
+        with pytest.raises(ps.SignatureError) as e:
+            ps.verify_envelope({**envelope, "signatures": bad}, keys)
+        assert e.value.code == ps.MALFORMED
+    with pytest.raises(ps.SignatureError) as e:
+        ps.verify_envelope({**envelope, "delegation": {"payload": envelope["payload"], "signatures": 5}}, {})
+    assert e.value.code in (ps.DELEGATION_INVALID, ps.UNKNOWN_KEY)
+    # Une première signature illisible n'empêche pas la suivante, valide.
+    good = envelope["signatures"][0]
+    mixed = {**envelope, "signatures": [{**good, "sig": "%%%"}, good]}
+    assert ps.verify_envelope(mixed, keys)[1] == good["keyid"]
+
+
+def test_the_current_delegation_replaces_the_one_stored_at_import(monkeypatch):
+    root, dm, other = new_key(), new_key(), new_key()
+    old, new = delegation(root, dm, days_after=1), delegation(root, dm, days_after=300)
+    envelope = ps.make_envelope({"schema": ps.STATEMENT_SCHEMA, "kind": "served"}, dm, old)
+    assert ps.with_current_delegation(envelope) == envelope, "sans délégation configurée : servie telle quelle"
+    monkeypatch.setenv("DM_PACKAGE_SIGNING_DELEGATION", json.dumps(new))
+    served = ps.with_current_delegation(envelope)
+    assert served["delegation"] == new and envelope["delegation"] == old, "l'enveloppe stockée n'est pas modifiée"
+    # Une délégation qui couvre une autre clé n'est pas jointe.
+    monkeypatch.setenv("DM_PACKAGE_SIGNING_DELEGATION", json.dumps(delegation(root, other)))
+    assert ps.with_current_delegation(envelope) == envelope
+    monkeypatch.setenv("DM_PACKAGE_SIGNING_DELEGATION", "pas du json")
+    assert ps.with_current_delegation(envelope) == envelope and ps.with_current_delegation(None) is None
 
 
 # ─── Signature du DM ────────────────────────────────────────────────────────

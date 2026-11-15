@@ -186,6 +186,15 @@ def test_e2e_trial_from_an_unlisted_branch_needs_a_recorded_confirmation(site, c
                          data={"emails": "autre@example.test, pas-une-adresse"},
                          headers={"x-admin-token": _TOKEN}, follow_redirects=False)
     assert res.status_code == 400
+    # Une cohorte qui n'est pas une liste de personnes : l'ajout n'aurait aucun effet, il est refusé.
+    cohort_id = site.sql("SELECT target_cohort_id FROM campaigns WHERE plugin_id = %s AND is_experiment",
+                         (site.plugin_id,))[0][0]
+    site.sql("UPDATE cohorts SET type = 'email_pattern' WHERE id = %s", (cohort_id,))
+    res = site.http.post(f"/admin/catalog/{site.plugin_id}/versions/{version_id}/invite",
+                         data={"emails": "autre@example.test"},
+                         headers={"x-admin-token": _TOKEN}, follow_redirects=False)
+    assert res.status_code == 409
+    site.sql("UPDATE cohorts SET type = 'manual' WHERE id = %s", (cohort_id,))
     res = site.http.post(f"/admin/catalog/{site.plugin_id}/versions/{version_id}/invite",
                          data={"emails": "Autre@example.test"},
                          headers={"x-admin-token": _TOKEN}, follow_redirects=False)
@@ -210,10 +219,14 @@ def test_e2e_candidate_is_public_only_when_the_admin_says_so(site, chain):
                          headers={"x-admin-token": _TOKEN}, follow_redirects=False)
     assert res.status_code == 303
     page = site.http.get(f"/catalog/{_SLUG}").text
-    assert "Preversion 1.1.0-rc.3" in page and "?exp=rc" in page
+    assert "Preversion 1.1.0-rc.3" in page and "?exp=rc&amp;v=1.1.0-rc.3" in page
     assert "1.1.0-dev.9" not in page and "exp-secret" not in page, "un essai n'est jamais listé"
 
-    page = site.http.get(f"/catalog/{_SLUG}?exp=rc").text
+    # Un essai rangé par erreur sous l'étiquette de la candidate ne sort pas par le lien public.
+    res = _send(site, chain, "1.1.0-dev.4", ref="refs/heads/develop", action="experimental", tag="rc")
+    assert res.status_code == 303, res.text
+    page = site.http.get(f"/catalog/{_SLUG}?exp=rc&v=1.1.0-rc.3").text
+    assert "1.1.0-dev.4" not in page
     assert "Version d'essai" in page and "Revenir a la version generale" in page
     # Le bouton principal sert l'essai, pas la version générale.
     assert "Telecharger la version d'essai 1.1.0-rc.3" in page and "Version generale 1.0.0" in page
@@ -296,3 +309,90 @@ def test_e2e_a_campaign_can_ask_for_a_restart_after_install(site, monkeypatch):
                          files={"binary": (f"{_SLUG}-1.2.0.xpi", xpi("1.2.0"), "application/octet-stream")})
     assert res.status_code == 201, res.text
     assert site.config_update("1.1.0")["restart_required"] is True
+
+
+# ─── Constats de relecture ───────────────────────────────────────────────────
+
+def _stored_zip_with_bad_crc(version: str) -> bytes:
+    """Archive ouvrable dont install.rdf ne se lit pas (contenu changé, CRC inchangé)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr(zipfile.ZipInfo("install.rdf", (2026, 1, 1, 0, 0, 0)),
+                    f"<RDF><em:id>p@x</em:id><em:version>{version}</em:version></RDF>")
+    return buf.getvalue().replace(f"<em:version>{version}".encode(), b"<em:version>" + b"9" * len(version))
+
+
+def test_e2e_require_is_not_bypassed_by_an_archive_that_reads_badly(site, chain):
+    """Une archive qui se lit mal était « stockée telle quelle » avant tout contrôle."""
+    package = _stored_zip_with_bad_crc("3.0.0")
+    for url, data in ((f"/api/plugins/{_SLUG}/deploy", {"strategy": "immediate", "version": "3.0.0"}),
+                      ("/api/artifacts", {"device_type": _DEVICE_TYPE, "version": "3.0.0"})):
+        res = site.http.post(url, headers={"X-Admin-Token": _TOKEN}, data=data,
+                             files={"binary": (f"{_SLUG}-3.0.0.xpi", package, "application/octet-stream")})
+        assert res.status_code == 422, (url, res.text)
+    # Même signée par la chaîne de build, elle n'est pas servie : elle ne peut pas être signée par le DM.
+    envelope = build_envelope(chain["publisher"], package, slug=_SLUG, version="3.0.0")
+    res = site.http.post(f"/api/plugins/{_SLUG}/deploy", headers={"X-Admin-Token": _TOKEN},
+                         data={"strategy": "immediate", "version": "3.0.0"},
+                         files={"binary": (f"{_SLUG}-3.0.0.xpi", package, "application/octet-stream"),
+                                "signature": ("s.json", json.dumps(envelope), "application/json")})
+    assert res.status_code == 422 and res.json()["code"] == "unreadable_archive", res.text
+    assert site.versions() == {} and site.stored_files() == []
+    assert site.sql("SELECT count(*) FROM artifacts WHERE device_type = %s", (_DEVICE_TYPE,))[0][0] == 0
+
+
+def test_e2e_paths_that_do_not_name_the_plugin_are_refused_under_require(site, chain):
+    package = xpi("1.0.0")
+    envelope = json.dumps(build_envelope(chain["publisher"], package, slug="un-autre-plugin", version="1.0.0"))
+    res = site.http.post("/api/artifacts", headers={"X-Admin-Token": _TOKEN},
+                         data={"device_type": _DEVICE_TYPE, "version": "1.0.0"},
+                         files={"binary": (f"{_SLUG}-1.0.0.xpi", package, "application/octet-stream"),
+                                "signature": ("s.json", envelope, "application/json")})
+    assert res.status_code == 422 and res.json()["code"] == "plugin_required", res.text
+    _page(site, "/admin/campaigns")     # pose la session d'administration
+    res = site.http.post("/admin/deploy/create", follow_redirects=False,
+                         data={"device_type": _DEVICE_TYPE, "version": "1.0.0", "target_mode": "all"},
+                         files={"binary": (f"{_SLUG}-1.0.0.xpi", package, "application/octet-stream"),
+                                "signature": ("s.json", envelope, "application/json")})
+    assert res.status_code == 422 and res.json()["detail"]["code"] == "plugin_required", res.text
+    assert site.sql("SELECT count(*) FROM artifacts WHERE device_type = %s", (_DEVICE_TYPE,))[0][0] == 0
+
+
+def test_e2e_api_import_leaves_an_audit_line(site, chain, monkeypatch):
+    monkeypatch.setenv("DM_PACKAGE_ALLOWED_REFS", "refs/heads/main")
+    package = xpi("2.1.0")
+    envelope = build_envelope(chain["publisher"], package, slug=_SLUG, version="2.1.0", ref="refs/heads/exp/x")
+    res = site.http.post(f"/api/plugins/{_SLUG}/deploy", headers={"X-Admin-Token": _TOKEN},
+                         data={"strategy": "immediate", "version": "2.1.0", "confirm_ref": "true"},
+                         files={"binary": (f"{_SLUG}-2.1.0.xpi", package, "application/octet-stream"),
+                                "signature": ("s.json", json.dumps(envelope), "application/json")})
+    assert res.status_code == 201, res.text
+    audit = site.sql("SELECT payload FROM admin_audit_log WHERE action = 'package.import' ORDER BY id DESC LIMIT 1")
+    assert audit, "un import par l'API doit laisser une ligne d'audit"
+    payload = audit[0][0]
+    assert payload["build"]["ref_confirmed"] is True and payload["build"]["ref"] == "refs/heads/exp/x"
+    assert payload["signed"] is True and "payload" not in json.dumps(payload["build"])
+
+
+def test_e2e_the_served_envelope_carries_the_delegation_in_force(site, chain, monkeypatch):
+    assert _send(site, chain, "1.0.0").status_code == 303
+    stored = _artifact(site, "1.0.0")[0]
+    renewed = delegation(chain["root"], chain["dm"], days_after=700, dm=HERE)
+    monkeypatch.setenv("DM_PACKAGE_SIGNING_DELEGATION", json.dumps(renewed))
+    update = site.config_update("0.9.0")
+    assert update["signature"]["delegation"] == renewed != stored["delegation"]
+    assert update["signature"]["signatures"] == stored["signatures"], "seule la délégation change"
+    served = site.http.get(f"/catalog/{_SLUG}/download/{_SLUG}-1.0.0.xpi.sig.json").json()
+    assert served["delegation"] == renewed
+    _verify_like_a_device(site.http.get(update["artifact_url"]).content, update["signature"], "1.0.0")
+
+
+def test_e2e_legacy_deploy_form_also_confirms_a_prerelease_on_production(site, monkeypatch):
+    monkeypatch.setenv("DM_BOOTSTRAP_URLS", HERE)
+    monkeypatch.setenv("DM_APP_ENV", "prod")
+    fields = {"device_type": _DEVICE_TYPE, "version": "1.2.0-rc.1", "target_mode": "all", "deploy_type": "immediate"}
+    files = {"binary": (f"{_SLUG}-1.2.0-rc.1.xpi", xpi("1.2.0-rc.1"), "application/octet-stream")}
+    _page(site, "/admin/campaigns")     # pose la session d'administration
+    res = site.http.post("/admin/deploy/create", data=fields, files=files, follow_redirects=False)
+    assert res.status_code == 409 and res.json()["detail"]["code"] == "prerelease_ordinary", res.text
+    assert site.sql("SELECT count(*) FROM artifacts WHERE device_type = %s", (_DEVICE_TYPE,))[0][0] == 0

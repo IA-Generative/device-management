@@ -151,7 +151,7 @@
           Cette version est en cours de validation avant de devenir la version generale.
           Elle peut comporter des defauts.
         </p>
-        <a href="/catalog/{{ plugin.slug }}?exp={{ candidate.tag | urlencode }}" class="fr-btn fr-btn--secondary">Voir la preversion</a>
+        <a href="/catalog/{{ plugin.slug }}?exp={{ candidate.tag | urlencode }}&amp;v={{ candidate.version | urlencode }}" class="fr-btn fr-btn--secondary">Voir la preversion</a>
       </div>
       {% endif %}
 

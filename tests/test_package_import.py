@@ -242,7 +242,9 @@ def test_preview_never_raises_and_says_whether_a_confirmation_would_do(monkeypat
                                                                 ref="refs/heads/develop"))
     assert out["refusal"]["confirmable"] is True and out["build"]["ref"] == "refs/heads/develop"
     assert out["nature"] == "rc"
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "off")
     assert package_import.preview(data, version="9.9.9")["refusal"]["code"] == package_import.VERSION_MISMATCH
+    assert package_import.preview(b"pas une archive", version="1.0.0")["refusal"] is None
 
 
 # ─── Configuration embarquée (issue #107) ───────────────────────────────────
@@ -293,3 +295,118 @@ def test_declining_the_adaptation_keeps_the_package_values_and_says_so(monkeypat
     assert template["prod"]["keycloakClientId"] == "client-du-build"
     assert template["prod"]["keycloakIssuerUrl"] == "${{KEYCLOAK_ISSUER_URL}}", "les clés absentes restent complétées"
     assert "prod.keycloakClientId" in package_config.summary(report)["kept"]
+
+
+# ─── Constats de relecture : archives ambiguës, chemins sans nom de plugin ───
+
+def _raw_zip(entries: list[tuple[str, str]]) -> bytes:
+    import warnings
+    buf = io.BytesIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, content in entries:
+                zf.writestr(zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0)), content)
+    return buf.getvalue()
+
+
+_PREFS = ("defaults/preferences/prefs.js", "pref('extensions.IAssistant.bootstrapUrls', 'https://dm.example.invalid');\n")
+_RDF = ("install.rdf", "<RDF><Description><em:id>p@x</em:id><em:version>1.0.0</em:version></Description></RDF>")
+
+
+def test_require_cannot_be_bypassed_by_an_archive_that_reads_badly(monkeypatch, publisher):
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "require")
+    stored = io.BytesIO()
+    with zipfile.ZipFile(stored, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr(zipfile.ZipInfo("install.rdf", (2026, 1, 1, 0, 0, 0)), _RDF[1])
+    data = stored.getvalue().replace(b"<em:version>1.0.0", b"<em:version>1.0.9")   # contenu changé, CRC inchangé
+    with pytest.raises(zipfile.BadZipFile):
+        zipfile.ZipFile(io.BytesIO(data)).read("install.rdf")
+    # Sans signature : refus de signature, pas une sortie par l'erreur de lecture.
+    with pytest.raises(package_import.PackageRefused) as e:
+        package_import.import_package(data, slug="plugin", version="1.0.0")
+    assert e.value.code == package_import.SIGNATURE_REQUIRED
+    # Signée par la chaîne de build mais illisible : refusée aussi, jamais stockée telle quelle.
+    with pytest.raises(package_import.PackageRefused) as e:
+        package_import.import_package(data, slug="plugin", version="1.0.0",
+                                      build_signature=build_envelope(publisher, data))
+    assert e.value.code == package_import.UNREADABLE
+    assert package_import.preview(data, slug="plugin", version="1.0.0")["refusal"]["code"] == \
+        package_import.SIGNATURE_REQUIRED
+
+
+def test_without_any_setting_an_unreadable_archive_is_still_left_to_the_caller():
+    with pytest.raises(zipfile.BadZipFile):
+        package_import.import_package(b"pas une archive", version="1.0.0")
+
+
+def test_require_refuses_a_path_that_does_not_name_the_plugin(monkeypatch, publisher):
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "require")
+    data = xpi("1.0.0")
+    with pytest.raises(package_import.PackageRefused) as e:
+        package_import.import_package(data, version="1.0.0", build_signature=build_envelope(publisher, data))
+    assert e.value.code == package_import.PLUGIN_REQUIRED
+
+
+def test_unreadable_publisher_keys_refuse_the_import_with_a_message(monkeypatch):
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "warn")
+    monkeypatch.setenv("DM_PACKAGE_PUBLISHER_KEYS", "-----BEGIN PUBLIC KEY-----\nnon\n-----END PUBLIC KEY-----")
+    data = xpi("1.0.0")
+    with pytest.raises(package_import.PackageRefused) as e:
+        package_import.import_package(data, slug="plugin", version="1.0.0",
+                                      build_signature=build_envelope(new_key(), data))
+    assert e.value.code == package_import.SIGNING_CONFIG
+
+
+@pytest.mark.parametrize("names", [
+    ["dm-trust.json", "dm-trust.json"],
+    ["DM-TRUST.JSON"],
+    ["dm-trust.json", "Dm-Trust.json"],
+])
+def test_no_anchor_from_the_package_survives_under_any_spelling(signing, names):
+    intruder = json.dumps({"schema": "dm-trust/1", "roots": [{"keyid": "intrus"}]})
+    data = _raw_zip([_RDF, _PREFS] + [(n, intruder) for n in names])
+    if len({n.lower() for n in names}) < len(names):
+        # Deux entrées de même nom : l'archive est ambiguë, elle est refusée.
+        with pytest.raises(package_import.PackageRefused) as e:
+            package_import.import_package(data, slug="p", version="1.0.0")
+        assert e.value.code == package_import.UNREADABLE
+        return
+    served, info = package_import.import_package(data, slug="p", version="1.0.0")
+    with zipfile.ZipFile(io.BytesIO(served)) as zf:
+        anchors = [n for n in zf.namelist() if n.lower() == "dm-trust.json"]
+        assert anchors == ["dm-trust.json"]
+        assert json.loads(zf.read("dm-trust.json"))["roots"][0]["keyid"] == ps.key_id(signing.public_key())
+    assert info["trust_anchor"] is True
+
+
+def test_rebuild_drops_every_entry_named_like_a_dm_file():
+    data = _raw_zip([_RDF, _PREFS, ("dm-trust.json", "un"), ("dm-trust.json", "deux")])
+    served, _info = package_bootstrap.prepare(data, extra_files={"dm-trust.json": b"celui du DM"})
+    with zipfile.ZipFile(io.BytesIO(served)) as zf:
+        assert [n for n in zf.namelist() if n.lower() == "dm-trust.json"] == ["dm-trust.json"]
+        assert zf.read("dm-trust.json") == b"celui du DM"
+
+
+def test_an_embedded_signature_with_its_own_anchor_is_refused(signing):
+    data = _raw_zip([_RDF, ("defaults/preferences/prefs.js", f"pref('extensions.IAssistant.bootstrapUrls', '{HERE}');\n"),
+                     ("META-INF/mozilla.rsa", "signature"), ("dm-trust.json", "{}")])
+    with pytest.raises(package_import.PackageRefused) as e:
+        package_import.import_package(data, slug="p", version="1.0.0")
+    assert e.value.code == package_import.FOREIGN_ANCHOR
+
+
+def test_a_host_that_only_takes_numeric_versions_is_noted_not_refused():
+    def crx(manifest):
+        return _raw_zip([("manifest.json", json.dumps(manifest))])
+    # Extension de navigateur : `version` numérique, numéro complet dans version_name.
+    _s, info = package_import.import_package(crx({"version": "1.2.0", "version_name": "1.2.0-rc.3"}), version="1.2.0-rc.3")
+    assert info["versions"] == {"manifest.json": "1.2.0-rc.3"} and not any("cœur" in n for n in info["notes"])
+    # Sans version_name : le cœur seul est accepté, avec une remarque.
+    _s, info = package_import.import_package(crx({"version": "1.2.0"}), version="1.2.0-rc.3")
+    assert any("cœur" in n for n in info["notes"])
+    # Un autre numéro reste refusé, et Thunderbird (install.rdf) porte toujours le numéro complet.
+    with pytest.raises(package_import.PackageRefused):
+        package_import.import_package(crx({"version": "1.1.0"}), version="1.2.0-rc.3")
+    with pytest.raises(package_import.PackageRefused):
+        package_import.import_package(xpi("1.2.0"), version="1.2.0-rc.3")

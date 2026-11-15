@@ -33,12 +33,15 @@ plugin avec son premier paquet, `POST /api/plugins/{slug}/deploy`, `POST /api/ar
 | `DM_PACKAGE_ALLOWED_REPOSITORIES` | tous | dépôts acceptés (`IA-Generative/*`) |
 | `DM_PACKAGE_SIGNING_REQUIRED` | tous | `true` : un composant sans clé refuse l'import |
 | `DM_PACKAGE_TRUST_ROOTS` | tous | clés publiques (PEM) de la racine de l'organisation |
+| `DM_PACKAGE_SIGNING_DELEGATION` | tous | délégation signée par la racine (JSON). Ce n'est pas un secret |
 | `DM_PACKAGE_SIGNING_KEY` | **administration seulement** | clé privée de signature du DM (PEM) |
-| `DM_PACKAGE_SIGNING_DELEGATION` | **administration seulement** | délégation signée par la racine (JSON) |
 
 Chaque variable de clé accepte une variante `_FILE` qui désigne un fichier monté. Dans le
-chart : `config.packageTrust.*` pour les six premières, le Secret de l'application pour les
-deux dernières, que seul le déploiement d'administration lit.
+chart : `config.packageTrust.*` pour toutes sauf la clé privée, qui est une clé du Secret de
+l'application que seul le déploiement d'administration lit.
+
+Une valeur inconnue de `DM_PACKAGE_SIGNATURE_POLICY` (« required », « on »…) est traitée
+comme `require`, avec une erreur au journal : une faute de frappe ne désactive pas le contrôle.
 
 Ces réglages ne se modifient pas depuis l'interface d'administration : une politique de
 signature ne doit pas pouvoir être levée par un compte d'administration compromis.
@@ -61,7 +64,10 @@ signature ne doit pas pouvoir être levée par un compte d'administration compro
    à jour ; la confiance s'ancre à l'installation de ce premier paquet.
 
 Renouveler la délégation avant son échéance : un DM dont la délégation a expiré refuse
-d'importer (`signing_config`), et les postes refusent les paquets qu'il a signés.
+d'importer (`signing_config`), et les postes refusent les paquets qu'il a signés. Il suffit de
+remplacer `DM_PACKAGE_SIGNING_DELEGATION` sur tous les composants : la délégation en vigueur
+est jointe à chaque enveloppe au moment où elle est servie, les paquets déjà importés n'ont
+pas à l'être de nouveau.
 
 ## Refus à l'import
 
@@ -73,7 +79,10 @@ d'importer (`signing_config`), et les postes refusent les paquets qu'il a signé
 | `ref_not_allowed` | 409 | construit depuis une référence hors liste | confirmer ; la confirmation est tracée |
 | `prerelease_ordinary` | 409 | pré-version en campagne ordinaire sur une production | préférer un essai sur une cohorte, ou confirmer |
 | `bootstrap_signed` | 409 | archive à signature embarquée dont la liste de DM diffère | confirmer qu'elle est servie telle quelle |
-| `signing_config` | 422 | ce composant ne peut pas signer, ou sa configuration est incohérente | importer par l'administration ; vérifier clé et délégation |
+| `signing_config` | 422 | ce composant ne peut pas signer, ou sa configuration est incohérente | importer par l'administration ; vérifier clés et délégation |
+| `plugin_required` | 422 | politique `require`, et le chemin d'envoi ne nomme pas le plugin (`/api/artifacts`, ancien formulaire de déploiement, envoi d'artefact nu) | passer par « Nouvelle version » de la fiche du plugin, ou `POST /api/plugins/{slug}/deploy` |
+| `unreadable_archive` | 422 | archive endommagée, entrée illisible, ou deux entrées de même nom | reprendre le paquet à la source |
+| `foreign_trust_anchor` | 422 | archive à signature embarquée qui apporte son propre `dm-trust.json` | retirer ce fichier du build |
 
 Un refus n'écrit rien : ni fichier, ni version, ni campagne.
 
@@ -81,8 +90,9 @@ Un refus n'écrit rien : ni fichier, ni version, ni campagne.
 
 - **Fiche du plugin, onglet Versions** : nature (générale, candidate, essai), origine (branche
   et commit, « sur confirmation » le cas échéant), signature du DM, et qui reçoit la version.
-- **Journal d'audit**, action `version.upload` : contrôle d'origine, empreinte du paquet reçu,
-  paquet signé ou non. L'enveloppe elle-même n'y est pas recopiée.
+- **Journal d'audit**, action `version.upload` (administration) ou `package.import` (API) :
+  contrôle d'origine, référence confirmée hors liste, empreinte du paquet reçu, paquet signé
+  ou non. L'enveloppe elle-même n'y est pas recopiée.
 - **Catalogue** : `…/download/<fichier>.sig.json` sert l'enveloppe du paquet, pour qui installe
   à la main.
 - **Vérifier à la main** : `dm-package-keys.py verify <paquet> <enveloppe> --public <clés>`.
