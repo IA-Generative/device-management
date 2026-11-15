@@ -280,6 +280,37 @@ def test_e2e_without_any_setting_nothing_changes(site, monkeypatch):
     assert site.http.get(f"/catalog/{_SLUG}/download/{_SLUG}-1.0.0.xpi.sig.json").status_code == 404
 
 
+def test_e2e_a_campaign_can_ask_for_a_restart_after_install(site, monkeypatch):
+    """La directive ne porte `restart_required` que si le déploiement l'a demandé."""
+    monkeypatch.setenv("DM_BOOTSTRAP_URLS", HERE)
+
+    def send(version, **fields):
+        return site.http.post(
+            f"/admin/catalog/{site.plugin_id}/versions/upload",
+            data={"version": version, "action": "deploy", "environment": "it", "target_mode": "all",
+                  "deploy_strategy": "patch_all", **fields},
+            files={"binary": (f"{_SLUG}-{version}.xpi", xpi(version), "application/octet-stream")},
+            headers={"x-admin-token": _TOKEN}, follow_redirects=False)
+
+    assert send("1.0.0").status_code == 303
+    assert "restart_required" not in site.config_update("0.9.0"), "sans demande, la directive est inchangée"
+
+    assert send("1.1.0", restart_required="1").status_code == 303
+    update = site.config_update("1.0.0")
+    assert update["target_version"] == "1.1.0" and update["restart_required"] is True
+    audit = site.sql("SELECT payload FROM admin_audit_log WHERE action = 'deploy.create' ORDER BY id DESC LIMIT 1")
+    assert audit and audit[0][0]["restart_required"] is True
+    page = _page(site, f"/admin/catalog/{site.plugin_id}?tab=versions")
+    assert "redemarrage demande" in page
+
+    # Par l'API aussi.
+    res = site.http.post(f"/api/plugins/{_SLUG}/deploy", headers={"X-Admin-Token": _TOKEN},
+                         data={"strategy": "immediate", "version": "1.2.0", "restart_required": "true"},
+                         files={"binary": (f"{_SLUG}-1.2.0.xpi", xpi("1.2.0"), "application/octet-stream")})
+    assert res.status_code == 201, res.text
+    assert site.config_update("1.1.0")["restart_required"] is True
+
+
 # ─── Constats de relecture ───────────────────────────────────────────────────
 
 def _stored_zip_with_bad_crc(version: str) -> bytes:

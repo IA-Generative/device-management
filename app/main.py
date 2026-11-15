@@ -1382,7 +1382,8 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
               c.rollout_config,
               c.created_at AS campaign_created_at,
               c.is_experiment,
-              a.signature AS artifact_signature
+              a.signature AS artifact_signature,
+              c.restart_required
             FROM campaigns c
             LEFT JOIN artifacts a  ON a.id  = c.artifact_id
             LEFT JOIN artifacts ra ON ra.id = c.rollback_artifact_id
@@ -1422,6 +1423,7 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         min_host_version, max_host_version,
         rollback_s3_path, rollback_version, rollback_checksum,
         rollout_config, campaign_created_at, is_experiment, artifact_signature,
+        restart_required,
     ) = row
 
     # Filter by host (platform) version compatibility
@@ -1458,6 +1460,7 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         "is_experiment": bool(is_experiment),
         # Enveloppe signée du paquet servi (ADR-0006), None si le DM ne signe pas.
         "artifact_signature": artifact_signature if isinstance(artifact_signature, dict) else None,
+        "restart_required": bool(restart_required),
     }
 
 
@@ -1559,6 +1562,11 @@ def _build_update_directive(
     # Absente si le DM ne signe pas ; la clé n'existe alors pas dans la directive.
     if campaign.get("artifact_signature"):
         directive["signature"] = _package_signing.with_current_delegation(campaign["artifact_signature"])
+    # Redémarrage du logiciel hôte demandé au déploiement : le plugin le propose
+    # à l'utilisateur après l'installation. Seul `true` est émis ; sans demande,
+    # la clé n'existe pas dans la directive.
+    if campaign.get("restart_required"):
+        directive["restart_required"] = True
     return directive
 
 
@@ -3785,6 +3793,8 @@ async def api_plugin_deploy(slug: str, request: Request):
         « require ».
       - confirm_ref (bool, optional): accepte un paquet signé construit depuis
         une référence hors de DM_PACKAGE_ALLOWED_REFS. Tracé.
+      - restart_required (bool, optional): la directive demandera au plugin de
+        proposer le redémarrage du logiciel hôte après l'installation.
       - confirm_prerelease (bool, optional): sur une instance de production,
         confirme le déploiement d'une pré-version (-rc.N, -dev.N) par cette
         campagne ordinaire (issue #106). Sans lui, 409.
@@ -3816,6 +3826,7 @@ async def api_plugin_deploy(slug: str, request: Request):
     build_signature = await _form_file_bytes(form, "signature")
     adapt_config = str(form.get("adapt_config", "true")).strip().lower() not in ("0", "false", "off", "no")
     confirm_prerelease = str(form.get("confirm_prerelease", "")).strip().lower() in ("1", "true", "on", "yes")
+    restart_required = str(form.get("restart_required", "")).strip().lower() in ("1", "true", "on", "yes")
     if cohort_id not in (None, "") and not str(cohort_id).strip().isdigit():
         return JSONResponse({"ok": False, "error": "cohort_id must be an integer"}, status_code=400)
 
@@ -3828,7 +3839,7 @@ async def api_plugin_deploy(slug: str, request: Request):
     return await run_in_threadpool(
         _deploy_plugin_db_work, slug, data, orig_filename, version, strategy, urgency, cohort_id, db_url,
         make_general, overwrite, keep_bootstrap, build_signature, confirm_ref, adapt_config,
-        confirm_prerelease,
+        confirm_prerelease, restart_required,
     )
 
 
@@ -3870,7 +3881,7 @@ def _deploy_plugin_db_work(
     slug: str, data: bytes, orig_filename: str, version: str, strategy: str, urgency: str, cohort_id, db_url: str,
     make_general: bool = False, overwrite: bool = False, keep_bootstrap: bool = False,
     build_signature: bytes | None = None, confirm_ref: bool = False, adapt_config: bool = True,
-    confirm_prerelease: bool = False,
+    confirm_prerelease: bool = False, restart_required: bool = False,
 ):
     """Partie bloquante de POST /api/plugins/{slug}/deploy (DB + zip + persist
     binaire) — exécutée en threadpool par l'endpoint async."""
@@ -4082,8 +4093,8 @@ def _deploy_plugin_db_work(
 
             cur.execute("""
                 INSERT INTO campaigns (name, type, artifact_id, plugin_id, version_id,
-                    target_cohort_id, urgency, status, rollout_config, created_by)
-                VALUES (%s, 'plugin_update', %s, %s, %s, %s, %s, 'active', %s, 'api')
+                    target_cohort_id, urgency, status, rollout_config, created_by, restart_required)
+                VALUES (%s, 'plugin_update', %s, %s, %s, %s, %s, 'active', %s, 'api', %s)
                 RETURNING id
             """, (
                 f"Release {plugin_name} v{version}",
@@ -4091,6 +4102,7 @@ def _deploy_plugin_db_work(
                 int(cohort_id) if cohort_id else None,
                 urgency,
                 json.dumps(rollout_config) if rollout_config else None,
+                restart_required,
             ))
             campaign_id = cur.fetchone()[0]
 
