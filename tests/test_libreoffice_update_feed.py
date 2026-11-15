@@ -125,6 +125,20 @@ PLUGIN_ROW = (7, "libreoffice", "fr.gouv.interieur.mirai")   # id, device_type, 
 VERSION_ROW = ("0.0.1.0.32",)
 
 
+def test_update_xml_announces_a_prerelease_in_its_numeric_form(mod):
+    """LibreOffice range « 0.4.0-rc.12 » APRÈS « 0.4.0 » : le flux annonce l'écriture
+    numérique de la pré-version, le fichier garde le numéro du DM."""
+    res, _cur = _get(mod, {
+        "extension_id FROM plugins": [PLUGIN_ROW],
+        "FROM plugin_versions pv": [("0.4.0-rc.12",) + tuple(VERSION_ROW[1:])],
+    })
+    assert res.status_code == 200, res.text
+    root = ET.fromstring(res.content)
+    assert root.find("u:version", NS).get("value") == "0.3.99999.2.12"
+    assert root.find("u:update-download/u:src", NS).get(f"{{{NS_XLINK}}}href").endswith(
+        "/download/mirai-libreoffice-0.4.0-rc.12.oxt")
+
+
 def _servable(dist_mode, artifact_id, download_url) -> bool:
     """Mêmes conditions que _serve_plugin_download : hors de celles-ci, le
     téléchargement répond 404 quoi qu'annonce le feed."""
