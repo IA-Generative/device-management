@@ -32,6 +32,7 @@ data:
   DM_PACKAGE_ALLOWED_REPOSITORIES: {{ .Values.config.packageTrust.allowedRepositories | quote }}
   DM_PACKAGE_PUBLISHER_KEYS: {{ .Values.config.packageTrust.publisherKeys | quote }}
   DM_PACKAGE_TRUST_ROOTS: {{ .Values.config.packageTrust.trustRoots | quote }}
+  DM_PACKAGE_SIGNING_DELEGATION: {{ .Values.config.packageTrust.signingDelegation | quote }}
 
   # -- config.storage --
   DM_STORE_ENROLL_LOCALLY: {{ .Values.config.storage.storeEnrollLocally | quote }}

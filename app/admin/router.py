@@ -1511,6 +1511,7 @@ async def deploy_create(request: Request,
                         confirm_overwrite: str = Form(""),
                         keep_bootstrap: str = Form(""),
                         confirm_ref: str = Form(""),
+                        confirm_prerelease: str = Form(""),
                         adapt_config: str = Form("1"),
                         signature: UploadFile | None = File(None),
                         binary: UploadFile = File(...)):
@@ -1569,6 +1570,10 @@ async def deploy_create(request: Request,
             unreadable = unorderable_version_message(version)
             if unreadable:
                 raise HTTPException(400, unreadable)
+            # Pré-version en campagne ordinaire sur une production (issue #106).
+            prerelease_warning = prerelease_campaign_message(version, os.getenv("DM_APP_ENV", ""))
+            if prerelease_warning and not _form_truthy(confirm_prerelease):
+                raise HTTPException(409, {"code": PRERELEASE_ORDINARY_CODE, "message": prerelease_warning})
             try:
                 overwritten = artifacts_svc.check_overwrite(
                     cur, device_type=device_type, platform_variant="", version=version,
@@ -2342,6 +2347,10 @@ async def catalog_create(request: Request):
                         status="published",
                     )
                     version_created = initial_version
+                except (package_import.PackageRefused, package_bootstrap.SignedPackageMismatch) as refused:
+                    # Un paquet refusé n'est pas une panne : rien n'est créé, et
+                    # l'administrateur lit pourquoi (au lieu d'un plugin sans version).
+                    raise HTTPException(422, str(refused)) from refused
                 except Exception as ver_err:
                     logger.warning("auto-version creation failed: %s", ver_err)
 
@@ -2352,6 +2361,9 @@ async def catalog_create(request: Request):
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/catalog/{plugin_id}?created=1", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         logger.error("plugin create failed: %s", e)

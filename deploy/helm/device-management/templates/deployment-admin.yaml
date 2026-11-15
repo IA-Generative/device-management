@@ -97,12 +97,6 @@ spec:
                   name: {{ include "device-management.secretName" . }}
                   key: DM_PACKAGE_SIGNING_KEY
                   optional: true
-            - name: DM_PACKAGE_SIGNING_DELEGATION
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "device-management.secretName" . }}
-                  key: DM_PACKAGE_SIGNING_DELEGATION
-                  optional: true
             # LLM (debug page).
             - name: LLM_API_TOKEN
               valueFrom:

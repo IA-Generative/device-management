@@ -265,3 +265,90 @@ def test_e2e_without_any_setting_nothing_changes(site, monkeypatch):
     update = site.config_update("0.9.0")
     assert "signature" not in update, "sans clé, la directive est celle d'avant"
     assert site.http.get(f"/catalog/{_SLUG}/download/{_SLUG}-1.0.0.xpi.sig.json").status_code == 404
+
+
+# ─── Constats de relecture ───────────────────────────────────────────────────
+
+def _stored_zip_with_bad_crc(version: str) -> bytes:
+    """Archive ouvrable dont install.rdf ne se lit pas (contenu changé, CRC inchangé)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr(zipfile.ZipInfo("install.rdf", (2026, 1, 1, 0, 0, 0)),
+                    f"<RDF><em:id>p@x</em:id><em:version>{version}</em:version></RDF>")
+    return buf.getvalue().replace(f"<em:version>{version}".encode(), b"<em:version>" + b"9" * len(version))
+
+
+def test_e2e_require_is_not_bypassed_by_an_archive_that_reads_badly(site, chain):
+    """Une archive qui se lit mal était « stockée telle quelle » avant tout contrôle."""
+    package = _stored_zip_with_bad_crc("3.0.0")
+    for url, data in ((f"/api/plugins/{_SLUG}/deploy", {"strategy": "immediate", "version": "3.0.0"}),
+                      ("/api/artifacts", {"device_type": _DEVICE_TYPE, "version": "3.0.0"})):
+        res = site.http.post(url, headers={"X-Admin-Token": _TOKEN}, data=data,
+                             files={"binary": (f"{_SLUG}-3.0.0.xpi", package, "application/octet-stream")})
+        assert res.status_code == 422, (url, res.text)
+    # Même signée par la chaîne de build, elle n'est pas servie : elle ne peut pas être signée par le DM.
+    envelope = build_envelope(chain["publisher"], package, slug=_SLUG, version="3.0.0")
+    res = site.http.post(f"/api/plugins/{_SLUG}/deploy", headers={"X-Admin-Token": _TOKEN},
+                         data={"strategy": "immediate", "version": "3.0.0"},
+                         files={"binary": (f"{_SLUG}-3.0.0.xpi", package, "application/octet-stream"),
+                                "signature": ("s.json", json.dumps(envelope), "application/json")})
+    assert res.status_code == 422 and res.json()["code"] == "unreadable_archive", res.text
+    assert site.versions() == {} and site.stored_files() == []
+    assert site.sql("SELECT count(*) FROM artifacts WHERE device_type = %s", (_DEVICE_TYPE,))[0][0] == 0
+
+
+def test_e2e_paths_that_do_not_name_the_plugin_are_refused_under_require(site, chain):
+    package = xpi("1.0.0")
+    envelope = json.dumps(build_envelope(chain["publisher"], package, slug="un-autre-plugin", version="1.0.0"))
+    res = site.http.post("/api/artifacts", headers={"X-Admin-Token": _TOKEN},
+                         data={"device_type": _DEVICE_TYPE, "version": "1.0.0"},
+                         files={"binary": (f"{_SLUG}-1.0.0.xpi", package, "application/octet-stream"),
+                                "signature": ("s.json", envelope, "application/json")})
+    assert res.status_code == 422 and res.json()["code"] == "plugin_required", res.text
+    _page(site, "/admin/campaigns")     # pose la session d'administration
+    res = site.http.post("/admin/deploy/create", follow_redirects=False,
+                         data={"device_type": _DEVICE_TYPE, "version": "1.0.0", "target_mode": "all"},
+                         files={"binary": (f"{_SLUG}-1.0.0.xpi", package, "application/octet-stream"),
+                                "signature": ("s.json", envelope, "application/json")})
+    assert res.status_code == 422 and res.json()["detail"]["code"] == "plugin_required", res.text
+    assert site.sql("SELECT count(*) FROM artifacts WHERE device_type = %s", (_DEVICE_TYPE,))[0][0] == 0
+
+
+def test_e2e_api_import_leaves_an_audit_line(site, chain, monkeypatch):
+    monkeypatch.setenv("DM_PACKAGE_ALLOWED_REFS", "refs/heads/main")
+    package = xpi("2.1.0")
+    envelope = build_envelope(chain["publisher"], package, slug=_SLUG, version="2.1.0", ref="refs/heads/exp/x")
+    res = site.http.post(f"/api/plugins/{_SLUG}/deploy", headers={"X-Admin-Token": _TOKEN},
+                         data={"strategy": "immediate", "version": "2.1.0", "confirm_ref": "true"},
+                         files={"binary": (f"{_SLUG}-2.1.0.xpi", package, "application/octet-stream"),
+                                "signature": ("s.json", json.dumps(envelope), "application/json")})
+    assert res.status_code == 201, res.text
+    audit = site.sql("SELECT payload FROM admin_audit_log WHERE action = 'package.import' ORDER BY id DESC LIMIT 1")
+    assert audit, "un import par l'API doit laisser une ligne d'audit"
+    payload = audit[0][0]
+    assert payload["build"]["ref_confirmed"] is True and payload["build"]["ref"] == "refs/heads/exp/x"
+    assert payload["signed"] is True and "payload" not in json.dumps(payload["build"])
+
+
+def test_e2e_the_served_envelope_carries_the_delegation_in_force(site, chain, monkeypatch):
+    assert _send(site, chain, "1.0.0").status_code == 303
+    stored = _artifact(site, "1.0.0")[0]
+    renewed = delegation(chain["root"], chain["dm"], days_after=700, dm=HERE)
+    monkeypatch.setenv("DM_PACKAGE_SIGNING_DELEGATION", json.dumps(renewed))
+    update = site.config_update("0.9.0")
+    assert update["signature"]["delegation"] == renewed != stored["delegation"]
+    assert update["signature"]["signatures"] == stored["signatures"], "seule la délégation change"
+    served = site.http.get(f"/catalog/{_SLUG}/download/{_SLUG}-1.0.0.xpi.sig.json").json()
+    assert served["delegation"] == renewed
+    _verify_like_a_device(site.http.get(update["artifact_url"]).content, update["signature"], "1.0.0")
+
+
+def test_e2e_legacy_deploy_form_also_confirms_a_prerelease_on_production(site, monkeypatch):
+    monkeypatch.setenv("DM_BOOTSTRAP_URLS", HERE)
+    monkeypatch.setenv("DM_APP_ENV", "prod")
+    fields = {"device_type": _DEVICE_TYPE, "version": "1.2.0-rc.1", "target_mode": "all", "deploy_type": "immediate"}
+    files = {"binary": (f"{_SLUG}-1.2.0-rc.1.xpi", xpi("1.2.0-rc.1"), "application/octet-stream")}
+    _page(site, "/admin/campaigns")     # pose la session d'administration
+    res = site.http.post("/admin/deploy/create", data=fields, files=files, follow_redirects=False)
+    assert res.status_code == 409 and res.json()["detail"]["code"] == "prerelease_ordinary", res.text
+    assert site.sql("SELECT count(*) FROM artifacts WHERE device_type = %s", (_DEVICE_TYPE,))[0][0] == 0
