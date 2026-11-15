@@ -410,3 +410,34 @@ def test_a_host_that_only_takes_numeric_versions_is_noted_not_refused():
         package_import.import_package(crx({"version": "1.1.0"}), version="1.2.0-rc.3")
     with pytest.raises(package_import.PackageRefused):
         package_import.import_package(xpi("1.2.0"), version="1.2.0-rc.3")
+
+
+# ─── LibreOffice : écriture numérique d'une pré-version ──────────────────────
+
+@pytest.mark.parametrize("version,numeric", [
+    ("0.4.0", "0.4.0"), ("0.4.0-rc.12", "0.3.99999.2.12"), ("0.4.0-dev.7", "0.3.99999.1.7"),
+    ("0.3.1-rc.5", "0.3.0.2.5"), ("1.0.0-rc.1", "0.99999.99999.2.1"),
+    ("0.0.0-rc.1", None), ("0.4.0-test3", None), ("0.23.0.154", None), ("", None),
+    ("1.3.0-rc1", None),   # libellé hors convention : annoncé tel quel
+])
+def test_libreoffice_numeric_version(version, numeric):
+    from app.services.versions import libreoffice_numeric_version
+    assert libreoffice_numeric_version(version) == numeric
+
+
+def test_libreoffice_numeric_versions_sort_like_the_versions_they_stand_for():
+    from app.services.versions import libreoffice_numeric_version, version_sort_key
+    ordered = ["0.3.0", "0.3.1", "0.4.0-dev.7", "0.4.0-dev.30", "0.4.0-rc.12", "0.4.0", "0.4.1-rc.1", "0.4.1"]
+    assert sorted(ordered, key=version_sort_key) == ordered
+    numeric = [tuple(int(p) for p in libreoffice_numeric_version(v).split(".")) for v in ordered]
+    assert sorted(numeric) == numeric, "l'ordre numérique que voit LibreOffice est celui des versions"
+
+
+def test_an_oxt_prerelease_may_carry_its_numeric_form_in_description_xml():
+    def oxt(native):
+        return _raw_zip([("description.xml", f'<description><identifier value="lo.id"/><version value="{native}"/></description>'),
+                         ("config.default.json", json.dumps({"enabled": True, "bootstrap_urls": [HERE]}))])
+    _s, info = package_import.import_package(oxt("0.3.99999.2.12"), slug="lo", version="0.4.0-rc.12")
+    assert info["versions"] == {"description.xml": "0.3.99999.2.12"} and info["nature"] == "rc"
+    with pytest.raises(package_import.PackageRefused):
+        package_import.import_package(oxt("0.3.99999.2.11"), slug="lo", version="0.4.0-rc.12")
