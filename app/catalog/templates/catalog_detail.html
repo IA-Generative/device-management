@@ -60,6 +60,24 @@
   </div>
 
   {# ── Actions ── #}
+  {# Arrive par un lien d'essai : dire d'emblee que ce n'est pas la version generale #}
+  {% if trial_tag %}
+  <div class="fr-notice fr-notice--info" role="status" style="margin-bottom:1.5rem;">
+    <div class="fr-container">
+      <div class="fr-notice__body">
+        <p>
+          <span class="fr-notice__title">Version d'essai</span>
+          <span class="fr-notice__desc">
+            Vous consultez l'essai « {{ trial_tag }} », pas la version generale{% if plugin.latest_version %} {{ plugin.latest_version }}{% endif %}.
+            Il est decrit plus bas, avec ce qu'il cherche a verifier.
+            <a href="/catalog/{{ plugin.slug }}">Revenir a la version generale</a>
+          </span>
+        </p>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="fr-btns-group fr-btns-group--inline" style="margin-bottom:2rem;">
     {% if plugin.latest_version %}
       <a href="/catalog/{{ plugin.slug }}/download" class="fr-btn">
@@ -114,6 +132,26 @@
         </p>
       </div>
 
+      {# ── Préversion : la candidate, annoncee a tous si l'administrateur l'a choisi ── #}
+      {% if candidate and not trial_tag %}
+      <div class="fr-callout fr-callout--yellow-moutarde" style="margin-bottom:2rem;">
+        <p class="fr-callout__title">Preversion {{ candidate.version }}</p>
+        <p class="fr-callout__text">
+          Cette version est en cours de validation avant de devenir la version generale.
+          Elle peut comporter des defauts.
+        </p>
+        <a href="/catalog/{{ plugin.slug }}?exp={{ candidate.tag | urlencode }}" class="fr-btn fr-btn--secondary">Voir la preversion</a>
+      </div>
+      {% endif %}
+
+      {# Les essais ne sont jamais listes. Cette phrase est affichee qu'il en existe ou non :
+         elle ne revele donc rien. #}
+      {% if not trial_tag %}
+      <p class="fr-text--sm" style="margin-bottom:2rem;color:#666;">
+        Des versions d'essai peuvent etre proposees sur invitation. Si vous avez recu un lien, ouvrez-le pour y acceder.
+      </p>
+      {% endif %}
+
       {# ── Versions expérimentales (pull opt-in, révélées par ?exp=<tag>) ── #}
       {% if experiments %}
       <div style="margin-bottom:2rem;">
@@ -142,6 +180,10 @@
             {% for q in exp.hypotheses %}<li>{{ q }}</li>{% endfor %}
           </ul>
           {% endif %}
+          <p class="fr-text--sm" style="margin:0.5rem 0;">
+            Elle remplace la version installee. Vous recevrez ensuite les mises a jour de cet essai,
+            puis la version generale a sa sortie. Vos reglages et votre connexion sont conserves.
+          </p>
           <a href="/catalog/{{ plugin.slug }}/download/{{ plugin.slug }}-{{ exp.version }}{% if file_ext %}.{{ file_ext }}{% endif %}"
              class="fr-btn fr-btn--secondary fr-mt-1w">
             Telecharger cette version (test)
