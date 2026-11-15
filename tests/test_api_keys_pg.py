@@ -164,3 +164,57 @@ def test_e2e_a_key_cannot_manage_keys_and_the_service_token_still_works(site, ke
         assert res.status_code != 200, "une clé d'API ne crée ni ne liste de clés"
     assert site.http.get("/api/campaigns", headers={"X-Admin-Token": _TOKEN}).status_code == 200
     assert site.http.get("/api/campaigns").status_code == 401
+
+
+def test_e2e_renewing_a_key_gives_a_new_secret_and_a_new_expiry(site, keys):
+    old, row = keys(label="CI à renouveler", plugins=[_SLUG], ttl_days=5)
+    _page(site, "/admin/campaigns")     # session d'administration
+    res = site.http.post(f"/admin/api-keys/{row['id']}/renew", data={"ttl_days": "120", "rotate": "1"})
+    assert res.status_code == 200, res.text
+    assert res.headers["cache-control"] == "no-store"
+    body = res.json()
+    new = body["token"]
+    assert body["rotated"] is True and new != old
+    assert new.split("_")[1] == old.split("_")[1], "la clé garde son identifiant"
+    site.http.cookies.clear()
+    # L'ancien secret ne vaut plus rien, le nouveau prend la suite avec les mêmes droits.
+    res = site.http.get("/api/campaigns", headers=_bearer(old))
+    assert res.status_code == 401 and res.json()["code"] == "invalid_key"
+    assert site.http.get("/api/campaigns", headers=_bearer(new)).status_code == 200
+    assert _deploy(site, _bearer(new), "1.0.0").status_code == 201
+    stored = site.sql("SELECT label, owner_email, plugins, renewed_by, expires_at - now() > interval '119 days', "
+                      "expires_at - now() <= interval '120 days' FROM api_keys WHERE id = %s", (row["id"],))[0]
+    assert stored == ("CI à renouveler", OWNER, [_SLUG], "admin@test.invalid", True, True)
+    audit = site.sql("SELECT payload FROM admin_audit_log WHERE action = 'api_key.renew' ORDER BY id DESC LIMIT 1")[0][0]
+    assert audit["rotated"] is True and new.rsplit("_", 1)[1] not in json.dumps(audit)
+
+
+def test_e2e_the_expiry_alone_can_be_changed_and_an_expired_key_comes_back(site, keys):
+    token, row = keys(ttl_days=5)
+    site.sql("UPDATE api_keys SET expires_at = now() - interval '1 day' WHERE id = %s", (row["id"],))
+    assert site.http.get("/api/campaigns", headers=_bearer(token)).json()["code"] == "expired_key"
+    _page(site, "/admin/campaigns")
+    res = site.http.post(f"/admin/api-keys/{row['id']}/renew", data={"ttl_days": "10"})   # case décochée
+    assert res.status_code == 200 and res.json()["token"] is None and res.json()["rotated"] is False
+    site.http.cookies.clear()
+    assert site.http.get("/api/campaigns", headers=_bearer(token)).status_code == 200, "même secret, remis en service"
+
+
+def test_e2e_renewal_limits(site, keys):
+    token, row = keys()
+    # Une clé d'API ne renouvelle pas une clé, pas même elle-même.
+    site.http.cookies.clear()
+    res = site.http.post(f"/admin/api-keys/{row['id']}/renew", headers=_bearer(token),
+                         data={"ttl_days": "30", "rotate": "1"}, follow_redirects=False)
+    assert res.status_code != 200
+    _page(site, "/admin/campaigns")
+    for bad in ("0", "5000", "abc"):
+        res = site.http.post(f"/admin/api-keys/{row['id']}/renew", data={"ttl_days": bad, "rotate": "1"})
+        assert res.status_code == 400 and res.json()["error"], bad
+    assert site.http.post("/admin/api-keys/999999999/renew", data={"ttl_days": "30"}).status_code == 404
+    # Révoquer est définitif.
+    assert site.http.post(f"/admin/api-keys/{row['id']}/revoke", follow_redirects=False).status_code == 303
+    res = site.http.post(f"/admin/api-keys/{row['id']}/renew", data={"ttl_days": "30", "rotate": "1"})
+    assert res.status_code == 400 and "révoquée" in res.json()["error"]
+    site.http.cookies.clear()
+    assert site.http.get("/api/campaigns", headers=_bearer(token)).json()["code"] == "revoked_key"

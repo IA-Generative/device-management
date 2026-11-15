@@ -11,7 +11,7 @@
 {# Bloc de la cle creee : rempli par le serveur (sans script) ou par le script apres l'envoi. #}
 <div id="new-key" role="status" {% if not new_token %}hidden{% endif %}
      style="background:#E8F5E9;border:1px solid #18753C;border-left-width:4px;border-radius:6px;padding:1rem;margin:1rem 0;">
-  <strong>Cle « <span id="new-key-label">{{ new_key.label if new_key else '' }}</span> » creee. Copiez-la maintenant : elle ne sera plus jamais affichee.</strong>
+  <strong>Cle « <span id="new-key-label">{{ new_key.label if new_key else '' }}</span> » <span id="new-key-verb">creee</span>. Copiez-la maintenant : elle ne sera plus jamais affichee.</strong>
   <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.75rem;">
     <input type="text" readonly class="dm-input" id="new-key-value" value="{{ new_token }}"
            style="font-family:monospace;font-size:0.85rem;" aria-label="Cle d'API">
@@ -26,6 +26,9 @@
   <a href="/admin/api-keys" class="dm-btn dm-btn--secondary dm-btn--sm">J'ai copie la cle</a>
 </div>
 <div id="api-key-error" class="dm-flash dm-flash--error" role="alert" hidden></div>
+{% if request.query_params.get('renewed') == '1' %}
+<div class="dm-flash dm-flash--success" role="status">Echeance mise a jour. La cle en service reste la meme.</div>
+{% endif %}
 {% if request.query_params.get('revoked') == '1' %}
 <div class="dm-flash dm-flash--success" role="status">Cle revoquee. Elle ne fonctionne plus.</div>
 {% endif %}
@@ -94,14 +97,18 @@
       <td>{% if 'write' in k.scopes %}Lecture et ecriture{% else %}Lecture{% endif %}</td>
       <td>{% if k.plugins %}{{ k.plugins | join(', ') }}{% else %}<span style="color:#666;">tous</span>{% endif %}</td>
       <td>{{ k.created_at.strftime('%d/%m/%Y') }}</td>
-      <td>{{ k.expires_at.strftime('%d/%m/%Y') }}</td>
+      <td>{{ k.expires_at.strftime('%d/%m/%Y') }}{% if k.renewed_at %}<div style="font-size:0.75rem;color:#666;">renouvelee le {{ k.renewed_at.strftime('%d/%m/%Y') }}{% if k.renewed_by %} par {{ k.renewed_by }}{% endif %}</div>{% endif %}</td>
       <td>{% if k.last_used_at %}{{ k.last_used_at.strftime('%d/%m/%Y %H:%M') }}{% if k.last_used_ip %}<div style="font-size:0.75rem;color:#666;">{{ k.last_used_ip }}</div>{% endif %}{% else %}<span style="color:#666;">jamais</span>{% endif %}</td>
       <td>
         {% if k.revoked_at %}<span class="dm-badge dm-badge--error" title="Revoquee le {{ k.revoked_at.strftime('%d/%m/%Y') }}{% if k.revoked_by %} par {{ k.revoked_by }}{% endif %}">Revoquee</span>
         {% elif not k.active %}<span class="dm-badge dm-badge--neutral">Expiree</span>
         {% else %}<span class="dm-badge dm-badge--success">Valide</span>{% endif %}
       </td>
-      <td>
+      <td style="white-space:nowrap;">
+        {% if not k.revoked_at %}
+        <button type="button" class="dm-btn dm-btn--secondary dm-btn--sm" aria-expanded="false"
+                aria-controls="renew-{{ k.id }}" data-renew-toggle="{{ k.id }}">Renouveler</button>
+        {% endif %}
         {% if k.active %}
         <form method="post" action="/admin/api-keys/{{ k.id }}/revoke" style="display:inline;"
               onsubmit="return confirm('Revoquer la cle « {{ k.label }} » ? Les appels qui l\'utilisent echoueront aussitot.');">
@@ -110,6 +117,31 @@
         {% endif %}
       </td>
     </tr>
+    {% if not k.revoked_at %}
+    <tr id="renew-{{ k.id }}" hidden>
+      <td colspan="9" style="background:#F5F5FE;padding:1rem;">
+        {# data-native : envoi par le script de la page, qui affiche la nouvelle cle une seule fois #}
+        <form method="post" action="/admin/api-keys/{{ k.id }}/renew" data-native="1" data-renew-form="{{ k.label }}"
+              style="display:flex;gap:1rem;align-items:flex-end;flex-wrap:wrap;">
+          <div>
+            <label class="dm-label" for="renew-ttl-{{ k.id }}">Nouvelle validite, en jours</label>
+            <input class="dm-input" id="renew-ttl-{{ k.id }}" name="ttl_days" type="number" min="1" max="{{ max_ttl_days }}"
+                   value="90" required style="max-width:120px;">
+          </div>
+          <label style="display:flex;gap:0.5rem;align-items:flex-start;max-width:46ch;font-size:0.9rem;">
+            <input type="checkbox" name="rotate" value="1" checked>
+            <span><strong>Generer un nouveau secret.</strong> L'ancien cesse de fonctionner aussitot : il faudra
+            mettre la nouvelle cle a la place. Decochez pour ne changer que l'echeance.</span>
+          </label>
+          <button class="dm-btn dm-btn--primary dm-btn--sm" type="submit">Renouveler « {{ k.label }} »</button>
+        </form>
+        <p style="font-size:0.8rem;color:#666;margin:0.5rem 0 0 0;">
+          La cle garde son nom, son titulaire, sa portee et ses plugins. L'echeance repart d'aujourd'hui.
+          {% if not k.active %}Cette cle est expiree : la renouveler la remet en service.{% endif %}
+        </p>
+      </td>
+    </tr>
+    {% endif %}
     {% endfor %}
     {% if not keys %}
     <tr><td colspan="9" style="color:#666;text-align:center;">Aucune cle. Creez la premiere ci-dessus.</td></tr>
@@ -130,6 +162,56 @@
     } else { fallback(); }
   });
 
+  function showKey(data, verb) {
+    document.getElementById('new-key-label').textContent = data.label;
+    document.getElementById('new-key-verb').textContent = verb;
+    document.getElementById('new-key-expiry').textContent = data.expires_at;
+    document.getElementById('new-key-value').value = data.token;
+    copyBtn.textContent = 'Copier';
+    document.getElementById('new-key').hidden = false;
+    document.getElementById('new-key').scrollIntoView({block: 'center'});
+  }
+
+  // Renouveler : ouvrir le formulaire de la ligne, l'envoyer, afficher la nouvelle cle.
+  document.querySelectorAll('[data-renew-toggle]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var row = document.getElementById('renew-' + btn.dataset.renewToggle);
+      row.hidden = !row.hidden;
+      btn.setAttribute('aria-expanded', String(!row.hidden));
+    });
+  });
+  document.querySelectorAll('[data-renew-form]').forEach(function (renewForm) {
+    renewForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var errBox = document.getElementById('api-key-error');
+      var rotating = renewForm.querySelector('[name=rotate]').checked;
+      if (rotating && !confirm('Renouveler « ' + renewForm.dataset.renewForm + ' » avec un nouveau secret ? ' +
+                               'La cle actuelle cessera de fonctionner aussitot.')) return;
+      errBox.hidden = true;
+      fetch(renewForm.action, {method: 'POST', body: new FormData(renewForm), credentials: 'same-origin',
+                               headers: {'Accept': 'application/json'}})
+        .then(function (resp) { return resp.json().then(function (data) { return {ok: resp.ok, data: data}; }); })
+        .then(function (res) {
+          if (!res.ok) {
+            errBox.textContent = res.data.error || res.data.detail || 'Renouvellement impossible.';
+            errBox.hidden = false;
+            errBox.scrollIntoView({block: 'center'});
+            return;
+          }
+          if (res.data.token) {
+            renewForm.closest('tr').hidden = true;
+            showKey(res.data, 'renouvelee');
+          } else {
+            window.location.href = '/admin/api-keys?renewed=1';
+          }
+        })
+        .catch(function (err) {
+          errBox.textContent = 'Erreur reseau : ' + err.message;
+          errBox.hidden = false;
+        });
+    });
+  });
+
   // Envoi par fetch : la cle revient en JSON et s'affiche ici, une seule fois.
   var form = document.getElementById('api-key-form');
   form.addEventListener('submit', function (e) {
@@ -148,14 +230,9 @@
           errBox.hidden = false;
           return;
         }
-        document.getElementById('new-key-label').textContent = res.data.label;
-        document.getElementById('new-key-expiry').textContent = res.data.expires_at;
-        document.getElementById('new-key-value').value = res.data.token;
-        copyBtn.textContent = 'Copier';
-        document.getElementById('new-key').hidden = false;
         form.closest('details').open = false;
         form.reset();
-        document.getElementById('new-key').scrollIntoView({block: 'center'});
+        showKey(res.data, 'creee');
       })
       .catch(function (err) {
         submit.disabled = false;

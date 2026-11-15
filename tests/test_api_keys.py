@@ -47,3 +47,16 @@ class _NoDb:
                                    "autre_0123456789ab_" + "A" * 43, "dmk_0123456789AB_" + "A" * 43])
 def test_a_malformed_key_is_refused_without_touching_the_database(token):
     assert api_keys.authenticate(_NoDb(), token) == (None, api_keys.INVALID)
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "0", "-3", str(api_keys.MAX_TTL_DAYS + 1), None])
+def test_an_expiry_is_always_between_one_day_and_the_maximum(bad):
+    with pytest.raises(api_keys.ApiKeyInputError):
+        api_keys.expiry_in(bad)
+
+
+def test_expiry_counts_from_now():
+    import datetime
+    now = datetime.datetime.now(datetime.UTC)
+    delta = api_keys.expiry_in("30") - now
+    assert datetime.timedelta(days=29, hours=23) < delta <= datetime.timedelta(days=30, seconds=5)

@@ -764,7 +764,11 @@ CREATE TABLE IF NOT EXISTS api_keys (
     expires_at TIMESTAMPTZ NOT NULL,
     last_used_at TIMESTAMPTZ,
     last_used_ip TEXT,
+    renewed_at TIMESTAMPTZ,
+    renewed_by TEXT,
     revoked_at TIMESTAMPTZ,
     revoked_by TEXT
 );
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS renewed_at TIMESTAMPTZ;
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS renewed_by TEXT;
 CREATE INDEX IF NOT EXISTS api_keys_owner_idx ON api_keys (owner_email);

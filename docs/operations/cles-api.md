@@ -21,6 +21,23 @@ La clé est affichée **une seule fois**. Seule son empreinte est conservée : p
 remplace. Seule une session d'administration crée ou révoque une clé ; une clé d'API ne peut
 pas en créer une autre.
 
+## Renouveler une clé, changer son échéance
+
+Bouton **« Renouveler »** de la ligne d'une clé. On choisit la nouvelle validité, en jours
+à partir d'aujourd'hui, et l'un des deux gestes :
+
+- **Avec un nouveau secret** (case cochée, le défaut). L'ancienne clé cesse de fonctionner
+  aussitôt ; la nouvelle est affichée une seule fois, à mettre à sa place. C'est la rotation.
+- **Sans nouveau secret** (case décochée). Seule l'échéance change : la clé en service reste la
+  même, rien n'est à redéployer. Pour prolonger, ou pour raccourcir.
+
+La clé garde son identifiant, son nom, son titulaire, sa portée et ses plugins. Une clé
+expirée se renouvelle et reprend du service. Une clé révoquée ne se renouvelle pas : la
+révocation est définitive. Le renouvellement est tracé au journal d'audit (`api_key.renew`).
+
+Il n'y a pas de période de recouvrement. Pour une rotation sans coupure : créer d'abord une
+seconde clé, basculer l'automate, puis révoquer la première.
+
 ## L'utiliser
 
 ```

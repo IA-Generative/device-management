@@ -106,6 +106,18 @@ def normalize_plugins(raw) -> list[str]:
     return plugins
 
 
+def expiry_in(ttl_days) -> datetime.datetime:
+    """Échéance dans `ttl_days` jours à partir de maintenant. Lève ApiKeyInputError hors bornes."""
+    try:
+        days = int(ttl_days)
+    except (TypeError, ValueError) as e:
+        raise ApiKeyInputError("Durée de validité attendue en jours.") from e
+    if not 1 <= days <= MAX_TTL_DAYS:
+        raise ApiKeyInputError(
+            f"Durée de validité : de 1 à {MAX_TTL_DAYS} jours. Une clé sans échéance n'est pas proposée.")
+    return datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days)
+
+
 def create(cur, *, label: str, owner_email: str, scopes, plugins=(), ttl_days: int | str = DEFAULT_TTL_DAYS,
            created_by: str = "") -> tuple[str, dict]:
     """Crée une clé → (clé en clair, à montrer UNE fois ; ligne créée, sans le secret)."""
@@ -115,17 +127,10 @@ def create(cur, *, label: str, owner_email: str, scopes, plugins=(), ttl_days: i
         raise ApiKeyInputError("Donnez un nom à la clé (100 caractères au plus) : à quoi sert-elle ?")
     if not _EMAIL_RE.fullmatch(owner_email):
         raise ApiKeyInputError("Adresse du titulaire attendue : c'est à elle que les appels seront attribués.")
-    try:
-        days = int(ttl_days)
-    except (TypeError, ValueError) as e:
-        raise ApiKeyInputError("Durée de validité attendue en jours.") from e
-    if not 1 <= days <= MAX_TTL_DAYS:
-        raise ApiKeyInputError(
-            f"Durée de validité : de 1 à {MAX_TTL_DAYS} jours. Une clé sans échéance n'est pas proposée.")
+    expires_at = expiry_in(ttl_days)
     scopes, plugins = normalize_scopes(scopes), normalize_plugins(plugins)
 
     key_id, secret = secrets.token_hex(6), secrets.token_urlsafe(32)
-    expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days)
     cur.execute("""
         INSERT INTO api_keys (key_id, secret_hash, label, owner_email, scopes, plugins, expires_at, created_by)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
@@ -139,12 +144,45 @@ def list_keys(cur) -> list[dict]:
     """Toutes les clés, les valides d'abord. Jamais le secret ni son empreinte."""
     cur.execute("""
         SELECT id, key_id, label, owner_email, scopes, plugins, created_at, created_by,
-               expires_at, last_used_at, last_used_ip, revoked_at, revoked_by,
+               expires_at, last_used_at, last_used_ip, renewed_at, renewed_by, revoked_at, revoked_by,
                (revoked_at IS NULL AND expires_at > now()) AS active
         FROM api_keys ORDER BY (revoked_at IS NULL AND expires_at > now()) DESC, created_at DESC
     """)
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
+
+
+def renew(cur, key_pk: int, *, ttl_days: int | str = DEFAULT_TTL_DAYS, rotate: bool = True,
+          renewed_by: str = "") -> tuple[str | None, dict | None]:
+    """Renouvelle une clé : nouvelle échéance, et nouveau secret si `rotate`.
+
+    - `rotate=True` (défaut) : un nouveau secret est tiré, l'ancien cesse de
+      fonctionner aussitôt. La clé garde son identifiant, son nom, son titulaire,
+      sa portée et ses plugins. Rend (clé en clair, à montrer UNE fois ; ligne).
+    - `rotate=False` : seule l'échéance change, le secret en service reste le
+      même. Rend (None, ligne).
+
+    Une clé expirée se renouvelle ; une clé révoquée, non (ApiKeyInputError) :
+    révoquer est définitif. (None, None) si la clé est inconnue.
+    """
+    expires_at = expiry_in(ttl_days)
+    cur.execute("SELECT key_id, revoked_at FROM api_keys WHERE id = %s FOR UPDATE", (key_pk,))
+    found = cur.fetchone()
+    if not found:
+        return None, None
+    key_id, revoked_at = found
+    if revoked_at is not None:
+        raise ApiKeyInputError("Cette clé est révoquée : elle ne se renouvelle pas. Créez-en une nouvelle.")
+    secret = secrets.token_urlsafe(32) if rotate else None
+    cur.execute("""
+        UPDATE api_keys SET expires_at = %s, renewed_at = now(), renewed_by = %s,
+                            secret_hash = COALESCE(%s, secret_hash)
+        WHERE id = %s
+        RETURNING id, key_id, label, owner_email, scopes, plugins, created_at, expires_at
+    """, (expires_at, renewed_by or None, _hash(secret) if secret else None, key_pk))
+    cols = [d[0] for d in cur.description]
+    row = dict(zip(cols, cur.fetchone(), strict=False))
+    return (f"{PREFIX}{key_id}_{secret}" if secret else None), row
 
 
 def revoke(cur, key_pk: int, *, revoked_by: str = "") -> dict | None:

@@ -811,6 +811,45 @@ async def api_keys_create(request: Request, label: str = Form(""), owner_email: 
     return _api_keys_page(request, new_token=token, new_key=row)
 
 
+@router.post("/api-keys/{key_pk}/renew")
+@require_admin
+async def api_keys_renew(request: Request, key_pk: int, ttl_days: str = Form(""), rotate: str = Form("")):
+    """Renouvelle une clé : nouvelle échéance, et nouveau secret si demandé (affiché UNE fois).
+
+    Répond en JSON : la page affiche elle-même la nouvelle clé.
+    """
+    actor = getattr(request.state, "admin_session", {}) or {}
+    do_rotate = _form_truthy(rotate)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            try:
+                token, row = api_keys_svc.renew(
+                    cur, key_pk, ttl_days=ttl_days or api_keys_svc.DEFAULT_TTL_DAYS, rotate=do_rotate,
+                    renewed_by=actor.get("email") or "")
+            except api_keys_svc.ApiKeyInputError as e:
+                conn.rollback()
+                return JSONResponse({"error": str(e)}, status_code=400)
+            if row is None:
+                conn.rollback()
+                return JSONResponse({"error": "Clé introuvable."}, status_code=404)
+            audit_log(cur, actor=actor, action="api_key.renew", resource_type="api_key",
+                      resource_id=str(key_pk),
+                      payload={"key_id": row["key_id"], "label": row["label"], "owner_email": row["owner_email"],
+                               "rotated": do_rotate, "expires_at": row["expires_at"].isoformat()},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error("api key renew failed: %s", e)
+        raise HTTPException(400, "Renouvellement de la clé impossible.") from e
+    finally:
+        conn.close()
+    return JSONResponse({"token": token, "label": row["label"], "rotated": do_rotate,
+                         "expires_at": row["expires_at"].strftime("%d/%m/%Y")},
+                        headers={"Cache-Control": "no-store"})
+
+
 @router.post("/api-keys/{key_pk}/revoke")
 @require_admin
 async def api_keys_revoke(request: Request, key_pk: int):

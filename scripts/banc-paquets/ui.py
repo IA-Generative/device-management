@@ -196,10 +196,40 @@ with sync_playwright() as p:
     listing = page.inner_text("table")
     check("la liste montre la clé sans son secret", "CI du banc" in listing and "ci@banc.test" in listing and key not in page.content())
     page.screenshot(path=f"{SHOTS}/13-cles-api-liste.png", full_page=True)
+    # Renouveler : nouvelle échéance, nouveau secret affiché une fois, l'ancien est coupé.
+    page.click("button:has-text('Renouveler')")
+    page.fill("[id^='renew-ttl-']", "120")
+    page.screenshot(path=f"{SHOTS}/14-cle-api-renouveler.png", full_page=True)
+    page.click("button:has-text('Renouveler « CI du banc »')")
+    page.wait_for_selector("#new-key:not([hidden])", timeout=15000)
+    renewed = page.input_value("#new-key-value")
+    check("confirmation demandée avant de changer le secret", any("nouveau secret" in d for d in dialogs), str(dialogs[-2:])[:200])
+    check("nouvelle clé affichée, même identifiant, autre secret",
+          renewed.startswith("dmk_") and renewed != key and renewed.split("_")[1] == key.split("_")[1]
+          and "renouvelee" in page.inner_text("#new-key"))
+    check("l'ancienne clé ne fonctionne plus", httpx.get(f"{ADMIN}/api/campaigns", headers=bearer).status_code == 401)
+    bearer = {"Authorization": f"Bearer {renewed}"}
+    check("la clé renouvelée lit l'API", httpx.get(f"{ADMIN}/api/campaigns", headers=bearer).status_code == 200)
+    days = int(psql("SELECT round(extract(epoch FROM (expires_at - now())) / 86400) FROM api_keys WHERE label = 'CI du banc'"))
+    check("échéance repartie pour 120 jours", days == 120, str(days))
+    page.click("text=J'ai copie la cle")
+    page.wait_for_load_state("networkidle")
+    check("la liste dit « renouvelee le »", "renouvelee le" in page.inner_text("table"))
+    # Changer seulement l'échéance : la clé en service reste la même.
+    page.click("button:has-text('Renouveler')")
+    page.fill("[id^='renew-ttl-']", "30")
+    page.uncheck("[data-renew-form] input[name=rotate]")
+    page.click("button:has-text('Renouveler « CI du banc »')")
+    page.wait_for_selector("text=Echeance mise a jour", timeout=15000)
+    check("échéance seule : la même clé fonctionne toujours", httpx.get(f"{ADMIN}/api/campaigns", headers=bearer).status_code == 200)
+    days = int(psql("SELECT round(extract(epoch FROM (expires_at - now())) / 86400) FROM api_keys WHERE label = 'CI du banc'"))
+    check("échéance ramenée à 30 jours", days == 30, str(days))
+
     page.click("button:has-text('Revoquer')")
     page.wait_for_selector("text=Cle revoquee", timeout=15000)
     r = httpx.get(f"{ADMIN}/api/campaigns", headers=bearer)
     check("clé révoquée : 401 revoked_key", r.status_code == 401 and r.json().get("code") == "revoked_key", r.text[:200])
+    check("une clé révoquée n'a plus de bouton « Renouveler »", page.locator("button:has-text('Renouveler')").count() == 0)
 
     check("aucune erreur de script dans les pages", not errors, str(errors)[:400])
     browser.close()
