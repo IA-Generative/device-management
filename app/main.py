@@ -60,6 +60,7 @@ from .services import links as _links
 from .services import package_bootstrap as _package_bootstrap
 from .services import package_config as _package_config
 from .services import package_import as _package_import
+from .services import package_signing as _package_signing
 from .services import update_rules as _update_rules
 from .services.crypto import (
     SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
@@ -73,6 +74,7 @@ from .services.crypto import (
 from .services.crypto import (
     hash_relay_secret as _svc_hash_relay_secret,
 )
+from .services.crypto import is_sensitive_key as _is_sensitive_key
 from .services.db import (
     _with_db,
 )
@@ -894,15 +896,36 @@ def _load_config_template(profile: str, device: str | None = None,
 from app.pathsafe import safe_path_join as _safe_path_join  # noqa: E402 (alias historique placé près des appelants)
 from app.pathsafe import safe_segment as _safe_segment  # noqa: E402 (alias historique placé près des appelants)
 
+# Secrets qu'un gabarit de configuration a le droit de désigner : ceux que le DM
+# distribue à dessein (ils sont ensuite retirés pour un appelant sans paire relais).
+_TEMPLATE_SECRET_ALLOWLIST = frozenset(
+    m.group(1) or m.group(2)
+    for placeholder in _package_config.GOVERNED.values()
+    for m in [_TEMPLATE_VAR_RE.search(placeholder)] if m
+)
+_TEMPLATE_VARS_REFUSED: set[str] = set()
+
 
 def _substitute_env_in_str(value: str) -> str:
-    """Replace ${{VARNAME}} (or legacy ${VARNAME}) with os.environ['VARNAME'] if set, else empty string."""
+    """Replace ${{VARNAME}} (or legacy ${VARNAME}) with os.environ['VARNAME'] if set, else empty string.
+
+    Le gabarit vient d'un paquet de plugin : un repère qui désignerait un secret
+    du serveur (`${{DATABASE_URL}}`, clé de signature…) le ferait partir vers
+    tous les postes. Un nom sensible n'est donc résolu que s'il fait partie des
+    réglages que le DM distribue à dessein ; sinon il est remplacé par du vide.
+    """
 
     def repl(m: re.Match[str]) -> str:
         # group(1) matches the preferred ${{VARNAME}} syntax,
         # group(2) matches the legacy ${VARNAME} syntax.
-        var = m.group(1) or m.group(2)
-        return os.getenv(var or "", "")
+        var = m.group(1) or m.group(2) or ""
+        if var not in _TEMPLATE_SECRET_ALLOWLIST and _is_sensitive_key(var):
+            if var not in _TEMPLATE_VARS_REFUSED:
+                _TEMPLATE_VARS_REFUSED.add(var)
+                logger.error("gabarit de configuration : le repère ${{%s}} désigne un secret du serveur, "
+                             "il n'est pas résolu", var)
+            return ""
+        return os.getenv(var, "")
 
     return _TEMPLATE_VAR_RE.sub(repl, value)
 
@@ -1356,6 +1379,9 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         )
         row = cur.fetchone()
     except Exception:
+        # Typiquement une base en retard d'une migration : sans ce journal, plus
+        # aucun poste ne reçoit de mise à jour et rien ne le dit.
+        logger.exception("résolution de la campagne active impossible : aucune directive servie")
         return None
 
     if not row:
@@ -1505,7 +1531,7 @@ def _build_update_directive(
     # Signature du paquet servi (ADR-0006) : le plugin la vérifie avant d'installer.
     # Absente si le DM ne signe pas ; la clé n'existe alors pas dans la directive.
     if campaign.get("artifact_signature"):
-        directive["signature"] = campaign["artifact_signature"]
+        directive["signature"] = _package_signing.with_current_delegation(campaign["artifact_signature"])
     # Redémarrage du logiciel hôte demandé au déploiement : le plugin le propose
     # à l'utilisateur après l'installation. Seul `true` est émis ; sans demande,
     # la clé n'existe pas dans la directive.
@@ -3794,6 +3820,24 @@ async def _form_file_bytes(form, field: str) -> bytes | None:
     return content or None
 
 
+def _audit_package_import(cur, *, route: str, artifact_id, slug: str, version: str, checksum: str,
+                          provenance: dict | None, signed: bool) -> None:
+    """Trace d'audit d'un import par l'API (jeton de service) : origine contrôlée ou non,
+    référence confirmée hors liste, paquet signé ou non. Jamais l'enveloppe elle-même."""
+    try:
+        from app.admin.helpers import audit_log as _audit_log
+        build = (provenance or {}).get("build") or {}
+        _audit_log(cur, actor={"email": "api-token", "sub": "service-token"}, action="package.import",
+                   resource_type="artifact", resource_id=str(artifact_id), plugin=slug or None,
+                   payload={"route": route, "version": version, "checksum": checksum, "signed": signed,
+                            "upstream_sha256": ((provenance or {}).get("upstream") or {}).get("sha256"),
+                            "build": {k: build.get(k) for k in ("status", "keyid", "repository", "ref", "commit",
+                                                                  "ref_allowed", "ref_confirmed")
+                                      if build.get(k) is not None}})
+    except Exception:
+        logger.exception("audit de l'import impossible")
+
+
 def _package_refused_response(e: _package_import.PackageRefused) -> JSONResponse:
     """Refus d'import (ADR-0006) : 409 si une confirmation le lève, 422 sinon."""
     status = 409 if e.code == _package_import.REF_NOT_ALLOWED else 422
@@ -3936,6 +3980,9 @@ def _deploy_plugin_db_work(
                 cur, device_type=device_type, platform_variant="", version=version,
                 s3_path=binary_ref, checksum=checksum, bootstrap_info=bootstrap_info)
             bootstrap_info, package_signature, package_provenance = _package_import.split_info(bootstrap_info)
+            _audit_package_import(cur, route="api.plugin_deploy", artifact_id=artifact_id, slug=slug,
+                                  version=version, checksum=checksum, provenance=package_provenance,
+                                  signed=package_signature is not None)
 
             # 6. Deprecate old versions + upsert new version
             cur.execute("UPDATE plugin_versions SET status = 'deprecated' WHERE plugin_id = %s AND status = 'published' AND version <> %s", (plugin_id, version))
@@ -4372,6 +4419,9 @@ async def api_upload_artifact(request: Request):
             )
             artifact_id = cur.fetchone()[0]
             bootstrap_info = _bootstrap
+            _audit_package_import(cur, route="api.artifacts", artifact_id=artifact_id, slug=device_type,
+                                  version=version, checksum=checksum, provenance=_provenance,
+                                  signed=_signature is not None)
         conn.close()
         return JSONResponse({
             "ok": True, "artifact_id": artifact_id, "checksum": checksum,
@@ -4975,7 +5025,8 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None, signatu
                     envelope = srow[0] if srow else None
                 if not isinstance(envelope, dict):
                     raise HTTPException(404, "Ce paquet n'est pas signé par cette instance")
-                return JSONResponse(envelope, headers={"Cache-Control": "no-cache"})
+                return JSONResponse(_package_signing.with_current_delegation(envelope),
+                                    headers={"Cache-Control": "no-cache"})
 
             if dist_mode == "managed" and artifact_id:
                 cur.execute("SELECT s3_path, checksum FROM artifacts WHERE id = %s", (artifact_id,))
@@ -5010,6 +5061,10 @@ def catalog_download_file(slug: str, filename: str):
     signature_only = filename.endswith(_SIGNATURE_SUFFIX)
     if signature_only:
         filename = filename[:-len(_SIGNATURE_SUFFIX)]
+        variant_signature = _variant_signature_by_filename(slug, filename)
+        if variant_signature is not None:
+            return JSONResponse(_package_signing.with_current_delegation(variant_signature),
+                                headers={"Cache-Control": "no-cache"})
     else:
         served = _serve_variant_by_filename(slug, filename)
         if served is not None:
@@ -5557,6 +5612,29 @@ def _serve_variant_by_filename(slug: str, filename: str):
         return None
 
 
+def _variant_signature_by_filename(slug: str, filename: str):
+    """Enveloppe signée de l'artefact de variante nommé `filename`, ou None s'il n'y en a pas."""
+    def _q(cur):
+        _slug, _dtype, pid, _via = _resolve_device(slug, cur)
+        if not pid:
+            return None
+        cur.execute("""
+            SELECT a.s3_path, a.signature
+            FROM plugin_version_artifacts pva
+            JOIN artifacts a ON a.id = pva.artifact_id
+            JOIN plugin_versions pv ON pv.id = pva.plugin_version_id
+            WHERE pv.plugin_id = %s
+        """, (pid,))
+        for s3_path, signature in cur.fetchall():
+            if s3_path and os.path.basename(s3_path) == filename and isinstance(signature, dict):
+                return signature
+        return None
+    try:
+        return _with_bootstrap_cursor(_q)
+    except HTTPException:
+        return None
+
+
 def _latest_variant_release(cur, plugin_id: int, variant: str):
     """(version, filename, checksum, extension_id, gecko_id) de la version à
     annoncer pour cette variante ; None si aucune.
@@ -5651,7 +5729,7 @@ def updates_manifest_json(request: Request, slug: str, target: str):
 
 
 @app.get("/catalog/{slug}", response_class=Response)
-def catalog_detail(request: Request, slug: str, exp: str | None = None):
+def catalog_detail(request: Request, slug: str, exp: str | None = None, v: str | None = None):
     """Public HTML — plugin detail page.
 
     ``?exp=<tag>`` révèle la section « Versions expérimentales » (branches
@@ -5706,6 +5784,11 @@ def catalog_detail(request: Request, slug: str, exp: str | None = None):
                     ORDER BY published_at DESC NULLS LAST
                 """, (p["id"], exp))
                 exp_rows = cur.fetchall()
+                # ?v=<version> : une seule version de l'étiquette. C'est le lien du bloc
+                # « Préversion », public : il ne doit montrer que la candidate, pas un
+                # essai rangé sous la même étiquette.
+                if v:
+                    exp_rows = [row for row in exp_rows if row[0] == v]
 
             # Version candidate annoncée à tous (bloc « Préversion »), si
             # l'administrateur l'a choisi. Les essais, eux, ne sont jamais listés.
