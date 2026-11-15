@@ -215,6 +215,8 @@ def test_e2e_candidate_is_public_only_when_the_admin_says_so(site, chain):
 
     page = site.http.get(f"/catalog/{_SLUG}?exp=rc").text
     assert "Version d'essai" in page and "Revenir a la version generale" in page
+    # Le bouton principal sert l'essai, pas la version générale.
+    assert "Telecharger la version d'essai 1.1.0-rc.3" in page and "Version generale 1.0.0" in page
 
 
 def test_e2e_prerelease_in_an_ordinary_campaign_is_confirmed_on_production(site, chain, monkeypatch):

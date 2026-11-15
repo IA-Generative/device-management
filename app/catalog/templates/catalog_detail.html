@@ -79,7 +79,18 @@
   {% endif %}
 
   <div class="fr-btns-group fr-btns-group--inline" style="margin-bottom:2rem;">
-    {% if plugin.latest_version %}
+    {# Sur un lien d'essai, le bouton principal sert l'essai : le testeur ne doit pas
+       repartir avec la version generale en cliquant sur le premier bouton venu. #}
+    {% if trial_tag and experiments %}
+      <a href="/catalog/{{ plugin.slug }}/download/{{ plugin.slug }}-{{ experiments[0].version }}{% if file_ext %}.{{ file_ext }}{% endif %}" class="fr-btn">
+        Telecharger la version d'essai {{ experiments[0].version }}{% if file_ext %} (.{{ file_ext }}){% endif %}
+      </a>
+      {% if plugin.latest_version %}
+      <a href="/catalog/{{ plugin.slug }}/download" class="fr-btn fr-btn--tertiary">
+        Version generale {{ plugin.latest_version }}
+      </a>
+      {% endif %}
+    {% elif plugin.latest_version %}
       <a href="/catalog/{{ plugin.slug }}/download" class="fr-btn">
         Telecharger v{{ plugin.latest_version }}{% if file_ext %} (.{{ file_ext }}){% endif %}
       </a>
