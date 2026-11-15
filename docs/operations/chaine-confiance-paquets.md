@@ -29,6 +29,7 @@ plugin avec son premier paquet, `POST /api/plugins/{slug}/deploy`, `POST /api/ar
 |---|---|---|
 | `DM_PACKAGE_SIGNATURE_POLICY` | tous les composants | `off` (défaut), `warn`, `require` |
 | `DM_PACKAGE_PUBLISHER_KEYS` | tous | clés publiques (PEM) des chaînes de build acceptées |
+| `DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS` | tous | plugins dont la signature d'origine peut être levée à l'envoi (voir plus bas) |
 | `DM_PACKAGE_ALLOWED_REFS` | tous | références Git acceptées sans confirmation (`refs/heads/main,refs/tags/*`) |
 | `DM_PACKAGE_ALLOWED_REPOSITORIES` | tous | dépôts acceptés (`IA-Generative/*`) |
 | `DM_PACKAGE_SIGNING_REQUIRED` | tous | `true` : un composant sans clé refuse l'import |
@@ -69,6 +70,22 @@ remplacer `DM_PACKAGE_SIGNING_DELEGATION` sur tous les composants : la délégat
 est jointe à chaque enveloppe au moment où elle est servie, les paquets déjà importés n'ont
 pas à l'être de nouveau.
 
+## En attendant qu'une chaîne de build signe
+
+Tant que la CI d'un plugin ne publie pas de `.sig.json`, la politique `require` refuserait
+tous ses paquets. `DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS` nomme ces plugins (noms au
+catalogue, séparés par des virgules ; par exemple `mirai-libreoffice,iassistant-direct`).
+
+Pour eux seulement, l'écran d'envoi affiche une case **« Exiger la signature d'origine »**,
+cochée. Un paquet sans signature reste refusé tant qu'elle l'est. L'administrateur la
+décoche puis valide : le paquet est importé, la fiche de la version affiche « Origine non
+signée (exigence levée) », et le journal d'audit le retient. Par l'API, c'est le champ
+`skip_signature=true`.
+
+- Une signature fournie est toujours vérifiée, même pour ces plugins.
+- Le DM signe quand même le paquet qu'il sert : seule la preuve d'origine manque.
+- La liste se vide plugin par plugin, dès que sa chaîne de build signe.
+
 ## Refus à l'import
 
 | Code | HTTP | Sens | Que faire |
@@ -76,6 +93,7 @@ pas à l'être de nouveau.
 | `signature_required` | 422 | pas de signature d'origine valide, politique `require` | joindre le `.sig.json` publié avec le paquet |
 | `signature_invalid` | 422 | la signature fournie ne correspond pas : fichier modifié, mauvais plugin, mauvaise version | reprendre le paquet et sa signature à la source |
 | `version_mismatch` | 422 | le paquet se déclare sous un autre numéro | enregistrer sous le numéro du paquet |
+| `signature_waivable` | 409 | pas de signature, mais ce plugin est de ceux dont l'exigence peut être levée | décocher « Exiger la signature d'origine » et valider, ou `skip_signature=true` par l'API |
 | `ref_not_allowed` | 409 | construit depuis une référence hors liste | confirmer ; la confirmation est tracée |
 | `prerelease_ordinary` | 409 | pré-version en campagne ordinaire sur une production | préférer un essai sur une cohorte, ou confirmer |
 | `bootstrap_signed` | 409 | archive à signature embarquée dont la liste de DM diffère | confirmer qu'elle est servie telle quelle |

@@ -172,7 +172,7 @@ def _plugin_aliases(cur, plugin_id) -> list[str]:
 
 def _prepare_package(data: bytes, keep_bootstrap="", *, slug: str = "", version: str = "",
                      filename: str = "", build_signature=None, confirm_ref="",
-                     slug_aliases=()) -> tuple[bytes, dict]:
+                     slug_aliases=(), skip_signature="") -> tuple[bytes, dict]:
     """Paquet tel qu'il sera stocké et servi, et relevé de l'import (issue #133, ADR-0006).
 
     Vérifie la signature d'origine selon la politique de l'instance, retire
@@ -188,12 +188,14 @@ def _prepare_package(data: bytes, keep_bootstrap="", *, slug: str = "", version:
         return package_import.import_package(
             data, slug=slug, version=version, filename=filename,
             build_signature=build_signature, keep_bootstrap=_form_truthy(keep_bootstrap),
-            confirm_ref=_form_truthy(confirm_ref), slug_aliases=slug_aliases)
+            confirm_ref=_form_truthy(confirm_ref), slug_aliases=slug_aliases,
+            skip_signature=_form_truthy(skip_signature))
     except package_bootstrap.SignedPackageMismatch as e:
         raise HTTPException(409, {"code": "bootstrap_signed", "message": str(e)}) from e
     except package_import.PackageRefused as e:
-        status = 409 if e.code == package_import.REF_NOT_ALLOWED else 422
-        raise HTTPException(status, {"code": e.code, "message": str(e)}) from e
+        # 409 : un refus que l'administrateur lève (confirmation, ou exigence décochée).
+        liftable = e.code in (package_import.REF_NOT_ALLOWED, package_import.SIGNATURE_WAIVABLE)
+        raise HTTPException(409 if liftable else 422, {"code": e.code, "message": str(e)}) from e
     except zipfile.BadZipFile as e:
         raise HTTPException(400, "Le fichier envoyé n'est pas une archive de plugin lisible.") from e
 
@@ -260,6 +262,8 @@ def _origin_view(provenance: dict | None, signed: bool) -> dict:
         "ref": ref, "commit": commit,
         "repository": build.get("repository") or "",
         "ref_confirmed": bool(build.get("ref_confirmed")),
+        # Importé sans signature d'origine, exigence levée par l'administrateur.
+        "waived": bool(build.get("waived")),
         "signed": bool(signed),
         # Release GitHub dont le paquet a été tiré (issue #108), s'il en vient.
         "github": (provenance or {}).get("github") or None,
@@ -293,7 +297,8 @@ def _bootstrap_audit(info: dict | None) -> dict:
            "served_urls": info.get("served_urls")}
     if build:
         out["build"] = {k: build.get(k) for k in ("status", "keyid", "repository", "ref", "commit",
-                                                    "ref_allowed", "ref_confirmed") if build.get(k) is not None}
+                                                    "ref_allowed", "ref_confirmed", "waived")
+                        if build.get(k) is not None}
     if info.get("upstream"):
         out["upstream_sha256"] = info["upstream"].get("sha256")
     if info.get("github"):
@@ -3213,6 +3218,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         confirm_ref = body.get("confirm_ref", False)
         adapt_config = body.get("adapt_config", True)
         confirm_prerelease = body.get("confirm_prerelease", False)
+        skip_signature = body.get("skip_signature", False)
         restart_required = body.get("restart_required", False)
         build_signature = await _signature_input(body.get("signature"))
         campaign_kind = body.get("campaign_kind", "ordinary")
@@ -3249,6 +3255,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         confirm_ref = form.get("confirm_ref", "")
         adapt_config = form.get("adapt_config", "1")
         confirm_prerelease = form.get("confirm_prerelease", "")
+        skip_signature = form.get("skip_signature", "")
         restart_required = form.get("restart_required", "")
         build_signature = await _signature_input(form.get("signature"))
         campaign_kind = form.get("campaign_kind", "ordinary")
@@ -3333,7 +3340,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                     data, keep_bootstrap, slug=_slug, version=version,
                     filename=f"{_slug}-{version}{_suffix}{_ext}",
                     build_signature=build_signature, confirm_ref=confirm_ref,
-                    slug_aliases=_plugin_aliases(cur, plugin_id))
+                    slug_aliases=_plugin_aliases(cur, plugin_id), skip_signature=skip_signature)
             except HTTPException as refused:
                 # Un paquet tiré de GitHub et refusé sans appel : le refus se voit
                 # sur la fiche, à la ligne de la release (issue #108).

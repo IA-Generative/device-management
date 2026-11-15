@@ -40,6 +40,8 @@ common = {
     "KEYCLOAK_CLIENT_ID": "client-du-banc",
     "DM_GITHUB_API_URL": "http://faux-github:8765", "DM_GITHUB_POLL_INTERVAL": "5",
     "DM_PACKAGE_SIGNATURE_POLICY": "require",
+    # banc-lo : plugin dont la chaîne de build « ne signe pas encore ».
+    "DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS": "banc-lo",
     "DM_PACKAGE_SIGNING_REQUIRED": "true",
     "DM_PACKAGE_PUBLISHER_KEYS": pub(publisher),
     "DM_PACKAGE_ALLOWED_REFS": "refs/heads/main,refs/heads/develop,refs/tags/*",
@@ -122,6 +124,10 @@ for version, ref, prerelease in (("0.27.0", "refs/heads/main", False), ("0.27.1-
     open(os.path.join(folder, name), "wb").write(data)
     json.dump(envelope(data, "banc-tb", version, name, ref), open(os.path.join(folder, name + ".sig.json"), "w"))
     json.dump({"prerelease": prerelease, "body": f"Notes de la {version}"}, open(os.path.join(folder, "release.json"), "w"))
+
+# Paquets LibreOffice SANS signature (chaîne de build qui ne signe pas encore).
+for version in ("0.3.2", "0.3.3"):
+    open(os.path.join(OUT, f"banc-lo-{version}.oxt"), "wb").write(oxt(version))
 
 # Cas d'attaque
 data = xpi("0.24.1")

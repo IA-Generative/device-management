@@ -315,6 +315,19 @@ def policy() -> str:
     return POLICY_REQUIRE
 
 
+def optional_plugins() -> set[str]:
+    """Plugins pour lesquels l'administrateur peut lever, envoi par envoi, l'exigence
+    de signature d'origine (`DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS`, noms au catalogue
+    séparés par des virgules).
+
+    Mesure d'attente, pour un plugin dont la chaîne de build ne signe pas encore :
+    sous `require`, un paquet sans signature reste refusé par défaut, et n'est
+    importé que si l'administrateur décoche l'exigence à l'envoi. Une signature
+    fournie est toujours vérifiée.
+    """
+    return set(_patterns("DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS"))
+
+
 def publisher_keys() -> dict:
     """Clés d'éditeur configurées. Lève SigningConfigError si elles sont illisibles."""
     try:
