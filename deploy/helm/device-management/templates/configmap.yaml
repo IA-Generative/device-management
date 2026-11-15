@@ -28,6 +28,7 @@ data:
   # signature, elle, n'est montée que sur le composant d'administration.
   DM_PACKAGE_SIGNATURE_POLICY: {{ .Values.config.packageTrust.signaturePolicy | quote }}
   DM_PACKAGE_SIGNING_REQUIRED: {{ .Values.config.packageTrust.signingRequired | quote }}
+  DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS: {{ .Values.config.packageTrust.signatureOptionalPlugins | quote }}
   DM_PACKAGE_ALLOWED_REFS: {{ .Values.config.packageTrust.allowedRefs | quote }}
   DM_PACKAGE_ALLOWED_REPOSITORIES: {{ .Values.config.packageTrust.allowedRepositories | quote }}
   DM_PACKAGE_PUBLISHER_KEYS: {{ .Values.config.packageTrust.publisherKeys | quote }}

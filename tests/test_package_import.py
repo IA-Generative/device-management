@@ -441,3 +441,58 @@ def test_an_oxt_prerelease_may_carry_its_numeric_form_in_description_xml():
     assert info["versions"] == {"description.xml": "0.3.99999.2.12"} and info["nature"] == "rc"
     with pytest.raises(package_import.PackageRefused):
         package_import.import_package(oxt("0.3.99999.2.11"), slug="lo", version="0.4.0-rc.12")
+
+
+# ─── Exigence de signature levée à l'envoi, en attendant qu'une CI signe ─────
+
+def test_an_unsigned_package_of_a_listed_plugin_needs_the_box_unchecked(monkeypatch, publisher):
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "require")
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS", "mirai-libreoffice, iassistant-direct")
+    data = xpi("1.0.0")
+    # Case cochée (défaut) : refus, mais un refus que l'administrateur peut lever.
+    with pytest.raises(package_import.PackageRefused) as e:
+        package_import.import_package(data, slug="mirai-libreoffice", version="1.0.0")
+    assert e.value.code == package_import.SIGNATURE_WAIVABLE
+    out = package_import.preview(data, slug="mirai-libreoffice", version="1.0.0")
+    assert out["refusal"]["waivable"] is True and out["refusal"]["confirmable"] is False
+    # Case décochée : importé, et le relevé le dit.
+    _served, info = package_import.import_package(data, slug="mirai-libreoffice", version="1.0.0",
+                                                  skip_signature=True)
+    assert info["build"]["status"] == package_import.BUILD_UNSIGNED and info["build"]["waived"] is True
+    _b, _s, provenance = package_import.split_info(info)
+    assert provenance["build"]["waived"] is True
+
+
+def test_the_waiver_does_not_reach_other_plugins_nor_a_bad_signature(monkeypatch, publisher):
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "require")
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS", "mirai-libreoffice")
+    data = xpi("1.0.0")
+    # Un autre plugin : décocher n'y change rien.
+    with pytest.raises(package_import.PackageRefused) as e:
+        package_import.import_package(data, slug="mirai-matisse", version="1.0.0", skip_signature=True)
+    assert e.value.code == package_import.SIGNATURE_REQUIRED
+    assert package_import.preview(data, slug="mirai-matisse", version="1.0.0")["refusal"]["waivable"] is False
+    # Une signature fournie est toujours vérifiée : une mauvaise n'est pas « levée ».
+    for envelope in (build_envelope(new_key(), data, slug="mirai-libreoffice"),          # clé inconnue
+                     build_envelope(publisher, xpi("1.0.0", extra={"x": "y"}), slug="mirai-libreoffice")):  # autre fichier
+        with pytest.raises(package_import.PackageRefused) as e:
+            package_import.import_package(data, slug="mirai-libreoffice", version="1.0.0",
+                                          build_signature=envelope, skip_signature=True)
+        assert e.value.code in (package_import.SIGNATURE_REQUIRED, package_import.SIGNATURE_INVALID)
+    # Et une bonne signature est acceptée comme pour tout plugin.
+    _s, info = package_import.import_package(
+        data, slug="mirai-libreoffice", version="1.0.0",
+        build_signature=build_envelope(publisher, data, slug="mirai-libreoffice"))
+    assert info["build"]["status"] == package_import.BUILD_VERIFIED and "waived" not in info["build"]
+
+
+def test_the_waiver_follows_a_catalogue_alias_and_changes_nothing_outside_require(monkeypatch, publisher):
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS", "iassistant-direct")
+    data = xpi("1.0.0")
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "require")
+    _s, info = package_import.import_package(data, slug="iassistant-direct-browser", version="1.0.0",
+                                             slug_aliases=["iassistant-direct"], skip_signature=True)
+    assert info["build"]["waived"] is True
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_POLICY", "warn")
+    _s, info = package_import.import_package(data, slug="iassistant-direct", version="1.0.0")
+    assert info["build"]["status"] == package_import.BUILD_UNSIGNED and "waived" not in info["build"]

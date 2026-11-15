@@ -396,3 +396,52 @@ def test_e2e_legacy_deploy_form_also_confirms_a_prerelease_on_production(site, m
     res = site.http.post("/admin/deploy/create", data=fields, files=files, follow_redirects=False)
     assert res.status_code == 409 and res.json()["detail"]["code"] == "prerelease_ordinary", res.text
     assert site.sql("SELECT count(*) FROM artifacts WHERE device_type = %s", (_DEVICE_TYPE,))[0][0] == 0
+
+
+def test_e2e_signature_requirement_lifted_at_upload_for_a_listed_plugin(site, chain, monkeypatch):
+    """En attendant qu'une chaîne de build signe : case décochée à l'envoi, tracée."""
+    monkeypatch.setenv("DM_PACKAGE_SIGNATURE_OPTIONAL_PLUGINS", f"autre-plugin,{_SLUG}")
+    # L'aperçu de l'écran d'envoi annonce un refus que la case lève.
+    _page(site, "/admin/campaigns")     # session d'administration pour l'aperçu
+    preview = site.http.post("/admin/api/deploy/extract-version", data={"plugin_id": str(site.plugin_id)},
+                             files={"binary": (f"{_SLUG}-1.0.0.xpi", xpi("1.0.0"), "application/octet-stream")}).json()
+    assert preview["package"]["refusal"]["code"] == "signature_waivable"
+    assert preview["package"]["refusal"]["waivable"] is True
+
+    # Case cochée : refus 409, rien n'est écrit.
+    res = _send(site, chain, "1.0.0", signed=False)
+    assert res.status_code == 409 and res.json()["detail"]["code"] == "signature_waivable", res.text
+    assert site.versions() == {} and site.stored_files() == []
+
+    # Case décochée : importé, signé par le DM, et la levée se lit partout.
+    res = _send(site, chain, "1.0.0", signed=False, skip_signature="1")
+    assert res.status_code == 303, res.text
+    signature, provenance, _bootstrap = _artifact(site, "1.0.0")
+    assert provenance["build"]["status"] == "unsigned" and provenance["build"]["waived"] is True
+    assert signature is not None, "le DM signe quand même ce qu'il sert"
+    assert statement_of(signature)["upstream"]["verified"] is False
+    audit = site.sql("SELECT payload FROM admin_audit_log WHERE action = 'version.upload' ORDER BY id DESC LIMIT 1")[0][0]
+    assert audit["bootstrap"]["build"]["waived"] is True
+    page = _page(site, f"/admin/catalog/{site.plugin_id}?tab=versions")
+    assert "Origine non signée (exigence levee)" in page
+    update = site.config_update("0.9.0")
+    _verify_like_a_device(site.http.get(update["artifact_url"]).content, update["signature"], "1.0.0")
+
+    # Par l'API : même règle.
+    package = xpi("1.1.0")
+    files = {"binary": (f"{_SLUG}-1.1.0.xpi", package, "application/octet-stream")}
+    res = site.http.post(f"/api/plugins/{_SLUG}/deploy", headers={"X-Admin-Token": _TOKEN},
+                         data={"strategy": "immediate", "version": "1.1.0"}, files=files)
+    assert res.status_code == 409 and res.json()["code"] == "signature_waivable"
+    res = site.http.post(f"/api/plugins/{_SLUG}/deploy", headers={"X-Admin-Token": _TOKEN},
+                         data={"strategy": "immediate", "version": "1.1.0", "skip_signature": "true"}, files=files)
+    assert res.status_code == 201, res.text
+    assert res.json()["provenance"]["build"]["waived"] is True
+    api_audit = site.sql("SELECT payload FROM admin_audit_log WHERE action = 'package.import' ORDER BY id DESC LIMIT 1")[0][0]
+    assert api_audit["build"]["waived"] is True
+
+
+def test_e2e_a_plugin_that_is_not_listed_cannot_lift_the_requirement(site, chain):
+    res = _send(site, chain, "1.0.0", signed=False, skip_signature="1")
+    assert res.status_code == 422 and res.json()["detail"]["code"] == "signature_required"
+    assert site.versions() == {}
