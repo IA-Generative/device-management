@@ -30,6 +30,16 @@ data:
   DM_LINKS: {{ .Values.config.app.links | default list | toJson | quote }}
   DM_LINKS_BY_APP: {{ .Values.config.app.linksByApp | default dict | toJson | quote }}
 
+  # -- config.packageTrust (ADR-0006) : posé sur tous les composants. La clé de
+  # signature, elle, n'est montée que sur le composant d'administration.
+  DM_PACKAGE_SIGNATURE_POLICY: {{ .Values.config.packageTrust.signaturePolicy | quote }}
+  DM_PACKAGE_SIGNING_REQUIRED: {{ .Values.config.packageTrust.signingRequired | quote }}
+  DM_PACKAGE_ALLOWED_REFS: {{ .Values.config.packageTrust.allowedRefs | quote }}
+  DM_PACKAGE_ALLOWED_REPOSITORIES: {{ .Values.config.packageTrust.allowedRepositories | quote }}
+  DM_PACKAGE_PUBLISHER_KEYS: {{ .Values.config.packageTrust.publisherKeys | quote }}
+  DM_PACKAGE_TRUST_ROOTS: {{ .Values.config.packageTrust.trustRoots | quote }}
+  DM_PACKAGE_SIGNING_DELEGATION: {{ .Values.config.packageTrust.signingDelegation | quote }}
+
   # -- config.storage --
   DM_STORE_ENROLL_LOCALLY: {{ .Values.config.storage.storeEnrollLocally | quote }}
   DM_ENROLL_DIR: {{ .Values.config.storage.enrollDir | quote }}

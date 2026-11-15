@@ -125,7 +125,7 @@ def list_versions(cur, plugin_id: int) -> list[dict]:
     cur.execute("""
         SELECT pv.*,
                a.s3_path, a.checksum, a.device_type AS artifact_device_type,
-               a.bootstrap_info,
+               a.bootstrap_info, a.provenance, (a.signature IS NOT NULL) AS signed,
                COUNT(pi.id) FILTER (WHERE pi.installed_version = pv.version) AS install_count
         FROM plugin_versions pv
         LEFT JOIN artifacts a ON a.id = pv.artifact_id

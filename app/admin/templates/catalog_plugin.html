@@ -226,6 +226,17 @@
           <div id="nv-file-analysis" style="margin-top:0.75rem;"></div>
         </div>
 
+        {# Signature d'origine (ADR-0006) : le fichier .sig.json publie a cote du paquet #}
+        <div class="dm-form-row">
+          <label class="dm-label" for="nv-signature-input">Signature d'origine du paquet (.sig.json)</label>
+          <input type="file" class="dm-input" accept=".json,application/json" id="nv-signature-input">
+          <p style="font-size:0.8rem;color:#666;margin:0.25rem 0 0 0;">
+            Le fichier publie a cote du paquet sur la release. Il prouve que le paquet sort bien de la
+            chaine de build du plugin. Selon le reglage de cette instance, il est facultatif ou exige.
+          </p>
+          <div id="nv-import-preview" style="margin-top:0.75rem;"></div>
+        </div>
+
         <div id="nv-detected-info" style="display:none;background:#fff;border:1px solid #e5e5e5;border-radius:6px;padding:1rem;margin-top:0.75rem;">
           <div class="dm-grid-2" style="gap:0.75rem;">
             <div>
@@ -244,6 +255,9 @@
           <button type="button" class="dm-btn dm-btn--primary dm-btn--sm" id="nv-btn-step2" disabled onclick="nvGoStep(2)">Suivant</button>
         </div>
       </div>
+      {# Adaptation de la configuration embarquee (issue #107). Le champ cache porte la
+         valeur envoyee : une case decochee n'envoie rien, donc on ecrit 0 ou 1. #}
+      <input type="hidden" name="adapt_config" id="nv-adapt-config" value="1">
 
       {# Step 2: Details (pre-filled) #}
       <div id="nv-step-2" style="display:none;">
@@ -451,8 +465,9 @@
   </div>
 
   {# Version history table #}
+  <div style="overflow-x:auto;">
   <table>
-    <thead><tr><th>Version</th><th>Statut</th><th>Distribution</th><th>Date</th><th>Installs</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Version</th><th>Nature</th><th>Origine et signature</th><th>Statut</th><th>Qui la recoit</th><th>Date</th><th>Postes</th><th>Actions</th></tr></thead>
     <tbody>
       {% for v in versions %}
       <tr>
@@ -494,6 +509,30 @@
           {% endif %}
         </td>
         <td>
+          <span class="dm-nature dm-nature--{{ v.nature }}"
+                title="{% if v.nature == 'general' %}Version X.Y.Z, destinee a tout le parc{% elif v.nature == 'rc' %}Version candidate X.Y.Z-rc.N, a valider sur des pilotes{% elif v.nature == 'dev' %}Version d'essai X.Y.Z-dev.N, issue d'une branche d'essai{% else %}Suffixe hors convention (attendu -rc.N ou -dev.N){% endif %}">{{ v.nature_label }}</span>
+        </td>
+        <td style="font-size:0.8rem;">
+          {% if v.origin.known %}
+            <div>
+              {% if v.origin.status == 'verified' %}<span class="dm-badge dm-badge--success">{{ v.origin.label }}</span>
+              {% elif v.origin.status in ('unsigned', 'unverified') %}<span class="dm-badge dm-badge--warning">{{ v.origin.label }}</span>
+              {% else %}<span class="dm-badge dm-badge--neutral">{{ v.origin.label }}</span>{% endif %}
+            </div>
+            {% if v.origin.ref %}
+            <div style="margin-top:0.25rem;color:#444;" title="{{ v.origin.repository }}">
+              <code>{{ v.origin.ref }}</code>{% if v.origin.commit %} @ <code>{{ v.origin.commit }}</code>{% endif %}
+              {% if v.origin.ref_confirmed %}<span title="Reference hors de la liste acceptee par cette instance, importee sur confirmation">(sur confirmation)</span>{% endif %}
+            </div>
+            {% endif %}
+            <div style="margin-top:0.25rem;color:#666;">
+              {% if v.origin.signed %}Signee par ce DM{% else %}Non signee par ce DM{% endif %}
+            </div>
+          {% elif v.artifact_id %}
+            <span style="color:#666;">Non relevee (paquet importe avant ce controle)</span>
+          {% endif %}
+        </td>
+        <td>
           {% if v.status == 'published' %}<span class="dm-badge dm-badge--success">Publie</span>
           {% elif v.status == 'draft' %}<span class="dm-badge dm-badge--neutral">Brouillon</span>
           {% elif v.status == 'deprecated' %}<span class="dm-badge dm-badge--warning">Obsolete</span>
@@ -503,10 +542,24 @@
              a affiche une cellule vide pour 'experimental' pendant deux versions. #}
           {% else %}<span class="dm-badge dm-badge--neutral">{{ v.status }}</span>{% endif %}
         </td>
-        <td>{{ v.distribution_mode }}</td>
+        <td style="font-size:0.8rem;">
+          {% for d in v.diffusion %}
+          <div>
+            <a href="/admin/campaigns/{{ d.campaign_id }}">{% if d.is_experiment %}Essai{% else %}Campagne ordinaire{% endif %}</a>{% if d.status == 'paused' %} (en pause){% endif %} :
+            {% if d.cohort_name %}cohorte « {{ d.cohort_name }} »{% else %}tout le parc{% endif %}
+          </div>
+          {% endfor %}
+          {% if not v.diffusion %}
+            {% if general_version and general_version.id == v.id %}Canaux natifs seulement
+            {% elif v.trial_link %}Lien d'essai seulement
+            {% elif v.status in ('published', 'experimental') %}<span style="color:#666;">Aucune campagne active</span>
+            {% endif %}
+          {% endif %}
+          {% if v.distribution_mode != 'managed' %}<div style="color:#666;">{{ v.distribution_mode }}</div>{% endif %}
+        </td>
         <td>{{ v.published_at.strftime('%d/%m/%Y') if v.published_at else v.created_at.strftime('%d/%m/%Y') }}</td>
         <td>{{ v.install_count or 0 }}</td>
-        <td style="display:flex;gap:0.25rem;">
+        <td style="display:flex;gap:0.25rem;flex-wrap:wrap;">
           {% if v.status == 'published' %}
           <form method="post" action="/admin/catalog/{{ plugin.id }}/versions/{{ v.id }}/status" style="display:inline;">
             <input type="hidden" name="status" value="deprecated">
@@ -529,14 +582,15 @@
         </td>
       </tr>
       {% if v.release_notes %}
-      <tr><td colspan="6" style="background:#f9f9f9;font-size:0.85rem;color:#555;padding:0.5rem 0.75rem;white-space:pre-line;">{{ v.release_notes }}</td></tr>
+      <tr><td colspan="8" style="background:#f9f9f9;font-size:0.85rem;color:#555;padding:0.5rem 0.75rem;white-space:pre-line;">{{ v.release_notes }}</td></tr>
       {% endif %}
       {% endfor %}
       {% if not versions %}
-      <tr><td colspan="6" style="color:#666;text-align:center;">Aucune version. Uploadez la premiere ci-dessus.</td></tr>
+      <tr><td colspan="8" style="color:#666;text-align:center;">Aucune version. Uploadez la premiere ci-dessus.</td></tr>
       {% endif %}
     </tbody>
   </table>
+  </div>
 </div>
 
 {# Tab: Deployments #}
@@ -614,24 +668,60 @@
 {# ── Versions tab JavaScript ── #}
 <script>
 const PLUGIN_NAME = {{ plugin.name|tojson }};
+const PLUGIN_ID = {{ plugin.id|tojson }};
 
-function nvGoStep(n) {
-  for (let i = 1; i <= 3; i++) {
-    document.getElementById('nv-step-' + i).style.display = i === n ? 'block' : 'none';
-    const si = document.getElementById('nv-si-' + i);
-    si.classList.remove('dm-step--active', 'dm-step--done');
-    if (i < n) si.classList.add('dm-step--done');
-    if (i === n) si.classList.add('dm-step--active');
+function dmEsc(text) {
+  return String(text == null ? '' : text).replace(/[&<>"']/g,
+    c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+// Apercu de l'import (ADR-0006, issues #106 et #107) : nature, origine, configuration.
+let nvRefusal = null;
+function nvRenderImportPreview(data) {
+  const box = document.getElementById('nv-import-preview');
+  const pkg = data.package, cfg = data.config;
+  const lines = [];
+  nvRefusal = null;
+  if (pkg) {
+    if (pkg.nature_label) lines.push('<div>Nature : <strong>' + dmEsc(pkg.nature_label) + '</strong></div>');
+    const b = pkg.build;
+    if (b && b.status === 'verified') {
+      lines.push('<div>&#10003; Origine verifiee : <code>' + dmEsc(String(b.ref || '?').replace(/^refs\/(heads|tags)\//, '')) + '</code>' +
+        (b.commit ? ' @ <code>' + dmEsc(String(b.commit).slice(0, 7)) + '</code>' : '') +
+        (b.repository ? ' (' + dmEsc(b.repository) + ')' : '') + '</div>');
+    } else if (b && b.status === 'unsigned') {
+      lines.push('<div style="color:#B34000;">&#9888; Aucune signature d\'origine jointe : rien ne prouve d\'ou vient ce paquet.</div>');
+    } else if (b && b.status === 'unverified') {
+      lines.push('<div style="color:#B34000;">&#9888; ' + dmEsc(b.message || 'Signature d\'origine non verifiable.') + '</div>');
+    }
+    (pkg.notes || []).forEach(n => lines.push('<div style="color:#B34000;">&#9888; ' + dmEsc(n) + '</div>'));
+    if (pkg.refusal) {
+      nvRefusal = pkg.refusal;
+      lines.push('<div style="color:#CE0500;font-weight:600;">&#10007; ' + dmEsc(pkg.refusal.message) + '</div>');
+    }
   }
-  if (n === 3) { nvUpdateEnvUI(); nvPreview(); }
+  if (cfg && cfg.replaced && cfg.replaced.length) {
+    lines.push('<div style="margin-top:0.5rem;"><label style="display:flex;gap:0.5rem;align-items:flex-start;">' +
+      '<input type="checkbox" id="nv-adapt-checkbox" checked onchange="document.getElementById(\'nv-adapt-config\').value = this.checked ? \'1\' : \'0\'">' +
+      '<span><strong>Adapter la configuration a cet environnement.</strong> Les ' + cfg.replaced.length +
+      ' valeur(s) suivantes du paquet seront remplacees par celles de cette instance :</span></label>' +
+      '<ul style="margin:0.25rem 0 0 1.75rem;font-size:0.8rem;">' +
+      cfg.replaced.map(e => '<li><code>' + dmEsc(e.profile + '.' + e.key) + '</code> : ' + dmEsc(e.package_value) + '</li>').join('') +
+      '</ul></div>');
+  }
+  if (cfg && cfg.kept_unknown && cfg.kept_unknown.length) {
+    lines.push('<div style="color:#B34000;margin-top:0.25rem;">&#9888; Valeurs du paquet gardees, faute de valeur cote instance : ' +
+      cfg.kept_unknown.map(e => '<code>' + dmEsc(e.profile + '.' + e.key) + '</code>').join(', ') + '</div>');
+  }
+  document.getElementById('nv-adapt-config').value = '1';
+  box.innerHTML = lines.length
+    ? '<div style="background:#fff;border:1px solid #e5e5e5;border-radius:6px;padding:0.75rem;font-size:0.85rem;">' + lines.join('') + '</div>'
+    : '';
 }
-
-function resetNvForm() {
-  document.getElementById('nv-file-analysis').innerHTML = '';
-  document.getElementById('nv-detected-info').style.display = 'none';
-  document.getElementById('nv-btn-step2').disabled = true;
-  nvGoStep(1);
-}
+document.getElementById('nv-signature-input').addEventListener('change', function() {
+  // Rejouer l'analyse avec la signature : le controle d'origine en depend.
+  const fileInput = document.getElementById('nv-file-input');
+  if (fileInput.files[0]) fileInput.dispatchEvent(new Event('change'));
+});
 
 // File upload analysis
 document.getElementById('nv-file-input').addEventListener('change', function() {
@@ -647,6 +737,10 @@ document.getElementById('nv-file-input').addEventListener('change', function() {
 
   const fd = new FormData();
   fd.append('binary', file);
+  fd.append('plugin_id', PLUGIN_ID);
+  const sigFile = document.getElementById('nv-signature-input').files[0];
+  if (sigFile) fd.append('signature', sigFile);
+  document.getElementById('nv-import-preview').innerHTML = '';
   fetch('/admin/api/deploy/extract-version', {method: 'POST', body: fd, credentials: 'same-origin'})
     .then(r => r.json())
     .then(data => {
@@ -685,7 +779,9 @@ document.getElementById('nv-file-input').addEventListener('change', function() {
         document.getElementById('nv-detected-type').textContent = labels[data.device_type] || data.device_type;
       }
       info.style.display = 'block';
-      btn.disabled = false;
+      nvRenderImportPreview(data);
+      // Un refus sans appel (signature absente ou invalide, version discordante) arrete ici.
+      btn.disabled = !!(nvRefusal && !nvRefusal.confirmable);
     })
     .catch(() => {
       box.innerHTML = '<div class="dm-flash dm-flash--warning" style="margin-bottom:0;">Analyse impossible — saisie manuelle</div>';
@@ -864,6 +960,8 @@ async function nvUploadFileChunked(file) {
 
 let nvConfirmOverwrite = false;
 let nvKeepBootstrap = false;
+let nvConfirmRef = false;
+let nvConfirmPrerelease = false;
 async function nvSubmit(action) {
   const errBox = document.getElementById('nv-deploy-error');
   errBox.style.display = 'none';
@@ -938,6 +1036,11 @@ async function nvSubmit(action) {
     payload.upload_id = uploadId;
     if (nvConfirmOverwrite) payload.confirm_overwrite = true;
     if (nvKeepBootstrap) payload.keep_bootstrap = true;
+    if (nvConfirmRef) payload.confirm_ref = true;
+    if (nvConfirmPrerelease) payload.confirm_prerelease = true;
+    // Signature d'origine (ADR-0006) : le contenu du .sig.json, joint au corps JSON.
+    const sigFile = document.getElementById('nv-signature-input').files[0];
+    if (sigFile) payload.signature = await sigFile.text();
 
     document.getElementById('nv-btn-deploy').innerHTML =
       '<span class="dm-spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;margin-right:0.5rem;"></span>' +
@@ -969,6 +1072,27 @@ async function nvSubmit(action) {
           nvKeepBootstrap = true;
           return nvSubmit(action);
         }
+        msg = msg.message;
+      }
+      // Paquet construit depuis une reference hors de la liste acceptee (ADR-0006) :
+      // l'importer demande une confirmation, tracee au journal d'audit.
+      else if (resp.status === 409 && msg && msg.code === 'ref_not_allowed') {
+        if (!nvConfirmRef && confirm(msg.message)) {
+          nvConfirmRef = true;
+          return nvSubmit(action);
+        }
+        msg = msg.message;
+      }
+      // Pre-version en campagne ordinaire sur une production (issue #106).
+      else if (resp.status === 409 && msg && msg.code === 'prerelease_ordinary') {
+        if (!nvConfirmPrerelease && confirm(msg.message)) {
+          nvConfirmPrerelease = true;
+          return nvSubmit(action);
+        }
+        msg = msg.message;
+      }
+      // Refus sans appel de l'import (signature, version discordante, configuration de signature).
+      else if (resp.status === 422 && msg && msg.message) {
         msg = msg.message;
       }
       // Meme numero de version, binaire different : confirmation explicite (issue #132).

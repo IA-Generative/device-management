@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from datetime import UTC, datetime
 from typing import Any
 from urllib import error as urllib_error
@@ -57,6 +58,9 @@ from .s3 import s3_client
 from .services import health as _health
 from .services import links as _links
 from .services import package_bootstrap as _package_bootstrap
+from .services import package_config as _package_config
+from .services import package_import as _package_import
+from .services import package_signing as _package_signing
 from .services import update_rules as _update_rules
 from .services.crypto import (
     SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
@@ -70,6 +74,7 @@ from .services.crypto import (
 from .services.crypto import (
     hash_relay_secret as _svc_hash_relay_secret,
 )
+from .services.crypto import is_sensitive_key as _is_sensitive_key
 from .services.db import (
     _with_db,
 )
@@ -920,15 +925,36 @@ def _load_config_template(profile: str, device: str | None = None,
 from app.pathsafe import safe_path_join as _safe_path_join  # noqa: E402 (alias historique placé près des appelants)
 from app.pathsafe import safe_segment as _safe_segment  # noqa: E402 (alias historique placé près des appelants)
 
+# Secrets qu'un gabarit de configuration a le droit de désigner : ceux que le DM
+# distribue à dessein (ils sont ensuite retirés pour un appelant sans paire relais).
+_TEMPLATE_SECRET_ALLOWLIST = frozenset(
+    m.group(1) or m.group(2)
+    for placeholder in _package_config.GOVERNED.values()
+    for m in [_TEMPLATE_VAR_RE.search(placeholder)] if m
+)
+_TEMPLATE_VARS_REFUSED: set[str] = set()
+
 
 def _substitute_env_in_str(value: str) -> str:
-    """Replace ${{VARNAME}} (or legacy ${VARNAME}) with os.environ['VARNAME'] if set, else empty string."""
+    """Replace ${{VARNAME}} (or legacy ${VARNAME}) with os.environ['VARNAME'] if set, else empty string.
+
+    Le gabarit vient d'un paquet de plugin : un repère qui désignerait un secret
+    du serveur (`${{DATABASE_URL}}`, clé de signature…) le ferait partir vers
+    tous les postes. Un nom sensible n'est donc résolu que s'il fait partie des
+    réglages que le DM distribue à dessein ; sinon il est remplacé par du vide.
+    """
 
     def repl(m: re.Match[str]) -> str:
         # group(1) matches the preferred ${{VARNAME}} syntax,
         # group(2) matches the legacy ${VARNAME} syntax.
-        var = m.group(1) or m.group(2)
-        return os.getenv(var or "", "")
+        var = m.group(1) or m.group(2) or ""
+        if var not in _TEMPLATE_SECRET_ALLOWLIST and _is_sensitive_key(var):
+            if var not in _TEMPLATE_VARS_REFUSED:
+                _TEMPLATE_VARS_REFUSED.add(var)
+                logger.error("gabarit de configuration : le repère ${{%s}} désigne un secret du serveur, "
+                             "il n'est pas résolu", var)
+            return ""
+        return os.getenv(var, "")
 
     return _TEMPLATE_VAR_RE.sub(repl, value)
 
@@ -1354,7 +1380,8 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
               ra.checksum AS rollback_checksum,
               c.rollout_config,
               c.created_at AS campaign_created_at,
-              c.is_experiment
+              c.is_experiment,
+              a.signature AS artifact_signature
             FROM campaigns c
             LEFT JOIN artifacts a  ON a.id  = c.artifact_id
             LEFT JOIN artifacts ra ON ra.id = c.rollback_artifact_id
@@ -1380,6 +1407,9 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         )
         row = cur.fetchone()
     except Exception:
+        # Typiquement une base en retard d'une migration : sans ce journal, plus
+        # aucun poste ne reçoit de mise à jour et rien ne le dit.
+        logger.exception("résolution de la campagne active impossible : aucune directive servie")
         return None
 
     if not row:
@@ -1390,7 +1420,7 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         artifact_version, artifact_s3_path, artifact_checksum, changelog_url,
         min_host_version, max_host_version,
         rollback_s3_path, rollback_version, rollback_checksum,
-        rollout_config, campaign_created_at, is_experiment,
+        rollout_config, campaign_created_at, is_experiment, artifact_signature,
     ) = row
 
     # Filter by host (platform) version compatibility
@@ -1425,6 +1455,8 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
         "rollout_config": rollout_config if isinstance(rollout_config, dict) else None,
         "campaign_created_at": campaign_created_at,
         "is_experiment": bool(is_experiment),
+        # Enveloppe signée du paquet servi (ADR-0006), None si le DM ne signe pas.
+        "artifact_signature": artifact_signature if isinstance(artifact_signature, dict) else None,
     }
 
 
@@ -1510,7 +1542,7 @@ def _build_update_directive(
             "plugin_slug": device_name or None,
         }
 
-    return {
+    directive = {
         "action": "update",
         "current_version": plugin_version,
         "target_version": artifact_version,
@@ -1522,6 +1554,11 @@ def _build_update_directive(
         "campaign_id": campaign["campaign_id"],
         "plugin_slug": device_name or None,
     }
+    # Signature du paquet servi (ADR-0006) : le plugin la vérifie avant d'installer.
+    # Absente si le DM ne signe pas ; la clé n'existe alors pas dans la directive.
+    if campaign.get("artifact_signature"):
+        directive["signature"] = _package_signing.with_current_delegation(campaign["artifact_signature"])
+    return directive
 
 
 def _upsert_campaign_device_status(cur, *, campaign_id: int, client_uuid: str, email: str, version_before: str) -> None:
@@ -3742,6 +3779,17 @@ async def api_plugin_deploy(slug: str, request: Request):
       - overwrite (bool, optional): confirme le remplacement du binaire quand
         ce numéro de version existe déjà avec un binaire différent. Sans lui,
         409 (issue #132) : les postes déjà sur ce numéro ne recevraient rien.
+      - signature (file, optional): enveloppe .sig.json publiée avec le paquet
+        (signature d'origine, ADR-0006). Exigée si l'instance est en politique
+        « require ».
+      - confirm_ref (bool, optional): accepte un paquet signé construit depuis
+        une référence hors de DM_PACKAGE_ALLOWED_REFS. Tracé.
+      - confirm_prerelease (bool, optional): sur une instance de production,
+        confirme le déploiement d'une pré-version (-rc.N, -dev.N) par cette
+        campagne ordinaire (issue #106). Sans lui, 409.
+      - adapt_config (bool, optional, défaut : oui): remplace les valeurs de
+        configuration que le DM gouverne (LLM, Keycloak) par celles de cette
+        instance (issue #107). « false » garde celles du paquet.
     """
     if not _verify_admin_token(request):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
@@ -3763,6 +3811,10 @@ async def api_plugin_deploy(slug: str, request: Request):
     make_general = str(form.get("general", "")).strip().lower() in ("1", "true", "on", "yes")
     overwrite = str(form.get("overwrite", "")).strip().lower() in ("1", "true", "on", "yes")
     keep_bootstrap = str(form.get("keep_bootstrap", "")).strip().lower() in ("1", "true", "on", "yes")
+    confirm_ref = str(form.get("confirm_ref", "")).strip().lower() in ("1", "true", "on", "yes")
+    build_signature = await _form_file_bytes(form, "signature")
+    adapt_config = str(form.get("adapt_config", "true")).strip().lower() not in ("0", "false", "off", "no")
+    confirm_prerelease = str(form.get("confirm_prerelease", "")).strip().lower() in ("1", "true", "on", "yes")
     if cohort_id not in (None, "") and not str(cohort_id).strip().isdigit():
         return JSONResponse({"ok": False, "error": "cohort_id must be an integer"}, status_code=400)
 
@@ -3774,13 +3826,50 @@ async def api_plugin_deploy(slug: str, request: Request):
     # aller-retour dans le threadpool, hors event-loop.
     return await run_in_threadpool(
         _deploy_plugin_db_work, slug, data, orig_filename, version, strategy, urgency, cohort_id, db_url,
-        make_general, overwrite, keep_bootstrap,
+        make_general, overwrite, keep_bootstrap, build_signature, confirm_ref, adapt_config,
+        confirm_prerelease,
     )
+
+
+async def _form_file_bytes(form, field: str) -> bytes | None:
+    """Contenu d'un fichier de formulaire facultatif (None s'il est absent ou vide)."""
+    item = form.get(field)
+    if item is None or not hasattr(item, "read"):
+        return None
+    content = await item.read()
+    return content or None
+
+
+def _audit_package_import(cur, *, route: str, artifact_id, slug: str, version: str, checksum: str,
+                          provenance: dict | None, signed: bool) -> None:
+    """Trace d'audit d'un import par l'API (jeton de service) : origine contrôlée ou non,
+    référence confirmée hors liste, paquet signé ou non. Jamais l'enveloppe elle-même."""
+    try:
+        from app.admin.helpers import audit_log as _audit_log
+        build = (provenance or {}).get("build") or {}
+        _audit_log(cur, actor={"email": "api-token", "sub": "service-token"}, action="package.import",
+                   resource_type="artifact", resource_id=str(artifact_id), plugin=slug or None,
+                   payload={"route": route, "version": version, "checksum": checksum, "signed": signed,
+                            "upstream_sha256": ((provenance or {}).get("upstream") or {}).get("sha256"),
+                            "build": {k: build.get(k) for k in ("status", "keyid", "repository", "ref", "commit",
+                                                                  "ref_allowed", "ref_confirmed")
+                                      if build.get(k) is not None}})
+    except Exception:
+        logger.exception("audit de l'import impossible")
+
+
+def _package_refused_response(e: _package_import.PackageRefused) -> JSONResponse:
+    """Refus d'import (ADR-0006) : 409 si une confirmation le lève, 422 sinon."""
+    status = 409 if e.code == _package_import.REF_NOT_ALLOWED else 422
+    return JSONResponse({"ok": False, "error": str(e), "code": e.code,
+                         "build": e.info.get("build")}, status_code=status)
 
 
 def _deploy_plugin_db_work(
     slug: str, data: bytes, orig_filename: str, version: str, strategy: str, urgency: str, cohort_id, db_url: str,
     make_general: bool = False, overwrite: bool = False, keep_bootstrap: bool = False,
+    build_signature: bytes | None = None, confirm_ref: bool = False, adapt_config: bool = True,
+    confirm_prerelease: bool = False,
 ):
     """Partie bloquante de POST /api/plugins/{slug}/deploy (DB + zip + persist
     binaire) — exécutée en threadpool par l'endpoint async."""
@@ -3825,6 +3914,7 @@ def _deploy_plugin_db_work(
 
             # 3. Extract dm-config.json and dm-manifest.json
             deploy_config_template = None
+            config_report: list[dict] = []
             dm_manifest = None
             try:
                 with _zf.ZipFile(_io.BytesIO(data)) as zf:
@@ -3832,7 +3922,8 @@ def _deploy_plugin_db_work(
                         basename = zname.rsplit("/", 1)[-1].lower()
                         if basename in ("dm-config.json", "dm_config.json") and not deploy_config_template:
                             raw = zf.read(zname).decode("utf-8", errors="replace")
-                            deploy_config_template = json.loads(raw)
+                            deploy_config_template, config_report = _package_config.adapt(
+                                json.loads(raw), replace=adapt_config)
                         elif basename in ("dm-manifest.json", "dm_manifest.json") and not dm_manifest:
                             raw = zf.read(zname).decode("utf-8", errors="replace")
                             dm_manifest = json.loads(raw)
@@ -3843,13 +3934,24 @@ def _deploy_plugin_db_work(
             # l'instance si celle du paquet diffère (issue #133), compute checksum
             # — sur le paquet tel qu'il sera servi —, store.
             bootstrap_info = None
+            _ext = os.path.splitext(orig_filename or "")[1] or ".oxt"
             try:
-                data, bootstrap_info = _package_bootstrap.prepare(data, keep=keep_bootstrap)
+                cur.execute("SELECT alias FROM plugin_aliases WHERE plugin_id = %s", (plugin_id,))
+                data, bootstrap_info = _package_import.import_package(
+                    data, slug=slug, version=version, filename=f"{slug}-{version}{_ext}",
+                    build_signature=build_signature, keep_bootstrap=keep_bootstrap,
+                    confirm_ref=confirm_ref, slug_aliases=[row[0] for row in cur.fetchall()])
             except _package_bootstrap.SignedPackageMismatch as e:
                 return JSONResponse({"ok": False, "error": str(e), "code": "bootstrap_signed",
                                      "bootstrap": e.info}, status_code=409)
-            except Exception:
+            except _package_import.PackageRefused as e:
+                return _package_refused_response(e)
+            except zipfile.BadZipFile:
                 logger.warning("api_plugin_deploy: archive illisible, stockée telle quelle")
+            if bootstrap_info is not None and config_report:
+                _digest = _package_config.summary(config_report)
+                bootstrap_info["config"] = {k: _digest[k] for k in ("replaced", "kept_unknown", "kept")}
+                bootstrap_info["notes"] = list(bootstrap_info.get("notes") or []) + _digest["messages"]
 
             checksum = "sha256:" + hashlib.sha256(data).hexdigest()
             # Assainir chaque composant fourni par l'utilisateur avant de
@@ -3862,11 +3964,18 @@ def _deploy_plugin_db_work(
 
             # Contrôles AVANT de persister le binaire (issue #132). Cette route
             # crée une campagne ordinaire : version qu'on ne sait pas ordonner = refus.
+            from app.services.versions import PRERELEASE_ORDINARY_CODE as _PRERELEASE_CODE
+            from app.services.versions import prerelease_campaign_message as _prerelease_message
             from app.services.versions import unorderable_version_message as _unorderable
             unreadable = _unorderable(version)
             if unreadable:
                 return JSONResponse({"ok": False, "error": unreadable, "code": "version_format"},
                                     status_code=400)
+            # Pré-version en campagne ordinaire sur une production (issue #106).
+            _prerelease_warning = _prerelease_message(version, os.getenv("DM_APP_ENV", ""))
+            if _prerelease_warning and not confirm_prerelease:
+                return JSONResponse({"ok": False, "error": _prerelease_warning, "code": _PRERELEASE_CODE},
+                                    status_code=409)
             from app.admin.services import artifacts as _artifacts_svc
             try:
                 _artifacts_svc.check_overwrite(
@@ -3887,17 +3996,13 @@ def _deploy_plugin_db_work(
             binary_ref = _persist_plugin_binary(data, rel_path, filename, device_type)
 
             # 5. Upsert artifact — use the persisted reference as canonical
-            cur.execute("""
-                INSERT INTO artifacts (device_type, platform_variant, version, s3_path, checksum,
-                                       bootstrap_info)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (device_type, platform_variant, version) DO UPDATE SET
-                    s3_path = EXCLUDED.s3_path, checksum = EXCLUDED.checksum,
-                    bootstrap_info = EXCLUDED.bootstrap_info, released_at = NOW()
-                RETURNING id
-            """, (device_type, "", version, binary_ref, checksum,
-                  json.dumps(bootstrap_info) if bootstrap_info else None))
-            artifact_id = cur.fetchone()[0]
+            artifact_id = _artifacts_svc.create_artifact(
+                cur, device_type=device_type, platform_variant="", version=version,
+                s3_path=binary_ref, checksum=checksum, bootstrap_info=bootstrap_info)
+            bootstrap_info, package_signature, package_provenance = _package_import.split_info(bootstrap_info)
+            _audit_package_import(cur, route="api.plugin_deploy", artifact_id=artifact_id, slug=slug,
+                                  version=version, checksum=checksum, provenance=package_provenance,
+                                  signed=package_signature is not None)
 
             # 6. Deprecate old versions + upsert new version
             cur.execute("UPDATE plugin_versions SET status = 'deprecated' WHERE plugin_id = %s AND status = 'published' AND version <> %s", (plugin_id, version))
@@ -4002,7 +4107,11 @@ def _deploy_plugin_db_work(
             # Liste de DM que porte le paquet servi (issue #133) ; un écart ou une
             # réécriture est aussi dit dans « warnings ».
             "bootstrap": bootstrap_info,
-            "warnings": [bootstrap_info["message"]] if (bootstrap_info or {}).get("message") else [],
+            # Contrôle d'origine et signature du paquet servi (ADR-0006).
+            "provenance": package_provenance,
+            "signed": package_signature is not None,
+            "warnings": ([bootstrap_info["message"]] if (bootstrap_info or {}).get("message") else [])
+                        + list((bootstrap_info or {}).get("notes") or []),
         }, status_code=201)
     except Exception as e:
         logger.exception("api_plugin_deploy failed")
@@ -4279,15 +4388,21 @@ async def api_upload_artifact(request: Request):
     # Liste de DM du paquet alignée sur l'instance avant le calcul d'empreinte (issue #133).
     keep_bootstrap = str(form.get("keep_bootstrap", "")).strip().lower() in ("1", "true", "on", "yes")
     bootstrap_info = None
+    filename = os.path.basename(binary.filename or f"mirai-{version}.oxt")
     try:
-        data, bootstrap_info = _package_bootstrap.prepare(data, keep=keep_bootstrap)
+        data, bootstrap_info = _package_import.import_package(
+            data, version=version, filename=filename,
+            build_signature=await _form_file_bytes(form, "signature"),
+            keep_bootstrap=keep_bootstrap,
+            confirm_ref=str(form.get("confirm_ref", "")).strip().lower() in ("1", "true", "on", "yes"))
     except _package_bootstrap.SignedPackageMismatch as e:
         return JSONResponse({"ok": False, "error": str(e), "code": "bootstrap_signed",
                              "bootstrap": e.info}, status_code=409)
-    except Exception:
+    except _package_import.PackageRefused as e:
+        return _package_refused_response(e)
+    except zipfile.BadZipFile:
         logger.warning("api_upload_artifact: archive illisible, stockée telle quelle")
     checksum = "sha256:" + hashlib.sha256(data).hexdigest()
-    filename = os.path.basename(binary.filename or f"mirai-{version}.oxt")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", filename):
         return JSONResponse({"ok": False, "error": "invalid filename"}, status_code=400)
 
@@ -4308,17 +4423,24 @@ async def api_upload_artifact(request: Request):
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
         with conn.cursor() as cur:
+            _bootstrap, _signature, _provenance = _package_import.split_info(bootstrap_info)
             cur.execute(
                 """
                 INSERT INTO artifacts (device_type, version, s3_path, checksum, changelog_url,
-                                       bootstrap_info)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                                       bootstrap_info, signature, provenance)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (device_type, version, local_path, checksum, changelog_url,
-                 json.dumps(bootstrap_info) if bootstrap_info else None),
+                 json.dumps(_bootstrap) if _bootstrap else None,
+                 json.dumps(_signature) if _signature else None,
+                 json.dumps(_provenance) if _provenance else None),
             )
             artifact_id = cur.fetchone()[0]
+            bootstrap_info = _bootstrap
+            _audit_package_import(cur, route="api.artifacts", artifact_id=artifact_id, slug=device_type,
+                                  version=version, checksum=checksum, provenance=_provenance,
+                                  signed=_signature is not None)
         conn.close()
         return JSONResponse({
             "ok": True, "artifact_id": artifact_id, "checksum": checksum,
@@ -4776,6 +4898,7 @@ _DEVICE_TYPE_EXT = {"libreoffice": "oxt", "firefox": "xpi", "chrome": "zip", "ed
 # la version. Source unique : catalog_download_file la consomme pour parser,
 # _build_update_directive pour construire une URL épinglée qu'elle saura parser.
 _CATALOG_KNOWN_EXT = (".oxt", ".xpi", ".crx", ".zip", ".bin")
+_SIGNATURE_SUFFIX = ".sig.json"
 
 
 @app.get("/catalog", response_class=Response)
@@ -4867,8 +4990,12 @@ def catalog_index(request: Request, category: str | None = None):
             conn.close()
 
 
-def _serve_plugin_download(slug: str, version_filter: str | None = None):
-    """Resolve and serve a plugin binary. version_filter=None → version générale."""
+def _serve_plugin_download(slug: str, version_filter: str | None = None, signature_only: bool = False):
+    """Resolve and serve a plugin binary. version_filter=None → version générale.
+
+    ``signature_only`` : sert l'enveloppe signée du paquet (ADR-0006) au lieu du
+    binaire ; 404 si le paquet n'a pas été signé par ce DM.
+    """
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
         raise HTTPException(404, "Aucune version disponible")
@@ -4909,6 +5036,17 @@ def _serve_plugin_download(slug: str, version_filter: str | None = None):
             ext = _DEVICE_TYPE_EXT.get(device_type, "bin")
             filename = f"{slug}-{version}.{ext}"
 
+            if signature_only:
+                envelope = None
+                if dist_mode == "managed" and artifact_id:
+                    cur.execute("SELECT signature FROM artifacts WHERE id = %s", (artifact_id,))
+                    srow = cur.fetchone()
+                    envelope = srow[0] if srow else None
+                if not isinstance(envelope, dict):
+                    raise HTTPException(404, "Ce paquet n'est pas signé par cette instance")
+                return JSONResponse(_package_signing.with_current_delegation(envelope),
+                                    headers={"Cache-Control": "no-cache"})
+
             if dist_mode == "managed" and artifact_id:
                 cur.execute("SELECT s3_path, checksum FROM artifacts WHERE id = %s", (artifact_id,))
                 arow = cur.fetchone()
@@ -4937,9 +5075,19 @@ def catalog_download_file(slug: str, filename: str):
     (plugin_version_artifacts, ex. iassistant-direct-browser-1.0.0-chromium-scaleway.crx),
     sert CE binaire ; sinon retombe sur l'artefact primaire de la version.
     """
-    served = _serve_variant_by_filename(slug, filename)
-    if served is not None:
-        return served
+    # « <fichier>.sig.json » : enveloppe signée du paquet (ADR-0006), servie à
+    # côté du binaire pour qui installe à la main et veut vérifier.
+    signature_only = filename.endswith(_SIGNATURE_SUFFIX)
+    if signature_only:
+        filename = filename[:-len(_SIGNATURE_SUFFIX)]
+        variant_signature = _variant_signature_by_filename(slug, filename)
+        if variant_signature is not None:
+            return JSONResponse(_package_signing.with_current_delegation(variant_signature),
+                                headers={"Cache-Control": "no-cache"})
+    else:
+        served = _serve_variant_by_filename(slug, filename)
+        if served is not None:
+            return served
     # Strip known extensions, then remove slug prefix to get version
     base = filename
     for ext in _CATALOG_KNOWN_EXT:
@@ -4947,7 +5095,10 @@ def catalog_download_file(slug: str, filename: str):
             base = base[:-len(ext)]
             break
     version = base.removeprefix(f"{slug}-") if base.startswith(f"{slug}-") else base
-    return _serve_plugin_download(slug, version_filter=version if version != filename else None)
+    version_filter = version if version != filename else None
+    if signature_only:
+        return _serve_plugin_download(slug, version_filter=version_filter, signature_only=True)
+    return _serve_plugin_download(slug, version_filter=version_filter)
 
 
 @app.get("/catalog/{slug}/download")
@@ -5473,6 +5624,29 @@ def _serve_variant_by_filename(slug: str, filename: str):
         for s3_path, checksum in cur.fetchall():
             if s3_path and os.path.basename(s3_path) == filename:
                 return _serve_binary_path(s3_path, filename, checksum)
+        return None
+    try:
+        return _with_bootstrap_cursor(_q)
+    except HTTPException:
+        return None
+
+
+def _variant_signature_by_filename(slug: str, filename: str):
+    """Enveloppe signée de l'artefact de variante nommé `filename`, ou None s'il n'y en a pas."""
+    def _q(cur):
+        _slug, _dtype, pid, _via = _resolve_device(slug, cur)
+        if not pid:
+            return None
+        cur.execute("""
+            SELECT a.s3_path, a.signature
+            FROM plugin_version_artifacts pva
+            JOIN artifacts a ON a.id = pva.artifact_id
+            JOIN plugin_versions pv ON pv.id = pva.plugin_version_id
+            WHERE pv.plugin_id = %s
+        """, (pid,))
+        for s3_path, signature in cur.fetchall():
+            if s3_path and os.path.basename(s3_path) == filename and isinstance(signature, dict):
+                return signature
         return None
     try:
         return _with_bootstrap_cursor(_q)

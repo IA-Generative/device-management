@@ -212,6 +212,9 @@ CREATE TABLE IF NOT EXISTS artifacts (
     UNIQUE (device_type, platform_variant, version)
 );
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS bootstrap_info JSONB;
+-- Enveloppe signée du paquet servi et provenance du paquet reçu (ADR-0006).
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS signature JSONB;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS provenance JSONB;
 
 CREATE TABLE IF NOT EXISTS plugin_versions (
     id SERIAL PRIMARY KEY,

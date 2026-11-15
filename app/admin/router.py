@@ -29,9 +29,15 @@ from app.resilience import retry_transient
 
 from .. import runtime_config as rcfg
 from ..services import binaries as binaries_svc
-from ..services import package_bootstrap
+from ..services import package_bootstrap, package_config, package_import
 from ..services.crypto import encrypt_secret, secrets_encryption_available
-from ..services.versions import unorderable_version_message
+from ..services.versions import (
+    PRERELEASE_ORDINARY_CODE,
+    nature_label,
+    prerelease_campaign_message,
+    unorderable_version_message,
+    version_nature,
+)
 from ..settings import settings
 from .auth import (
     CLIENT_ID,
@@ -90,8 +96,10 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/admin/templates")
 
 
-def _form_truthy(value) -> bool:
-    """Case à cocher / booléen JSON d'un formulaire."""
+def _form_truthy(value, default: bool = False) -> bool:
+    """Case à cocher / booléen JSON d'un formulaire. Absent ou vide → `default`."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
     return str(value).strip().lower() in ("1", "true", "on", "yes")
 
 
@@ -115,30 +123,28 @@ templates.env.globals["span_label"] = span_label
 
 # ─── dm-config.json helpers ──────────────────────────────────────────────
 
-_PLATFORM_DEFAULTS = {
-    "llm_base_urls": "${{LLM_BASE_URL}}",
-    "llm_default_models": "${{DEFAULT_MODEL_NAME}}",
-    "llm_api_tokens": "${{LLM_API_TOKEN}}",
-    "keycloakIssuerUrl": "${{KEYCLOAK_ISSUER_URL}}",
-    "keycloakRealm": "${{KEYCLOAK_REALM}}",
-    "keycloakClientId": "${{KEYCLOAK_CLIENT_ID}}",
-    "keycloak_redirect_uri": "${{KEYCLOAK_REDIRECT_URI}}",
-    "keycloak_allowed_redirect_uri": "${{KEYCLOAK_ALLOWED_REDIRECT_URI}}",
-}
-_LOCAL_PROFILES = {"local"}
+_PLATFORM_DEFAULTS = package_config.GOVERNED
+_LOCAL_PROFILES = package_config.LOCAL_PROFILES
 
 
 def _apply_platform_defaults(template: dict) -> dict:
-    """Add ${{VAR}} placeholders to server profiles where keys are missing."""
-    for section_name, section in template.items():
-        if section_name in ("configVersion", "default") or section_name in _LOCAL_PROFILES:
-            continue
-        if not isinstance(section, dict):
-            continue
-        for key, placeholder in _PLATFORM_DEFAULTS.items():
-            if section.get(key) is None or section.get(key) == "":
-                section[key] = placeholder
+    """Add ${{VAR}} placeholders to server profiles where keys are missing.
+
+    Édition du gabarit par l'administrateur : seules les clés absentes sont
+    complétées, une valeur qu'il a saisie en dur est respectée. L'import d'un
+    paquet, lui, passe par `_adapt_package_config`.
+    """
+    template, _report = package_config.adapt(template, replace=False)
     return template
+
+
+def _adapt_package_config(template: dict, adapt_config="1") -> tuple[dict, list[dict]]:
+    """Configuration embarquée d'un paquet adaptée à l'instance (issue #107).
+
+    Les valeurs que le DM gouverne sont remplacées par les siennes, sauf si
+    l'administrateur a décoché l'adaptation. Renvoie (gabarit, relevé).
+    """
+    return package_config.adapt(template, replace=_form_truthy(adapt_config, default=True))
 
 
 def _read_dm_manifest(zf) -> dict | None:
@@ -153,27 +159,142 @@ def _read_dm_manifest(zf) -> dict | None:
     return None
 
 
-def _prepare_package(data: bytes, keep_bootstrap="") -> tuple[bytes, dict]:
-    """Paquet tel qu'il sera stocké et servi, et relevé de sa liste de DM (issue #133).
+def _plugin_aliases(cur, plugin_id) -> list[str]:
+    """Autres noms sous lesquels les postes et la CI désignent ce plugin."""
+    try:
+        cur.execute("SELECT alias FROM plugin_aliases WHERE plugin_id = %s", (plugin_id,))
+        return [row[0] for row in cur.fetchall()]
+    except Exception:
+        logger.warning("alias du plugin %s illisibles", plugin_id, exc_info=True)
+        return []
 
-    Retire dm-config.json / dm-manifest.json (OXT/XPI/CRX) et inscrit la liste de
-    DM de l'instance si celle du paquet diffère. L'empreinte se calcule sur le
-    résultat. Un paquet signé dont la liste diffère est refusé (409), sauf
-    conservation confirmée.
+
+def _prepare_package(data: bytes, keep_bootstrap="", *, slug: str = "", version: str = "",
+                     filename: str = "", build_signature=None, confirm_ref="",
+                     slug_aliases=()) -> tuple[bytes, dict]:
+    """Paquet tel qu'il sera stocké et servi, et relevé de l'import (issue #133, ADR-0006).
+
+    Vérifie la signature d'origine selon la politique de l'instance, retire
+    dm-config.json / dm-manifest.json (OXT/XPI/CRX), inscrit la liste de DM de
+    l'instance si celle du paquet diffère, dépose l'ancre de confiance et signe le
+    résultat. L'empreinte se calcule sur ce résultat.
+
+    409 : un refus qu'une confirmation lève (paquet à signature embarquée dont la
+    liste diffère, référence d'origine hors liste). 422 : un refus sans appel
+    (signature absente ou invalide, version discordante).
     """
     try:
-        return package_bootstrap.prepare(data, keep=_form_truthy(keep_bootstrap))
+        return package_import.import_package(
+            data, slug=slug, version=version, filename=filename,
+            build_signature=build_signature, keep_bootstrap=_form_truthy(keep_bootstrap),
+            confirm_ref=_form_truthy(confirm_ref), slug_aliases=slug_aliases)
     except package_bootstrap.SignedPackageMismatch as e:
         raise HTTPException(409, {"code": "bootstrap_signed", "message": str(e)}) from e
+    except package_import.PackageRefused as e:
+        status = 409 if e.code == package_import.REF_NOT_ALLOWED else 422
+        raise HTTPException(status, {"code": e.code, "message": str(e)}) from e
     except zipfile.BadZipFile as e:
         raise HTTPException(400, "Le fichier envoyé n'est pas une archive de plugin lisible.") from e
 
 
+def _import_preview(data: bytes, *, version: str, filename: str, plugin_id: str = "",
+                    build_signature=None) -> tuple[dict | None, dict | None]:
+    """(aperçu de l'import, aperçu de l'adaptation de configuration) pour l'écran d'envoi.
+
+    Lecture seule. Une panne ici ne doit pas empêcher l'envoi : l'import refera
+    les mêmes contrôles, pour de bon.
+    """
+    package_preview = config_preview = None
+    try:
+        slug, aliases = "", []
+        if str(plugin_id).strip().isdigit():
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    plugin = catalog_svc.get_plugin(cur, int(plugin_id))
+                    slug = (plugin or {}).get("slug") or ""
+                    aliases = _plugin_aliases(cur, int(plugin_id))
+            finally:
+                conn.close()
+        package_preview = package_import.preview(data, slug=slug, version=version, filename=filename,
+                                                 build_signature=build_signature, slug_aliases=aliases)
+        if package_preview.get("nature"):
+            package_preview["nature_label"] = nature_label(package_preview["nature"])
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for entry in zf.namelist():
+                if entry.rsplit("/", 1)[-1].lower() in ("dm-config.json", "dm_config.json"):
+                    template = json.loads(zf.read(entry).decode("utf-8", errors="replace"))
+                    _tpl, report = package_config.adapt(template, replace=True)
+                    digest = package_config.summary(report)
+                    config_preview = {
+                        "replaced": [e for e in report if e["state"] == package_config.REPLACED],
+                        "kept_unknown": [e for e in report if e["state"] == package_config.KEPT_UNKNOWN],
+                        "messages": digest["messages"],
+                    }
+                    break
+    except Exception:
+        logger.warning("aperçu de l'import indisponible", exc_info=True)
+    return package_preview, config_preview
+
+
+def _origin_view(provenance: dict | None, signed: bool) -> dict:
+    """Ce que la fiche d'une version dit de l'origine et de la signature du paquet."""
+    build = (provenance or {}).get("build") or {}
+    status = build.get("status")
+    ref = str(build.get("ref") or "")
+    for prefix in ("refs/heads/", "refs/tags/"):
+        if ref.startswith(prefix):
+            ref = ref[len(prefix):]
+    commit = str(build.get("commit") or "")[:7]
+    labels = {
+        package_import.BUILD_VERIFIED: "Origine vérifiée",
+        package_import.BUILD_UNSIGNED: "Origine non signée",
+        package_import.BUILD_UNVERIFIED: "Origine non vérifiable",
+        package_import.BUILD_UNCHECKED: "Origine non contrôlée",
+    }
+    return {
+        "known": provenance is not None,
+        "status": status,
+        "label": labels.get(status, "Origine non relevée"),
+        "ref": ref, "commit": commit,
+        "repository": build.get("repository") or "",
+        "ref_confirmed": bool(build.get("ref_confirmed")),
+        "signed": bool(signed),
+    }
+
+
+def _note_config_report(info: dict | None, report: list[dict]) -> None:
+    """Joint au relevé de l'import ce que l'adaptation de la configuration a changé (issue #107)."""
+    if info is None or not report:
+        return
+    digest = package_config.summary(report)
+    info["config"] = {k: digest[k] for k in ("replaced", "kept_unknown", "kept")}
+    info["notes"] = list(info.get("notes") or []) + digest["messages"]
+
+
+async def _signature_input(value) -> bytes | str | dict | None:
+    """Enveloppe de signature d'origine reçue d'un formulaire (fichier ou texte) ou d'un corps JSON."""
+    if value is None or value == "":
+        return None
+    if hasattr(value, "read"):
+        content = await value.read()
+        return content or None
+    return value
+
+
 def _bootstrap_audit(info: dict | None) -> dict:
-    """Ce que le journal d'audit retient du relevé."""
+    """Ce que le journal d'audit retient du relevé (jamais l'enveloppe elle-même)."""
     info = info or {}
-    return {"status": info.get("status"), "package_urls": info.get("package_urls"),
-            "served_urls": info.get("served_urls")}
+    build = info.get("build") or {}
+    out = {"status": info.get("status"), "package_urls": info.get("package_urls"),
+           "served_urls": info.get("served_urls")}
+    if build:
+        out["build"] = {k: build.get(k) for k in ("status", "keyid", "repository", "ref", "commit",
+                                                    "ref_allowed", "ref_confirmed") if build.get(k) is not None}
+    if info.get("upstream"):
+        out["upstream_sha256"] = info["upstream"].get("sha256")
+    out["signed"] = info.get("signature") is not None
+    return out
 
 
 # ─── OIDC callback / logout ──────────────────────────────────────────────
@@ -933,10 +1054,12 @@ async def artifact_upload(request: Request,
     # Liste de DM du paquet alignée sur l'instance avant le calcul d'empreinte (issue #133).
     bootstrap_info = None
     try:
-        data, bootstrap_info = package_bootstrap.prepare(data, keep=_form_truthy(keep_bootstrap))
-    except package_bootstrap.SignedPackageMismatch as e:
+        data, bootstrap_info = package_import.import_package(
+            data, version=version, filename=binary.filename or "",
+            keep_bootstrap=_form_truthy(keep_bootstrap))
+    except (package_bootstrap.SignedPackageMismatch, package_import.PackageRefused) as e:
         return HTMLResponse(f'<div class="dm-flash dm-flash--error">{html.escape(str(e))}</div>')
-    except Exception:
+    except zipfile.BadZipFile:
         logger.warning("artifact upload: archive illisible, stockée telle quelle")
     checksum = artifacts_svc.compute_checksum(data)
 
@@ -1225,8 +1348,15 @@ async def deploy_wizard(request: Request):
 
 @router.post("/api/deploy/extract-version")
 @require_admin
-async def api_extract_version(request: Request, binary: UploadFile = File(...)):
-    """Extract version from plugin package (ZIP: .xpi, .oxt, .crx)."""
+async def api_extract_version(request: Request, binary: UploadFile = File(...),
+                              signature: UploadFile | None = File(None),
+                              plugin_id: str = Form("")):
+    """Extract version from plugin package (ZIP: .xpi, .oxt, .crx).
+
+    Rend aussi l'aperçu de l'import (clé `package` : nature, contrôle d'origine,
+    refus éventuel) et ce que l'adaptation de la configuration remplacerait
+    (clé `config`), sans rien stocker.
+    """
     import io
     import re
     import zipfile
@@ -1345,9 +1475,15 @@ async def api_extract_version(request: Request, binary: UploadFile = File(...)):
                 release_notes = "\n".join(f"- {c}" for c in entry.get("changes", []))
                 break
 
+    package_preview, config_preview = _import_preview(
+        data, version=version or "", filename=filename, plugin_id=plugin_id,
+        build_signature=await _signature_input(signature))
+
     return JSONResponse({
         "version": version or "",
         "source": source,
+        "package": package_preview,
+        "config": config_preview,
         "device_type": device_type,
         "valid": len(errors) == 0,
         "is_valid_zip": is_valid_zip,
@@ -1374,6 +1510,10 @@ async def deploy_create(request: Request,
                         rollback_artifact_id: str = Form(""),
                         confirm_overwrite: str = Form(""),
                         keep_bootstrap: str = Form(""),
+                        confirm_ref: str = Form(""),
+                        confirm_prerelease: str = Form(""),
+                        adapt_config: str = Form("1"),
+                        signature: UploadFile | None = File(None),
                         binary: UploadFile = File(...)):
     # 1. Upload artifact
     error = artifacts_svc.validate_upload(binary.filename or "", binary.size or 0)
@@ -1387,6 +1527,7 @@ async def deploy_create(request: Request,
     # Extract dm-config.json and dm-manifest.json from the package before stripping
     deploy_config_template = None
     deploy_dm_manifest = None
+    config_report: list[dict] = []
     try:
         import zipfile
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -1398,7 +1539,8 @@ async def deploy_create(request: Request,
                 if basename in ("dm-config.json", "dm_config.json"):
                     raw = zf.read(entry).decode("utf-8", errors="replace")
                     deploy_config_template = json.loads(raw)
-                    deploy_config_template = _apply_platform_defaults(deploy_config_template)
+                    deploy_config_template, config_report = _adapt_package_config(
+                        deploy_config_template, adapt_config)
                 elif basename in ("dm-manifest.json", "dm_manifest.json"):
                     raw = zf.read(entry).decode("utf-8", errors="replace")
                     deploy_dm_manifest = json.loads(raw)
@@ -1407,12 +1549,15 @@ async def deploy_create(request: Request,
 
     # Strip dm-config.json from the binary before storage (users shouldn't see placeholders)
     # et inscrire la liste de DM de l'instance (issue #133).
-    data, bootstrap_info = _prepare_package(data, keep_bootstrap)
+    _ext = os.path.splitext(binary.filename or "")[1] or ".oxt"
+    _safe_name = (name or device_type).strip().lower().replace(" ", "-")
+    data, bootstrap_info = _prepare_package(
+        data, keep_bootstrap, version=version, filename=f"{_safe_name}-{version}{_ext}",
+        build_signature=await _signature_input(signature), confirm_ref=confirm_ref)
+    _note_config_report(bootstrap_info, config_report)
 
     checksum = artifacts_svc.compute_checksum(data)
     binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
-    _ext = os.path.splitext(binary.filename or "")[1] or ".oxt"
-    _safe_name = (name or device_type).strip().lower().replace(" ", "-")
     rel_path = f"{device_type}/{_safe_name}-{version}{_ext}"
     local_path = f"{binaries_dir}/{rel_path}"
 
@@ -1425,6 +1570,10 @@ async def deploy_create(request: Request,
             unreadable = unorderable_version_message(version)
             if unreadable:
                 raise HTTPException(400, unreadable)
+            # Pré-version en campagne ordinaire sur une production (issue #106).
+            prerelease_warning = prerelease_campaign_message(version, os.getenv("DM_APP_ENV", ""))
+            if prerelease_warning and not _form_truthy(confirm_prerelease):
+                raise HTTPException(409, {"code": PRERELEASE_ORDINARY_CODE, "message": prerelease_warning})
             try:
                 overwritten = artifacts_svc.check_overwrite(
                     cur, device_type=device_type, platform_variant="", version=version,
@@ -2170,12 +2319,15 @@ async def catalog_create(request: Request):
                 try:
                     # Paquet signé à la liste divergente : refusé ici (pas de
                     # confirmation sur ce formulaire) ; l'envoyer par « Nouvelle version ».
-                    bin_data, bootstrap_info = package_bootstrap.prepare(bin_data)
-                    checksum = artifacts_svc.compute_checksum(bin_data)
-                    binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
                     # Normalize filename to {slug}-{version}.{ext} for consistent download URLs
                     _ext = os.path.splitext(bin_filename)[1] or ".oxt"
                     norm_filename = f"{slug}-{initial_version}{_ext}"
+                    # Pas de champ de signature sur ce formulaire : en politique
+                    # « require », le paquet est refusé ici ; l'envoyer par « Nouvelle version ».
+                    bin_data, bootstrap_info = package_import.import_package(
+                        bin_data, slug=slug, version=initial_version, filename=norm_filename)
+                    checksum = artifacts_svc.compute_checksum(bin_data)
+                    binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
                     rel_path = f"{device_type}/{norm_filename}"
                     os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
                     local_path = f"{binaries_dir}/{rel_path}"
@@ -2195,6 +2347,10 @@ async def catalog_create(request: Request):
                         status="published",
                     )
                     version_created = initial_version
+                except (package_import.PackageRefused, package_bootstrap.SignedPackageMismatch) as refused:
+                    # Un paquet refusé n'est pas une panne : rien n'est créé, et
+                    # l'administrateur lit pourquoi (au lieu d'un plugin sans version).
+                    raise HTTPException(422, str(refused)) from refused
                 except Exception as ver_err:
                     logger.warning("auto-version creation failed: %s", ver_err)
 
@@ -2205,6 +2361,9 @@ async def catalog_create(request: Request):
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/catalog/{plugin_id}?created=1", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         logger.error("plugin create failed: %s", e)
@@ -2226,7 +2385,15 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             versions = catalog_svc.list_versions(cur, plugin_id)
             _instance_dm = package_bootstrap.instance_urls()
             _bootstrap_notice = None
+            _public_base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
             for _v in versions:
+                # Nature, origine et signature du paquet (issue #106, ADR-0006).
+                _v["nature"] = version_nature(_v.get("version"))
+                _v["nature_label"] = nature_label(_v["nature"])
+                _v["origin"] = _origin_view(_v.get("provenance"), _v.get("signed"))
+                _v["trial_link"] = (f"{_public_base}/catalog/{plugin['slug']}?exp={urllib.parse.quote(_v['tag'])}"
+                                    if _v.get("tag") and _v.get("status") == "experimental" else "")
+                _v["diffusion"] = []
                 # Forme non reconnue : aucune campagne ordinaire ne la servira (issue #132).
                 _v["unorderable"] = unorderable_version_message(_v.get("version")) is not None
                 # Liste de DM que porte le paquet (issue #133) : relevée à l'envoi ;
@@ -2309,14 +2476,26 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             cohort_list = cohorts_svc.list_cohorts(cur2)
             # Deployments for this plugin
             cur2.execute("""
-                SELECT c.*, pv.version
+                SELECT c.*, pv.version, co.name AS cohort_name, co.type AS cohort_type
                 FROM campaigns c
                 LEFT JOIN plugin_versions pv ON pv.id = c.version_id
+                LEFT JOIN cohorts co ON co.id = c.target_cohort_id
                 WHERE c.plugin_id = %s
                 ORDER BY c.created_at DESC LIMIT 50
             """, (plugin_id,))
             dep_cols = [d[0] for d in cur2.description]
             deployments = [dict(zip(dep_cols, r, strict=False)) for r in cur2.fetchall()]
+            # « Qui reçoit quoi » : les campagnes vivantes de chaque version.
+            _by_version = {_v["id"]: _v for _v in versions}
+            for d in deployments:
+                _v = _by_version.get(d.get("version_id"))
+                if _v is not None and d.get("status") in ("active", "paused"):
+                    _v["diffusion"].append({
+                        "campaign_id": d["id"], "status": d["status"],
+                        "is_experiment": bool(d.get("is_experiment")),
+                        "cohort_id": d.get("target_cohort_id"), "cohort_name": d.get("cohort_name"),
+                        "cohort_type": d.get("cohort_type"),
+                    })
             # Add progress_pct
             for d in deployments:
                 try:
@@ -2822,6 +3001,10 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         make_general = body.get("make_general", False)
         confirm_overwrite = body.get("confirm_overwrite", False)
         keep_bootstrap = body.get("keep_bootstrap", False)
+        confirm_ref = body.get("confirm_ref", False)
+        adapt_config = body.get("adapt_config", True)
+        confirm_prerelease = body.get("confirm_prerelease", False)
+        build_signature = await _signature_input(body.get("signature"))
         campaign_kind = body.get("campaign_kind", "ordinary")
         upload_id = body.get("upload_id", "")
         if not upload_id:
@@ -2851,6 +3034,10 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         make_general = form.get("make_general", "")
         confirm_overwrite = form.get("confirm_overwrite", "")
         keep_bootstrap = form.get("keep_bootstrap", "")
+        confirm_ref = form.get("confirm_ref", "")
+        adapt_config = form.get("adapt_config", "1")
+        confirm_prerelease = form.get("confirm_prerelease", "")
+        build_signature = await _signature_input(form.get("signature"))
         campaign_kind = form.get("campaign_kind", "ordinary")
         binary = form.get("binary")
         if not binary or not hasattr(binary, "read"):
@@ -2886,6 +3073,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
     # 2. Extract dm-config.json and dm-manifest.json before stripping
     deploy_config_template = None
     dm_manifest = None
+    config_report: list[dict] = []
     try:
         import zipfile as _zf
         with _zf.ZipFile(io.BytesIO(data)) as zf:
@@ -2894,17 +3082,13 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 if basename in ("dm-config.json", "dm_config.json"):
                     raw = zf.read(name).decode("utf-8", errors="replace")
                     deploy_config_template = json.loads(raw)
-                    deploy_config_template = _apply_platform_defaults(deploy_config_template)
+                    deploy_config_template, config_report = _adapt_package_config(
+                        deploy_config_template, adapt_config)
                 elif basename in ("dm-manifest.json", "dm_manifest.json"):
                     raw = zf.read(name).decode("utf-8", errors="replace")
                     dm_manifest = json.loads(raw)
     except Exception:
         pass
-
-    # 3. Strip dm-config.json from binary, inscrire la liste de DM de l'instance
-    # (issue #133), store artifact — l'empreinte porte sur le paquet réécrit.
-    data, bootstrap_info = _prepare_package(data, keep_bootstrap)
-    checksum = artifacts_svc.compute_checksum(data)
 
     conn = get_db_connection()
     try:
@@ -2927,6 +3111,17 @@ async def catalog_version_upload(request: Request, plugin_id: int):
             # (e.g. chromium + gecko × cibles) ne s'écrasent pas sur disque.
             _suffix = f"-{safe_segment(platform_variant, 'platform_variant')}" if platform_variant else ""
 
+            # 3. Import du paquet (issue #133, ADR-0006) : signature d'origine
+            # vérifiée, dm-config.json retiré, liste de DM de l'instance inscrite,
+            # paquet signé. L'empreinte porte sur le paquet tel qu'il sera servi.
+            data, bootstrap_info = _prepare_package(
+                data, keep_bootstrap, slug=_slug, version=version,
+                filename=f"{_slug}-{version}{_suffix}{_ext}",
+                build_signature=build_signature, confirm_ref=confirm_ref,
+                slug_aliases=_plugin_aliases(cur, plugin_id))
+            _note_config_report(bootstrap_info, config_report)
+            checksum = artifacts_svc.compute_checksum(data)
+
             # Contrôles AVANT d'écrire le binaire (issue #132) : un refus ne doit
             # pas laisser sur disque un fichier que la base ne connaît pas.
             try:
@@ -2943,6 +3138,13 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 unreadable = None if experiment_campaign else unorderable_version_message(version)
                 if unreadable:
                     raise HTTPException(400, unreadable)
+                # Pré-version en campagne ordinaire sur une production (issue #106) :
+                # l'exception se confirme, et l'audit de la campagne la retient.
+                prerelease_warning = (None if experiment_campaign else
+                                      prerelease_campaign_message(version, os.getenv("DM_APP_ENV", "")))
+                if prerelease_warning and not _form_truthy(confirm_prerelease):
+                    raise HTTPException(409, {"code": PRERELEASE_ORDINARY_CODE,
+                                              "message": prerelease_warning})
                 # Cible incomplète refusée (cohorts_svc.resolve_deploy_target).
                 try:
                     target_cohort_id = cohorts_svc.resolve_deploy_target(
@@ -3099,7 +3301,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                           resource_type="campaign", resource_id=str(campaign_id),
                           payload={"plugin_id": plugin_id, "version": version,
                                    "environment": environment, "strategy": deploy_strategy,
-                                   "is_experiment": experiment_campaign},
+                                   "is_experiment": experiment_campaign,
+                                   "prerelease_confirmed": bool(prerelease_warning)},
                           ip=request.client.host if request.client else None)
 
             conn.commit()
