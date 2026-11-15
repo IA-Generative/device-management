@@ -28,6 +28,7 @@ from app.resilience import retry_transient
 from .. import runtime_config as rcfg
 from ..services import binaries as binaries_svc
 from ..services.crypto import encrypt_secret, secrets_encryption_available
+from ..services.versions import unorderable_version_message
 from ..settings import settings
 from .auth import (
     CLIENT_ID,
@@ -84,6 +85,11 @@ logger = logging.getLogger("dm-admin-router")
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/admin/templates")
+
+
+def _form_truthy(value) -> bool:
+    """Case à cocher / booléen JSON d'un formulaire."""
+    return str(value).strip().lower() in ("1", "true", "on", "yes")
 
 
 def _get_deploy_environments() -> list[dict]:
@@ -1022,6 +1028,11 @@ async def campaign_create(request: Request,
     try:
         actor = getattr(request.state, "admin_session", {})
         with conn.cursor() as cur:
+            # Rattacher la campagne à son plugin, comme l'écran d'envoi et l'API
+            # (issue #132). Sans plugin_id, elle n'était appariée que par le type
+            # de l'artefact et n'apparaissait pas dans les déploiements du plugin.
+            plugin_id = campaigns_svc.plugin_id_for_artifact(
+                cur, int(artifact_id) if artifact_id else None)
             campaign_id = campaigns_svc.create_campaign(
                 cur,
                 name=name, description=description, type="plugin_update",
@@ -1034,6 +1045,7 @@ async def campaign_create(request: Request,
                 created_by=actor.get("email"),
                 is_experiment=is_experiment,
                 priority=priority,
+                plugin_id=plugin_id,
             )
             audit_log(cur, actor=actor, action="campaign.create",
                       resource_type="campaign", resource_id=str(campaign_id),
@@ -1060,8 +1072,15 @@ async def campaign_detail(request: Request, campaign_id: int):
                 raise HTTPException(404, "Campagne non trouvee")
             stats = campaigns_svc.get_campaign_stats(cur, campaign_id)
             events = campaigns_svc.get_campaign_events(cur, campaign_id)
+            try:
+                reach = campaigns_svc.campaign_reach(cur, campaign_id)
+            except Exception:
+                conn.rollback()
+                logger.warning("campaign_reach indisponible pour %s", campaign_id, exc_info=True)
+                reach = None
         return templates.TemplateResponse(request, "campaign_detail.html", {
             "request": request, "campaign": campaign, "stats": stats, "events": events,
+            "reach": reach,
         })
     finally:
         conn.close()
@@ -1332,6 +1351,7 @@ async def deploy_create(request: Request,
                         stage_hours: str = Form("24"),
                         name: str = Form(""),
                         rollback_artifact_id: str = Form(""),
+                        confirm_overwrite: str = Form(""),
                         binary: UploadFile = File(...)):
     # 1. Upload artifact
     error = artifacts_svc.validate_upload(binary.filename or "", binary.size or 0)
@@ -1368,41 +1388,40 @@ async def deploy_create(request: Request,
     _ext = os.path.splitext(binary.filename or "")[1] or ".oxt"
     _safe_name = (name or device_type).strip().lower().replace(" ", "-")
     rel_path = f"{device_type}/{_safe_name}-{version}{_ext}"
-    os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
     local_path = f"{binaries_dir}/{rel_path}"
-    with open(local_path, "wb") as f:
-        f.write(data)
 
     conn = get_db_connection()
     try:
         actor = getattr(request.state, "admin_session", {})
         with conn.cursor() as cur:
+            # Contrôles AVANT d'écrire le binaire (issue #132) : un refus ne doit
+            # pas laisser sur disque un fichier que la base ne connaît pas.
+            unreadable = unorderable_version_message(version)
+            if unreadable:
+                raise HTTPException(400, unreadable)
+            try:
+                overwritten = artifacts_svc.check_overwrite(
+                    cur, device_type=device_type, platform_variant="", version=version,
+                    checksum=checksum, confirmed=_form_truthy(confirm_overwrite))
+            except artifacts_svc.ArtifactConflict as e:
+                raise HTTPException(409, str(e)) from e
+            # 2. Cohort — cible incomplète refusée (cohorts_svc.resolve_deploy_target).
+            try:
+                target_cohort_id = cohorts_svc.resolve_deploy_target(
+                    cur, target_mode=target_mode, cohort_id=cohort_id,
+                    percent=percent, emails=emails,
+                    auto_name=f"auto-{device_type}-{version}",
+                    auto_description="Auto-created")
+            except cohorts_svc.TargetError as e:
+                raise HTTPException(400, str(e)) from e
+
+            os.makedirs(f"{binaries_dir}/{device_type}", exist_ok=True)
+            with open(local_path, "wb") as f:
+                f.write(data)
             artifact_id = artifacts_svc.create_artifact(
                 cur, device_type=device_type, platform_variant="",
                 version=version, s3_path=local_path, checksum=checksum,
             )
-
-            # 2. Cohort
-            target_cohort_id = None
-            if target_mode == "existing" and cohort_id:
-                target_cohort_id = int(cohort_id)
-            elif target_mode == "percent":
-                pct = max(1, min(100, int(percent)))
-                cid = cohorts_svc.create_cohort(
-                    cur, name=f"auto-{device_type}-{version}-{pct}pct",
-                    description=f"Auto-created: {pct}% rollout", type="percentage",
-                )
-                target_cohort_id = cid
-            elif target_mode == "emails":
-                email_list = [e.strip() for e in emails.strip().splitlines() if e.strip()]
-                if email_list:
-                    cid = cohorts_svc.create_cohort(
-                        cur, name=f"auto-{device_type}-{version}-manual",
-                        description=f"Auto-created: {len(email_list)} emails",
-                        type="manual",
-                    )
-                    cohorts_svc.add_members(cur, cid, [("email", e) for e in email_list])
-                    target_cohort_id = cid
 
             # 3. Campaign
             rollout_config = None
@@ -1479,10 +1498,14 @@ async def deploy_create(request: Request,
                       resource_type="campaign", resource_id=str(campaign_id),
                       payload={"name": campaign_name, "device_type": device_type,
                                "version": version, "deploy_type": deploy_type,
-                               "has_config_template": bool(deploy_config_template)},
+                               "has_config_template": bool(deploy_config_template),
+                               "binary_overwritten": overwritten},
                       ip=request.client.host if request.client else None)
             conn.commit()
         return RedirectResponse(f"/admin/deploy/{campaign_id}", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         logger.error("deploy create failed: %s", e)
@@ -2169,6 +2192,9 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
             if not plugin:
                 raise HTTPException(404, "Plugin non trouve")
             versions = catalog_svc.list_versions(cur, plugin_id)
+            for _v in versions:
+                # Forme non reconnue : aucune campagne ordinaire ne la servira (issue #132).
+                _v["unorderable"] = unorderable_version_message(_v.get("version")) is not None
             try:
                 general_version = catalog_svc.get_general_version(cur, plugin_id)
             except Exception:
@@ -2252,9 +2278,24 @@ async def catalog_plugin_detail(request: Request, plugin_id: int, tab: str = "ve
                     d["progress_pct"] = s.get("progress_pct", 0)
                 except Exception:
                     d["progress_pct"] = 0
+                # Postes éligibles (issue #132) : une campagne « Actif » qui ne
+                # sert personne doit se voir. Seulement pour celles qui vivent.
+                if d.get("status") in ("active", "paused"):
+                    try:
+                        d["reach"] = campaigns_svc.campaign_reach(cur2, d["id"])
+                    except Exception:
+                        conn.rollback()
+                        logger.warning("campaign_reach indisponible pour %s", d["id"], exc_info=True)
+            # La version générale est-elle portée par une campagne active ?
+            try:
+                general_coverage = campaigns_svc.general_version_coverage(cur2, plugin_id)
+            except Exception:
+                conn.rollback()
+                general_coverage = None
         return templates.TemplateResponse(request, "catalog_plugin.html", {
             "request": request, "plugin": plugin, "versions": versions,
             "general_version": general_version,
+            "general_coverage": general_coverage,
             "stats": stats, "installations": installations,
             "artifacts": artifact_list, "features": features,
             "env_overrides": env_overrides, "kc_clients": kc_clients,
@@ -2498,6 +2539,91 @@ async def catalog_plugin_general_version(request: Request, plugin_id: int,
         conn.close()
 
 
+@router.post("/catalog/{plugin_id}/deploy-preview")
+@require_admin_or_service_token
+async def catalog_deploy_preview(request: Request, plugin_id: int):
+    """Ce que « Publier et déployer » ferait avec ces choix — lecture seule.
+
+    Corps JSON : les champs de l'étape « Déployer » (version, campaign_kind,
+    target_mode, cohort_id, percent, emails, deploy_strategy). Répond
+    {ok, summary, eligible, installed, reasons, notes, supersedes}, ou
+    {ok: false, error} quand le serveur refuserait le déploiement. Rien n'est
+    créé : ni cohorte, ni version, ni campagne (issue #132)."""
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, "JSON attendu") from e
+    version = str(body.get("version", "")).strip()
+    experiment = str(body.get("campaign_kind", "ordinary")).strip().lower() == "experiment"
+    progressive = str(body.get("deploy_strategy", "patch_all")).strip() == "progressive"
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            if not catalog_svc.get_plugin(cur, plugin_id):
+                raise HTTPException(404, "Plugin introuvable")
+            if not version:
+                return JSONResponse({"ok": False, "error": "La version est requise."})
+            unreadable = None if experiment else unorderable_version_message(version)
+            if unreadable:
+                return JSONResponse({"ok": False, "error": unreadable})
+            try:
+                target = cohorts_svc.validate_deploy_target(
+                    cur, target_mode=body.get("target_mode", "all"),
+                    cohort_id=body.get("cohort_id", ""), percent=body.get("percent", ""),
+                    emails=body.get("emails", ""), experiment=experiment)
+            except cohorts_svc.TargetError as e:
+                return JSONResponse({"ok": False, "error": str(e)})
+            preview = campaigns_svc.preview_deployment(
+                cur, plugin_id=plugin_id, version=version, target=target,
+                is_experiment=experiment,
+                # Premier palier du déploiement progressif créé par ce formulaire.
+                first_stage_percent=5 if progressive else 100)
+        return JSONResponse({"ok": True, **preview})
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+@router.post("/catalog/{plugin_id}/general-campaign")
+@require_admin_or_service_token
+async def catalog_plugin_general_campaign(request: Request, plugin_id: int):
+    """Crée la campagne par défaut (active, tout le parc) de la version générale.
+
+    La version générale n'alimente que les canaux natifs : sans campagne, les
+    plugins qui ne lisent que /config ne la reçoivent jamais (issue #132)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            coverage = campaigns_svc.general_version_coverage(cur, plugin_id)
+            if coverage is None:
+                raise HTTPException(400, "Ce plugin n'a pas de version générale.")
+            if coverage["coverage"] == "full":
+                raise HTTPException(400, f"La version {coverage['version']} est déjà portée "
+                                         "par une campagne active sur tout le parc.")
+            actor = getattr(request.state, "admin_session", {})
+            try:
+                campaign_id = campaigns_svc.create_default_campaign(
+                    cur, plugin_id=plugin_id, version_id=coverage["version_id"],
+                    created_by=actor.get("email"))
+            except campaigns_svc.DefaultCampaignError as e:
+                raise HTTPException(400, str(e)) from e
+            audit_log(cur, actor=actor, action="deploy.create",
+                      resource_type="campaign", resource_id=str(campaign_id),
+                      payload={"plugin_id": plugin_id, "version": coverage["version"],
+                               "via": "general-campaign", "target": "all"},
+                      ip=request.client.host if request.client else None)
+            conn.commit()
+        return RedirectResponse(f"/admin/catalog/{plugin_id}?tab=deployments", status_code=303)
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, str(e)) from e
+    finally:
+        conn.close()
+
+
 @router.post("/catalog/{plugin_id}/versions/purge")
 @require_admin
 async def catalog_versions_purge(request: Request, plugin_id: int):
@@ -2647,6 +2773,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         tag = body.get("tag", "")
         hypotheses = body.get("hypotheses", "")
         make_general = body.get("make_general", False)
+        confirm_overwrite = body.get("confirm_overwrite", False)
+        campaign_kind = body.get("campaign_kind", "ordinary")
         upload_id = body.get("upload_id", "")
         if not upload_id:
             raise HTTPException(400, "Missing upload_id in JSON body")
@@ -2673,6 +2801,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
         tag = form.get("tag", "")
         hypotheses = form.get("hypotheses", "")
         make_general = form.get("make_general", "")
+        confirm_overwrite = form.get("confirm_overwrite", "")
+        campaign_kind = form.get("campaign_kind", "ordinary")
         binary = form.get("binary")
         if not binary or not hasattr(binary, "read"):
             raise HTTPException(400, "Missing binary file")
@@ -2690,7 +2820,15 @@ async def catalog_version_upload(request: Request, plugin_id: int):
     # Branche expérimentale (pull opt-in) : version publiée en 'experimental'
     # (jamais servie comme latest main), portant un tag + ses questions clés ; on
     # ne déploie PAS de campagne (action != 'deploy' → pas de push automatique).
-    is_experimental = (action == "experimental")
+    # « deploy » en campagne d'expérimentation (issue #132, tout se fait à
+    # l'envoi) : la version est une version d'essai — statut 'experimental',
+    # qui ne déprécie rien et ne devient jamais « dernière publiée » — et la
+    # campagne créée épingle cette version sur une cible délimitée.
+    campaign_kind = str(campaign_kind or "ordinary").strip().lower()
+    if campaign_kind not in ("ordinary", "experiment"):
+        raise HTTPException(400, "Type de campagne inconnu.")
+    experiment_campaign = (action == "deploy" and campaign_kind == "experiment")
+    is_experimental = (action == "experimental") or experiment_campaign
     if isinstance(hypotheses, list):
         hyp_list = [str(x).strip() for x in hypotheses if str(x).strip()] or None
     else:
@@ -2738,6 +2876,33 @@ async def catalog_version_upload(request: Request, plugin_id: int):
             # Variant-aware filename so multiple binaries of the same version
             # (e.g. chromium + gecko × cibles) ne s'écrasent pas sur disque.
             _suffix = f"-{safe_segment(platform_variant, 'platform_variant')}" if platform_variant else ""
+
+            # Contrôles AVANT d'écrire le binaire (issue #132) : un refus ne doit
+            # pas laisser sur disque un fichier que la base ne connaît pas.
+            try:
+                overwritten = artifacts_svc.check_overwrite(
+                    cur, device_type=device_type, platform_variant=platform_variant,
+                    version=version, checksum=checksum,
+                    confirmed=_form_truthy(confirm_overwrite))
+            except artifacts_svc.ArtifactConflict as e:
+                raise HTTPException(409, str(e)) from e
+            target_cohort_id = None
+            if action == "deploy":
+                # Une campagne ordinaire ne sert à personne une version qu'on
+                # ne sait pas ordonner ; l'expérimentation, elle, l'épingle.
+                unreadable = None if experiment_campaign else unorderable_version_message(version)
+                if unreadable:
+                    raise HTTPException(400, unreadable)
+                # Cible incomplète refusée (cohorts_svc.resolve_deploy_target).
+                try:
+                    target_cohort_id = cohorts_svc.resolve_deploy_target(
+                        cur, target_mode=target_mode, cohort_id=cohort_id,
+                        percent=percent, emails=emails,
+                        auto_name=f"auto-{device_type}-{version}-{environment}",
+                        auto_description=f"Auto: {environment}",
+                        experiment=experiment_campaign)
+                except cohorts_svc.TargetError as e:
+                    raise HTTPException(400, str(e)) from e
 
             binaries_dir = os.getenv("DM_LOCAL_BINARIES_DIR", "/data/content/binaries")
             rel_path = f"{device_type}/{_slug}-{version}{_suffix}{_ext}"
@@ -2834,35 +2999,14 @@ async def catalog_version_upload(request: Request, plugin_id: int):
             audit_log(cur, actor=actor, action="version.upload",
                       resource_type="plugin_version", resource_id=str(vid),
                       payload={"plugin_id": plugin_id, "version": version,
-                               "has_config_template": bool(deploy_config_template)},
+                               "has_config_template": bool(deploy_config_template),
+                               "binary_overwritten": overwritten},
                       ip=request.client.host if request.client else None)
 
             # 7. Deploy if requested
             campaign_id = None
             if action == "deploy":
-                # Cohort
-                target_cohort_id = None
-                if target_mode == "existing" and cohort_id:
-                    target_cohort_id = int(cohort_id)
-                elif target_mode == "percent":
-                    pct = max(1, min(100, int(percent)))
-                    cid = cohorts_svc.create_cohort(
-                        cur, name=f"auto-{device_type}-{version}-{environment}-{pct}pct",
-                        description=f"Auto: {pct}% rollout on {environment}",
-                        type="percentage",
-                    )
-                    target_cohort_id = cid
-                elif target_mode == "emails":
-                    email_list = [e.strip() for e in emails.strip().splitlines() if e.strip()]
-                    if email_list:
-                        cid = cohorts_svc.create_cohort(
-                            cur, name=f"auto-{device_type}-{version}-{environment}-manual",
-                            description=f"Auto: {len(email_list)} emails on {environment}",
-                            type="manual",
-                        )
-                        cohorts_svc.add_members(cur, cid, [("email", e) for e in email_list])
-                        target_cohort_id = cid
-
+                # Cible résolue plus haut, avant l'écriture du binaire.
                 # Rollout config
                 rollout_config = None
                 urgency = "normal"
@@ -2879,7 +3023,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 else:
                     urgency = "normal"
 
-                campaign_name = f"MaJ {plugin['name']} {version} [{environment}]"
+                campaign_name = (f"Essai {plugin['name']} {version} [{environment}]" if experiment_campaign
+                                 else f"MaJ {plugin['name']} {version} [{environment}]")
                 campaign_id = campaigns_svc.create_campaign(
                     cur, name=campaign_name, type="plugin_update",
                     artifact_id=artifact_id,
@@ -2888,6 +3033,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                     rollout_config=rollout_config,
                     created_by=actor.get("email"),
                     plugin_id=plugin_id,
+                    is_experiment=experiment_campaign,
                 )
                 # Set environment and plugin_id on campaign
                 cur.execute(
@@ -2897,7 +3043,8 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 audit_log(cur, actor=actor, action="deploy.create",
                           resource_type="campaign", resource_id=str(campaign_id),
                           payload={"plugin_id": plugin_id, "version": version,
-                                   "environment": environment, "strategy": deploy_strategy},
+                                   "environment": environment, "strategy": deploy_strategy,
+                                   "is_experiment": experiment_campaign},
                           ip=request.client.host if request.client else None)
 
             conn.commit()

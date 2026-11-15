@@ -51,6 +51,43 @@ def compute_checksum(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+class ArtifactConflict(ValueError):
+    """Le numéro de version existe déjà avec un autre binaire, sans confirmation."""
+
+
+def _bare_checksum(value) -> str:
+    text = str(value or "").strip().lower()
+    return text.split(":", 1)[1] if ":" in text else text
+
+
+def check_overwrite(cur, *, device_type: str, platform_variant: str, version: str,
+                    checksum: str, confirmed: bool = False) -> bool:
+    """Garde du double envoi (issue #132). À appeler AVANT d'écrire le binaire.
+
+    create_artifact écrase l'artefact de même (type, variante, version). Avec un
+    binaire différent, les postes déjà sur ce numéro ne reçoivent rien (égalité
+    de version) : deux binaires coexistent sous le même numéro. On refuse donc
+    (ArtifactConflict) sauf confirmation explicite. Même binaire : rien à dire.
+    Empreinte existante absente : pas de comparaison possible, on laisse passer.
+
+    Renvoie True si un binaire différent est remplacé (confirmé).
+    """
+    # COALESCE : les artefacts créés hors des formulaires ont une variante NULL.
+    cur.execute("""
+        SELECT checksum FROM artifacts
+        WHERE device_type = %s AND COALESCE(platform_variant, '') = %s AND version = %s
+    """, (device_type, platform_variant or "", version))
+    known = [_bare_checksum(row[0]) for row in cur.fetchall() if row[0]]
+    if not known or _bare_checksum(checksum) in known:
+        return False
+    if not confirmed:
+        raise ArtifactConflict(
+            f"La version {version} existe déjà avec un binaire différent. Les postes déjà en "
+            f"{version} ne recevront pas le nouveau binaire. Publiez sous un nouveau numéro de "
+            "version, ou confirmez le remplacement.")
+    return True
+
+
 def create_artifact(cur, *, device_type: str, platform_variant: str,
                     version: str, s3_path: str, checksum: str,
                     changelog_url: str = None) -> int:

@@ -145,6 +145,13 @@
             {% endfor %}
           </select>
         </div>
+        <div class="dm-form-row">
+          <label style="display:flex;gap:0.5rem;align-items:flex-start;font-size:0.9rem;">
+            <input type="checkbox" name="confirm_overwrite" value="1">
+            <span>Remplacer le binaire si ce numero de version existe deja avec un binaire different
+            (les postes deja sur ce numero ne recevront pas le nouveau binaire). Sans cette case, l'envoi est refuse.</span>
+          </label>
+        </div>
       </div>
     </details>
 

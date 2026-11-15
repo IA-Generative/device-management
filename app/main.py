@@ -56,6 +56,7 @@ from .postgres_queue import PostgresQueue, QueueJob
 from .s3 import s3_client
 from .services import health as _health
 from .services import links as _links
+from .services import update_rules as _update_rules
 from .services.crypto import (
     SECRET_CONFIG_KEYS as _SVC_SECRET_CONFIG_KEYS,
 )
@@ -1105,10 +1106,8 @@ def _resolve_device_cohorts(cur, *, email: str, client_uuid: str) -> list[int]:
 
         elif ctype == "percentage":
             pct = int(cconfig.get("percentage", 0))
-            if pct > 0 and client_uuid:
-                digest = hashlib.sha256(client_uuid.encode()).hexdigest()
-                if int(digest, 16) % 100 < pct:
-                    matched.append(cohort_id)
+            if _update_rules.percentage_cohort_admits(client_uuid, pct):
+                matched.append(cohort_id)
 
         elif ctype == "email_pattern":
             pattern = str(cconfig.get("pattern", ""))
@@ -1400,24 +1399,7 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
 
 def _get_current_rollout_percent(campaign: dict, stages: list) -> int:
     """Return the active rollout percent based on elapsed time since campaign start."""
-    import datetime
-    start = campaign.get("campaign_created_at")
-    if start is None:
-        return 100
-    if hasattr(start, "timestamp"):
-        start_ts = start.timestamp()
-    else:
-        try:
-            start_ts = datetime.datetime.fromisoformat(str(start)).timestamp()
-        except Exception:
-            return 100
-    elapsed_hours = (time.time() - start_ts) / 3600
-    cumulative_hours = 0
-    for stage in stages:
-        cumulative_hours += stage.get("duration_hours", 0)
-        if elapsed_hours < cumulative_hours or stage.get("percent", 100) == 100:
-            return stage.get("percent", 100)
-    return 100
+    return _update_rules.current_rollout_percent(campaign.get("campaign_created_at"), stages)
 
 
 def _binaries_route_url(s3_path: str) -> str:
@@ -1439,29 +1421,25 @@ def _build_update_directive(
     device_name: str = "",
 ) -> dict | None:
     """Build the update directive dict, or return None if no action needed."""
-    if not plugin_version or plugin_version in ("unknown", "0", "") or not campaign:
+    if not campaign:
         return None
 
     artifact_version = campaign["artifact_version"]
-    if not artifact_version:
+    # Règle partagée avec l'admin (postes éligibles) : app.services.update_rules.
+    action, _reason = _update_rules.decide_update(
+        plugin_version=plugin_version,
+        target_version=artifact_version,
+        is_experiment=bool(campaign.get("is_experiment")),
+        has_rollback=bool(campaign["rollback_s3_path"] and campaign["rollback_version"]),
+    )
+    if action is None:
         return None
-
-    if plugin_version == artifact_version:
-        return None
-
-    pv = _parse_version_tuple(plugin_version)
-    av = _parse_version_tuple(artifact_version)
 
     # Check rollout percentage gating
-    rollout_config = campaign.get("rollout_config")
-    if rollout_config and isinstance(rollout_config, dict) and client_uuid:
-        stages = rollout_config.get("stages", [])
-        if stages:
-            current_percent = _get_current_rollout_percent(campaign, stages)
-            if current_percent < 100:
-                device_hash = int(hashlib.md5(client_uuid.encode(), usedforsecurity=False).hexdigest()[:8], 16) % 100
-                if device_hash >= current_percent:
-                    return None  # Not yet eligible for this rollout stage
+    current_percent = _update_rules.campaign_rollout_percent(
+        campaign.get("rollout_config"), campaign.get("campaign_created_at"))
+    if not _update_rules.rollout_admits(client_uuid, current_percent):
+        return None  # Not yet eligible for this rollout stage
 
     def _pinned_artifact_url(s3_path, version):
         """URL épinglée sur la version visée par la directive, pour TOUTE
@@ -1482,41 +1460,11 @@ def _build_update_directive(
             return f"/catalog/{device_name}/download/{device_name}-{version}{ext}"
         return _binaries_route_url(s3_path)
 
-    # Campagnes d'expérimentation : PIN de la version cible. On sert la cible dès
-    # que le device n'y est pas déjà (l'égalité stricte est court-circuitée plus
-    # haut), sans exiger cible > courante. C'est ce qui rend déployables les
-    # builds suffixées (ex. 1.6.0-rc1) que _parse_version_tuple réduit à (0,).
+    # Campagnes d'expérimentation : PIN de la version cible (servie dès que le
+    # device n'y est pas, sans exiger cible > courante). Campagne ordinaire :
+    # installée < cible, pré-versions comprises (« 1.6.0-rc1 » < « 1.6.0 »).
     # Le client DOIT renvoyer la version cible exacte ensuite, sinon re-update.
-    if campaign.get("is_experiment"):
-        return {
-            "action": "update",
-            "current_version": plugin_version,
-            "target_version": artifact_version,
-            "artifact_url": _pinned_artifact_url(campaign["artifact_s3_path"], artifact_version),
-            "checksum": campaign["artifact_checksum"],
-            "urgency": campaign["urgency"],
-            "changelog_url": campaign["changelog_url"],
-            "deadline_at": campaign["deadline_iso"],
-            "campaign_id": campaign["campaign_id"],
-            "plugin_slug": device_name or None,
-        }
-
-    if pv < av:
-        return {
-            "action": "update",
-            "current_version": plugin_version,
-            "target_version": artifact_version,
-            "artifact_url": _pinned_artifact_url(campaign["artifact_s3_path"], artifact_version),
-            "checksum": campaign["artifact_checksum"],
-            "urgency": campaign["urgency"],
-            "changelog_url": campaign["changelog_url"],
-            "deadline_at": campaign["deadline_iso"],
-            "campaign_id": campaign["campaign_id"],
-            "plugin_slug": device_name or None,
-        }
-
-    # plugin_version > artifact_version → possible rollback
-    if campaign["rollback_s3_path"] and campaign["rollback_version"]:
+    if action == _update_rules.ROLLBACK:
         return {
             "action": "rollback",
             "current_version": plugin_version,
@@ -1531,7 +1479,18 @@ def _build_update_directive(
             "plugin_slug": device_name or None,
         }
 
-    return None
+    return {
+        "action": "update",
+        "current_version": plugin_version,
+        "target_version": artifact_version,
+        "artifact_url": _pinned_artifact_url(campaign["artifact_s3_path"], artifact_version),
+        "checksum": campaign["artifact_checksum"],
+        "urgency": campaign["urgency"],
+        "changelog_url": campaign["changelog_url"],
+        "deadline_at": campaign["deadline_iso"],
+        "campaign_id": campaign["campaign_id"],
+        "plugin_slug": device_name or None,
+    }
 
 
 def _upsert_campaign_device_status(cur, *, campaign_id: int, client_uuid: str, email: str, version_before: str) -> None:
@@ -3747,6 +3706,9 @@ async def api_plugin_deploy(slug: str, request: Request):
       - general (bool, optional): déclare aussi cette version « générale »
         (issue #40), la seule annoncée par les canaux natifs. Défaut : non —
         publier ne diffuse plus à tout le parc.
+      - overwrite (bool, optional): confirme le remplacement du binaire quand
+        ce numéro de version existe déjà avec un binaire différent. Sans lui,
+        409 (issue #132) : les postes déjà sur ce numéro ne recevraient rien.
     """
     if not _verify_admin_token(request):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
@@ -3766,6 +3728,9 @@ async def api_plugin_deploy(slug: str, request: Request):
     urgency = str(form.get("urgency", "normal")).strip()
     cohort_id = form.get("cohort_id")
     make_general = str(form.get("general", "")).strip().lower() in ("1", "true", "on", "yes")
+    overwrite = str(form.get("overwrite", "")).strip().lower() in ("1", "true", "on", "yes")
+    if cohort_id not in (None, "") and not str(cohort_id).strip().isdigit():
+        return JSONResponse({"ok": False, "error": "cohort_id must be an integer"}, status_code=400)
 
     db_url = _db_url_bootstrap() or _db_url()
     if not psycopg2 or not db_url:
@@ -3775,13 +3740,13 @@ async def api_plugin_deploy(slug: str, request: Request):
     # aller-retour dans le threadpool, hors event-loop.
     return await run_in_threadpool(
         _deploy_plugin_db_work, slug, data, orig_filename, version, strategy, urgency, cohort_id, db_url,
-        make_general,
+        make_general, overwrite,
     )
 
 
 def _deploy_plugin_db_work(
     slug: str, data: bytes, orig_filename: str, version: str, strategy: str, urgency: str, cohort_id, db_url: str,
-    make_general: bool = False,
+    make_general: bool = False, overwrite: bool = False,
 ):
     """Partie bloquante de POST /api/plugins/{slug}/deploy (DB + zip + persist
     binaire) — exécutée en threadpool par l'endpoint async."""
@@ -3862,6 +3827,27 @@ def _deploy_plugin_db_work(
             version = _safe_segment(version, "version")
             filename = _safe_segment(orig_filename or f"{slug}-{version}.oxt", "filename")
             rel_path = f"{device_type}/{version}_{filename}"
+
+            # Contrôles AVANT de persister le binaire (issue #132). Cette route
+            # crée une campagne ordinaire : version qu'on ne sait pas ordonner = refus.
+            from app.services.versions import unorderable_version_message as _unorderable
+            unreadable = _unorderable(version)
+            if unreadable:
+                return JSONResponse({"ok": False, "error": unreadable, "code": "version_format"},
+                                    status_code=400)
+            from app.admin.services import artifacts as _artifacts_svc
+            try:
+                _artifacts_svc.check_overwrite(
+                    cur, device_type=device_type, platform_variant="", version=version,
+                    checksum=checksum, confirmed=overwrite)
+            except _artifacts_svc.ArtifactConflict as e:
+                return JSONResponse({"ok": False, "error": str(e), "code": "version_exists"},
+                                    status_code=409)
+            if cohort_id not in (None, ""):
+                cur.execute("SELECT 1 FROM cohorts WHERE id = %s", (int(cohort_id),))
+                if not cur.fetchone():
+                    return JSONResponse({"ok": False, "error": f"cohort {cohort_id} not found"},
+                                        status_code=400)
 
             # Persist (local PVC cache + admin forward, or straight to S3 — see
             # settings.binaries_mode) and use the returned reference as canonical.
@@ -4069,6 +4055,43 @@ def _create_campaign_db_work(body: dict, db_url: str):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@app.get("/api/campaigns")
+async def api_list_campaigns(request: Request, plugin: str | None = None,
+                             status: str | None = None, limit: int = 100):
+    """Liste des campagnes (issue #132) : plugin, version, statut, expérimentation,
+    cible, dates — pour diagnostiquer sans passer par la base.
+
+    Filtres : ``?plugin=<slug>``, ``?status=draft|active|paused|completed|rolled_back``,
+    ``?limit=`` (défaut 100, max 500). Les plus récentes d'abord.
+    """
+    if not _verify_admin_token(request):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    db_url = _db_url_bootstrap() or _db_url()
+    if not psycopg2 or not db_url:
+        return JSONResponse({"ok": False, "error": "Database not configured"}, status_code=500)
+    return await run_in_threadpool(_list_campaigns_db_work, plugin, status, limit, db_url)
+
+
+def _list_campaigns_db_work(plugin, status, limit, db_url: str):
+    """Partie bloquante de GET /api/campaigns — exécutée en threadpool."""
+    from app.admin.services import campaigns as _campaigns_svc
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            items = _campaigns_svc.list_campaigns_api(
+                cur, plugin_slug=(plugin or "").strip() or None,
+                status=(status or "").strip() or None, limit=limit)
+        return JSONResponse({"ok": True, "count": len(items), "campaigns": items})
+    except Exception as e:
+        logger.exception("api_list_campaigns failed")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @app.patch("/api/campaigns/{campaign_id}/start")
 async def api_start_campaign(campaign_id: int, request: Request):
     if not _verify_admin_token(request):
@@ -4148,6 +4171,13 @@ async def api_campaign_progress(campaign_id: int, request: Request):
                 (campaign_id,),
             )
             stats = dict(cur.fetchall())
+            # Postes éligibles aujourd'hui et raisons des autres (issue #132).
+            try:
+                from app.admin.services import campaigns as _campaigns_svc
+                reach = _campaigns_svc.campaign_reach(cur, campaign_id)
+            except Exception:
+                logger.warning("campaign_reach indisponible pour %s", campaign_id, exc_info=True)
+                reach = None
         conn.close()
 
         total = sum(stats.values())
@@ -4179,6 +4209,7 @@ async def api_campaign_progress(campaign_id: int, request: Request):
             "notified": notified,
             "pending": pending,
             "failure_rate": failure_rate,
+            "reach": reach,
         })
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)

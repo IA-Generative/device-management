@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
+
+from ...services import update_rules
+from ...services.versions import unorderable_version_message
 
 
 def list_campaigns(cur, *, status: str = None, limit: int = 50,
@@ -179,3 +183,403 @@ def update_campaign_status(cur, campaign_id: int, new_status: str) -> bool:
         RETURNING id
     """, (new_status, campaign_id))
     return cur.fetchone() is not None
+
+
+# ── Qui cette campagne sert-elle ? (issue #132) ──────────────────────────────
+
+_REASON_LABELS = {
+    update_rules.UP_TO_DATE: "déjà sur la version cible",
+    update_rules.AHEAD: "sur une version postérieure à la cible (pas de rollback configuré)",
+    update_rules.NO_VERSION: "version installée inconnue",
+    update_rules.NO_TARGET: "campagne sans version cible",
+    "outside_cohort": "hors de la cohorte visée",
+    "rollout_waiting": "pas encore dans le palier en cours",
+}
+
+
+def _as_dict(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _cohort_matcher(cur, cohort_id, cohort_type, cohort_config):
+    """(fonction (client_uuid, email) -> bool, note) pour la cohorte visée.
+
+    Mêmes règles que app.main._resolve_device_cohorts. Le groupe Keycloak n'est
+    pas évalué ici (il faudrait interroger Keycloak) : tous les postes sont
+    alors comptés, et la note le dit.
+    """
+    if cohort_id is None:
+        return (lambda _u, _e: True), None
+    config = _as_dict(cohort_config)
+    if cohort_type == "manual":
+        cur.execute("SELECT identifier_type, identifier_value FROM cohort_members WHERE cohort_id = %s",
+                    (cohort_id,))
+        emails, uuids = set(), set()
+        for id_type, id_value in cur.fetchall():
+            (emails if id_type == "email" else uuids).add(str(id_value))
+        return (lambda u, e: (e or "") in emails or (u or "") in uuids), None
+    if cohort_type == "percentage":
+        try:
+            pct = int(config.get("percentage", 0))
+        except (TypeError, ValueError):
+            pct = 0
+        note = None
+        if pct <= 0:
+            note = "La cohorte « pourcentage » visée n'a pas de pourcentage : elle ne contient personne."
+        return (lambda u, _e: update_rules.percentage_cohort_admits(u or "", pct)), note
+    if cohort_type == "email_pattern":
+        pattern = str(config.get("pattern", ""))
+        try:
+            rx = re.compile(pattern, re.IGNORECASE) if pattern else None
+        except re.error:
+            rx = None
+        if rx is None:
+            return (lambda _u, _e: False), "Le motif d'adresse de la cohorte visée est vide ou invalide."
+        return (lambda _u, e: bool(rx.match(e or ""))), None
+    return ((lambda _u, _e: True),
+            "Cohorte de type groupe Keycloak : l'appartenance n'est pas évaluée ici, "
+            "tous les postes du plugin sont comptés.")
+
+
+def _plugin_devices(cur, plugin_id, device_type=None) -> list:
+    """(client_uuid, email, installed_version) des installations actives du plugin."""
+    if plugin_id is not None:
+        cur.execute("""
+            SELECT client_uuid, email, installed_version FROM plugin_installations
+            WHERE plugin_id = %s AND status = 'active'
+        """, (plugin_id,))
+    else:
+        # Campagne legacy sans plugin : /config la rattache par le type d'artefact.
+        cur.execute("""
+            SELECT pi.client_uuid, pi.email, pi.installed_version
+            FROM plugin_installations pi JOIN plugins p ON p.id = pi.plugin_id
+            WHERE p.device_type = %s AND pi.status = 'active'
+        """, (device_type,))
+    return cur.fetchall()
+
+
+def _reach(devices, *, target_version: str, is_experiment: bool, has_rollback: bool,
+           in_cohort, percent: int, cohort_label, notes: list) -> dict:
+    """Cœur du compte des postes éligibles : cohorte, version, palier — les règles de /config."""
+    reasons: dict[str, int] = {}
+    eligible = rollbacks = 0
+    for client_uuid, email, installed_version in devices:
+        if not in_cohort(client_uuid, email):
+            reason = "outside_cohort"
+        else:
+            action, reason = update_rules.decide_update(
+                plugin_version=installed_version or "", target_version=target_version,
+                is_experiment=is_experiment, has_rollback=has_rollback)
+            if action is not None:
+                if update_rules.rollout_admits(client_uuid or "", percent):
+                    eligible += 1
+                    rollbacks += action == update_rules.ROLLBACK
+                    continue
+                reason = "rollout_waiting"
+        reasons[reason] = reasons.get(reason, 0) + 1
+
+    notes = list(notes)
+    if target_version and not is_experiment and unorderable_version_message(target_version):
+        notes.append(f"Forme de version non reconnue (« {target_version} ») : une campagne ordinaire "
+                     "ne la sert à aucun poste. Seule une campagne d'expérimentation le peut.")
+
+    zero_reason = None
+    if eligible == 0:
+        if not target_version:
+            zero_reason = "La campagne n'a pas d'artefact : elle ne peut rien servir."
+        elif not devices:
+            zero_reason = "Aucune installation active connue pour ce plugin."
+        elif reasons.get("outside_cohort") == len(devices):
+            zero_reason = (f"La cohorte « {cohort_label} » ne contient aucun poste de ce plugin."
+                           if cohort_label else "La cible ne contient aucun poste de ce plugin.")
+        else:
+            zero_reason = (f"Aucun poste ne recevrait la version {target_version} : "
+                           + " ; ".join(f"{n} {_REASON_LABELS.get(r, r)}"
+                                        for r, n in sorted(reasons.items(), key=lambda kv: -kv[1])))
+    return {
+        "target_version": target_version,
+        "is_experiment": is_experiment,
+        "installed": len(devices),
+        "eligible": eligible,
+        "rollbacks": rollbacks,
+        "reasons": reasons,
+        "reason_labels": {r: _REASON_LABELS.get(r, r) for r in reasons},
+        "rollout_percent": percent,
+        "cohort": cohort_label,
+        "zero_reason": zero_reason,
+        "notes": notes,
+    }
+
+
+_LIMITS_NOTE = ("Compte indicatif : il ne tient pas compte de la précédence entre campagnes actives "
+                "(un bras ciblé l'emporte sur le rollout général).")
+
+
+def campaign_reach(cur, campaign_id: int) -> dict | None:
+    """Postes à qui la campagne servirait une directive AUJOURD'HUI, et pourquoi pas les autres.
+
+    Parcourt les installations actives du plugin (plugin_installations : UUID,
+    adresse et version vues au dernier appel /config) et applique les règles de
+    /config (app.services.update_rules) : cohorte, version, palier.
+
+    Limites, rappelées dans `notes` : la version de l'hôte n'est pas mémorisée,
+    les bornes min/max d'hôte ne sont donc pas évaluées ; la précédence entre
+    campagnes actives (un bras ciblé l'emporte sur le rollout général) non plus.
+    None si la campagne n'existe pas.
+    """
+    cur.execute("""
+        SELECT c.status, c.plugin_id, c.target_cohort_id, COALESCE(c.is_experiment, false),
+               c.rollout_config, c.created_at,
+               a.version, a.device_type, a.min_host_version, a.max_host_version,
+               ra.version, co.name, co.type, co.config
+        FROM campaigns c
+        LEFT JOIN artifacts a  ON a.id  = c.artifact_id
+        LEFT JOIN artifacts ra ON ra.id = c.rollback_artifact_id
+        LEFT JOIN cohorts co   ON co.id = c.target_cohort_id
+        WHERE c.id = %s
+    """, (campaign_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    (status, plugin_id, cohort_id, is_experiment, rollout_config, created_at,
+     target_version, device_type, min_host, max_host,
+     rollback_version, cohort_name, cohort_type, cohort_config) = row
+
+    devices = _plugin_devices(cur, plugin_id, device_type)
+    in_cohort, cohort_note = _cohort_matcher(cur, cohort_id, cohort_type, cohort_config)
+    notes = []
+    if status != "active":
+        notes.append(f"Campagne « {status} » : rien n'est servi tant qu'elle n'est pas active.")
+    if cohort_note:
+        notes.append(cohort_note)
+    if min_host or max_host:
+        notes.append(f"Bornes de version d'hôte (min {min_host or '-'}, max {max_host or '-'}) non "
+                     "évaluées : la version de l'hôte n'est pas mémorisée par poste.")
+    reach = _reach(
+        devices, target_version=str(target_version or ""), is_experiment=bool(is_experiment),
+        has_rollback=bool(rollback_version), in_cohort=in_cohort,
+        percent=update_rules.campaign_rollout_percent(_as_dict(rollout_config) or None, created_at),
+        cohort_label=(cohort_name or cohort_id) if cohort_id is not None else None, notes=notes)
+    reach["status"] = status
+    return reach
+
+
+def preview_deployment(cur, *, plugin_id: int, version: str, target: tuple,
+                       is_experiment: bool = False, first_stage_percent: int = 100) -> dict:
+    """Ce qui se passerait si l'on déployait `version` maintenant — sans rien créer.
+
+    `target` vient de cohorts.validate_deploy_target. Même compte que
+    campaign_reach, avant la création : « proposée à N postes », ou « à aucun
+    poste, parce que… » (issue #132). `summary` est la phrase à afficher,
+    `supersedes` les versions des campagnes ordinaires actives que ce
+    déploiement clôturerait.
+    """
+    from . import cohorts as cohorts_svc
+
+    label = None
+    notes = []
+    if target[0] == "all":
+        def in_cohort(_u, _e):
+            return True
+    elif target[0] == "cohort":
+        cohort = cohorts_svc.get_cohort(cur, target[1]) or {}
+        label = cohort.get("name") or target[1]
+        in_cohort, cohort_note = _cohort_matcher(cur, target[1], cohort.get("type"), cohort.get("config"))
+        if cohort_note:
+            notes.append(cohort_note)
+    elif target[0] == "percent":
+        pct = target[1]
+        label = f"{pct} % des comptes"
+
+        def in_cohort(u, _e):
+            return update_rules.percentage_cohort_admits(u or "", pct)
+    else:
+        wanted = set(target[1])
+        label = f"{len(wanted)} adresse(s)"
+
+        def in_cohort(_u, e):
+            return (e or "") in wanted
+
+    reach = _reach(
+        _plugin_devices(cur, plugin_id), target_version=str(version or "").strip(),
+        is_experiment=is_experiment, has_rollback=False, in_cohort=in_cohort,
+        percent=first_stage_percent, cohort_label=label, notes=notes)
+
+    supersedes = []
+    if not is_experiment:
+        cur.execute("""
+            SELECT COALESCE(pv.version, a.version) FROM campaigns c
+            LEFT JOIN plugin_versions pv ON pv.id = c.version_id
+            LEFT JOIN artifacts a ON a.id = c.artifact_id
+            WHERE c.status IN ('active', 'paused') AND c.type = 'plugin_update'
+              AND COALESCE(c.is_experiment, false) = false AND c.plugin_id = %s
+            ORDER BY c.created_at DESC
+        """, (plugin_id,))
+        supersedes = [r[0] for r in cur.fetchall() if r[0]]
+    reach["supersedes"] = supersedes
+
+    if reach["eligible"]:
+        summary = (f"Proposée aujourd'hui à {reach['eligible']} poste(s) sur "
+                   f"{reach['installed']} installation(s) active(s).")
+        if first_stage_percent < 100:
+            summary += f" Premier palier : {first_stage_percent} %, élargi ensuite."
+    else:
+        summary = "Proposée à aucun poste. " + (reach["zero_reason"] or "")
+    reach["summary"] = summary.strip()
+    reach["notes"].append(_LIMITS_NOTE)
+    return reach
+
+
+def plugin_id_for_artifact(cur, artifact_id) -> int | None:
+    """Plugin d'un artefact : celui de la version qui le porte, sinon l'unique
+    plugin actif de son type. None si l'on ne peut pas trancher."""
+    if not artifact_id:
+        return None
+    cur.execute("""
+        SELECT DISTINCT pv.plugin_id FROM plugin_versions pv
+        WHERE pv.artifact_id = %(a)s
+        UNION
+        SELECT DISTINCT pv.plugin_id FROM plugin_version_artifacts pva
+        JOIN plugin_versions pv ON pv.id = pva.plugin_version_id
+        WHERE pva.artifact_id = %(a)s
+    """, {"a": artifact_id})
+    ids = [r[0] for r in cur.fetchall()]
+    if len(ids) == 1:
+        return ids[0]
+    if ids:
+        return None
+    cur.execute("""
+        SELECT p.id FROM plugins p JOIN artifacts a ON a.device_type = p.device_type
+        WHERE a.id = %s AND p.status = 'active'
+    """, (artifact_id,))
+    ids = [r[0] for r in cur.fetchall()]
+    return ids[0] if len(ids) == 1 else None
+
+
+# ── La version générale est-elle portée par une campagne ? (issue #132) ──────
+
+def general_version_coverage(cur, plugin_id: int) -> dict | None:
+    """État de diffusion par /config de la version générale d'un plugin.
+
+    La version générale n'alimente que les canaux natifs. Les plugins qui ne
+    lisent que /config (Thunderbird, …) ne reçoivent une version que par une
+    campagne `plugin_update` active. Renvoie None sans version générale, sinon
+    {version_id, version, coverage, can_create} avec coverage ∈
+      - "full"    : une campagne active non ciblée porte cette version ;
+      - "partial" : seulement des campagnes ciblées (cohorte) ;
+      - "none"    : aucune campagne active ne la porte.
+    """
+    cur.execute("""
+        SELECT pv.id, pv.version, pv.artifact_id, p.device_type
+        FROM plugins p JOIN plugin_versions pv ON pv.id = p.general_version_id
+        WHERE p.id = %s
+    """, (plugin_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    version_id, version, artifact_id, device_type = row
+    cur.execute("""
+        SELECT c.target_cohort_id
+        FROM campaigns c LEFT JOIN artifacts a ON a.id = c.artifact_id
+        WHERE c.status = 'active' AND c.type = 'plugin_update'
+          AND (c.plugin_id = %(pid)s OR (c.plugin_id IS NULL AND a.device_type = %(dt)s))
+          AND (c.version_id = %(vid)s OR a.version = %(version)s)
+    """, {"pid": plugin_id, "dt": device_type, "vid": version_id, "version": version})
+    targets = [r[0] for r in cur.fetchall()]
+    if any(t is None for t in targets):
+        coverage = "full"
+    elif targets:
+        coverage = "partial"
+    else:
+        coverage = "none"
+    return {"version_id": version_id, "version": version, "coverage": coverage,
+            "can_create": artifact_id is not None}
+
+
+class DefaultCampaignError(ValueError):
+    """La campagne par défaut ne peut pas être créée pour cette version."""
+
+
+def create_default_campaign(cur, *, plugin_id: int, version_id: int,
+                            created_by: str = None) -> int:
+    """Campagne par défaut d'une version : active, tout le parc, sans palier.
+
+    C'est la campagne que « Publier et déployer » aurait créée avec la cible
+    « Tous les utilisateurs » et la stratégie « Patch all ». Comme toute release
+    générale, elle clôt la campagne ordinaire active précédente du plugin
+    (autocomplete_superseded) et laisse les expérimentations en place.
+    """
+    cur.execute("""
+        SELECT pv.version, pv.status, pv.artifact_id, p.name
+        FROM plugin_versions pv JOIN plugins p ON p.id = pv.plugin_id
+        WHERE pv.id = %s AND pv.plugin_id = %s
+    """, (version_id, plugin_id))
+    row = cur.fetchone()
+    if not row:
+        raise DefaultCampaignError("Version introuvable pour ce plugin.")
+    version, status, artifact_id, plugin_name = row
+    if status not in ("published", "deprecated"):
+        raise DefaultCampaignError(f"Une version « {status} » ne peut pas être déployée à tout le parc.")
+    if artifact_id is None:
+        raise DefaultCampaignError("Cette version n'a pas de binaire hébergé : une campagne ne peut pas la servir.")
+    unreadable = unorderable_version_message(version)
+    if unreadable:
+        raise DefaultCampaignError(unreadable)
+    campaign_id = create_campaign(
+        cur, name=f"MaJ {plugin_name} {version} [tout le parc]", type="plugin_update",
+        artifact_id=artifact_id, target_cohort_id=None, status="active",
+        created_by=created_by, plugin_id=plugin_id)
+    cur.execute("UPDATE campaigns SET version_id = %s WHERE id = %s", (version_id, campaign_id))
+    return campaign_id
+
+
+def list_campaigns_api(cur, *, plugin_slug: str = None, status: str = None,
+                       limit: int = 100) -> list[dict]:
+    """Campagnes pour GET /api/campaigns : de quoi diagnostiquer sans la base."""
+    conditions, params = [], []
+    if plugin_slug:
+        conditions.append("p.slug = %s")
+        params.append(plugin_slug)
+    if status:
+        conditions.append("c.status = %s")
+        params.append(status)
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    params.append(max(1, min(int(limit), 500)))
+    cur.execute(f"""
+        SELECT c.id, c.name, c.type, c.status, c.environment,
+               c.plugin_id, p.slug AS plugin_slug,
+               COALESCE(pv.version, a.version) AS version,
+               a.device_type, a.checksum,
+               COALESCE(c.is_experiment, false) AS is_experiment, c.priority,
+               c.target_cohort_id, co.name AS target_cohort_name, co.type AS target_cohort_type,
+               c.rollout_config, c.urgency,
+               ra.version AS rollback_version,
+               c.created_at, c.updated_at, c.deadline_at, c.created_by
+        FROM campaigns c
+        LEFT JOIN plugins p ON p.id = c.plugin_id
+        LEFT JOIN plugin_versions pv ON pv.id = c.version_id
+        LEFT JOIN artifacts a ON a.id = c.artifact_id
+        LEFT JOIN artifacts ra ON ra.id = c.rollback_artifact_id
+        LEFT JOIN cohorts co ON co.id = c.target_cohort_id
+        {where}
+        ORDER BY c.created_at DESC, c.id DESC
+        LIMIT %s
+    """, params)
+    cols = [d[0] for d in cur.description]
+    out = []
+    for row in cur.fetchall():
+        item = dict(zip(cols, row, strict=False))
+        for key in ("created_at", "updated_at", "deadline_at"):
+            if item[key] is not None and hasattr(item[key], "isoformat"):
+                item[key] = item[key].isoformat()
+        item["rollout_config"] = _as_dict(item["rollout_config"]) or None
+        out.append(item)
+    return out

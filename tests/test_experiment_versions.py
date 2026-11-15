@@ -109,8 +109,8 @@ def test_resolve_campaign_precedence_order_by():
 # ── A3 : mode pin ────────────────────────────────────────────────────────
 
 def test_pin_serves_suffixed_target_even_when_not_greater():
-    """1.6.0-rc1 se réduit à (0,) par _parse_version_tuple → sans pin, aucun
-    update. Avec is_experiment, on sert la cible quand même."""
+    """Le pin sert la cible sans comparer. (Depuis l'issue #132, une campagne
+    ordinaire sert aussi une rc aux versions antérieures : test_update_rules.)"""
     mod = _load_module()
     d = mod._build_update_directive(plugin_version="1.5.0",
                                     campaign=_experiment_campaign(),
