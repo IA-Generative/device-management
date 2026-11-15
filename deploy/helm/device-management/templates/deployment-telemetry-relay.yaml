@@ -66,8 +66,7 @@ spec:
             # Runtime config overrides (cross-pod): required to decrypt the
             # secret telemetry overrides (upstream/signing keys).
             {{- include "device-management.identityEnv" (dict "root" . "pollIntervalSeconds" .Values.telemetryRelay.runtimeConfig.pollIntervalSeconds "editable" .Values.telemetryRelay.runtimeConfig.editable) | nindent 12 }}
-            {{- include "device-management.databaseEnv" . | nindent 12 }}
-            {{- include "device-management.cnpgSuperuserAdminUrlOverride" . | nindent 12 }}
+            {{- include "device-management.databaseEnvForApp" . | nindent 12 }}
             # Required by the prod startup guard (validate_security_config in
             # app/main.py): it runs at module-import time regardless of
             # DM_RUNTIME_MODE, so telemetryRelay is subject to the same
