@@ -47,8 +47,10 @@ common = {
 }
 admin = {"DM_PACKAGE_SIGNING_KEY": priv(dm)}
 if mode == "delegation":
-    admin["DM_PACKAGE_SIGNING_DELEGATION"] = json.dumps(deleg)
-    admin["DM_PACKAGE_TRUST_ROOTS"] = pub(root)
+    # Ni la délégation ni la racine ne sont secrètes : tous les composants les lisent
+    # (la délégation en vigueur est jointe à l'enveloppe au moment de servir).
+    common["DM_PACKAGE_SIGNING_DELEGATION"] = json.dumps(deleg)
+    common["DM_PACKAGE_TRUST_ROOTS"] = pub(root)
 open(os.path.join(HERE, "common.env"), "w").writelines(envline(k, v) for k, v in common.items())
 open(os.path.join(HERE, "admin.env"), "w").writelines(envline(k, v) for k, v in admin.items())
 json.dump({"root_keyid": ps.key_id(root.public_key()), "dm_keyid": ps.key_id(dm.public_key()),
