@@ -4,7 +4,7 @@
 name: dm-banc
 services:
   pg:
-    image: postgres:18-alpine
+    image: postgres:19-alpine
     environment: {POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: bootstrap}
     healthcheck: {test: ["CMD", "pg_isready", "-U", "postgres"], interval: 2s, timeout: 3s, retries: 20}
   droits:   # les volumes nommés naissent en root ; l'image tourne en uid 10001
