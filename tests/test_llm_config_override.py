@@ -217,6 +217,26 @@ def test_reranker_direct_mode_uses_backend_root_and_scrubs_token():
     assert BACKEND_TOKEN not in str(cfg)  # rerankToken effacé comme llmToken
 
 
+def test_eloignement_vision_model_is_announced_when_set():
+    mod = load_module({"ELOIGNEMENT_VISION_MODEL_NAME": "modele-vision-essai"})
+    client = TestClient(mod.app)
+    cfg = _get_config(client, {**enroll(client), **_ENRICHED})
+    assert cfg["eloignementOcrModele"] == "modele-vision-essai"
+
+
+def test_eloignement_vision_model_unset_leaves_the_template_alone():
+    mod = load_module()
+    client = TestClient(mod.app)
+    cfg = _get_config(client, {**enroll(client), **_ENRICHED})
+    assert "eloignementOcrModele" not in cfg  # le gabarit d'essai ne la déclare pas
+
+
+def test_eloignement_vision_model_is_editable_key():
+    from app import runtime_config
+    spec = runtime_config.EDITABLE_KEYS.get("ELOIGNEMENT_VISION_MODEL_NAME")
+    assert spec is not None and spec.type == "str" and spec.hot_reloadable and not spec.sensitive
+
+
 def test_embedder_inherits_base_path_prefix():
     """Non-régression DGX : embdUrl hérite du préfixe /bootstrap via llmEndpoint."""
     mod = load_module({"EMBD_MODEL_NAME": "embedding"})

@@ -942,6 +942,11 @@ config:
     # RERANK_MODEL_NAME. Reranking model (/llm/v1/rerank), e.g.
     # bge-reranker-v2-m3. Empty = no rerankEndpoint served.
     rerankModelName: ""
+    # ELOIGNEMENT_VISION_MODEL_NAME. Vision model announced to the Eloignement
+    # viewer as eloignementOcrModele (reads a scanned page or a zone through
+    # /llm/v1). Empty = whatever the plugin template declares. If the model is
+    # not served by the default backend, route it with LLM_BACKENDS.
+    eloignementVisionModelName: ""
 
   # Fleet-state export run by the worker (PARC_EXPORT_SECRET lives in the
   # Secret). Defaults mirror app/settings.py.

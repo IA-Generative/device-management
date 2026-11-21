@@ -60,6 +60,7 @@ the feature on the extension side:
 | Value | Env | Extension feature |
 |---|---|---|
 | `config.llm.embdModelName` | `EMBD_MODEL_NAME` | local search indexing (embeddings through `/llm/v1/embeddings`) |
+| `config.llm.eloignementVisionModelName` | `ELOIGNEMENT_VISION_MODEL_NAME` | Eloignement viewer: vision model that reads a scanned page or a zone (served as `eloignementOcrModele`) |
 | `config.llm.rerankModelName` | `RERANK_MODEL_NAME` | result reranking (`/llm/v1/rerank`, `rerankEndpoint` is only served when set) |
 
 Both reach the api and the llmProxy through the ConfigMap. The api also needs

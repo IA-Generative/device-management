@@ -118,6 +118,7 @@ data:
   # -- config.llm : modèles annoncés aux extensions (vide = fonction désactivée) --
   EMBD_MODEL_NAME: {{ .Values.config.llm.embdModelName | quote }}
   RERANK_MODEL_NAME: {{ .Values.config.llm.rerankModelName | quote }}
+  ELOIGNEMENT_VISION_MODEL_NAME: {{ .Values.config.llm.eloignementVisionModelName | quote }}
 
   # -- config.parc : export de l'état du parc (worker), non secret --
   PARC_EXPORT_ENABLED: {{ .Values.config.parc.enabled | quote }}

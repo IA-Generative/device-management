@@ -2173,6 +2173,14 @@ def _apply_llm_proxy_overrides(cfg: dict, *, relay_ok: bool, relay_meta: dict | 
     config_obj["rerankModel"] = rerank_model
     config_obj["rerankEndpoint"] = rerank_endpoint
     config_obj["rerankToken"] = str(config_obj.get("llmToken") or "") if rerank_endpoint else ""
+
+    # Éloignement : le modèle de vision qui lit une page ou une zone d'une pièce.
+    # Les requêtes passent par /llm/v1 comme les autres (routage par LLM_BACKENDS) ;
+    # ici on ne fait qu'annoncer le nom du modèle. Vide = on laisse la valeur du
+    # gabarit du plugin, s'il en déclare une.
+    vision_model = str(runtime_config.cfg("ELOIGNEMENT_VISION_MODEL_NAME", "") or "").strip()
+    if vision_model:
+        config_obj["eloignementOcrModele"] = vision_model
     return cfg
 
 

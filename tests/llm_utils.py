@@ -88,7 +88,8 @@ def load_module(extra_env: dict[str, str] | None = None):
     # Clés hot-reload : repartir propre à chaque chargement.
     for key in ("LLM_QUOTA_REQUESTS_PER_MINUTE", "LLM_QUOTA_WINDOW_SECONDS",
                 "LLM_GUARDRAILS", "LLM_BACKENDS", "FORCE_LLM_ENDPOINT_OVERRIDE",
-                "EMBD_MODEL_NAME", "RERANK_MODEL_NAME", "DM_RUNTIME_MODE"):
+                "EMBD_MODEL_NAME", "RERANK_MODEL_NAME", "ELOIGNEMENT_VISION_MODEL_NAME",
+                "DM_RUNTIME_MODE"):
         os.environ.pop(key, None)
     os.environ.pop("DATABASE_URL", None)
     os.environ.pop("DATABASE_ADMIN_URL", None)

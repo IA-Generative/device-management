@@ -235,12 +235,12 @@ découvrir, puis `POST <toolsEndpoint>/{service}/{outil}`.
 
 Le plugin lit aussi, toutes facultatives : `eloignementRecherches` (liste `{id, libelle, url}`,
 l'`url` portant `{q}`, `{nom}`, `{prenom}`, `{naissance}` que le plugin remplace),
-`eloignementOcrModele`, `eloignementOcrConsigne`, `eloignementOcrService`,
+`eloignementOcrModele`, `eloignementOcrConsigne`, `eloignementIdentiteConsigne`, `eloignementOcrService`,
 `eloignementClassementConsigne`, `eloignementDecoupeService`, `eloignementDecoupeSeuilPages`,
 `eloignementInterfaceUrl`.
 
-**Le DM n'en calcule ni n'en porte aucune** : il sert ce que le gabarit du plugin déclare, comme
-toute autre clé. Elles se posent donc dans le gabarit, par profil (`dm-config.json` du paquet,
+**Le DM n'en porte qu'une, `eloignementOcrModele`** (voir « Modèle de vision » ci-dessous). Pour
+les autres, il sert ce que le gabarit du plugin déclare, comme toute autre clé. Elles se posent donc dans le gabarit, par profil (`dm-config.json` du paquet,
 sections `default` et par profil, ou fichier `config/<plugin>/config.<profil>.json`), ou par
 `DM_CONFIG_OVERRIDES` pour tout un déploiement. Absentes du gabarit, elles sont absentes de la
 réponse et la fonction reste éteinte côté plugin. Un repère `${{PUBLIC_BASE_URL}}` y est résolu ;
@@ -261,6 +261,30 @@ valeur réelle : les consignes, le modèle et l'adresse de l'interface sont à f
    "eloignementDecoupeSeuilPages": 20
  }}
 ```
+
+### Modèle de vision d'Éloignement
+
+Le visualiseur lit une page scannée, ou une zone tracée (« Lire comme une identité »), par un modèle
+de vision appelé à travers `/llm/v1/chat/completions`. Le nom du modèle se règle au DM, pas dans le
+plugin :
+
+| Clé | Rôle |
+|---|---|
+| `ELOIGNEMENT_VISION_MODEL_NAME` | Nom du modèle annoncé au plugin dans `eloignementOcrModele`. Réglable à chaud dans l'onglet Config de l'admin (groupe LLM). Vide : le DM n'annonce rien de lui-même, la valeur du gabarit s'applique si elle existe ; sans l'une ni l'autre, la lecture par modèle et « Lire comme une identité » sont absentes du visualiseur. |
+| `LLM_BACKENDS` | Si le modèle de vision n'est pas servi par l'amont par défaut, c'est ici qu'on déclare son amont et qu'on y aiguille le modèle. Le jeton reste côté serveur, désigné par `token_env`. |
+
+Exemple, pour deux modèles de vision servis par un amont à part (adresse et noms de modèles fictifs) :
+
+```json
+{"backends": {"vision": {"base_url": "https://vision.exemple/api/v1", "token_env": "LLM_API_TOKEN_VISION"}},
+ "model_map": {"gemma-*": "vision", "qwen-*": "vision"}}
+```
+
+La variable `LLM_API_TOKEN_VISION` se pose au déploiement, dans le Secret, jamais dans le registre
+ni dans le dépôt. Changer de modèle (comparer deux modèles au banc) = changer
+`ELOIGNEMENT_VISION_MODEL_NAME` : les plugins le reçoivent au prochain relevé de configuration.
+Les consignes envoyées avec l'image (`eloignementOcrConsigne`, `eloignementIdentiteConsigne`) restent
+dans le gabarit : elles dépendent du modèle choisi.
 
 `GET /simulation/si/{systeme}` est une page statique qui affiche la requête reçue et trois faux
 résultats marqués « simulation, données fictives ». Elle n'est servie que si
