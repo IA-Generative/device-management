@@ -6,6 +6,8 @@
   panne n'est pas listé ; les autres restent.
 - ``POST /tools/v1/{service}/{outil}`` : corps {"arguments": {…}} → 200 {"result": <JSON>,
   "truncated": bool}. Erreurs : statut HTTP + {"error": {"code", "message"}}.
+- ``GET|POST|PUT|PATCH|DELETE /tools/v1/{service}/{chemin…}`` : service ``passthrough``,
+  propagé tel quel vers l'amont dans les bornes du registre (voir passthrough.py).
 
 Identité, double comme sur /llm/v1 :
 - le POSTE par ``X-Relay-Client`` / ``X-Relay-Key`` (cible ``tools``) ou ``Authorization:
@@ -32,9 +34,9 @@ from fastapi.responses import JSONResponse
 from .. import runtime_config
 from ..llm.auth import _client_uuid_is_active
 from ..llm.tokens import verify_llm_token
-from . import audit, throttle, upstream
+from . import audit, passthrough, throttle, upstream
 from .errors import ToolsError, tools_error
-from .registry import Outil, Service, nom_public, services_actifs, trouver
+from .registry import METHODES_PASSTHROUGH, Outil, Service, nom_public, services_actifs, trouver
 from .schema import erreurs_arguments
 
 logger = logging.getLogger("device-management.tools")
@@ -125,6 +127,8 @@ class Authentificateur:
 
 async def _outils_du_service(service: Service, bearer: str) -> list[dict]:
     """Outils d'un service au format OpenAI ; MCP : tools/list (cache 60 s), filtré par la liste blanche."""
+    if service.protocol == "passthrough":
+        return []  # pas d'outils déclarés : le plugin appelle les chemins du service
     if service.protocol == "rest":
         return [{
             "type": "function",
@@ -200,6 +204,8 @@ def build_router(
         trace_id = _trace_id(request)
         identite: Identite | None = None
         service = trouver(service_id)
+        if service is not None and service.protocol == "passthrough":
+            return await appel_passthrough(service_id, outil_nom, request)
         outil = service.outil(outil_nom) if service else None
 
         def journal(status: int, *, size: int = 0, error: str | None = None, truncated: bool = False) -> None:
@@ -248,5 +254,48 @@ def build_router(
             return tools_error(500, "unavailable", "erreur interne du relais")
         journal(200, size=size, truncated=truncated)
         return JSONResponse({"result": result, "truncated": truncated})
+
+    # Déclarée après la route d'appel : `POST /{service}/{outil}` garde la priorité pour les
+    # services rest et mcp, et passe la main ici si le service est un passthrough.
+    @router.api_route("/{service_id}/{chemin:path}", methods=list(METHODES_PASSTHROUGH), include_in_schema=False)
+    async def appel_passthrough(service_id: str, chemin: str, request: Request) -> Response:
+        t0 = time.perf_counter()
+        trace_id = _trace_id(request)
+        identite: Identite | None = None
+        service = trouver(service_id)
+
+        def journal(status: int, *, size: int = 0, error: str | None = None) -> None:
+            # Le chemin est journalisé, jamais la chaîne de requête ni le corps.
+            audit.log_appel(
+                trace_id=trace_id, service=service_id, outil=f"{request.method} /{chemin}"[:200], status=status,
+                duration_ms=(time.perf_counter() - t0) * 1000, size=size,
+                client_uuid=identite.client_uuid if identite else "", sub=identite.sub if identite else "",
+                acts=request.method != "GET", error=error,
+            )
+
+        try:
+            identite = await auth.resoudre(request)
+            if service is None or service.protocol != "passthrough":
+                raise ToolsError(404, "not_found", "chemin inconnu ou non autorisé sur ce service")
+            passthrough.verifier_methode(service, request.method)
+            chemin_amont = passthrough.chemin_amont(service, chemin)
+            autorise, retry_after = throttle.autoriser(identite.sub, service.id)
+            if not autorise:
+                raise ToolsError(429, "rate_limited", "trop d'appels pour cette personne sur ce service",
+                                 retry_after=retry_after)
+            corps = await passthrough.lire_corps(request, service.max_body_bytes)
+            reponse = await passthrough.relayer(service, request, chemin_amont, corps)
+        except ToolsError as exc:
+            journal(exc.status_code, error=exc.code)
+            refus = exc.to_response()
+            if exc.status_code == 405 and service is not None:
+                refus.headers["Allow"] = ", ".join(service.methods)
+            return refus
+        except Exception:
+            logger.exception("tools: passthrough %s en échec", service_id)
+            journal(500, error="internal")
+            return tools_error(500, "unavailable", "erreur interne du relais")
+        journal(reponse.status_code, size=len(reponse.body))
+        return reponse
 
     return router
