@@ -187,6 +187,12 @@ from .version import router as _version_router  # noqa: E402
 
 app.include_router(_version_router)
 
+# ---- Page de simulation de système d'information (recherches Éloignement) : inerte tant
+# que DM_SIMULATION_SI_ENABLED n'est pas vrai.
+from .simulation import router as _simulation_router  # noqa: E402
+
+app.include_router(_simulation_router)
+
 # ---- Admin UI router (Jinja2 + HTMX, no external JS build)
 if _RUNTIME_MODE in ("admin", "all"):
     from fastapi.staticfiles import StaticFiles
