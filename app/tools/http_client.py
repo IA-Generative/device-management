@@ -2,10 +2,15 @@
 proxy de sortie, DM_TLS_VERIFY). Le délai est fixé PAR APPEL d'après le registre."""
 from __future__ import annotations
 
+import logging
 import os
 import threading
 
 import httpx
+
+# httpx écrit chaque requête sortante avec son adresse complète au niveau INFO. Une chaîne de
+# requête (et la signature d'une adresse présignée) n'a rien à faire dans un journal.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 _client: httpx.AsyncClient | None = None
 _lock = threading.Lock()

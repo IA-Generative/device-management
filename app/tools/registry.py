@@ -15,8 +15,30 @@ Forme :
                               "parameters": {"type": "object", "properties": {…}, "required": ["q"]}}}}
     ]}
 
+Troisième protocole, `passthrough` : tout ce qui suit le nom du service est propagé tel
+quel vers `base_url` (voir passthrough.py). L'entrée s'écrit dans la liste `services`, ou
+directement sous son nom à la racine du registre :
+
+    {"eloignement": {"protocol": "passthrough", "base_url": "http://localhost:8000",
+                     "paths": ["/v1/"], "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                     "max_body_mb": 60, "timeout_s": 120,
+                     "auth": {"kind": "client_credentials", "token_url": "…", "client_id": "…",
+                              "secret_env": "ELOIGNEMENT_CLIENT_SECRET"},
+                     "agent_header": "X-Agent-Email"}}
+
+Option `follow` d'un passthrough : sur les chemins listés, le DM va chercher lui-même le
+fichier dont l'amont rend l'adresse (téléchargement présigné), et rend son contenu :
+
+    "follow": {"paths": ["/storage/presigned-download"], "url_field": "url",
+               "hosts": ["s3.exemple"], "max_mb": 20}
+
 Règles :
-- liste blanche stricte : seuls les outils déclarés dans `tools` passent ;
+- liste blanche stricte : seuls les outils déclarés dans `tools` passent (`rest`, `mcp`) ;
+  en `passthrough`, seuls les préfixes de `paths` et les verbes de `methods` passent ;
+- un service `passthrough` déclare son authentification amont (`auth.kind` : `client_credentials`,
+  `static` ou `header`) ; le secret n'est jamais dans le registre, seulement le NOM de la
+  variable d'environnement qui le porte (`secret_env`), et ce nom doit figurer dans
+  DM_TOOLS_SECRET_ENVS (variable du déploiement), sinon le service est refusé ;
 - un service MCP doit être authentifié (`auth` vaut `bearer`, défaut) : `auth: none` le rejette ;
 - `identity` : `passthrough` (le jeton de la personne est transmis tel quel) ; `exchange`
   (échange de jeton Keycloak) est accepté dans le registre mais pas encore servi : le service
@@ -36,16 +58,26 @@ from .. import runtime_config
 
 logger = logging.getLogger("device-management.tools")
 
-PROTOCOLES = ("rest", "mcp")
+PROTOCOLES = ("rest", "mcp", "passthrough")
 IDENTITES = ("passthrough", "exchange")
 METHODES_REST = ("GET", "POST")
+METHODES_PASSTHROUGH = ("GET", "POST", "PUT", "PATCH", "DELETE")
+AUTHS_AMONT = ("client_credentials", "static", "header")
 _NOM_OUTIL = re.compile(r"^[a-zA-Z0-9_-]{1,40}$")
 _NOM_SERVICE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
+_NOM_EN_TETE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+_NOM_VARIABLE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_NOM_CHAMP = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Hôte de stockage admis par `follow.hosts` : un nom exact, port facultatif, aucun joker.
+_HOTE = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?$")
 
 DEFAUT_TIMEOUT_S = 15
 DEFAUT_MAX_RESPONSE_KB = 256
 PLAFOND_TIMEOUT_S = 180
 PLAFOND_MAX_RESPONSE_KB = 4096
+DEFAUT_MAX_BODY_MB = 10
+PLAFOND_MAX_BODY_MB = 100
+DEFAUT_FOLLOW_MAX_MB = 20
 
 
 @dataclass(frozen=True)
@@ -66,6 +98,31 @@ class Outil:
 
 
 @dataclass(frozen=True)
+class AuthAmont:
+    """Authentification d'un service passthrough auprès de son amont. Le secret est lu à
+    l'appel dans la variable d'environnement `secret_env`, jamais gardé ici."""
+    kind: str                 # client_credentials | static | header
+    secret_env: str
+    token_url: str = ""       # client_credentials
+    client_id: str = ""       # client_credentials
+    header_name: str = ""     # header
+
+
+@dataclass(frozen=True)
+class Suivi:
+    """Option `follow` d'un service passthrough : sur ces chemins, l'amont rend l'adresse d'un
+    fichier (champ `url_field` d'une réponse JSON) et c'est le DM qui va le chercher."""
+    paths: tuple[str, ...]    # chemins exacts (pas des préfixes), appelés en POST
+    url_field: str
+    hosts: tuple[str, ...]    # hôtes de stockage admis, comparaison exacte (`hôte` ou `hôte:port`)
+    max_mb: int = DEFAUT_FOLLOW_MAX_MB
+
+    @property
+    def max_bytes(self) -> int:
+        return int(self.max_mb) * 1024 * 1024
+
+
+@dataclass(frozen=True)
 class Service:
     id: str
     protocol: str
@@ -77,6 +134,13 @@ class Service:
     health_path: str = ""
     profiles: tuple[str, ...] = ()
     tools: dict[str, Outil] = field(default_factory=dict)
+    # Protocole passthrough uniquement.
+    paths: tuple[str, ...] = ()         # préfixes de chemin autorisés
+    methods: tuple[str, ...] = ()       # verbes autorisés
+    max_body_mb: int = DEFAUT_MAX_BODY_MB
+    auth_amont: AuthAmont | None = None
+    agent_header: str = ""              # en-tête qui porte l'e-mail de la personne
+    follow: Suivi | None = None         # téléchargement présigné suivi par le DM
 
     def outil(self, name: str) -> Outil | None:
         return self.tools.get(name)
@@ -87,6 +151,10 @@ class Service:
     @property
     def max_response_bytes(self) -> int:
         return int(self.max_response_kb) * 1024
+
+    @property
+    def max_body_bytes(self) -> int:
+        return int(self.max_body_mb) * 1024 * 1024
 
 
 def nom_public(service_id: str, outil: str) -> str:
@@ -144,6 +212,127 @@ def _parse_outil(service_id: str, name: str, brut, protocol: str) -> Outil | Non
     )
 
 
+def secrets_autorises() -> frozenset[str]:
+    """Noms des variables d'environnement qu'un service peut désigner par `secret_env`
+    (DM_TOOLS_SECRET_ENVS, CSV). Sans cette borne, le registre, modifiable à chaud depuis
+    l'admin, pourrait envoyer à un amont n'importe quel secret du processus (celui de la
+    base, par exemple). Liste vide : aucun `secret_env` n'est admis.
+
+    Lue dans l'environnement du déploiement, pas par runtime_config : elle borne ce que
+    l'admin peut faire, elle ne se règle donc pas depuis l'admin.
+    """
+    return frozenset(nom.strip() for nom in os.getenv("DM_TOOLS_SECRET_ENVS", "").split(",") if nom.strip())
+
+
+def _parse_auth_amont(sid: str, brut) -> AuthAmont | None:
+    if not isinstance(brut, dict):
+        logger.warning("tools registry: service %s refusé, auth absente (objet {kind, secret_env, …} requis)", sid)
+        return None
+    kind = str(brut.get("kind") or "").strip().lower()
+    secret_env = str(brut.get("secret_env") or "").strip()
+    if kind not in AUTHS_AMONT or not _NOM_VARIABLE.match(secret_env):
+        logger.warning("tools registry: service %s refusé, auth.kind ou auth.secret_env invalide", sid)
+        return None
+    if secret_env not in secrets_autorises():
+        logger.warning("tools registry: service %s refusé, la variable %s n'est pas dans DM_TOOLS_SECRET_ENVS",
+                       sid, secret_env)
+        return None
+    token_url = str(brut.get("token_url") or "").strip()
+    client_id = str(brut.get("client_id") or "").strip()
+    header_name = str(brut.get("header_name") or "").strip()
+    if kind == "client_credentials" and not (token_url.startswith(("http://", "https://")) and client_id):
+        logger.warning("tools registry: service %s refusé, token_url et client_id requis", sid)
+        return None
+    if kind == "header" and not _NOM_EN_TETE.match(header_name):
+        logger.warning("tools registry: service %s refusé, auth.header_name invalide", sid)
+        return None
+    return AuthAmont(kind=kind, secret_env=secret_env, token_url=token_url, client_id=client_id,
+                     header_name=header_name)
+
+
+def _parse_follow(sid: str, brut) -> Suivi | None:
+    """Option `follow`, ou None si elle est mal formée (le service est alors refusé : un
+    suivi à moitié déclaré ne doit pas se transformer en passthrough ordinaire)."""
+    if not isinstance(brut, dict):
+        logger.warning("tools registry: service %s refusé, follow doit être un objet", sid)
+        return None
+    paths = brut.get("paths")
+    hosts = brut.get("hosts")
+    url_field = str(brut.get("url_field") or "url").strip()
+    if (not isinstance(paths, list) or not paths
+            or not all(isinstance(p, str) and p.startswith("/") and ".." not in p for p in paths)):
+        logger.warning("tools registry: service %s refusé, follow.paths doit lister des chemins commençant par /", sid)
+        return None
+    if not isinstance(hosts, list) or not hosts or not all(isinstance(h, str) and _HOTE.match(h) for h in hosts):
+        logger.warning("tools registry: service %s refusé, follow.hosts doit lister des hôtes exacts "
+                       "(minuscules, port facultatif, pas de joker)", sid)
+        return None
+    if not _NOM_CHAMP.match(url_field):
+        logger.warning("tools registry: service %s refusé, follow.url_field invalide", sid)
+        return None
+    return Suivi(paths=tuple(paths), url_field=url_field, hosts=tuple(hosts),
+                 max_mb=_int_borne(brut.get("max_mb"), DEFAUT_FOLLOW_MAX_MB, PLAFOND_MAX_BODY_MB))
+
+
+def _parse_passthrough(sid: str, brut: dict) -> Service | None:
+    base_url = str(brut.get("base_url") or brut.get("upstream") or "").strip().rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        logger.warning("tools registry: service %s, base_url absente ou non http(s)", sid)
+        return None
+    paths = brut.get("paths")
+    if (not isinstance(paths, list) or not paths
+            or not all(isinstance(p, str) and p.startswith("/") and ".." not in p for p in paths)):
+        logger.warning("tools registry: service %s refusé, paths doit lister des préfixes commençant par /", sid)
+        return None
+    methods = brut.get("methods")
+    if not isinstance(methods, list) or not methods:
+        logger.warning("tools registry: service %s refusé, methods doit lister les verbes autorisés", sid)
+        return None
+    methods = tuple(str(m).strip().upper() for m in methods)
+    if not all(m in METHODES_PASSTHROUGH for m in methods):
+        logger.warning("tools registry: service %s refusé, verbe hors %s", sid, "/".join(METHODES_PASSTHROUGH))
+        return None
+    auth_amont = _parse_auth_amont(sid, brut.get("auth"))
+    if auth_amont is None:
+        return None
+    agent_header = str(brut.get("agent_header") or "").strip()
+    if agent_header and not _NOM_EN_TETE.match(agent_header):
+        logger.warning("tools registry: service %s refusé, agent_header invalide", sid)
+        return None
+    follow = None
+    if brut.get("follow") is not None:
+        follow = _parse_follow(sid, brut["follow"])
+        if follow is None:
+            return None
+    return Service(
+        id=sid,
+        protocol="passthrough",
+        upstream=base_url,
+        label=str(brut.get("label") or sid),
+        timeout_s=_int_borne(brut.get("timeout_s"), _defaut_timeout(), PLAFOND_TIMEOUT_S),
+        health_path=_health_path(brut),
+        profiles=_profiles(brut),
+        paths=tuple(paths),
+        methods=methods,
+        max_body_mb=_int_borne(brut.get("max_body_mb"), DEFAUT_MAX_BODY_MB, PLAFOND_MAX_BODY_MB),
+        auth_amont=auth_amont,
+        agent_header=agent_header,
+        follow=follow,
+    )
+
+
+def _profiles(brut: dict) -> tuple[str, ...]:
+    profiles = brut.get("profiles") or ()
+    if not isinstance(profiles, (list, tuple)):
+        return ()
+    return tuple(str(p).strip().lower() for p in profiles if str(p).strip())
+
+
+def _health_path(brut: dict) -> str:
+    health_path = str(brut.get("health_path") or "")
+    return health_path if health_path.startswith("/") else ""
+
+
 def _parse_service(brut) -> Service | None:
     if not isinstance(brut, dict):
         return None
@@ -155,6 +344,8 @@ def _parse_service(brut) -> Service | None:
     if protocol not in PROTOCOLES:
         logger.warning("tools registry: service %s, protocole %r inconnu", sid, protocol)
         return None
+    if protocol == "passthrough":
+        return _parse_passthrough(sid, brut)
     upstream = str(brut.get("upstream") or "").strip().rstrip("/")
     if not upstream.startswith(("http://", "https://")):
         logger.warning("tools registry: service %s, upstream absent ou non http(s)", sid)
@@ -182,12 +373,6 @@ def _parse_service(brut) -> Service | None:
             tools[name] = outil
     if not tools:
         return None
-    profiles = brut.get("profiles") or ()
-    if not isinstance(profiles, (list, tuple)):
-        profiles = ()
-    health_path = str(brut.get("health_path") or "")
-    if health_path and not health_path.startswith("/"):
-        health_path = ""
     return Service(
         id=sid,
         protocol=protocol,
@@ -196,8 +381,8 @@ def _parse_service(brut) -> Service | None:
         identity=identity,
         timeout_s=_int_borne(brut.get("timeout_s"), _defaut_timeout(), PLAFOND_TIMEOUT_S),
         max_response_kb=_int_borne(brut.get("max_response_kb"), _defaut_max_kb(), PLAFOND_MAX_RESPONSE_KB),
-        health_path=health_path,
-        profiles=tuple(str(p).strip().lower() for p in profiles if str(p).strip()),
+        health_path=_health_path(brut),
+        profiles=_profiles(brut),
         tools=tools,
     )
 
@@ -230,7 +415,13 @@ def parse_registry(raw: str) -> list[Service]:
     except ValueError:
         logger.warning("tools registry: DM_TOOLS_REGISTRY n'est pas du JSON valide, registre vide")
         return []
-    items = data.get("services") if isinstance(data, dict) else data
+    if isinstance(data, dict):
+        items = data.get("services") or []
+        if isinstance(items, list):
+            # Forme du contrat Éloignement : une entrée directement sous le nom du service.
+            items = items + [{**v, "id": k} for k, v in data.items() if k != "services" and isinstance(v, dict)]
+    else:
+        items = data
     if not isinstance(items, list):
         return []
     services: list[Service] = []

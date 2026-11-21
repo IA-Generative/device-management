@@ -2,7 +2,8 @@
 
 Codes du contrat (issue #116) : unauthorized, forbidden, not_found,
 invalid_arguments, rate_limited (avec Retry-After), unavailable, blocked,
-truncated n'est pas une erreur (champ de la réponse 200).
+truncated n'est pas une erreur (champ de la réponse 200). Le protocole passthrough
+ajoute method_not_allowed (405, verbe hors de la liste du service).
 """
 from __future__ import annotations
 

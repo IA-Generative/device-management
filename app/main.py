@@ -110,6 +110,7 @@ from .services.versions import libreoffice_numeric_version as _libreoffice_numer
 from .services.versions import parse_version_tuple as _parse_version_tuple
 from .services.versions import version_nature as _version_nature
 from .settings import settings
+from .tools import registry as _tools_registry
 
 # Apply persisted runtime-config overrides to os.environ + settings BEFORE the
 # module-level constants (CORS, MAX_BODY_BYTES) and the admin auth globals capture
@@ -186,6 +187,12 @@ _RUNTIME_MODE = str(settings.runtime_mode or "api").strip().lower()
 from .version import router as _version_router  # noqa: E402
 
 app.include_router(_version_router)
+
+# ---- Page de simulation de système d'information (recherches Éloignement) : inerte tant
+# que DM_SIMULATION_SI_ENABLED n'est pas vrai.
+from .simulation import router as _simulation_router  # noqa: E402
+
+app.include_router(_simulation_router)
 
 # ---- Admin UI router (Jinja2 + HTMX, no external JS build)
 if _RUNTIME_MODE in ("admin", "all"):
@@ -332,6 +339,10 @@ def validate_security_config(app_env: str | None = None) -> list[str]:
         problems.append("CORS allow_origins is '*' — set DM_ALLOW_ORIGINS to an explicit allowlist")
     if _dev_autologin_enabled():
         problems.append("DM_DEV_AUTOLOGIN is enabled outside development")
+    if not settings.auth_verify_access_token and _tools_registry.enabled():
+        # Sans vérification, le jeton de la personne est seulement décodé : un poste enrôlé
+        # pourrait en fabriquer un et appeler un amont du relais sous l'identité de son choix.
+        problems.append("DM_AUTH_VERIFY_ACCESS_TOKEN is false while the tools relay is on (DM_TOOLS_ENABLED)")
 
     if problems:
         log = logger.critical if prod_like else logger.warning
@@ -2167,6 +2178,18 @@ def _apply_llm_proxy_overrides(cfg: dict, *, relay_ok: bool, relay_meta: dict | 
     config_obj["rerankModel"] = rerank_model
     config_obj["rerankEndpoint"] = rerank_endpoint
     config_obj["rerankToken"] = str(config_obj.get("llmToken") or "") if rerank_endpoint else ""
+
+    # Éloignement : le modèle de vision qui lit une page ou une zone d'une pièce.
+    # Les requêtes passent par /llm/v1 comme les autres (routage par LLM_BACKENDS) ;
+    # ici on ne fait qu'annoncer le nom du modèle. Vide = on laisse la valeur du
+    # gabarit du plugin, s'il en déclare une.
+    vision_model = str(runtime_config.cfg("ELOIGNEMENT_VISION_MODEL_NAME", "") or "").strip()
+    if vision_model:
+        config_obj["eloignementOcrModele"] = vision_model
+    # Et le moteur de l'async-api qui lit une pièce entière, par le service `ocr` du relais d'outils.
+    ocr_service = str(runtime_config.cfg("ELOIGNEMENT_OCR_SERVICE_NAME", "") or "").strip()
+    if ocr_service:
+        config_obj["eloignementOcrService"] = ocr_service
     return cfg
 
 
@@ -6259,9 +6282,17 @@ if _RUNTIME_MODE in ("api", "all", "llm"):
     # helpers injectés ; le jeton de la personne est vérifié par _verify_access_token.
     from .tools.router import build_router as _build_tools_router
 
+    def _verify_access_token_for_tools(token: str) -> dict:
+        # Le garde-fou de démarrage (validate_security_config) ne voit pas un relais allumé à
+        # chaud par l'admin : en production, sans vérification du jeton, le relais ne sert pas.
+        if not settings.auth_verify_access_token and (settings.app_env or "").strip().lower() in _PROD_LIKE_ENVS:
+            logger.error("tools: appel refusé, DM_AUTH_VERIFY_ACCESS_TOKEN est à false en production")
+            raise HTTPException(status_code=503, detail="Access token verification is disabled.")
+        return _verify_access_token(token)
+
     app.include_router(_build_tools_router(
         relay_auth=_relay_auth_from_request,
-        verify_access_token=_verify_access_token,
+        verify_access_token=_verify_access_token_for_tools,
     ))
 
 

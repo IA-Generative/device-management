@@ -60,7 +60,19 @@ the feature on the extension side:
 | Value | Env | Extension feature |
 |---|---|---|
 | `config.llm.embdModelName` | `EMBD_MODEL_NAME` | local search indexing (embeddings through `/llm/v1/embeddings`) |
+| `config.llm.eloignementVisionModelName` | `ELOIGNEMENT_VISION_MODEL_NAME` | Eloignement viewer: vision model that reads a scanned page or a zone (served as `eloignementOcrModele`) |
+| `config.llm.eloignementOcrServiceName` | `ELOIGNEMENT_OCR_SERVICE_NAME` | Eloignement viewer: async-api service that reads a whole piece through the `ocr` service of the tools relay (served as `eloignementOcrService`). Empty = nothing announced. |
 | `config.llm.rerankModelName` | `RERANK_MODEL_NAME` | result reranking (`/llm/v1/rerank`, `rerankEndpoint` is only served when set) |
+
+The tools relay (`/tools/v1`) has one dedicated value; its other `DM_TOOLS_*`
+keys go through `api.extraEnv` / `llmProxy.extraEnv` or the admin Config tab:
+
+| Value | Env | Role |
+|---|---|---|
+| `config.tools.secretEnvs` | `DM_TOOLS_SECRET_ENVS` | Comma-separated names of the environment variables a passthrough service of `DM_TOOLS_REGISTRY` may point at with `secret_env`. Empty (default) = no passthrough service is served. Deployment-only, not editable from the admin. |
+
+With `config.app.env=prod` the app refuses to start when the tools relay is on
+(`DM_TOOLS_ENABLED=true`) and `config.auth.verifyAccessToken` is `false`.
 
 Both reach the api and the llmProxy through the ConfigMap. The api also needs
 `DM_LLM_TOKEN_SIGNING_KEY` in the Secret: it signs the per-client `llmToken`

@@ -859,7 +859,8 @@ config:
   # PKCE/OIDC access-token verification (bearer tokens presented to the API).
   auth:
     # DM_AUTH_VERIFY_ACCESS_TOKEN. Optional, default true. Never disable in
-    # production.
+    # production: with app.env=prod and the tools relay on (DM_TOOLS_ENABLED),
+    # the app refuses to start when this is false.
     verifyAccessToken: true
     # DM_AUTH_JWKS_URL. Required when verifyAccessToken=true — JWKS endpoint
     # used to validate bearer tokens (typically the relay-assistant or
@@ -942,6 +943,26 @@ config:
     # RERANK_MODEL_NAME. Reranking model (/llm/v1/rerank), e.g.
     # bge-reranker-v2-m3. Empty = no rerankEndpoint served.
     rerankModelName: ""
+    # ELOIGNEMENT_VISION_MODEL_NAME. Vision model announced to the Eloignement
+    # viewer as eloignementOcrModele (reads a scanned page or a zone through
+    # /llm/v1). Empty = whatever the plugin template declares. If the model is
+    # not served by the default backend, route it with LLM_BACKENDS.
+    eloignementVisionModelName: ""
+    # ELOIGNEMENT_OCR_SERVICE_NAME. async-api service that reads a whole piece for the
+    # Eloignement viewer, through the `ocr` service of the tools relay (served as
+    # eloignementOcrService). Empty = nothing announced.
+    eloignementOcrServiceName: ""
+
+  # Tools relay (/tools/v1). The other DM_TOOLS_* keys are set through extraEnv
+  # or hot-reloaded from the admin; this one is deployment-only on purpose.
+  tools:
+    # DM_TOOLS_SECRET_ENVS. Comma-separated NAMES of the environment variables a
+    # passthrough service of DM_TOOLS_REGISTRY may point at with `secret_env`,
+    # e.g. "ELOIGNEMENT_CLIENT_SECRET,ASYNC_API_KEY_ELOIGNEMENT". Default "" =
+    # no secret_env accepted, so no passthrough service is served. Names only,
+    # never values. Not editable from the admin: it bounds what the admin-edited
+    # registry can reach.
+    secretEnvs: ""
 
   # Fleet-state export run by the worker (PARC_EXPORT_SECRET lives in the
   # Secret). Defaults mirror app/settings.py.
