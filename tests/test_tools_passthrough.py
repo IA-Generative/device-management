@@ -443,3 +443,114 @@ def test_secret_absent_de_l_environnement_503_sans_appel_amont(monkeypatch):
     assert res.status_code == 503, res.text
     assert "LECTURE_JETON" not in res.text
     assert amont.requests == []
+
+
+# ── Réponse amont rendue telle quelle ─────────────────────────────────────────
+
+def test_reponse_amont_rendue_avec_code_corps_et_en_tetes():
+    _, client, amont = _setup()
+    amont.reponse = lambda request: httpx.Response(
+        201, content=b'{"id": 1987, "statut": "brouillon"}',
+        headers={"Content-Type": "application/json; charset=utf-8", "Location": "/v1/dossiers/1987",
+                 "ETag": '"abc"', "Retry-After": "7", "Set-Cookie": "session=amont", "Server": "amont/1.0",
+                 "X-Interne": "detail"})
+    res = client.post("/tools/v1/eloignement/v1/dossiers", headers=_entetes(client), json={"origine": "courriel"})
+    assert res.status_code == 201
+    assert res.content == b'{"id": 1987, "statut": "brouillon"}'
+    assert res.headers["content-type"] == "application/json; charset=utf-8"
+    assert res.headers["location"] == "/v1/dossiers/1987"
+    assert res.headers["etag"] == '"abc"'
+    assert res.headers["retry-after"] == "7"
+    # Le reste des en-têtes amont ne sort pas.
+    for absent in ("set-cookie", "server", "x-interne"):
+        assert absent not in res.headers, absent
+
+
+def test_erreur_metier_amont_rendue_telle_quelle():
+    _, client, amont = _setup()
+    probleme = {"type": "about:blank", "title": "Conflit", "status": 409, "detail": "Le dossier n'est plus un brouillon."}
+    amont.reponse = lambda request: httpx.Response(409, json=probleme,
+                                                   headers={"Content-Type": "application/problem+json"})
+    res = client.delete("/tools/v1/eloignement/v1/dossiers/12", headers=_entetes(client))
+    assert res.status_code == 409
+    assert res.headers["content-type"] == "application/problem+json"
+    assert res.json() == probleme
+
+
+def test_reponse_sans_corps_et_redirection_non_suivie():
+    _, client, amont = _setup()
+    amont.reponse = lambda request: httpx.Response(204)
+    res = client.delete("/tools/v1/eloignement/v1/dossiers/12", headers=_entetes(client))
+    assert res.status_code == 204 and res.content == b""
+    amont.reponse = lambda request: httpx.Response(302, headers={"Location": "https://ailleurs.test/login"})
+    res = client.get("/tools/v1/eloignement/v1/dossiers/12", headers=_entetes(client), follow_redirects=False)
+    assert res.status_code == 302
+    assert [r.url.host for r in amont.appels] == ["eloignement.test", "eloignement.test"]
+
+
+def test_reponse_binaire_rendue_octet_pour_octet():
+    _, client, amont = _setup()
+    octets = bytes(range(256)) * 64
+    amont.reponse = lambda request: httpx.Response(200, content=octets, headers={"Content-Type": "application/pdf"})
+    res = client.get("/tools/v1/eloignement/v1/dossiers/12/documents/55", headers=_entetes(client))
+    assert res.status_code == 200 and res.content == octets
+    assert res.headers["content-type"] == "application/pdf"
+
+
+def test_reponse_amont_au_dela_de_la_borne_502():
+    _, client, amont = _setup()
+    amont.reponse = lambda request: httpx.Response(200, content=b"x" * (1024 * 1024 + 1))
+    res = client.get("/tools/v1/eloignement/v1/dossiers", headers=_entetes(client))
+    assert res.status_code == 502
+    assert res.json()["error"]["code"] == "unavailable"
+
+
+# ── Pannes réseau de l'amont ──────────────────────────────────────────────────
+
+def _lever(exc):
+    def reponse(request):
+        raise exc("connexion refusée par 10.1.2.3:8443 (eloignement.interne)", request=request)
+    return reponse
+
+
+@pytest.mark.parametrize("panne, statut", [
+    (httpx.ConnectError, 502), (httpx.ReadError, 502), (httpx.RemoteProtocolError, 502),
+    (httpx.ConnectTimeout, 504), (httpx.ReadTimeout, 504),
+])
+def test_panne_reseau_amont_502_ou_504_sans_detail_interne(panne, statut):
+    _, client, amont = _setup()
+    amont.reponse = _lever(panne)
+    res = client.get("/tools/v1/eloignement/v1/dossiers", headers=_entetes(client))
+    assert res.status_code == statut, res.text
+    assert res.json()["error"]["code"] == "unavailable"
+    for interne in ("10.1.2.3", "eloignement.interne", "eloignement.test", "Traceback", panne.__name__):
+        assert interne not in res.text, interne
+
+
+def test_serveur_de_jetons_muet_504():
+    _, client, amont = _setup()
+
+    def handler(request):
+        raise httpx.ReadTimeout("délai dépassé", request=request)
+
+    from app.tools import http_client
+    http_client.set_transport_for_tests(httpx.MockTransport(handler))
+    res = client.get("/tools/v1/eloignement/v1/dossiers", headers=_entetes(client))
+    assert res.status_code == 504
+    assert "sso.test" not in res.text
+
+
+# ── Journal ───────────────────────────────────────────────────────────────────
+
+def test_journal_passthrough_sans_requete_ni_corps_ni_adresse(caplog):
+    import logging
+    _, client, _ = _setup()
+    with caplog.at_level(logging.INFO, logger="dm-tools-audit"):
+        client.post("/tools/v1/eloignement/v1/dossiers?message_id=identifiant-du-courriel",
+                    headers=_entetes(client, email="alice@example.com"), json={"commentaire": "texte-de-l-agent"})
+    lignes = [r.getMessage() for r in caplog.records if r.name == "dm-tools-audit"]
+    entree = json.loads(lignes[-1])
+    assert (entree["service"], entree["tool"], entree["status"], entree["acts"]) == (
+        "eloignement", "POST /v1/dossiers", 200, True)
+    for absent in ("identifiant-du-courriel", "texte-de-l-agent", "alice@example.com", "jeton-de-service"):
+        assert absent not in lignes[-1], absent

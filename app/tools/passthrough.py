@@ -41,6 +41,9 @@ _EN_TETES_RETIRES = frozenset({
 })
 _PREFIXES_RETIRES = ("x-relay-", "x-forwarded-", "proxy-")
 
+# En-têtes de la réponse amont rendus au poste ; aucun autre ne sort (ni Set-Cookie, ni Server).
+_EN_TETES_REPONSE = ("content-type", "location", "etag", "retry-after")
+
 _ADRESSE = re.compile(r"^[^\s@<>,;:\"]+@[^\s@<>,;:\"]+$")
 
 # Jetons client_credentials : clé du service → (échéance, jeton). Redemandé un peu avant
@@ -125,6 +128,8 @@ async def _jeton_de_service(service: Service) -> str:
             data={"grant_type": "client_credentials", "client_id": auth.client_id, "client_secret": _secret(service)},
             headers={"Accept": "application/json"}, timeout=http_client.timeout(10.0), follow_redirects=False,
         )
+    except httpx.TimeoutException as exc:
+        raise ToolsError(504, "unavailable", f"authentification auprès de {service.label} hors délai") from exc
     except httpx.HTTPError as exc:
         logger.warning("tools: %s, serveur de jetons injoignable: %s", service.id, exc.__class__.__name__)
         raise indisponible from exc
@@ -190,7 +195,11 @@ async def lire_corps(request: Request, limite: int) -> bytes:
 
 
 async def relayer(service: Service, request: Request, chemin: str, corps: bytes, email: str) -> Response:
-    """Appelle l'amont et rend sa réponse."""
+    """Appelle l'amont et rend sa réponse telle quelle : code, corps et en-têtes utiles.
+
+    Une panne réseau devient 502 (injoignable) ou 504 (délai), avec un message qui ne cite
+    ni adresse ni détail de l'erreur. Une redirection n'est pas suivie : elle est rendue.
+    """
     url = service.upstream + chemin
     if request.url.query:
         url += "?" + request.url.query
@@ -198,8 +207,33 @@ async def relayer(service: Service, request: Request, chemin: str, corps: bytes,
         request.method, url, headers=await en_tetes_sortants(service, request, email), content=corps,
         extensions={"timeout": http_client.timeout(float(service.timeout_s)).as_dict()},
     )
-    resp = await http_client.get_async_client().send(sortante, follow_redirects=False)
+    try:
+        resp = await http_client.get_async_client().send(sortante, stream=True, follow_redirects=False)
+        try:
+            contenu = await _lire_reponse(service, resp)
+        finally:
+            await resp.aclose()
+    except httpx.TimeoutException as exc:
+        raise ToolsError(504, "unavailable", f"{service.label} n'a pas répondu dans le délai") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("tools: %s injoignable: %s", service.id, exc.__class__.__name__)
+        raise ToolsError(502, "unavailable", f"{service.label} est injoignable") from exc
     if resp.status_code == 401 and service.auth_amont and service.auth_amont.kind == "client_credentials":
         _jetons.pop(_cle_jeton(service), None)  # jeton refusé : le prochain appel en redemande un
-    return Response(content=resp.content, status_code=resp.status_code,
-                    media_type=resp.headers.get("content-type"))
+    return Response(
+        content=contenu, status_code=resp.status_code,
+        headers={nom: resp.headers[nom] for nom in _EN_TETES_REPONSE if nom in resp.headers},
+    )
+
+
+async def _lire_reponse(service: Service, resp: httpx.Response) -> bytes:
+    """Corps de la réponse amont, borné comme le corps entrant (`max_body_mb`). Une réponse
+    plus grosse n'est pas coupée (elle serait fausse) : elle est refusée."""
+    morceaux: list[bytes] = []
+    lu = 0
+    async for morceau in resp.aiter_bytes():
+        lu += len(morceau)
+        if lu > service.max_body_bytes:
+            raise ToolsError(502, "unavailable", f"réponse de {service.label} trop volumineuse")
+        morceaux.append(morceau)
+    return b"".join(morceaux)
