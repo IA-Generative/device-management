@@ -3,7 +3,8 @@
 - ``GET  /tools/v1`` : découverte, les outils que ce poste peut appeler, au format outils
   OpenAI : {"tools": [{"type": "function", "function": {name, description, parameters},
   "service": "<id>", "acts": bool}]}. Nom public ``service__outil``. Un service coupé ou en
-  panne n'est pas listé ; les autres restent.
+  panne n'est pas listé ; les autres restent. Les services ``passthrough`` sont annoncés à
+  part : "passthrough": [{"service", "protocol", "label", "methods"}].
 - ``POST /tools/v1/{service}/{outil}`` : corps {"arguments": {…}} → 200 {"result": <JSON>,
   "truncated": bool}. Erreurs : statut HTTP + {"error": {"code", "message"}}.
 - ``GET|POST|PUT|PATCH|DELETE /tools/v1/{service}/{chemin…}`` : service ``passthrough``,
@@ -199,7 +200,13 @@ def build_router(
                 logger.info("tools: %s absent de la découverte (%s)", service.id, exc.code)
             except Exception:
                 logger.exception("tools: découverte de %s en échec", service.id)
-        return JSONResponse({"tools": outils, "services": [s.id for s in services]})
+        # Un service passthrough n'a pas d'outils : il est annoncé par son nom, pour que le
+        # plugin sache qu'il peut appeler ses chemins. Rien de son amont n'est exposé.
+        passthroughs = [
+            {"service": s.id, "protocol": s.protocol, "label": s.label, "methods": list(s.methods)}
+            for s in services if s.protocol == "passthrough"
+        ]
+        return JSONResponse({"tools": outils, "services": [s.id for s in services], "passthrough": passthroughs})
 
     @router.post("/{service_id}/{outil_nom}")
     async def appel(service_id: str, outil_nom: str, request: Request) -> Response:

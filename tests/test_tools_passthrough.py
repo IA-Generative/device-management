@@ -554,3 +554,44 @@ def test_journal_passthrough_sans_requete_ni_corps_ni_adresse(caplog):
         "eloignement", "POST /v1/dossiers", 200, True)
     for absent in ("identifiant-du-courriel", "texte-de-l-agent", "alice@example.com", "jeton-de-service"):
         assert absent not in lignes[-1], absent
+
+
+# ── Découverte ────────────────────────────────────────────────────────────────
+
+def test_decouverte_annonce_les_services_passthrough():
+    _, client, amont = _setup()
+    res = client.get("/tools/v1", headers=_entetes(client))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # Les services rest gardent leur annonce ; un passthrough n'a pas d'outils déclarés.
+    assert [t["function"]["name"] for t in body["tools"]] == ["mesreunions__chercher"]
+    assert body["services"] == ["eloignement", "lecture", "mesreunions"]
+    assert body["passthrough"] == [
+        {"service": "eloignement", "protocol": "passthrough", "label": "Éloignement",
+         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        {"service": "lecture", "protocol": "passthrough", "label": "lecture", "methods": ["GET"]},
+    ]
+    # Rien de l'amont ne sort dans l'annonce, et la découverte n'appelle aucun passthrough.
+    for interne in ("eloignement.test", "sso.test", "ELOIGNEMENT_CLIENT_SECRET", "dm-relais"):
+        assert interne not in res.text, interne
+    assert amont.requests == []
+
+
+def test_decouverte_sans_passthrough_garde_une_liste_vide():
+    _, client, _ = _setup({"services": [SERVICE_REUNIONS]})
+    body = client.get("/tools/v1", headers=_entetes(client)).json()
+    assert body["services"] == ["mesreunions"] and body["passthrough"] == []
+
+
+def test_passthrough_hors_profil_ni_annonce_ni_appelable():
+    _, client, amont = _setup({"services": [{**SERVICE_ELOIGNEMENT, "profiles": ["int"]}, SERVICE_REUNIONS]})
+    h = _entetes(client)
+    assert client.get("/tools/v1", headers=h).json()["passthrough"] == []
+    assert client.get("/tools/v1/eloignement/v1/dossiers", headers=h).status_code == 404
+    assert amont.requests == []
+
+
+def test_config_annonce_toolsendpoint_avec_un_seul_passthrough():
+    _, client, _ = _setup({"services": [SERVICE_ELOIGNEMENT]})
+    res = client.get("/config/libreoffice/config.json?profile=prod", headers=enroll(client))
+    assert res.json()["config"]["toolsEndpoint"] == "https://example.test/bootstrap/tools/v1"
