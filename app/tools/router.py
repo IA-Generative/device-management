@@ -53,6 +53,7 @@ class Identite:
     sub: str
     bearer: str          # « Bearer <jeton> » de la personne, transmis tel quel
     auth_method: str
+    email_personne: str = ""   # revendication `email` du jeton de la personne (pas l'adresse du poste)
 
 
 def _trace_id(request: Request) -> str:
@@ -102,7 +103,7 @@ class Authentificateur:
         raise ToolsError(401, "unauthorized",
                          "identité du poste absente : X-Relay-Client/X-Relay-Key ou Authorization: Bearer <llmToken>")
 
-    async def personne(self, request: Request) -> tuple[str, str]:
+    async def personne(self, request: Request) -> tuple[str, str, str]:
         brut = (request.headers.get(EN_TETE_PERSONNE) or "").strip()
         if not brut.lower().startswith("bearer ") or not brut[7:].strip():
             raise ToolsError(401, "unauthorized", "jeton de la personne absent (X-User-Authorization: Bearer …)")
@@ -117,12 +118,14 @@ class Authentificateur:
         sub = str((payload or {}).get("sub") or "")
         if not sub:
             raise ToolsError(401, "unauthorized", "jeton de la personne sans sujet")
-        return sub, f"Bearer {jeton}"
+        email = payload.get("email")
+        return sub, f"Bearer {jeton}", email if isinstance(email, str) else ""
 
     async def resoudre(self, request: Request) -> Identite:
         client_uuid, email, methode = await self.poste(request)
-        sub, bearer = await self.personne(request)
-        return Identite(client_uuid=client_uuid, email=email, sub=sub, bearer=bearer, auth_method=methode)
+        sub, bearer, email_personne = await self.personne(request)
+        return Identite(client_uuid=client_uuid, email=email, sub=sub, bearer=bearer, auth_method=methode,
+                        email_personne=email_personne)
 
 
 async def _outils_du_service(service: Service, bearer: str) -> list[dict]:
@@ -279,12 +282,13 @@ def build_router(
                 raise ToolsError(404, "not_found", "chemin inconnu ou non autorisé sur ce service")
             passthrough.verifier_methode(service, request.method)
             chemin_amont = passthrough.chemin_amont(service, chemin)
+            email = passthrough.adresse_agent(service, identite.email_personne)
             autorise, retry_after = throttle.autoriser(identite.sub, service.id)
             if not autorise:
                 raise ToolsError(429, "rate_limited", "trop d'appels pour cette personne sur ce service",
                                  retry_after=retry_after)
             corps = await passthrough.lire_corps(request, service.max_body_bytes)
-            reponse = await passthrough.relayer(service, request, chemin_amont, corps)
+            reponse = await passthrough.relayer(service, request, chemin_amont, corps, email)
         except ToolsError as exc:
             journal(exc.status_code, error=exc.code)
             refus = exc.to_response()

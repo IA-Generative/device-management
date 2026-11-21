@@ -282,3 +282,164 @@ def test_registre_borne_la_taille_et_le_delai():
     from app.tools.registry import parse_registry
     s = parse_registry(json.dumps({"services": [{**SERVICE_ELOIGNEMENT, "max_body_mb": 5000, "timeout_s": 5000}]}))[0]
     assert s.max_body_mb == 100 and s.timeout_s == 180
+
+
+# ── En-têtes : ce qui entre, ce qui sort ──────────────────────────────────────
+
+SERVICE_OCR = {
+    "id": "ocr", "protocol": "passthrough", "base_url": "https://ocr.test",
+    "paths": ["/jobs"], "methods": ["GET", "POST"],
+    "auth": {"kind": "header", "header_name": "apikey", "secret_env": "ASYNC_API_KEY_ELOIGNEMENT"},
+}
+
+
+def test_en_tetes_entrants_retires_et_identite_posee_par_le_dm():
+    _, client, amont = _setup()
+    forges = {
+        "X-Agent-Email": "prefet@example.com",   # forgé par le poste : ne passe jamais
+        "X_Agent_Email": "prefet@example.com",   # variante à tirets bas, confondue par certains serveurs
+        "Cookie": "session=abc",
+        "X-Relay-Proxy-Token": "jeton-de-proxy",
+        "X-Forwarded-For": "10.0.0.1",
+        "Accept-Encoding": "br",
+        "Idempotency-Key": "cle-123",
+        "If-Match": '"v1"',
+        "Accept": "application/json",
+    }
+    h = {**_entetes(client, email="alice@example.com"), **forges}
+    res = client.post("/tools/v1/eloignement/v1/dossiers", headers=h, json={"origine": "courriel"})
+    assert res.status_code == 200, res.text
+    sortant = amont.appels[-1]
+    assert sortant.headers["x-agent-email"] == "alice@example.com"
+    assert sortant.headers.get_list("x-agent-email") == ["alice@example.com"]
+    assert sortant.headers["authorization"] == "Bearer jeton-de-service-1"
+    assert sortant.headers["host"] == "eloignement.test"
+    for absent in ("cookie", "x-relay-client", "x-relay-key", "x-relay-proxy-token", "x-user-authorization",
+                   "x-forwarded-for", "x-client-id", "x-client-key", "x_agent_email"):
+        assert absent not in sortant.headers, absent
+    # Aucune trace du jeton de la personne ni de la clé du poste, où que ce soit.
+    brut = repr(sortant.headers.raw)
+    assert h["X-Relay-Key"] not in brut and h["X-User-Authorization"].split(" ", 1)[1] not in brut
+    # Le reste traverse.
+    assert sortant.headers["idempotency-key"] == "cle-123"
+    assert sortant.headers["if-match"] == '"v1"'
+    assert sortant.headers["accept"] == "application/json"
+    assert sortant.headers["content-type"] == "application/json"
+    assert sortant.headers["accept-encoding"] == "identity"
+
+
+def test_identite_du_poste_par_llmtoken_n_atteint_pas_l_amont():
+    mod, client, amont = _setup()
+    from app.llm.tokens import mint_llm_token
+    enroll(client)
+    client_uuid = next(iter(mod._RELAY_MEMORY_STORE.values()))["client_uuid"]
+    llm_token, _ = mint_llm_token(client_uuid=client_uuid, email="poste@example.com")
+    res = client.get("/tools/v1/eloignement/v1/dossiers",
+                     headers={"Authorization": f"Bearer {llm_token}", **_personne(email="alice@example.com")})
+    assert res.status_code == 200, res.text
+    sortant = amont.appels[-1]
+    assert sortant.headers["authorization"] == "Bearer jeton-de-service-1"
+    # L'adresse vient du jeton de la personne, pas de l'enrôlement du poste.
+    assert sortant.headers["x-agent-email"] == "alice@example.com"
+
+
+@pytest.mark.parametrize("email", ["", "pas-une-adresse", "a@b.fr\r\nX-Injecte: 1", "a b@example.com"])
+def test_jeton_sans_adresse_exploitable_refuse_403_sans_appel_amont(email):
+    _, client, amont = _setup()
+    res = client.get("/tools/v1/eloignement/v1/dossiers", headers=_entetes(client, email=email))
+    assert res.status_code == 403, res.text
+    assert res.json()["error"]["code"] == "forbidden"
+    assert amont.requests == []
+
+
+def test_service_sans_agent_header_ne_recoit_pas_l_adresse():
+    _, client, amont = _setup()
+    h = {**_entetes(client), "X-Agent-Email": "prefet@example.com"}
+    assert client.get("/tools/v1/lecture/v1/dossiers", headers=h).status_code == 200
+    assert "x-agent-email" not in amont.appels[-1].headers
+
+
+# ── Authentification amont ────────────────────────────────────────────────────
+
+def test_client_credentials_jeton_demande_puis_garde_en_cache(monkeypatch):
+    _, client, amont = _setup()
+    from app.tools import passthrough
+    horloge = [1000.0]
+    monkeypatch.setattr(passthrough, "_maintenant", lambda: horloge[0])
+    h = _entetes(client)
+    for _ in range(3):
+        assert client.get("/tools/v1/eloignement/v1/dossiers", headers=h).status_code == 200
+    assert amont.jetons_emis == 1
+    demande = [r for r in amont.requests if r.url.host == "sso.test"][0]
+    assert demande.method == "POST" and str(demande.url) == SSO
+    formulaire = dict(httpx.QueryParams(demande.content.decode()))
+    assert formulaire == {"grant_type": "client_credentials", "client_id": "dm-relais",
+                          "client_secret": SECRET_CLIENT}
+    assert all(r.headers["authorization"] == "Bearer jeton-de-service-1" for r in amont.appels)
+    # Peu avant l'expiration (300 s annoncées), le jeton est redemandé.
+    horloge[0] += 250
+    client.get("/tools/v1/eloignement/v1/dossiers", headers=h)
+    assert amont.jetons_emis == 1
+    horloge[0] += 30
+    client.get("/tools/v1/eloignement/v1/dossiers", headers=h)
+    assert amont.jetons_emis == 2
+    assert amont.appels[-1].headers["authorization"] == "Bearer jeton-de-service-2"
+
+
+def test_client_credentials_jeton_refuse_par_l_amont_est_oublie():
+    _, client, amont = _setup()
+    h = _entetes(client)
+    amont.reponse = lambda request: httpx.Response(401, json={"detail": "jeton expiré"})
+    assert client.get("/tools/v1/eloignement/v1/dossiers", headers=h).status_code == 401
+    amont.reponse = lambda request: httpx.Response(200, json={"ok": True})
+    assert client.get("/tools/v1/eloignement/v1/dossiers", headers=h).status_code == 200
+    assert amont.jetons_emis == 2
+
+
+def test_serveur_de_jetons_en_echec_502_sans_appel_amont_ni_fuite():
+    _, client, amont = _setup()
+    reponses = iter([httpx.Response(401, json={"error": "invalid_client", "error_description": SECRET_CLIENT}),
+                     httpx.Response(200, json={"pas": "de jeton"})])
+    original = amont.handler
+
+    def handler(request):
+        if request.url.host == "sso.test":
+            amont.requests.append(request)
+            return next(reponses)
+        return original(request)
+
+    from app.tools import http_client
+    http_client.set_transport_for_tests(httpx.MockTransport(handler))
+    for _ in range(2):
+        res = client.get("/tools/v1/eloignement/v1/dossiers", headers=_entetes(client))
+        assert res.status_code == 502, res.text
+        assert res.json()["error"]["code"] == "unavailable"
+        assert SECRET_CLIENT not in res.text and "sso.test" not in res.text
+    assert amont.appels == []
+
+
+def test_auth_static_pose_le_jeton_de_la_variable():
+    _, client, amont = _setup()
+    assert client.get("/tools/v1/lecture/v1/dossiers", headers=_entetes(client)).status_code == 200
+    assert amont.appels[-1].headers["authorization"] == "Bearer jeton-statique"
+    assert amont.jetons_emis == 0
+
+
+def test_auth_header_pose_la_cle_dans_l_en_tete_nomme():
+    _, client, amont = _setup({"services": [SERVICE_OCR]}, {"ASYNC_API_KEY_ELOIGNEMENT": "cle-ocr"})
+    h = {**_entetes(client), "apikey": "cle-forgee-par-le-poste"}
+    res = client.post("/tools/v1/ocr/jobs", headers=h, json={"modele": "x"})
+    assert res.status_code == 200, res.text
+    sortant = amont.appels[-1]
+    assert sortant.headers.get_list("apikey") == ["cle-ocr"]
+    assert "authorization" not in sortant.headers
+    assert "x-agent-email" not in sortant.headers
+
+
+def test_secret_absent_de_l_environnement_503_sans_appel_amont(monkeypatch):
+    _, client, amont = _setup()
+    monkeypatch.delenv("LECTURE_JETON")
+    res = client.get("/tools/v1/lecture/v1/dossiers", headers=_entetes(client))
+    assert res.status_code == 503, res.text
+    assert "LECTURE_JETON" not in res.text
+    assert amont.requests == []
