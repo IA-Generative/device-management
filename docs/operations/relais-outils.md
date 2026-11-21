@@ -21,7 +21,10 @@ adresse, un seul format, et l'appel reste **celui de la personne**.
 | `POST /tools/v1/{service}/{outil}` | **Appel.** Corps `{"arguments": {…}}`. Le DM valide les arguments contre le schéma (jsonschema, Draft 2020-12), appelle l'amont (`tools/call` en MCP, la route déclarée en REST), borne la réponse et rend `200 {"result": <JSON de l'amont>, "truncated": false}`. Pour un amont MCP, `result` est le JSON de `content[0].text` (ou `structuredContent`) ; une erreur d'outil MCP (`isError`) devient une erreur du relais, jamais un 200. |
 
 **Erreurs** : statut HTTP + `{"error": {"code", "message"}}`, codes `unauthorized`, `forbidden`,
-`not_found`, `invalid_arguments`, `rate_limited` (avec `Retry-After`), `unavailable`, `blocked`.
+`not_found`, `invalid_arguments`, `rate_limited` (avec `Retry-After`), `unavailable`, `blocked`
+(refus de l'amont : politique, contenu), `upstream_error` (l'outil amont a échoué : erreur d'outil
+MCP `isError` ou 422 du service ; ni un refus d'accès ni une faute d'arguments, le plugin affiche le
+message et le modèle ne doit pas réessayer à l'identique).
 Un `{error:{message}}` de l'amont est repris tel quel (borné à 300 caractères) ; aucun autre
 contenu amont n'est recopié dans une erreur.
 
