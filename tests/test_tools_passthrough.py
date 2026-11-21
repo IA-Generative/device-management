@@ -595,3 +595,62 @@ def test_config_annonce_toolsendpoint_avec_un_seul_passthrough():
     _, client, _ = _setup({"services": [SERVICE_ELOIGNEMENT]})
     res = client.get("/config/libreoffice/config.json?profile=prod", headers=enroll(client))
     assert res.json()["config"]["toolsEndpoint"] == "https://example.test/bootstrap/tools/v1"
+
+
+# ── Jeton de la personne réellement vérifié (signature, expiration, émetteur) ─
+
+EMETTEUR = "https://sso.test/realms/test"
+
+
+def _setup_verification(monkeypatch):
+    """DM en vérification réelle des jetons (RS256) ; la clé publique du royaume est servie
+    par un faux JWKS. Rend le client, l'amont et de quoi signer un jeton."""
+    import time
+
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    cle_royaume = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    mod, client, amont = _setup()   # l'enrôlement du poste se fait avant de durcir la vérification
+    poste = enroll(client)
+    monkeypatch.setattr(mod.settings, "auth_verify_access_token", True)
+    monkeypatch.setattr(mod.settings, "auth_issuer_url", EMETTEUR)
+    monkeypatch.setattr(mod.settings, "auth_audience", "")
+    monkeypatch.setattr(mod, "_get_jwks_client", lambda issuer: None)
+    monkeypatch.setattr(mod, "_fetch_jwks_signing_key",
+                        lambda jwks_client, token: type("Cle", (), {"key": cle_royaume.public_key()})())
+
+    def signer(cle=cle_royaume, **revendications) -> dict[str, str]:
+        claims = {"sub": "alice", "email": "alice@example.com", "iss": EMETTEUR, "exp": int(time.time()) + 300,
+                  **revendications}
+        return {**poste, "X-User-Authorization": f"Bearer {jwt.encode(claims, cle, algorithm='RS256')}"}
+
+    return client, amont, signer
+
+
+def test_adresse_tiree_d_un_jeton_signe_par_le_royaume(monkeypatch):
+    client, amont, signer = _setup_verification(monkeypatch)
+    res = client.get("/tools/v1/eloignement/v1/dossiers", headers=signer(email="agent@example.com"))
+    assert res.status_code == 200, res.text
+    assert amont.appels[-1].headers["x-agent-email"] == "agent@example.com"
+
+
+def test_jeton_forge_expire_ou_d_un_autre_emetteur_401_sans_appel_amont(monkeypatch):
+    import time
+
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    client, amont, signer = _setup_verification(monkeypatch)
+    autre_cle = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    non_signe = {**signer(), **_personne(email="prefet@example.com")}   # jeton « alg: none » fabriqué par le poste
+    refuses = {
+        "signé par une autre clé": signer(cle=autre_cle, email="prefet@example.com"),
+        "non signé": non_signe,
+        "expiré": signer(exp=int(time.time()) - 3600),
+        "autre émetteur": signer(iss="https://autre.test/realms/test"),
+    }
+    for cas, entetes in refuses.items():
+        res = client.post("/tools/v1/eloignement/v1/dossiers", headers=entetes, json={})
+        assert res.status_code == 401, cas
+        assert res.json()["error"]["code"] == "unauthorized", cas
+    assert amont.requests == []
