@@ -271,6 +271,7 @@ plugin :
 | Clé | Rôle |
 |---|---|
 | `ELOIGNEMENT_VISION_MODEL_NAME` | Nom du modèle annoncé au plugin dans `eloignementOcrModele`. Réglable à chaud dans l'onglet Config de l'admin (groupe LLM). Vide : le DM n'annonce rien de lui-même, la valeur du gabarit s'applique si elle existe ; sans l'une ni l'autre, la lecture par modèle et « Lire comme une identité » sont absentes du visualiseur. |
+| `ELOIGNEMENT_OCR_SERVICE_NAME` | Nom du moteur de l'async-api qui lit une pièce entière (« Lire tout le document »), annoncé dans `eloignementOcrService`. Le plugin l'appelle par le service `ocr` du relais d'outils, qui doit être déclaré dans `DM_TOOLS_REGISTRY` (chemins `/v1/`, verbes `GET` et `POST`, clé en `secret_env`). Réglable à chaud. Vide : la commande est absente du visualiseur. Mesure du 2026-11-21 sur un scan fictif de 8 pages : `ocr-lighton` est le plus fidèle (45 s), `ocr-classic` le seul qui ne dépende pas de la carte graphique à la demande. |
 | `LLM_BACKENDS` | Si le modèle de vision n'est pas servi par l'amont par défaut, c'est ici qu'on déclare son amont et qu'on y aiguille le modèle. Le jeton reste côté serveur, désigné par `token_env`. |
 
 Exemple, pour deux modèles de vision servis par un amont à part (adresse et noms de modèles fictifs) :

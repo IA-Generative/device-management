@@ -2181,6 +2181,10 @@ def _apply_llm_proxy_overrides(cfg: dict, *, relay_ok: bool, relay_meta: dict | 
     vision_model = str(runtime_config.cfg("ELOIGNEMENT_VISION_MODEL_NAME", "") or "").strip()
     if vision_model:
         config_obj["eloignementOcrModele"] = vision_model
+    # Et le moteur de l'async-api qui lit une pièce entière, par le service `ocr` du relais d'outils.
+    ocr_service = str(runtime_config.cfg("ELOIGNEMENT_OCR_SERVICE_NAME", "") or "").strip()
+    if ocr_service:
+        config_obj["eloignementOcrService"] = ocr_service
     return cfg
 
 

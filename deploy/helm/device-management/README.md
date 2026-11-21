@@ -61,6 +61,7 @@ the feature on the extension side:
 |---|---|---|
 | `config.llm.embdModelName` | `EMBD_MODEL_NAME` | local search indexing (embeddings through `/llm/v1/embeddings`) |
 | `config.llm.eloignementVisionModelName` | `ELOIGNEMENT_VISION_MODEL_NAME` | Eloignement viewer: vision model that reads a scanned page or a zone (served as `eloignementOcrModele`) |
+| `config.llm.eloignementOcrServiceName` | `ELOIGNEMENT_OCR_SERVICE_NAME` | Eloignement viewer: async-api service that reads a whole piece through the `ocr` service of the tools relay (served as `eloignementOcrService`). Empty = nothing announced. |
 | `config.llm.rerankModelName` | `RERANK_MODEL_NAME` | result reranking (`/llm/v1/rerank`, `rerankEndpoint` is only served when set) |
 
 Both reach the api and the llmProxy through the ConfigMap. The api also needs

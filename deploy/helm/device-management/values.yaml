@@ -947,6 +947,10 @@ config:
     # /llm/v1). Empty = whatever the plugin template declares. If the model is
     # not served by the default backend, route it with LLM_BACKENDS.
     eloignementVisionModelName: ""
+    # ELOIGNEMENT_OCR_SERVICE_NAME. async-api service that reads a whole piece for the
+    # Eloignement viewer, through the `ocr` service of the tools relay (served as
+    # eloignementOcrService). Empty = nothing announced.
+    eloignementOcrServiceName: ""
 
   # Fleet-state export run by the worker (PARC_EXPORT_SECRET lives in the
   # Secret). Defaults mirror app/settings.py.

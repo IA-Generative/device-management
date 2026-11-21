@@ -110,6 +110,9 @@ EDITABLE_KEYS: dict[str, ConfigKeySpec] = {
     "ELOIGNEMENT_VISION_MODEL_NAME": _spec(
         "ELOIGNEMENT_VISION_MODEL_NAME",
         "Modèle de vision d'Éloignement (lecture des pièces ; vide = valeur du gabarit)", "LLM", "str", True),
+    "ELOIGNEMENT_OCR_SERVICE_NAME": _spec(
+        "ELOIGNEMENT_OCR_SERVICE_NAME",
+        "Moteur de lecture d'une pièce entière d'Éloignement (service de l'async-api ; vide = valeur du gabarit)", "LLM", "str", True),
     # ── Proxy LLM (/llm/v1) — toutes relues PAR REQUÊTE → hot-reload réel ──
     "FORCE_LLM_ENDPOINT_OVERRIDE": _spec(
         "FORCE_LLM_ENDPOINT_OVERRIDE",
