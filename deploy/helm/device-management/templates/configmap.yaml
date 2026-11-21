@@ -121,6 +121,9 @@ data:
   ELOIGNEMENT_VISION_MODEL_NAME: {{ .Values.config.llm.eloignementVisionModelName | quote }}
   ELOIGNEMENT_OCR_SERVICE_NAME: {{ .Values.config.llm.eloignementOcrServiceName | quote }}
 
+  # -- config.tools : relais d'outils, variables que le registre peut désigner (noms, pas de valeur) --
+  DM_TOOLS_SECRET_ENVS: {{ .Values.config.tools.secretEnvs | quote }}
+
   # -- config.parc : export de l'état du parc (worker), non secret --
   PARC_EXPORT_ENABLED: {{ .Values.config.parc.enabled | quote }}
   PARC_EXPORT_URL: {{ .Values.config.parc.url | quote }}

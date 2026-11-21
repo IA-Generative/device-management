@@ -32,7 +32,7 @@ contenu amont n'est recopié dans une erreur.
 | En-tête | Qui | Vérification |
 |---|---|---|
 | `X-Relay-Client` / `X-Relay-Key`, **ou** `Authorization: Bearer <llmToken>` | le **poste** (enrôlement) | comme sur `/llm/v1` : paire relay vérifiée en base (cible `tools`, accordée aux enrôlements existants comme `llm`), ou `llmToken` signé puis révocation re-vérifiée |
-| `X-User-Authorization: Bearer <jeton Keycloak>` | la **personne** | signature, expiration et émetteur (`_verify_access_token`, les réglages `DM_AUTH_*` du DM), puis **transmis tel quel** à l'amont dans `Authorization` |
+| `X-User-Authorization: Bearer <jeton Keycloak>` | la **personne** | signature, expiration, émetteur, et audience si `DM_AUTH_AUDIENCE` est posée (`_verify_access_token`, les réglages `DM_AUTH_*` du DM), puis **transmis tel quel** à l'amont dans `Authorization` |
 
 Le relais **n'appelle jamais en son nom** : pas de clé de service, les trois services filtrent sur
 le `sub` de la personne. Deux personnes n'obtiennent pas les mêmes résultats. Aucun autre en-tête
@@ -113,9 +113,19 @@ secrets de l'amont.
    `DM_AUTH_AUDIENCE` ou `KEYCLOAK_CLIENT_ID` est posée). Sans poste ou sans jeton de personne
    valide : `401`, **rien ne part vers l'amont**.
 
-   > **`DM_AUTH_VERIFY_ACCESS_TOKEN` doit rester à `true`** (son défaut) sur tout DM qui sert un
-   > passthrough. À `false`, réglage de développement, le jeton est seulement décodé : un poste
+   > **`DM_AUTH_VERIFY_ACCESS_TOKEN` doit rester à `true`** (son défaut) sur tout DM qui sert le
+   > relais. À `false`, réglage de développement, le jeton est seulement décodé : un poste
    > enrôlé pourrait alors fabriquer un jeton et se présenter à l'amont sous l'adresse de son choix.
+   > **En production** (`DM_APP_ENV` = `prod`, `production` ou `staging`), le DM l'impose :
+   > relais actif et vérification coupée, il **refuse de démarrer** (`Refusing to start due to
+   > insecure configuration: DM_AUTH_VERIFY_ACCESS_TOKEN is false while the tools relay is on`) ;
+   > et si le relais est allumé à chaud depuis l'admin sur un DM déjà démarré ainsi, chaque appel
+   > de `/tools/v1` rend `503 unavailable`, sans appel amont. Hors production, seul un
+   > avertissement est écrit au démarrage : les essais locaux restent possibles.
+   >
+   > **Audience.** `DM_AUTH_AUDIENCE` (à défaut `KEYCLOAK_CLIENT_ID`) est l'audience attendue du
+   > jeton de la personne ; elle s'applique aux appels du relais comme à l'enrôlement. Vide (et
+   > `KEYCLOAK_CLIENT_ID` vide) : pas de contrôle d'audience. Un jeton sans cette audience : `401`.
 2. **Il applique les bornes du service** : chemin hors des préfixes de `paths` → `404` ; verbe hors
    de `methods` → `405` (avec `Allow`) ; corps au-delà de `max_body_mb` → `413` ; débit par
    personne et par service (`DM_TOOLS_RATE_PER_MINUTE`) → `429`.
@@ -189,6 +199,24 @@ Une entrée mal formée est **écartée entièrement** avec un avertissement dan
 **Le secret n'est jamais dans le registre** : `secret_env` est le *nom* d'une variable
 d'environnement du pod (secret Kubernetes, `api.extraEnv` du chart). Variable absente ou vide :
 `503`, aucun appel amont, et une ligne d'erreur qui nomme la variable dans le journal du DM.
+
+**Ce nom doit figurer dans `DM_TOOLS_SECRET_ENVS`** (liste de noms séparés par des virgules, par
+exemple `ELOIGNEMENT_CLIENT_SECRET,ASYNC_API_KEY_ELOIGNEMENT`). Le registre se modifie à chaud
+depuis l'admin : sans cette borne, une entrée pourrait désigner n'importe quelle variable du
+processus (le mot de passe de la base, la clé de signature…) et l'envoyer à l'amont de son choix.
+Un service dont le `secret_env` n'y figure pas est **refusé au chargement du registre**
+(`tools registry: service … refusé, la variable … n'est pas dans DM_TOOLS_SECRET_ENVS`) : ni
+annoncé, ni appelable (`404`). La comparaison est exacte, sans joker.
+
+- **Liste vide ou absente : aucun `secret_env` n'est admis**, donc aucun passthrough n'est servi,
+  en production comme ailleurs. Une seule règle partout : un essai local qui marche sans la liste
+  et une production qui refuse seraient une surprise au pire moment. Le protocole passthrough
+  n'ayant jamais été déployé sans cette liste, aucun déploiement existant n'est à migrer ; un
+  poste d'essai qui déclarait déjà un passthrough doit ajouter la variable. Les services `rest`
+  et `mcp` ne sont pas concernés (ils n'ont pas de secret de service).
+- **Elle ne se règle pas depuis l'admin** (absente de l'onglet Config) : elle borne ce que l'admin
+  peut faire. Elle se pose au déploiement (`config.tools.secretEnvs` du chart, ConfigMap) et se
+  change par un redéploiement. Elle ne contient que des noms, jamais de valeur.
 
 ### Suivre un téléchargement présigné
 
@@ -271,10 +299,11 @@ de leur amont :
 | `DM_TOOLS_RATE_PER_MINUTE` | Appels **par personne et par service** par minute (défaut 60, `0` = sans limite). Compteur mémoire par pod : approximatif en multi-réplicas, suffisant pour une protection ; le `Retry-After` de l'amont est respecté en plus. |
 | `DM_TOOLS_DEFAULT_TIMEOUT_SECONDS` | Délai amont par défaut (15 s). Un amont lent rend `unavailable` dans ce délai, sans bloquer les autres services. |
 | `DM_TOOLS_MAX_RESPONSE_KB` | Borne de réponse par défaut (256 Ko). |
+| `DM_TOOLS_SECRET_ENVS` | Noms des variables d'environnement qu'un service passthrough peut désigner par `secret_env` (CSV, défaut vide = aucune). Variable de déploiement, **pas réglable à chaud**. Voir [Entrée de registre](#entrée-de-registre). |
 
 Dans le chart Helm, ces variables se posent par `api.extraEnv` et `llmProxy.extraEnv` (le relais vit
 dans les pods API, et dans les pods `llm` s'ils existent, comme le proxy LLM), ou à chaud depuis
-l'admin. Le registre est une chaîne JSON : dans `values.yaml`, un bloc `|-`.
+l'admin ; `DM_TOOLS_SECRET_ENVS` a sa valeur dédiée, `config.tools.secretEnvs`. Le registre est une chaîne JSON : dans `values.yaml`, un bloc `|-`.
 
 ## Ce que voit le plugin — `GET /config/{device}/config.json`
 

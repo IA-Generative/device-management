@@ -37,7 +37,8 @@ Règles :
   en `passthrough`, seuls les préfixes de `paths` et les verbes de `methods` passent ;
 - un service `passthrough` déclare son authentification amont (`auth.kind` : `client_credentials`,
   `static` ou `header`) ; le secret n'est jamais dans le registre, seulement le NOM de la
-  variable d'environnement qui le porte (`secret_env`) ;
+  variable d'environnement qui le porte (`secret_env`), et ce nom doit figurer dans
+  DM_TOOLS_SECRET_ENVS (variable du déploiement), sinon le service est refusé ;
 - un service MCP doit être authentifié (`auth` vaut `bearer`, défaut) : `auth: none` le rejette ;
 - `identity` : `passthrough` (le jeton de la personne est transmis tel quel) ; `exchange`
   (échange de jeton Keycloak) est accepté dans le registre mais pas encore servi : le service
@@ -211,6 +212,18 @@ def _parse_outil(service_id: str, name: str, brut, protocol: str) -> Outil | Non
     )
 
 
+def secrets_autorises() -> frozenset[str]:
+    """Noms des variables d'environnement qu'un service peut désigner par `secret_env`
+    (DM_TOOLS_SECRET_ENVS, CSV). Sans cette borne, le registre, modifiable à chaud depuis
+    l'admin, pourrait envoyer à un amont n'importe quel secret du processus (celui de la
+    base, par exemple). Liste vide : aucun `secret_env` n'est admis.
+
+    Lue dans l'environnement du déploiement, pas par runtime_config : elle borne ce que
+    l'admin peut faire, elle ne se règle donc pas depuis l'admin.
+    """
+    return frozenset(nom.strip() for nom in os.getenv("DM_TOOLS_SECRET_ENVS", "").split(",") if nom.strip())
+
+
 def _parse_auth_amont(sid: str, brut) -> AuthAmont | None:
     if not isinstance(brut, dict):
         logger.warning("tools registry: service %s refusé, auth absente (objet {kind, secret_env, …} requis)", sid)
@@ -219,6 +232,10 @@ def _parse_auth_amont(sid: str, brut) -> AuthAmont | None:
     secret_env = str(brut.get("secret_env") or "").strip()
     if kind not in AUTHS_AMONT or not _NOM_VARIABLE.match(secret_env):
         logger.warning("tools registry: service %s refusé, auth.kind ou auth.secret_env invalide", sid)
+        return None
+    if secret_env not in secrets_autorises():
+        logger.warning("tools registry: service %s refusé, la variable %s n'est pas dans DM_TOOLS_SECRET_ENVS",
+                       sid, secret_env)
         return None
     token_url = str(brut.get("token_url") or "").strip()
     client_id = str(brut.get("client_id") or "").strip()

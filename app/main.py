@@ -110,6 +110,7 @@ from .services.versions import libreoffice_numeric_version as _libreoffice_numer
 from .services.versions import parse_version_tuple as _parse_version_tuple
 from .services.versions import version_nature as _version_nature
 from .settings import settings
+from .tools import registry as _tools_registry
 
 # Apply persisted runtime-config overrides to os.environ + settings BEFORE the
 # module-level constants (CORS, MAX_BODY_BYTES) and the admin auth globals capture
@@ -338,6 +339,10 @@ def validate_security_config(app_env: str | None = None) -> list[str]:
         problems.append("CORS allow_origins is '*' — set DM_ALLOW_ORIGINS to an explicit allowlist")
     if _dev_autologin_enabled():
         problems.append("DM_DEV_AUTOLOGIN is enabled outside development")
+    if not settings.auth_verify_access_token and _tools_registry.enabled():
+        # Sans vérification, le jeton de la personne est seulement décodé : un poste enrôlé
+        # pourrait en fabriquer un et appeler un amont du relais sous l'identité de son choix.
+        problems.append("DM_AUTH_VERIFY_ACCESS_TOKEN is false while the tools relay is on (DM_TOOLS_ENABLED)")
 
     if problems:
         log = logger.critical if prod_like else logger.warning
@@ -6277,9 +6282,17 @@ if _RUNTIME_MODE in ("api", "all", "llm"):
     # helpers injectés ; le jeton de la personne est vérifié par _verify_access_token.
     from .tools.router import build_router as _build_tools_router
 
+    def _verify_access_token_for_tools(token: str) -> dict:
+        # Le garde-fou de démarrage (validate_security_config) ne voit pas un relais allumé à
+        # chaud par l'admin : en production, sans vérification du jeton, le relais ne sert pas.
+        if not settings.auth_verify_access_token and (settings.app_env or "").strip().lower() in _PROD_LIKE_ENVS:
+            logger.error("tools: appel refusé, DM_AUTH_VERIFY_ACCESS_TOKEN est à false en production")
+            raise HTTPException(status_code=503, detail="Access token verification is disabled.")
+        return _verify_access_token(token)
+
     app.include_router(_build_tools_router(
         relay_auth=_relay_auth_from_request,
-        verify_access_token=_verify_access_token,
+        verify_access_token=_verify_access_token_for_tools,
     ))
 
 
