@@ -26,6 +26,12 @@ directement sous son nom à la racine du registre :
                               "secret_env": "ELOIGNEMENT_CLIENT_SECRET"},
                      "agent_header": "X-Agent-Email"}}
 
+Option `follow` d'un passthrough : sur les chemins listés, le DM va chercher lui-même le
+fichier dont l'amont rend l'adresse (téléchargement présigné), et rend son contenu :
+
+    "follow": {"paths": ["/storage/presigned-download"], "url_field": "url",
+               "hosts": ["s3.exemple"], "max_mb": 20}
+
 Règles :
 - liste blanche stricte : seuls les outils déclarés dans `tools` passent (`rest`, `mcp`) ;
   en `passthrough`, seuls les préfixes de `paths` et les verbes de `methods` passent ;
@@ -60,6 +66,9 @@ _NOM_OUTIL = re.compile(r"^[a-zA-Z0-9_-]{1,40}$")
 _NOM_SERVICE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
 _NOM_EN_TETE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 _NOM_VARIABLE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_NOM_CHAMP = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Hôte de stockage admis par `follow.hosts` : un nom exact, port facultatif, aucun joker.
+_HOTE = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?$")
 
 DEFAUT_TIMEOUT_S = 15
 DEFAUT_MAX_RESPONSE_KB = 256
@@ -67,6 +76,7 @@ PLAFOND_TIMEOUT_S = 180
 PLAFOND_MAX_RESPONSE_KB = 4096
 DEFAUT_MAX_BODY_MB = 10
 PLAFOND_MAX_BODY_MB = 100
+DEFAUT_FOLLOW_MAX_MB = 20
 
 
 @dataclass(frozen=True)
@@ -98,6 +108,20 @@ class AuthAmont:
 
 
 @dataclass(frozen=True)
+class Suivi:
+    """Option `follow` d'un service passthrough : sur ces chemins, l'amont rend l'adresse d'un
+    fichier (champ `url_field` d'une réponse JSON) et c'est le DM qui va le chercher."""
+    paths: tuple[str, ...]    # chemins exacts (pas des préfixes), appelés en POST
+    url_field: str
+    hosts: tuple[str, ...]    # hôtes de stockage admis, comparaison exacte (`hôte` ou `hôte:port`)
+    max_mb: int = DEFAUT_FOLLOW_MAX_MB
+
+    @property
+    def max_bytes(self) -> int:
+        return int(self.max_mb) * 1024 * 1024
+
+
+@dataclass(frozen=True)
 class Service:
     id: str
     protocol: str
@@ -115,6 +139,7 @@ class Service:
     max_body_mb: int = DEFAUT_MAX_BODY_MB
     auth_amont: AuthAmont | None = None
     agent_header: str = ""              # en-tête qui porte l'e-mail de la personne
+    follow: Suivi | None = None         # téléchargement présigné suivi par le DM
 
     def outil(self, name: str) -> Outil | None:
         return self.tools.get(name)
@@ -208,6 +233,30 @@ def _parse_auth_amont(sid: str, brut) -> AuthAmont | None:
                      header_name=header_name)
 
 
+def _parse_follow(sid: str, brut) -> Suivi | None:
+    """Option `follow`, ou None si elle est mal formée (le service est alors refusé : un
+    suivi à moitié déclaré ne doit pas se transformer en passthrough ordinaire)."""
+    if not isinstance(brut, dict):
+        logger.warning("tools registry: service %s refusé, follow doit être un objet", sid)
+        return None
+    paths = brut.get("paths")
+    hosts = brut.get("hosts")
+    url_field = str(brut.get("url_field") or "url").strip()
+    if (not isinstance(paths, list) or not paths
+            or not all(isinstance(p, str) and p.startswith("/") and ".." not in p for p in paths)):
+        logger.warning("tools registry: service %s refusé, follow.paths doit lister des chemins commençant par /", sid)
+        return None
+    if not isinstance(hosts, list) or not hosts or not all(isinstance(h, str) and _HOTE.match(h) for h in hosts):
+        logger.warning("tools registry: service %s refusé, follow.hosts doit lister des hôtes exacts "
+                       "(minuscules, port facultatif, pas de joker)", sid)
+        return None
+    if not _NOM_CHAMP.match(url_field):
+        logger.warning("tools registry: service %s refusé, follow.url_field invalide", sid)
+        return None
+    return Suivi(paths=tuple(paths), url_field=url_field, hosts=tuple(hosts),
+                 max_mb=_int_borne(brut.get("max_mb"), DEFAUT_FOLLOW_MAX_MB, PLAFOND_MAX_BODY_MB))
+
+
 def _parse_passthrough(sid: str, brut: dict) -> Service | None:
     base_url = str(brut.get("base_url") or brut.get("upstream") or "").strip().rstrip("/")
     if not base_url.startswith(("http://", "https://")):
@@ -233,6 +282,11 @@ def _parse_passthrough(sid: str, brut: dict) -> Service | None:
     if agent_header and not _NOM_EN_TETE.match(agent_header):
         logger.warning("tools registry: service %s refusé, agent_header invalide", sid)
         return None
+    follow = None
+    if brut.get("follow") is not None:
+        follow = _parse_follow(sid, brut["follow"])
+        if follow is None:
+            return None
     return Service(
         id=sid,
         protocol="passthrough",
@@ -246,6 +300,7 @@ def _parse_passthrough(sid: str, brut: dict) -> Service | None:
         max_body_mb=_int_borne(brut.get("max_body_mb"), DEFAUT_MAX_BODY_MB, PLAFOND_MAX_BODY_MB),
         auth_amont=auth_amont,
         agent_header=agent_header,
+        follow=follow,
     )
 
 

@@ -654,3 +654,226 @@ def test_jeton_forge_expire_ou_d_un_autre_emetteur_401_sans_appel_amont(monkeypa
         assert res.status_code == 401, cas
         assert res.json()["error"]["code"] == "unauthorized", cas
     assert amont.requests == []
+
+
+# ── Téléchargement présigné suivi par le DM (option `follow`) ─────────────────
+
+URL_PRESIGNEE = "https://s3.test/depot/f_abc.txt?X-Amz-Signature=signature-a-ne-pas-divulguer&X-Amz-Expires=3600"
+SERVICE_OCR_SUIVI = {
+    **SERVICE_OCR, "paths": ["/v1/", "/storage/presigned-download"],
+    "follow": {"paths": ["/storage/presigned-download"], "url_field": "url", "hosts": ["s3.test"], "max_mb": 1},
+}
+
+
+def _setup_suivi(url=URL_PRESIGNEE, stockage=None, follow=None):
+    """DM avec le service `ocr` en suivi : l'amont rend `url`, le faux stockage rend `stockage`."""
+    service = {**SERVICE_OCR_SUIVI, "follow": {**SERVICE_OCR_SUIVI["follow"], **(follow or {})}}
+    _, client, amont = _setup({"services": [service]}, {"ASYNC_API_KEY_ELOIGNEMENT": "cle-async-api"})
+
+    def reponse(request):
+        if request.url.host == "ocr.test":
+            return httpx.Response(200, json={"file_id": "f_abc", "url": url, "expires_in_seconds": 3600})
+        if stockage is not None:
+            return stockage(request)
+        return httpx.Response(200, content=b"texte lu, page 1\n", headers={
+            "Content-Type": "text/plain; charset=utf-8", "ETag": '"abc"', "Set-Cookie": "s3=1", "Server": "stockage"})
+
+    amont.reponse = reponse
+    return client, amont
+
+
+def _telecharger(client):
+    return client.post("/tools/v1/ocr/storage/presigned-download", headers=_entetes(client), json={"file_id": "f_abc"})
+
+
+def test_suivi_rend_le_contenu_du_fichier_au_lieu_de_l_adresse():
+    client, amont = _setup_suivi()
+    res = _telecharger(client)
+    assert res.status_code == 200, res.text
+    assert res.content == b"texte lu, page 1\n"
+    assert res.headers["content-type"] == "text/plain; charset=utf-8"
+    for nom in ("etag", "set-cookie", "server", "location"):
+        assert nom not in res.headers, nom
+    vers_amont, vers_stockage = amont.appels
+    assert (vers_amont.method, vers_amont.url.path) == ("POST", "/storage/presigned-download")
+    assert json.loads(vers_amont.content) == {"file_id": "f_abc"}
+    assert vers_stockage.method == "GET" and str(vers_stockage.url) == URL_PRESIGNEE
+    assert vers_stockage.content == b""
+
+
+def test_suivi_n_envoie_au_stockage_aucune_identite_du_poste_ni_du_dm():
+    client, amont = _setup_suivi()
+    h = {**_entetes(client), "Cookie": "session=abc", "X-Trace": "t-1"}
+    assert client.post("/tools/v1/ocr/storage/presigned-download", headers=h, json={"file_id": "f_abc"}).status_code == 200
+    vers_stockage = amont.appels[-1]
+    assert set(vers_stockage.headers) <= {"host", "accept", "accept-encoding", "user-agent", "connection"}
+    for valeur in vers_stockage.headers.values():
+        assert "cle-async-api" not in valeur and "Bearer" not in valeur
+
+
+@pytest.mark.parametrize("url", [
+    "http://s3.test/depot/f_abc.txt?sig=signature-a-ne-pas-divulguer",          # pas https
+    "https://autre.test/f?sig=signature-a-ne-pas-divulguer",                    # hôte hors liste
+    "https://s3.test.autre.test/f?sig=signature-a-ne-pas-divulguer",            # hôte qui commence pareil
+    "https://sous.s3.test/f?sig=signature-a-ne-pas-divulguer",                  # sous-domaine : pas de joker implicite
+    "https://s3.test:8443/f?sig=signature-a-ne-pas-divulguer",                  # autre port
+    "https://s3.test@autre.test/f?sig=signature-a-ne-pas-divulguer",            # hôte déguisé en identifiant
+    "https://agent:secret@s3.test/f?sig=signature-a-ne-pas-divulguer",          # identifiants dans l'adresse
+    "//s3.test/f?sig=signature-a-ne-pas-divulguer",                             # sans schéma
+    "",
+    None,
+    {"href": "https://s3.test/f"},
+])
+def test_suivi_refuse_une_adresse_hors_bornes_sans_appeler_le_stockage(url, caplog):
+    import logging
+    client, amont = _setup_suivi(url=url)
+    with caplog.at_level(logging.DEBUG):
+        res = _telecharger(client)
+    assert res.status_code == 502, res.text
+    assert res.json()["error"]["code"] == "unavailable"
+    assert [r.url.host for r in amont.appels] == ["ocr.test"]
+    for interne in ("signature-a-ne-pas-divulguer", "autre.test", "secret"):
+        assert interne not in res.text and interne not in caplog.text, interne
+
+
+def test_suivi_admet_un_port_declare_dans_hosts():
+    client, amont = _setup_suivi(url="https://s3.test:8443/f?sig=x", follow={"hosts": ["s3.test:8443"]})
+    assert _telecharger(client).status_code == 200
+    assert amont.appels[-1].url.port == 8443
+
+
+def test_suivi_reponse_amont_sans_le_champ_ou_illisible_502():
+    client, amont = _setup_suivi()
+    for reponse in (httpx.Response(200, json={"file_id": "f_abc"}), httpx.Response(200, content=b"<html>"),
+                    httpx.Response(200, json=["https://s3.test/f"])):
+        amont.reponse = lambda request, r=reponse: r
+        res = _telecharger(client)
+        assert res.status_code == 502 and res.json()["error"]["code"] == "unavailable"
+    assert all(r.url.host == "ocr.test" for r in amont.appels)
+
+
+def test_suivi_erreur_de_l_amont_rendue_telle_quelle_sans_appel_au_stockage():
+    client, amont = _setup_suivi()
+    amont.reponse = lambda request: httpx.Response(404, json={"detail": "fichier inconnu"})
+    res = _telecharger(client)
+    assert res.status_code == 404 and res.json() == {"detail": "fichier inconnu"}
+    assert len(amont.appels) == 1
+
+
+@pytest.mark.parametrize("statut", [302, 403, 404, 500])
+def test_suivi_redirection_ou_refus_du_stockage_502_sans_suivre_ni_recopier(statut):
+    refus = httpx.Response(statut, headers={"Location": "https://interne.test/metadonnees"},
+                           content=b"<Error><Code>AccessDenied</Code><Key>depot/f_abc.txt</Key></Error>")
+    client, amont = _setup_suivi(stockage=lambda request: refus)
+    res = _telecharger(client)
+    assert res.status_code == 502, res.text
+    assert res.json()["error"]["code"] == "unavailable"
+    assert "location" not in res.headers
+    for interne in ("interne.test", "AccessDenied", "depot/f_abc", "s3.test", "signature-a-ne-pas-divulguer"):
+        assert interne not in res.text, interne
+    assert [r.url.host for r in amont.appels] == ["ocr.test", "s3.test"]   # la redirection n'est pas suivie
+
+
+def test_suivi_fichier_au_dela_de_max_mb_502():
+    client, _ = _setup_suivi(stockage=lambda request: httpx.Response(200, content=b"x" * (1024 * 1024 + 1)))
+    res = _telecharger(client)
+    assert res.status_code == 502
+    assert res.json()["error"] == {"code": "unavailable", "message": "fichier de ocr trop volumineux"}
+
+
+def test_suivi_fichier_plus_gros_que_max_body_mb_passe_si_max_mb_le_permet():
+    """`follow.max_mb` borne le fichier ; `max_body_mb` ne borne que l'échange avec l'amont."""
+    fichier = b"x" * (1024 * 1024 + 1)
+    client, _ = _setup_suivi(stockage=lambda request: httpx.Response(200, content=fichier), follow={"max_mb": 2})
+    res = _telecharger(client)
+    assert res.status_code == 200 and res.content == fichier
+    assert res.headers["content-type"] == "application/octet-stream"
+
+
+@pytest.mark.parametrize("panne, statut", [(httpx.ConnectError, 502), (httpx.ReadTimeout, 504)])
+def test_suivi_panne_du_stockage_502_ou_504_sans_l_adresse(panne, statut, caplog):
+    import logging
+
+    def stockage(request):
+        raise panne(f"échec sur {request.url}", request=request)
+
+    client, _ = _setup_suivi(stockage=stockage)
+    with caplog.at_level(logging.DEBUG):
+        res = _telecharger(client)
+    assert res.status_code == statut, res.text
+    assert res.json()["error"]["code"] == "unavailable"
+    for interne in ("signature-a-ne-pas-divulguer", "s3.test", "X-Amz"):
+        assert interne not in res.text and interne not in caplog.text, interne
+
+
+def test_suivi_delai_total_depasse_504():
+    """Le délai du service borne tout le téléchargement, pas seulement l'attente entre deux morceaux."""
+    import anyio
+
+    async def stockage_lent(request):
+        if request.url.host == "ocr.test":
+            return httpx.Response(200, json={"url": URL_PRESIGNEE})
+        await anyio.sleep(5)
+        return httpx.Response(200, content=b"trop tard")
+
+    _, client, _ = _setup({"services": [{**SERVICE_OCR_SUIVI, "timeout_s": 1}]},
+                          {"ASYNC_API_KEY_ELOIGNEMENT": "cle-async-api"})
+    from app.tools import http_client
+    http_client.set_transport_for_tests(httpx.MockTransport(stockage_lent))
+    res = _telecharger(client)
+    assert res.status_code == 504 and res.json()["error"]["code"] == "unavailable"
+
+
+def test_suivi_adresse_absente_du_journal_meme_en_succes(caplog):
+    import logging
+    client, _ = _setup_suivi()
+    with caplog.at_level(logging.DEBUG):
+        assert _telecharger(client).status_code == 200
+    for interne in ("signature-a-ne-pas-divulguer", "X-Amz", "s3.test"):
+        assert interne not in caplog.text, interne
+    assert '"tool": "POST /storage/presigned-download"' in caplog.text
+
+
+def test_suivi_seulement_en_post_et_sur_les_chemins_declares():
+    client, amont = _setup_suivi()
+    h = _entetes(client)
+    # Même réponse de l'amont, mais hors du chemin déclaré ou en GET : rendue telle quelle.
+    assert client.post("/tools/v1/ocr/v1/services/moteur/tasks", headers=h, json={}).json()["url"] == URL_PRESIGNEE
+    assert client.get("/tools/v1/ocr/storage/presigned-download", headers=h).json()["url"] == URL_PRESIGNEE
+    assert all(r.url.host == "ocr.test" for r in amont.appels)
+
+
+def test_sans_follow_la_reponse_de_l_amont_est_rendue_telle_quelle():
+    service = {k: v for k, v in SERVICE_OCR_SUIVI.items() if k != "follow"}
+    _, client, amont = _setup({"services": [service]}, {"ASYNC_API_KEY_ELOIGNEMENT": "cle-async-api"})
+    amont.reponse = lambda request: httpx.Response(200, json={"file_id": "f_abc", "url": URL_PRESIGNEE})
+    res = _telecharger(client)
+    assert res.status_code == 200 and res.json()["url"] == URL_PRESIGNEE
+    assert len(amont.appels) == 1
+
+
+def test_registre_lit_l_option_follow_avec_ses_defauts():
+    from app.tools.registry import parse_registry
+    service = {**SERVICE_OCR_SUIVI, "follow": {"paths": ["/storage/presigned-download"], "hosts": ["s3.test"]}}
+    f = parse_registry(json.dumps({"services": [service]}))[0].follow
+    assert (f.paths, f.url_field, f.hosts, f.max_mb) == (("/storage/presigned-download",), "url", ("s3.test",), 20)
+    service["follow"]["max_mb"] = 5000
+    assert parse_registry(json.dumps({"services": [service]}))[0].follow.max_mb == 100
+
+
+@pytest.mark.parametrize("defaut", [
+    "oui",
+    {"paths": [], "hosts": ["s3.test"]},
+    {"paths": ["storage"], "hosts": ["s3.test"]},
+    {"paths": ["/storage"]},
+    {"paths": ["/storage"], "hosts": []},
+    {"paths": ["/storage"], "hosts": ["*.s3.test"]},
+    {"paths": ["/storage"], "hosts": ["*"]},
+    {"paths": ["/storage"], "hosts": ["https://s3.test"]},
+    {"paths": ["/storage"], "hosts": ["s3.test/depot"]},
+    {"paths": ["/storage"], "hosts": ["S3.TEST"]},
+    {"paths": ["/storage"], "hosts": ["s3.test"], "url_field": "a.b"},
+])
+def test_registre_refuse_un_service_dont_le_follow_est_mal_forme(defaut):
+    from app.tools.registry import parse_registry
+    assert parse_registry(json.dumps({"services": [{**SERVICE_OCR_SUIVI, "follow": defaut}]})) == []

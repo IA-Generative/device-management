@@ -174,6 +174,7 @@ Pour un essai local sans serveur de jetons, `eloignement` peut porter
 | `timeout_s` | délai de réponse de l'amont (défaut `DM_TOOLS_DEFAULT_TIMEOUT_SECONDS`, plafond 180) |
 | `auth` | **requis** : un service sans authentification amont ne s'inscrit pas. Voir ci-dessous. |
 | `agent_header` | nom de l'en-tête qui reçoit l'adresse de la personne (facultatif) |
+| `follow` | téléchargement présigné suivi par le DM (facultatif). Voir [Suivre un téléchargement présigné](#suivre-un-téléchargement-présigné). |
 | `label`, `profiles`, `health_path` | comme pour les autres protocoles |
 
 Une entrée mal formée est **écartée entièrement** avec un avertissement dans le journal du DM
@@ -188,6 +189,55 @@ Une entrée mal formée est **écartée entièrement** avec un avertissement dan
 **Le secret n'est jamais dans le registre** : `secret_env` est le *nom* d'une variable
 d'environnement du pod (secret Kubernetes, `api.extraEnv` du chart). Variable absente ou vide :
 `503`, aucun appel amont, et une ligne d'erreur qui nomme la variable dans le journal du DM.
+
+### Suivre un téléchargement présigné
+
+Certaines applications ne rendent pas un long fichier dans leur réponse : elles rendent son
+**adresse**, signée et valable peu de temps, sur un stockage (S3). L'async-api fait ainsi pour le
+texte d'un long document : `POST /storage/presigned-download` avec `{"file_id": "f_…"}` rend
+`{"file_id": "…", "url": "<adresse présignée>", "expires_in_seconds": 3600}`. Le plugin ne doit
+connaître aucune adresse en dehors du DM : avec l'option `follow`, **le DM va chercher le fichier
+lui-même** et rend son contenu à la place du JSON.
+
+```json
+{"id": "ocr", "label": "Lecture de documents", "protocol": "passthrough",
+ "base_url": "https://ocr.exemple",
+ "paths": ["/v1/", "/storage/presigned-download"], "methods": ["GET", "POST"],
+ "max_body_mb": 60, "timeout_s": 120,
+ "auth": {"kind": "header", "header_name": "apikey", "secret_env": "ASYNC_API_KEY_ELOIGNEMENT"},
+ "follow": {"paths": ["/storage/presigned-download"], "url_field": "url",
+            "hosts": ["s3.exemple"], "max_mb": 20}}
+```
+
+| Champ de `follow` | Sens |
+|---|---|
+| `paths` | **requis.** Chemins **exacts** (pas des préfixes) sur lesquels le DM suit l'adresse rendue. Ils doivent aussi être ouverts par `paths` du service, et `POST` par `methods`. |
+| `hosts` | **requis.** Hôtes de stockage admis, en minuscules, comparés **exactement** à l'hôte de l'adresse : ni joker ni sous-domaine implicite. Un port autre que 443 s'écrit `hôte:port`. |
+| `url_field` | nom du champ JSON qui porte l'adresse (défaut `url`) |
+| `max_mb` | taille maximale du fichier rendu (défaut 20, plafond 100), indépendante de `max_body_mb` |
+
+Un `follow` mal formé fait **refuser le service entier** (il ne redevient pas un passthrough
+ordinaire, qui rendrait l'adresse au poste).
+
+**Vu du plugin** : `POST {dm}/tools/v1/ocr/storage/presigned-download`, corps `{"file_id": "f_…"}`.
+
+| Réponse | Cas |
+|---|---|
+| `200`, corps = **le contenu du fichier**, `Content-Type` du stockage (`application/octet-stream` s'il n'en donne pas), aucun autre en-tête du stockage | l'amont a répondu `2xx` et le stockage `200` |
+| le code et le corps **de l'amont**, tels quels | l'amont n'a pas répondu `2xx` (fichier inconnu, clé refusée…) : rien n'est suivi |
+| `502 unavailable` | réponse `2xx` de l'amont sans adresse exploitable (pas du JSON, champ absent) ; adresse refusée (pas en `https`, hôte hors de `hosts`, identifiants dans l'adresse) ; stockage injoignable ou qui répond autre chose que `200` (une redirection **n'est pas suivie**) ; fichier au-delà de `max_mb` (il n'est pas coupé : il est refusé) |
+| `504 unavailable` | le stockage n'a pas rendu le fichier dans `timeout_s` (délai total, lecture comprise) |
+
+Les refus du DM en amont de l'appel (`401`, `403`, `404`, `405`, `413`, `429`) sont inchangés.
+Seul un `POST` sur un chemin de `follow.paths` est suivi ; tout autre appel du service reste un
+passthrough ordinaire.
+
+Garde-fous : l'appel au stockage est un `GET` **sans aucun en-tête du poste ni du DM** (ni clé de
+l'amont, ni jeton, ni cookie) ; l'adresse présignée, qui porte sa signature, **n'apparaît ni dans le
+journal ni dans une erreur**, et le corps d'un refus du stockage n'est jamais recopié. Le journal
+d'appel garde `tool` = `POST /storage/presigned-download`, et `size` = la taille du fichier rendu.
+Le journal `httpx` est tenu au niveau `WARNING` par le relais : au niveau `INFO`, il écrirait
+l'adresse complète de chaque requête sortante.
 
 ### Découverte
 
@@ -205,7 +255,8 @@ de leur amont :
 ### Limites connues
 
 - Le corps de la requête et celui de la réponse sont **gardés en mémoire** le temps de l'appel
-  (pas de flux) : `max_body_mb` borne donc aussi la mémoire prise par appel. À dimensionner avec le
+  (pas de flux) : `max_body_mb` (et `follow.max_mb` pour un fichier suivi) borne donc aussi la
+  mémoire prise par appel. À dimensionner avec le
   nombre d'appels simultanés ; l'ingress du DM doit par ailleurs accepter cette taille.
 - Pas de réponse en flux (SSE) ni de WebSocket.
 - Le cache des jetons de service est local au pod.

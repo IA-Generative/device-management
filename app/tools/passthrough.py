@@ -10,21 +10,27 @@ En-têtes : tout ce qui identifie le poste ou la personne auprès du DM est reti
 DM pose ce que l'amont attend : son authentification (`auth.kind` du registre) et, si le
 service déclare `agent_header`, l'adresse de la personne tirée de son jeton vérifié. Un
 en-tête de ce nom envoyé par le poste ne passe jamais.
+
+Option `follow` du service : sur les chemins qu'elle liste, l'amont ne rend pas le fichier
+mais son adresse (téléchargement présigné). Le DM va alors chercher le fichier lui-même
+et rend son contenu : le poste ne connaît aucune adresse en dehors du DM.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import time
 from urllib.parse import quote
 
+import anyio
 import httpx
 from fastapi import Request, Response
 
 from . import http_client
 from .errors import ToolsError
-from .registry import Service
+from .registry import Service, Suivi
 
 logger = logging.getLogger("device-management.tools")
 
@@ -220,6 +226,9 @@ async def relayer(service: Service, request: Request, chemin: str, corps: bytes,
         raise ToolsError(502, "unavailable", f"{service.label} est injoignable") from exc
     if resp.status_code == 401 and service.auth_amont and service.auth_amont.kind == "client_credentials":
         _jetons.pop(_cle_jeton(service), None)  # jeton refusé : le prochain appel en redemande un
+    suivi = service.follow
+    if suivi and request.method == "POST" and chemin in suivi.paths and 200 <= resp.status_code < 300:
+        return await _suivre(service, suivi, contenu)
     return Response(
         content=contenu, status_code=resp.status_code,
         headers={nom: resp.headers[nom] for nom in _EN_TETES_REPONSE if nom in resp.headers},
@@ -229,11 +238,67 @@ async def relayer(service: Service, request: Request, chemin: str, corps: bytes,
 async def _lire_reponse(service: Service, resp: httpx.Response) -> bytes:
     """Corps de la réponse amont, borné comme le corps entrant (`max_body_mb`). Une réponse
     plus grosse n'est pas coupée (elle serait fausse) : elle est refusée."""
+    return await _lire_borne(resp, service.max_body_bytes, f"réponse de {service.label} trop volumineuse")
+
+
+async def _lire_borne(resp: httpx.Response, limite: int, message: str) -> bytes:
+    """Corps d'une réponse lu par morceaux ; 502 dès que la limite est dépassée."""
     morceaux: list[bytes] = []
     lu = 0
     async for morceau in resp.aiter_bytes():
         lu += len(morceau)
-        if lu > service.max_body_bytes:
-            raise ToolsError(502, "unavailable", f"réponse de {service.label} trop volumineuse")
+        if lu > limite:
+            raise ToolsError(502, "unavailable", message)
         morceaux.append(morceau)
     return b"".join(morceaux)
+
+
+def _adresse_a_suivre(suivi: Suivi, contenu: bytes) -> httpx.URL | None:
+    """Adresse du fichier rendue par l'amont, ou None si elle n'est pas à suivre : réponse
+    illisible, champ absent, autre schéma que https, identifiants dans l'adresse, hôte hors
+    de `follow.hosts` (comparaison exacte)."""
+    try:
+        obj = json.loads(contenu)
+        url = httpx.URL(obj[suivi.url_field])
+    except (ValueError, KeyError, TypeError, httpx.InvalidURL):
+        return None
+    hote = url.host if url.port is None else f"{url.host}:{url.port}"
+    if url.scheme != "https" or url.userinfo or hote not in suivi.hosts:
+        return None
+    return url
+
+
+async def _suivre(service: Service, suivi: Suivi, contenu: bytes) -> Response:
+    """Va chercher le fichier dont l'amont vient de rendre l'adresse, et rend son contenu.
+
+    L'adresse est un secret à durée courte (elle porte sa signature) : elle ne sort ni dans
+    le journal ni dans une erreur. L'appel au stockage ne porte aucun en-tête du poste ni
+    du DM, et ne suit aucune redirection (elle ferait sortir de `follow.hosts`).
+    """
+    url = _adresse_a_suivre(suivi, contenu)
+    if url is None:
+        logger.warning("tools: %s, adresse de téléchargement absente ou refusée (https et follow.hosts)", service.id)
+        raise ToolsError(502, "unavailable", f"{service.label} a rendu une adresse de téléchargement refusée")
+    sortante = httpx.Request(
+        "GET", url, headers={"accept-encoding": "identity"},
+        extensions={"timeout": http_client.timeout(float(service.timeout_s)).as_dict()},
+    )
+    try:
+        # Délai total, lecture comprise : le délai httpx ne borne que l'attente entre deux morceaux.
+        with anyio.fail_after(service.timeout_s):
+            resp = await http_client.get_async_client().send(sortante, stream=True, follow_redirects=False)
+            try:
+                if resp.status_code != 200:
+                    # Le corps d'un refus du stockage n'est pas recopié : il peut citer l'adresse.
+                    logger.warning("tools: %s, stockage en refus (HTTP %s)", service.id, resp.status_code)
+                    raise ToolsError(502, "unavailable", f"le fichier de {service.label} n'a pas pu être téléchargé")
+                fichier = await _lire_borne(resp, suivi.max_bytes, f"fichier de {service.label} trop volumineux")
+            finally:
+                await resp.aclose()
+    except (httpx.TimeoutException, TimeoutError) as exc:
+        raise ToolsError(504, "unavailable", f"le stockage de {service.label} n'a pas répondu dans le délai") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("tools: %s, stockage injoignable: %s", service.id, exc.__class__.__name__)
+        raise ToolsError(502, "unavailable", f"le stockage de {service.label} est injoignable") from exc
+    return Response(content=fichier, status_code=200,
+                    headers={"content-type": resp.headers.get("content-type", "application/octet-stream")})
