@@ -107,6 +107,43 @@ l'admin. Le registre est une chaîne JSON : dans `values.yaml`, un bloc `|-`.
 est servi à ce profil, sinon `""`. Le plugin lit cette seule clé, appelle `GET <toolsEndpoint>` pour
 découvrir, puis `POST <toolsEndpoint>/{service}/{outil}`.
 
+### Clés du plugin Éloignement
+
+Le plugin lit aussi, toutes facultatives : `eloignementRecherches` (liste `{id, libelle, url}`,
+l'`url` portant `{q}`, `{nom}`, `{prenom}`, `{naissance}` que le plugin remplace),
+`eloignementOcrModele`, `eloignementOcrConsigne`, `eloignementOcrService`,
+`eloignementClassementConsigne`, `eloignementDecoupeService`, `eloignementDecoupeSeuilPages`,
+`eloignementInterfaceUrl`.
+
+**Le DM n'en calcule ni n'en porte aucune** : il sert ce que le gabarit du plugin déclare, comme
+toute autre clé. Elles se posent donc dans le gabarit, par profil (`dm-config.json` du paquet,
+sections `default` et par profil, ou fichier `config/<plugin>/config.<profil>.json`), ou par
+`DM_CONFIG_OVERRIDES` pour tout un déploiement. Absentes du gabarit, elles sont absentes de la
+réponse et la fonction reste éteinte côté plugin. Un repère `${{PUBLIC_BASE_URL}}` y est résolu ;
+les accolades simples (`{q}`) sont laissées au plugin.
+
+Exemple pour un profil d'essai, où la recherche pointe vers la page de simulation du DM (aucune
+valeur réelle : les consignes, le modèle et l'adresse de l'interface sont à fournir par le métier) :
+
+```json
+{"configVersion": 1,
+ "default": {},
+ "int": {
+   "eloignementRecherches": [
+     {"id": "simulation", "libelle": "Système simulé",
+      "url": "${{PUBLIC_BASE_URL}}/simulation/si/simulation?q={q}&nom={nom}&prenom={prenom}&naissance={naissance}"}
+   ],
+   "eloignementOcrService": "ocr",
+   "eloignementDecoupeSeuilPages": 20
+ }}
+```
+
+`GET /simulation/si/{systeme}` est une page statique qui affiche la requête reçue et trois faux
+résultats marqués « simulation, données fictives ». Elle n'est servie que si
+`DM_SIMULATION_SI_ENABLED` est vrai (défaut : faux, la route répond alors 404) ; elle n'a pas sa
+place sur un DM de production. La recherche de l'agent voyage dans l'adresse : elle apparaît donc
+dans le journal d'accès du DM, comme elle apparaîtra dans celui de tout système réel appelé ainsi.
+
 ## Journal et diagnostic
 
 - Une ligne JSON par appel sur le logger `dm-tools-audit` : `service`, `tool`, `acts`, `status`,
