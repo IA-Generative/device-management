@@ -194,6 +194,12 @@ from .simulation import router as _simulation_router  # noqa: E402
 
 app.include_router(_simulation_router)
 
+# ---- Complément Word (IAssistant-Word) : inerte tant que DM_ADDIN_WORD_DIR n'est pas posé.
+from .addins import PREFIX as _ADDIN_WORD_PREFIX  # noqa: E402
+from .addins import router as _addins_router  # noqa: E402
+
+app.include_router(_addins_router)
+
 # ---- Admin UI router (Jinja2 + HTMX, no external JS build)
 if _RUNTIME_MODE in ("admin", "all"):
     from fastapi.staticfiles import StaticFiles
@@ -295,7 +301,9 @@ async def security_headers(request: Request, call_next):
         if response.status_code < 400 and any(path.startswith(p) for p in _CACHE_INVALIDATION_PATH_PREFIXES):
             _config_cache_clear()
 
-    response.headers["X-Frame-Options"] = "DENY"
+    # Word sur le web charge le volet du complément dans une iframe : pas de DENY sous son chemin.
+    if not request.url.path.startswith(_ADDIN_WORD_PREFIX):
+        response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     if request.url.path.startswith("/admin"):
