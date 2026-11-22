@@ -74,8 +74,15 @@ def render_manifest(template: str, profil: str | None) -> str:
     )
 
 
+def manifest_download_url() -> str:
+    """Lien du catalogue : le manifeste du profil de ce DM (`DM_ADDIN_WORD_PROFILE`), servi en pièce jointe."""
+    profil = str(runtime_config.cfg("DM_ADDIN_WORD_PROFILE", "") or "").strip()
+    query = f"profil={quote(profil)}&telecharger=1" if _PROFIL.fullmatch(profil) else "telecharger=1"
+    return f"{PREFIX}manifest.xml?{query}"
+
+
 @router.get("/addins/word/manifest.xml", include_in_schema=False)
-def word_manifest(profil: str | None = Query(default=None)) -> Response:
+def word_manifest(profil: str | None = Query(default=None), telecharger: bool = Query(default=False)) -> Response:
     if profil is not None and not _PROFIL.fullmatch(profil):
         raise HTTPException(status_code=400, detail="Profil invalide.")
     path = safe_path_join(_addin_dir(), "manifest.xml")
@@ -83,7 +90,11 @@ def word_manifest(profil: str | None = Query(default=None)) -> Response:
         raise HTTPException(status_code=404, detail="Fichier introuvable.")
     with open(path, encoding="utf-8") as handle:
         content = render_manifest(handle.read(), profil)
-    return Response(content, media_type=_TYPES[".xml"], headers={"Cache-Control": "no-cache"})
+    headers = {"Cache-Control": "no-cache"}
+    if telecharger:
+        # Depuis le catalogue : le navigateur enregistre le fichier au lieu de l'afficher.
+        headers["Content-Disposition"] = 'attachment; filename="eloignement-word.xml"'
+    return Response(content, media_type=_TYPES[".xml"], headers=headers)
 
 
 @router.get("/addins/word/{fichier:path}", include_in_schema=False)

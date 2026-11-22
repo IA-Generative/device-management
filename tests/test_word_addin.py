@@ -116,3 +116,24 @@ def test_client_mirai_word_configure_et_enrole(tmp_path):
     complet = client.get("/config/mirai-word/config.json?profile=int", headers={**entetes, **paire}).json()
     assert complet["features"]["eloignement"] is True
     assert complet["meta"]["device_name"] == "mirai-word"
+
+
+def test_le_catalogue_telecharge_le_manifeste_du_profil_de_ce_dm(client, monkeypatch):
+    monkeypatch.setenv("DM_ADDIN_WORD_PROFILE", "int")
+    from app.addins import manifest_download_url
+
+    url = manifest_download_url()
+    res = client.get(url)
+
+    assert url == "/addins/word/manifest.xml?profil=int&telecharger=1"
+    assert res.status_code == 200
+    assert res.headers["content-disposition"] == 'attachment; filename="eloignement-word.xml"'
+    assert "volet.html?profil=int" in res.text
+    assert "content-disposition" not in client.get("/addins/word/manifest.xml").headers
+
+
+def test_sans_profil_le_catalogue_donne_le_manifeste_de_production(monkeypatch):
+    monkeypatch.delenv("DM_ADDIN_WORD_PROFILE", raising=False)
+    from app.addins import manifest_download_url
+
+    assert manifest_download_url() == "/addins/word/manifest.xml?telecharger=1"
