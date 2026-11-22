@@ -90,6 +90,8 @@
         Version generale {{ plugin.latest_version }}
       </a>
       {% endif %}
+    {% elif word_manifest_url %}
+      <a href="{{ word_manifest_url }}" class="fr-btn">Télécharger le complément Word (.xml)</a>
     {% elif plugin.latest_version %}
       <a href="/catalog/{{ plugin.slug }}/download" class="fr-btn">
         Telecharger v{{ plugin.latest_version }}{% if file_ext %} (.{{ file_ext }}){% endif %}
@@ -115,6 +117,39 @@
             <li><p class="fr-tag">{{ feat }}</p></li>
           {% endfor %}
         </ul>
+      </div>
+      {% endif %}
+
+      {# ── Installation d'un complément Word (pas de paquet : un manifeste à déclarer à Word) ── #}
+      {% if word_manifest_url %}
+      <div style="margin-bottom:2rem;" id="installation-word">
+        <h2>Installer le complément dans Word</h2>
+        <p>Le fichier téléchargé (<code>eloignement-word.xml</code>) indique à Word où trouver le complément ;
+          tout le reste est servi par ce site. Word doit être fermé pendant l'installation.</p>
+        <h3 class="fr-h6">Windows</h3>
+        <ol>
+          <li>Enregistrez le fichier dans votre dossier <code>Documents</code>, où il doit rester.</li>
+          <li>Ouvrez l'invite de commandes (touche Windows, tapez <code>cmd</code>) et collez :<br>
+            <code>reg add "HKCU\Software\Microsoft\Office\16.0\WEF\Developer" /v Eloignement /t REG_SZ /d "%USERPROFILE%\Documents\eloignement-word.xml" /f</code><br>
+            Aucun droit d'administrateur n'est nécessaire.</li>
+          <li>Ouvrez Word : le bouton <strong>Éloignement</strong> apparaît dans l'onglet Accueil.</li>
+        </ol>
+        <h3 class="fr-h6">Mac</h3>
+        <ol>
+          <li>Dans le Finder, menu <em>Aller &gt; Aller au dossier</em>, saisissez
+            <code>~/Library/Containers/com.microsoft.Word/Data/Documents/wef</code> (créez le dossier <code>wef</code> s'il n'existe pas).</li>
+          <li>Déposez-y le fichier téléchargé.</li>
+          <li>Ouvrez Word, puis un document : le bouton <strong>Éloignement</strong> apparaît dans l'onglet Accueil
+            (sinon dans <em>Insertion &gt; Compléments &gt; Mes compléments</em>).</li>
+        </ol>
+        <h3 class="fr-h6">Première utilisation</h3>
+        <p>Le volet demande une connexion MirAI : <em>Se connecter</em> ouvre la fenêtre du SSO. Ensuite,
+          <em>Nouvel acte depuis Éloignement</em> propose les modèles de votre préfecture.</p>
+        <h3 class="fr-h6">Retirer le complément</h3>
+        <p>Windows : <code>reg delete "HKCU\Software\Microsoft\Office\16.0\WEF\Developer" /v Eloignement /f</code>.
+          Mac : supprimez le fichier du dossier <code>wef</code>. Puis relancez Word.</p>
+        <p class="fr-text--sm">Pour un déploiement à tous les agents d'un service, l'installation se fait par le poste de travail
+          (stratégie de groupe sous Windows, outil de gestion des Mac) : demande à adresser au support informatique.</p>
       </div>
       {% endif %}
 

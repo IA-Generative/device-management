@@ -5957,8 +5957,11 @@ def catalog_detail(request: Request, slug: str, exp: str | None = None, v: str |
             "license": p.get("license"),
             "updated_at": updated_at,
         }
+        # Un complément Word n'a pas de paquet : le catalogue donne son manifeste et la marche à suivre.
+        from .addins import manifest_download_url
         return _catalog_templates.TemplateResponse(request, "catalog_detail.html", {
             "request": request, "plugin": plugin, "file_ext": file_ext,
+            "word_manifest_url": manifest_download_url() if device_type == "word" else None,
             "experiments": experiments,
             # Lien d'essai suivi (?exp=<tag>) : la page le dit d'emblée.
             "trial_tag": exp if experiments else None,
