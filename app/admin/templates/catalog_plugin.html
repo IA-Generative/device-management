@@ -1479,6 +1479,10 @@ async function nvSubmit(action) {
       else if (resp.status === 409 && msg && msg.code === 'signature_waivable') {
         msg = msg.message;
       }
+      // Numero deja publie par un autre plugin de meme type (issue #62) : pas de remplacement.
+      else if (resp.status === 409 && msg && msg.code === 'version_taken') {
+        msg = msg.message;
+      }
       // Meme numero de version, binaire different : confirmation explicite (issue #132).
       else if (resp.status === 409 && !nvConfirmOverwrite && confirm(msg + '\n\nRemplacer le binaire de cette version ?')) {
         nvConfirmOverwrite = true;

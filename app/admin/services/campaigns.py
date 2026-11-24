@@ -439,10 +439,15 @@ def preview_deployment(cur, *, plugin_id: int, version: str, target: tuple,
 
 
 def plugin_id_for_artifact(cur, artifact_id) -> int | None:
-    """Plugin d'un artefact : celui de la version qui le porte, sinon l'unique
-    plugin actif de son type. None si l'on ne peut pas trancher."""
+    """Plugin d'un artefact : son propriétaire (issue #62), sinon celui de la
+    version qui le porte, sinon l'unique plugin actif de son type. None si l'on ne
+    peut pas trancher."""
     if not artifact_id:
         return None
+    cur.execute("SELECT plugin_id FROM artifacts WHERE id = %s", (artifact_id,))
+    owner = cur.fetchone()
+    if owner and owner[0] is not None:
+        return owner[0]
     cur.execute("""
         SELECT DISTINCT pv.plugin_id FROM plugin_versions pv
         WHERE pv.artifact_id = %(a)s
@@ -490,7 +495,9 @@ def general_version_coverage(cur, plugin_id: int) -> dict | None:
         SELECT c.target_cohort_id
         FROM campaigns c LEFT JOIN artifacts a ON a.id = c.artifact_id
         WHERE c.status = 'active' AND c.type = 'plugin_update'
-          AND (c.plugin_id = %(pid)s OR (c.plugin_id IS NULL AND a.device_type = %(dt)s))
+          AND (c.plugin_id = %(pid)s
+               OR (c.plugin_id IS NULL AND a.device_type = %(dt)s
+                   AND (a.plugin_id IS NULL OR a.plugin_id = %(pid)s)))
           AND (c.version_id = %(vid)s OR a.version = %(version)s)
     """, {"pid": plugin_id, "dt": device_type, "vid": version_id, "version": version})
     targets = [r[0] for r in cur.fetchall()]

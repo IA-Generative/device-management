@@ -1415,7 +1415,11 @@ def _resolve_active_campaign(cur, *, device_cohort_ids: list[int], device_type: 
               AND (
                     (%(plugin_id)s::int IS NOT NULL AND c.plugin_id = %(plugin_id)s)
                  OR ((%(plugin_id)s::int IS NULL OR c.plugin_id IS NULL)
-                     AND a.device_type = %(device_type)s)
+                     AND a.device_type = %(device_type)s
+                     -- Campagne sans plugin : son artefact, s'il a un propriétaire,
+                     -- ne part qu'aux postes de ce plugin (issue #62).
+                     AND (a.plugin_id IS NULL OR %(plugin_id)s::int IS NULL
+                          OR a.plugin_id = %(plugin_id)s))
               )
             -- Précédence : un bras ciblé (cohorte) bat le rollout général non
             -- ciblé ; priority départage ; created_at en dernier ressort. Permet
@@ -4037,7 +4041,11 @@ def _deploy_plugin_db_work(
             device_type = _safe_segment(device_type, "device_type")
             version = _safe_segment(version, "version")
             filename = _safe_segment(orig_filename or f"{slug}-{version}.oxt", "filename")
-            rel_path = f"{device_type}/{version}_{filename}"
+            # Le slug dans le nom stocké : deux plugins de même type qui envoient un
+            # fichier de même nom pour le même numéro ne s'écrasent pas (issue #62).
+            _slug_part = _safe_segment(slug, "slug")
+            _stored = filename if filename.startswith(f"{_slug_part}-") else f"{_slug_part}-{filename}"
+            rel_path = f"{device_type}/{version}_{_stored}"
 
             # Contrôles AVANT de persister le binaire (issue #132). Cette route
             # crée une campagne ordinaire : version qu'on ne sait pas ordonner = refus.
@@ -4057,7 +4065,10 @@ def _deploy_plugin_db_work(
             try:
                 _artifacts_svc.check_overwrite(
                     cur, device_type=device_type, platform_variant="", version=version,
-                    checksum=checksum, confirmed=overwrite)
+                    checksum=checksum, confirmed=overwrite, plugin_id=plugin_id)
+            except _artifacts_svc.ArtifactTaken as e:
+                return JSONResponse({"ok": False, "error": str(e), "code": e.code},
+                                    status_code=409)
             except _artifacts_svc.ArtifactConflict as e:
                 return JSONResponse({"ok": False, "error": str(e), "code": "version_exists"},
                                     status_code=409)
@@ -4075,7 +4086,8 @@ def _deploy_plugin_db_work(
             # 5. Upsert artifact — use the persisted reference as canonical
             artifact_id = _artifacts_svc.create_artifact(
                 cur, device_type=device_type, platform_variant="", version=version,
-                s3_path=binary_ref, checksum=checksum, bootstrap_info=bootstrap_info)
+                s3_path=binary_ref, checksum=checksum, bootstrap_info=bootstrap_info,
+                plugin_id=plugin_id)
             bootstrap_info, package_signature, package_provenance = _package_import.split_info(bootstrap_info)
             _audit_package_import(cur, route="api.plugin_deploy", artifact_id=artifact_id, slug=slug,
                                   version=version, checksum=checksum, provenance=package_provenance,
@@ -4223,18 +4235,13 @@ def _create_campaign_db_work(body: dict, db_url: str):
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
         with conn.cursor() as cur:
-            # Resolve plugin_id from artifact's device_type
+            # Plugin de l'artefact : son propriétaire, pas le premier plugin de son
+            # type venu (issue #62).
             plugin_id = body.get("plugin_id")
             artifact_id = body.get("artifact_id")
             if not plugin_id and artifact_id:
-                cur.execute("""
-                    SELECT p.id FROM plugins p
-                    JOIN artifacts a ON a.device_type = p.device_type
-                    WHERE a.id = %s AND p.status = 'active' LIMIT 1
-                """, (artifact_id,))
-                prow = cur.fetchone()
-                if prow:
-                    plugin_id = prow[0]
+                from app.admin.services.campaigns import plugin_id_for_artifact
+                plugin_id = plugin_id_for_artifact(cur, artifact_id)
 
             status = body.get("status", "draft")
             is_experiment = bool(body.get("is_experiment", False))

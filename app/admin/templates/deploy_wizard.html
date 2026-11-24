@@ -30,6 +30,18 @@
       {% endfor %}
     </div>
 
+    {# Plugin du catalogue (issue #62) : deux plugins peuvent partager un type. #}
+    <div class="dm-form-row" id="plugin-row">
+      <label class="dm-label" for="plugin-select">Plugin du catalogue</label>
+      <select name="plugin_id" id="plugin-select" class="dm-select" style="max-width:420px;">
+        <option value="" data-type="">Aucun (artefact non rattaché)</option>
+        {% for p in catalog_plugins %}
+        <option value="{{ p.id }}" data-type="{{ p.device_type }}" data-slug="{{ p.slug }}">{{ p.name }} ({{ p.slug }})</option>
+        {% endfor %}
+      </select>
+      <div class="dm-hint" id="plugin-hint"></div>
+    </div>
+
     <div class="dm-form-row">
       <label class="dm-label">Fichier du plugin</label>
       <input type="file" name="binary" required class="dm-input" accept=".oxt,.xpi,.crx,.exe" id="file-input">
@@ -141,7 +153,7 @@
           <select name="rollback_artifact_id" class="dm-select" style="max-width:400px;">
             <option value="">Aucun</option>
             {% for a in artifacts %}
-            <option value="{{ a.id }}">{{ a.device_type }}/{{ a.version }} (ID:{{ a.id }})</option>
+            <option value="{{ a.id }}">{{ a.plugin_slug or a.device_type }}/{{ a.version }} (ID:{{ a.id }})</option>
             {% endfor %}
           </select>
         </div>
@@ -293,6 +305,7 @@ document.getElementById('file-input').addEventListener('change', function() {
           card.querySelector('input[type=radio]').checked = true;
         }
       }
+      filterPlugins(data.slug || '');
     })
     .catch(() => {
       vBox.innerHTML = '<div class="dm-flash dm-flash--warning" style="margin-bottom:0;">Impossible d\'analyser le fichier — verification manuelle requise</div>';
@@ -302,15 +315,41 @@ document.getElementById('file-input').addEventListener('change', function() {
     });
 });
 
+// Plugin du catalogue : seuls ceux du type choisi ; présélection quand il n'y en a
+// qu'un, ou quand le slug déclaré par le paquet correspond (issue #62).
+function filterPlugins(preferredSlug) {
+  const dt = document.querySelector('input[name=device_type]:checked');
+  const type = dt ? dt.value : '';
+  const select = document.getElementById('plugin-select');
+  const hint = document.getElementById('plugin-hint');
+  const matching = [];
+  Array.from(select.options).forEach(opt => {
+    const keep = !opt.dataset.type || opt.dataset.type === type;
+    opt.hidden = !keep;
+    if (keep && opt.value) matching.push(opt);
+  });
+  const current = select.selectedOptions[0];
+  if (current && current.hidden) select.value = '';
+  const preferred = matching.find(o => preferredSlug && o.dataset.slug === preferredSlug);
+  if (preferred) select.value = preferred.value;
+  else if (matching.length === 1) select.value = matching[0].value;
+  hint.textContent = matching.length > 1
+    ? 'Plusieurs plugins de ce type : choisissez celui que ce paquet met a jour.'
+    : (matching.length ? '' : 'Aucun plugin actif de ce type au catalogue.');
+}
+
 // Card selection visual
 document.querySelectorAll('.dm-device-card').forEach(card => {
   card.addEventListener('click', () => {
     document.querySelectorAll('.dm-device-card').forEach(c => c.classList.remove('dm-device-card--selected'));
     card.classList.add('dm-device-card--selected');
+    card.querySelector('input[type=radio]').checked = true;
+    filterPlugins();
   });
 });
 // Init first card
 document.querySelector('.dm-device-card')?.classList.add('dm-device-card--selected');
+filterPlugins();
 </script>
 
 {% elif mode == "tracking" %}
