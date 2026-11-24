@@ -1470,6 +1470,9 @@ async def campaign_rollback(request: Request, campaign_id: int):
 DEVICE_TYPES = [
     {"id": "libreoffice", "label": "LibreOffice", "ext": ".oxt"},
     {"id": "matisse", "label": "Thunderbird (Matisse)", "ext": ".xpi"},
+    # Thunderbird 31 : plugin distinct de matisse, car le DM range tout Thunderbird
+    # < 78 dans la variante tb60 (issue #62). Le paquet le déclare dans dm-manifest.json.
+    {"id": "pablo", "label": "Thunderbird 31 (Pablo)", "ext": ".xpi"},
     {"id": "firefox", "label": "Firefox", "ext": ".xpi"},
     {"id": "chrome", "label": "Chrome / Chromium", "ext": ".crx"},
     {"id": "edge", "label": "Microsoft Edge", "ext": ".crx"},
@@ -1999,7 +2002,7 @@ A partir du texte fourni, extrais les informations suivantes au format JSON stri
   "description": "Description detaillee (2-5 phrases)",
   "key_features": ["Tag court 1", "Tag court 2", ...],  // tags metier courts (2-3 mots max) ex: "Redaction IA", "Mode hors-ligne", "SSO Keycloak"
   "category": "productivity|security|communication|tools|other",
-  "device_type": "libreoffice|firefox|chrome|edge|matisse",
+  "device_type": "libreoffice|firefox|chrome|edge|matisse|pablo",
   "changelog": "Changelog extrait si present (format markdown), sinon vide"
 }
 
