@@ -60,10 +60,12 @@ class ArtifactConflict(ValueError):
 
 
 class ArtifactTaken(ArtifactConflict):
-    """Le numéro de version est déjà pris par un AUTRE plugin du même type (issue #62).
+    """L'artefact de ce numéro n'a pas pu être écrit pour ce plugin (issue #62).
 
-    Aucune confirmation ne lève ce refus : remplacer le binaire servirait aux postes
-    de l'autre plugin un paquet qui n'est pas le leur.
+    Depuis que le plugin est dans la clé d'unicité, ne se produit plus que sur une
+    base restée sur l'ancienne contrainte. Aucune confirmation ne lève ce refus :
+    remplacer le binaire d'un autre plugin servirait à ses postes un paquet qui
+    n'est pas le leur.
     """
     code = "version_taken"
 
@@ -115,20 +117,14 @@ def check_overwrite(cur, *, device_type: str, platform_variant: str, version: st
     numéro. On refuse donc (ArtifactConflict) sauf confirmation explicite. Même
     binaire : rien à dire. Empreinte existante absente : on laisse passer.
 
-    Numéro déjà pris par un autre plugin du même type : refus sans appel
-    (ArtifactTaken), tant que la contrainte d'unicité ne porte pas le plugin.
+    Le même numéro publié par un autre plugin du même type n'entre pas en compte :
+    chaque plugin a son artefact (issue #62).
 
     Renvoie True si un binaire différent est remplacé (confirmé).
     """
     rows = _same_number_rows(cur, device_type=device_type,
                              platform_variant=platform_variant, version=version)
-    own, foreign = _split_owner(rows, plugin_id)
-    if foreign and not own:
-        owners = ", ".join(sorted({f"« {r[3] or r[1]} »" for r in foreign}))
-        raise ArtifactTaken(
-            f"La version {version} de type {device_type} est déjà publiée par le plugin "
-            f"{owners}. Deux plugins de même type ne peuvent pas encore publier le même "
-            "numéro : publiez sous un autre numéro de version.")
+    own, _foreign = _split_owner(rows, plugin_id)
     known = [_bare_checksum(row[2]) for row in own if row[2]]
     if not known or _bare_checksum(checksum) in known:
         return False

@@ -7,7 +7,8 @@ que les postes du premier recevaient alors.
 
 Couvre :
   - le rattachement de l'artefact à son plugin, et sa reprise s'il n'en a pas ;
-  - le refus sans appel d'un numéro déjà publié par l'autre plugin ;
+  - le même numéro publié par les deux plugins, chacun avec son binaire ;
+  - la garde du double envoi, qui ne vaut plus qu'au sein d'un plugin ;
   - les fichiers stockés, distincts d'un plugin à l'autre ;
   - une campagne sans plugin, servie aux seuls postes du propriétaire de l'artefact ;
   - l'initialisation de artifacts.plugin_id sur une base existante.
@@ -147,19 +148,27 @@ def test_republishing_replaces_the_plugin_own_artifact(svc):
     assert _owner(svc, first) == (svc.a, "sha256:a2")
 
 
-def test_number_taken_by_the_other_plugin_is_refused_even_confirmed(svc):
+def test_same_number_from_the_other_plugin_is_not_a_double_upload(svc):
     _create(svc, svc.a, "sha256:aa")
-    with pytest.raises(svc.artifacts.ArtifactTaken, match=_SLUG_A):
-        svc.artifacts.check_overwrite(svc.cur, device_type=_DEVICE_TYPE, platform_variant="",
-                                      version="1.0.0", checksum="sha256:bb",
-                                      confirmed=True, plugin_id=svc.b)
+    # Sans confirmation : ce n'est pas le même plugin qui renvoie son numéro.
+    assert svc.artifacts.check_overwrite(svc.cur, device_type=_DEVICE_TYPE, platform_variant="",
+                                         version="1.0.0", checksum="sha256:bb",
+                                         plugin_id=svc.b) is False
 
 
-def test_writing_over_the_other_plugin_never_touches_its_binary(svc):
-    artifact_id = _create(svc, svc.a, "sha256:aa")
-    with pytest.raises(svc.artifacts.ArtifactTaken):
-        _create(svc, svc.b, "sha256:bb")
-    assert _owner(svc, artifact_id) == (svc.a, "sha256:aa")
+def test_each_plugin_gets_its_own_artifact_for_the_same_number(svc):
+    first = _create(svc, svc.a, "sha256:aa")
+    second = _create(svc, svc.b, "sha256:bb")
+    assert second != first
+    assert _owner(svc, first) == (svc.a, "sha256:aa")
+    assert _owner(svc, second) == (svc.b, "sha256:bb")
+
+
+def test_key_is_plugin_type_variant_number(svc):
+    svc.cur.execute("SELECT pg_get_indexdef(indexrelid) FROM pg_index "
+                    "WHERE indrelid = 'artifacts'::regclass AND indisunique AND NOT indisprimary")
+    [(definition,)] = svc.cur.fetchall()
+    assert "(plugin_id, device_type, platform_variant, version)" in definition
 
 
 def test_artifact_without_owner_is_taken_over_by_the_first_publisher(svc):
@@ -330,28 +339,32 @@ def _stored_marker(site, slug, version) -> str:
         return zf.read("marker.txt").decode()
 
 
-def test_e2e_other_plugin_cannot_take_the_number_nor_the_binary(site):
+def test_e2e_two_plugins_publish_the_same_number_each_with_its_binary(site):
+    """Le cas de l'issue : même type, même numéro, deux binaires, sans confirmation."""
     assert site.deploy(_SLUG_A, "2.0.0", "binaire-a").status_code == 201
-    for fields in ({}, {"overwrite": "true"}):
-        refused = site.deploy(_SLUG_B, "2.0.0", "binaire-b", **fields)
-        assert refused.status_code == 409, refused.text
-        assert refused.json()["code"] == "version_taken"
-        assert _SLUG_A in refused.json()["error"]
-    # Les postes du plugin A reçoivent toujours le binaire de A.
+    second = site.deploy(_SLUG_B, "2.0.0", "binaire-b")
+    assert second.status_code == 201, second.text
+    owners = sorted(site.sql("SELECT plugin_id FROM artifacts WHERE device_type = %s AND version = '2.0.0'",
+                             (_DEVICE_TYPE,)))
+    assert owners == sorted([(site.a,), (site.b,)])
+    # Chaque plugin sert son binaire, et ses postes reçoivent la mise à jour.
     assert _stored_marker(site, _SLUG_A, "2.0.0") == "binaire-a"
+    assert _stored_marker(site, _SLUG_B, "2.0.0") == "binaire-b"
     assert site.config_update(_SLUG_A, "1.0.0")["target_version"] == "2.0.0"
-    assert site.config_update(_SLUG_B, "1.0.0") is None
-
-
-def test_e2e_artifacts_and_files_belong_to_their_plugin(site):
-    assert site.deploy(_SLUG_A, "2.0.0", "binaire-a").status_code == 201
-    assert site.deploy(_SLUG_B, "2.0.1", "binaire-b").status_code == 201
-    owners = dict(site.sql("SELECT version, plugin_id FROM artifacts WHERE device_type = %s",
-                           (_DEVICE_TYPE,)))
-    assert owners == {"2.0.0": site.a, "2.0.1": site.b}
+    assert site.config_update(_SLUG_B, "1.0.0")["target_version"] == "2.0.0"
     # Même nom d'envoi (« plugin.xpi ») : fichiers distincts, au nom du plugin.
     stored = sorted(os.listdir(os.path.join(site.mod._binaries_dir_for_tests, _DEVICE_TYPE)))
-    assert stored == [f"2.0.0_{_SLUG_A}-plugin.xpi", f"2.0.1_{_SLUG_B}-plugin.xpi"]
+    assert stored == [f"2.0.0_{_SLUG_A}-plugin.xpi", f"2.0.0_{_SLUG_B}-plugin.xpi"]
+
+
+def test_e2e_double_upload_guard_still_applies_within_a_plugin(site):
+    assert site.deploy(_SLUG_A, "2.0.0", "binaire-a").status_code == 201
+    assert site.deploy(_SLUG_B, "2.0.0", "binaire-b").status_code == 201
+    refused = site.deploy(_SLUG_B, "2.0.0", "binaire-b2")
+    assert refused.status_code == 409 and refused.json()["code"] == "version_exists"
+    assert site.deploy(_SLUG_B, "2.0.0", "binaire-b2", overwrite="true").status_code == 201
+    assert _stored_marker(site, _SLUG_A, "2.0.0") == "binaire-a"
+    assert _stored_marker(site, _SLUG_B, "2.0.0") == "binaire-b2"
 
 
 def test_e2e_campaign_without_plugin_reaches_only_the_artifact_owner(site):
