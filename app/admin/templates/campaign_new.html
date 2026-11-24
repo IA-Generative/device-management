@@ -19,7 +19,7 @@
           <option value="">Aucun</option>
           {% for a in artifacts %}
           {% if a.is_active %}
-          <option value="{{ a.id }}">{{ a.device_type }} / {{ a.version }}</option>
+          <option value="{{ a.id }}">{{ a.plugin_slug or a.device_type }} / {{ a.version }}</option>
           {% endif %}
           {% endfor %}
         </select>
@@ -29,7 +29,7 @@
         <select name="rollback_artifact_id" class="dm-select" style="width: 100%;">
           <option value="">Aucun</option>
           {% for a in artifacts %}
-          <option value="{{ a.id }}">{{ a.device_type }} / {{ a.version }}</option>
+          <option value="{{ a.id }}">{{ a.plugin_slug or a.device_type }} / {{ a.version }}</option>
           {% endfor %}
         </select>
       </div>

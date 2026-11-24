@@ -1488,11 +1488,16 @@ async def deploy_wizard(request: Request):
         with conn.cursor() as cur:
             cohort_list = cohorts_svc.list_cohorts(cur)
             artifact_list = artifacts_svc.list_artifacts(cur)
+            cur.execute("SELECT id, slug, name, device_type FROM plugins "
+                        "WHERE status = 'active' ORDER BY device_type, name")
+            catalog_plugins = [dict(zip(("id", "slug", "name", "device_type"), r, strict=False))
+                               for r in cur.fetchall()]
         return templates.TemplateResponse(request, "deploy_wizard.html", {
             "request": request,
             "device_types": DEVICE_TYPES,
             "cohorts": cohort_list,
             "artifacts": artifact_list,
+            "catalog_plugins": catalog_plugins,
             "mode": "wizard",
         })
     finally:
@@ -1650,6 +1655,8 @@ async def api_extract_version(request: Request, binary: UploadFile | None = File
         "package": package_preview,
         "config": config_preview,
         "device_type": device_type,
+        # Slug déclaré par le paquet : l'assistant présélectionne ce plugin (issue #62).
+        "slug": str((dm_manifest or {}).get("slug") or "") if isinstance(dm_manifest, dict) else "",
         "valid": len(errors) == 0,
         "is_valid_zip": is_valid_zip,
         "file_size": file_size,
@@ -1658,6 +1665,32 @@ async def api_extract_version(request: Request, binary: UploadFile | None = File
         "warnings": warnings,
         "release_notes": release_notes,
     })
+
+
+def _resolve_deploy_plugin(cur, device_type: str, plugin_id: str) -> dict | None:
+    """Plugin du catalogue que vise un envoi par l'assistant de déploiement (issue #62).
+
+    Choisi dans le formulaire, ou déduit quand un seul plugin actif porte ce type.
+    Plusieurs plugins actifs de ce type sans choix : refus, plutôt que de rattacher
+    le paquet au plus récent. Aucun : None (artefact sans plugin, comme avant).
+    """
+    plugin_id = (plugin_id or "").strip()
+    if plugin_id:
+        if not plugin_id.isdigit():
+            raise HTTPException(400, "Plugin du catalogue invalide")
+        cur.execute("SELECT id, slug FROM plugins WHERE id = %s AND device_type = %s AND status <> 'removed'",
+                    (int(plugin_id), device_type))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(400, f"Ce plugin du catalogue n'est pas de type {device_type}.")
+        return {"id": row[0], "slug": row[1]}
+    cur.execute("SELECT id, slug FROM plugins WHERE device_type = %s AND status = 'active' ORDER BY id",
+                (device_type,))
+    rows = cur.fetchall()
+    if len(rows) > 1:
+        raise HTTPException(400, f"Plusieurs plugins du catalogue sont de type {device_type} "
+                                 f"({', '.join(r[1] for r in rows)}) : choisissez le plugin.")
+    return {"id": rows[0][0], "slug": rows[0][1]} if rows else None
 
 
 @router.post("/deploy/create")
@@ -1678,6 +1711,7 @@ async def deploy_create(request: Request,
                         confirm_ref: str = Form(""),
                         confirm_prerelease: str = Form(""),
                         adapt_config: str = Form("1"),
+                        plugin_id: str = Form(""),
                         signature: UploadFile | None = File(None),
                         binary: UploadFile = File(...)):
     # 1. Upload artifact
@@ -1688,6 +1722,16 @@ async def deploy_create(request: Request,
     data = await binary.read()
     if len(data) > artifacts_svc.MAX_UPLOAD_SIZE:
         raise HTTPException(400, "Fichier trop volumineux (>100 Mo)")
+
+    # Plugin du catalogue visé (issue #62) : l'artefact, la campagne, le modèle de
+    # configuration et le changelog sont les siens, pas ceux de tout le type.
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            deploy_plugin = _resolve_deploy_plugin(cur, device_type, plugin_id)
+    finally:
+        conn.close()
+    _plugin_slug = deploy_plugin["slug"] if deploy_plugin else ""
 
     # Extract dm-config.json and dm-manifest.json from the package before stripping
     deploy_config_template = None
@@ -1715,7 +1759,9 @@ async def deploy_create(request: Request,
     # Strip dm-config.json from the binary before storage (users shouldn't see placeholders)
     # et inscrire la liste de DM de l'instance (issue #133).
     _ext = os.path.splitext(binary.filename or "")[1] or ".oxt"
-    _safe_name = (name or device_type).strip().lower().replace(" ", "-")
+    # Fichier au nom du plugin quand il est connu : deux plugins de même type ne
+    # s'écrasent pas sur disque, et le nom suit celui de la fiche du catalogue.
+    _safe_name = (_plugin_slug or name or device_type).strip().lower().replace(" ", "-")
     data, bootstrap_info = _prepare_package(
         data, keep_bootstrap, version=version, filename=f"{_safe_name}-{version}{_ext}",
         build_signature=await _signature_input(signature), confirm_ref=confirm_ref)
@@ -1742,7 +1788,8 @@ async def deploy_create(request: Request,
             try:
                 overwritten = artifacts_svc.check_overwrite(
                     cur, device_type=device_type, platform_variant="", version=version,
-                    checksum=checksum, confirmed=_form_truthy(confirm_overwrite))
+                    checksum=checksum, confirmed=_form_truthy(confirm_overwrite),
+                    plugin_id=deploy_plugin["id"] if deploy_plugin else None)
             except artifacts_svc.ArtifactConflict as e:
                 raise HTTPException(409, str(e)) from e
             # 2. Cohort — cible incomplète refusée (cohorts_svc.resolve_deploy_target).
@@ -1762,6 +1809,7 @@ async def deploy_create(request: Request,
                 cur, device_type=device_type, platform_variant="",
                 version=version, s3_path=local_path, checksum=checksum,
                 bootstrap_info=bootstrap_info,
+                plugin_id=deploy_plugin["id"] if deploy_plugin else None,
             )
 
             # 3. Campaign
@@ -1781,12 +1829,7 @@ async def deploy_create(request: Request,
                 urgency = "normal"
 
             campaign_name = name.strip() or f"MaJ {device_type} {version}"
-            # Resolve plugin_id from device_type for auto-completion of older campaigns
-            _deploy_plugin_id = None
-            cur.execute("SELECT id FROM plugins WHERE device_type = %s AND status = 'active' ORDER BY id DESC LIMIT 1", (device_type,))
-            _prow = cur.fetchone()
-            if _prow:
-                _deploy_plugin_id = _prow[0]
+            _deploy_plugin_id = deploy_plugin["id"] if deploy_plugin else None
             campaign_id = campaigns_svc.create_campaign(
                 cur, name=campaign_name, type="plugin_update",
                 artifact_id=artifact_id,
@@ -1800,25 +1843,34 @@ async def deploy_create(request: Request,
 
             # Store dm-config.json template in the plugin record if extracted
             if deploy_config_template:
+                # Le plugin visé seulement ; sans plugin résolu (aucun plugin actif
+                # de ce type), repli historique sur les fiches de ce type.
                 try:
-                    cur.execute(
-                        "UPDATE plugins SET config_template = %s WHERE device_type = %s AND status <> 'removed'",
-                        (json.dumps(deploy_config_template), device_type),
-                    )
+                    if deploy_plugin:
+                        cur.execute("UPDATE plugins SET config_template = %s WHERE id = %s",
+                                    (json.dumps(deploy_config_template), deploy_plugin["id"]))
+                    else:
+                        cur.execute(
+                            "UPDATE plugins SET config_template = %s WHERE device_type = %s AND status <> 'removed'",
+                            (json.dumps(deploy_config_template), device_type),
+                        )
                 except Exception as ct_err:
                     logger.warning("deploy: config_template store failed: %s", ct_err)
                 # Sans cette réconciliation, un upload via ce formulaire admin
                 # (le cas des sites air-gap : DGX/prod-sdid) mettait le template
                 # à jour mais laissait l'onglet Flags vide.
-                try:
-                    cur.execute(
-                        "SELECT slug FROM plugins WHERE device_type = %s AND status <> 'removed' ORDER BY id DESC LIMIT 1",
-                        (device_type,),
-                    )
-                    _row = cur.fetchone()
-                    _slug = _row[0] if _row and _row[0] else device_type
-                except Exception:
-                    _slug = device_type
+                if _plugin_slug:
+                    _slug = _plugin_slug
+                else:
+                    try:
+                        cur.execute(
+                            "SELECT slug FROM plugins WHERE device_type = %s AND status <> 'removed' ORDER BY id DESC LIMIT 1",
+                            (device_type,),
+                        )
+                        _row = cur.fetchone()
+                        _slug = _row[0] if _row and _row[0] else device_type
+                    except Exception:
+                        _slug = device_type
                 flags_svc.safe_reconcile_catalog(
                     cur, plugin_slug=_slug, template=deploy_config_template,
                     actor=actor, source="admin:deploy/create")
@@ -1828,10 +1880,14 @@ async def deploy_create(request: Request,
                 manifest_changelog = deploy_dm_manifest.get("changelog", [])
                 if isinstance(manifest_changelog, list) and manifest_changelog:
                     try:
-                        cur.execute(
-                            "UPDATE plugins SET changelog = %s WHERE device_type = %s",
-                            (json.dumps(manifest_changelog), device_type),
-                        )
+                        if deploy_plugin:
+                            cur.execute("UPDATE plugins SET changelog = %s WHERE id = %s",
+                                        (json.dumps(manifest_changelog), deploy_plugin["id"]))
+                        else:
+                            cur.execute(
+                                "UPDATE plugins SET changelog = %s WHERE device_type = %s",
+                                (json.dumps(manifest_changelog), device_type),
+                            )
                     except Exception as cl_err:
                         logger.warning("deploy: changelog update failed: %s", cl_err)
 
@@ -2600,7 +2656,7 @@ async def catalog_create(request: Request):
                     artifact_id = artifacts_svc.create_artifact(
                         cur, device_type=device_type, platform_variant="",
                         version=initial_version, s3_path=local_path, checksum=checksum,
-                        bootstrap_info=bootstrap_info,
+                        bootstrap_info=bootstrap_info, plugin_id=plugin_id,
                     )
                     catalog_svc.create_version(
                         cur, plugin_id=plugin_id, version=initial_version,
@@ -3503,7 +3559,10 @@ async def catalog_version_upload(request: Request, plugin_id: int):
                 overwritten = artifacts_svc.check_overwrite(
                     cur, device_type=device_type, platform_variant=platform_variant,
                     version=version, checksum=checksum,
-                    confirmed=_form_truthy(confirm_overwrite))
+                    confirmed=_form_truthy(confirm_overwrite), plugin_id=plugin_id)
+            except artifacts_svc.ArtifactTaken as e:
+                # Sans appel : la page ne propose pas de remplacer le binaire d'un autre plugin.
+                raise HTTPException(409, {"code": e.code, "message": str(e)}) from e
             except artifacts_svc.ArtifactConflict as e:
                 raise HTTPException(409, str(e)) from e
             target_cohort_id = None
@@ -3543,7 +3602,7 @@ async def catalog_version_upload(request: Request, plugin_id: int):
             artifact_id = artifacts_svc.create_artifact(
                 cur, device_type=device_type, platform_variant=platform_variant,
                 version=version, s3_path=local_path, checksum=checksum,
-                bootstrap_info=bootstrap_info,
+                bootstrap_info=bootstrap_info, plugin_id=plugin_id,
             )
 
             # 5. Create version. 'published' (main, immédiat) OU 'experimental'
