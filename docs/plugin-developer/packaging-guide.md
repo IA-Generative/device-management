@@ -75,7 +75,7 @@ Ce fichier décrit le plugin pour le catalogue. Tous les champs sont optionnels 
 | `name` | string | Nom affiché dans le catalogue |
 | `description` | string | Description longue |
 | `intent` | string | Proposition de valeur courte (1-2 phrases) |
-| `device_type` | string | `libreoffice`, `matisse`, `firefox`, `chrome`, `edge` |
+| `device_type` | string | `libreoffice`, `matisse` (Thunderbird 60), `pablo` (Thunderbird 31), `firefox`, `chrome`, `edge` |
 | `category` | string | `productivity`, `security`, `communication`, `tools` |
 | `publisher` | string | Éditeur / équipe |
 | `visibility` | string | `public`, `internal`, `hidden` |

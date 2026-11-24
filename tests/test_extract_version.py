@@ -96,6 +96,19 @@ def test_dm_manifest_thunderbird_alias_maps_to_matisse(client):
     assert out["device_type"] == "matisse"
 
 
+def test_dm_manifest_pablo_is_its_own_device_type(client):
+    """Le XPI Thunderbird 31 (bootstrap, sans manifest.json) déclare `pablo` (issue #62).
+
+    Avant, `pablo` était ignoré et l'heuristique classait le paquet `firefox`.
+    """
+    manifest = dict(DM_MANIFEST_TB60, slug="pablo", device_type="pablo")
+    data = _zip_bytes({"install.rdf": "<RDF/>", "bootstrap.js": "",
+                       "dm-manifest.json": json.dumps(manifest)})
+    out = _extract(client, data, "mirai-assistant-tb31.xpi")
+    assert out["device_type"] == "pablo"
+    assert out["version"] == "0.16.1"
+
+
 def test_dm_manifest_unknown_device_type_is_ignored(client):
     manifest = dict(DM_MANIFEST_TB60, device_type="toaster")
     data = _zip_bytes({"install.rdf": "<RDF/>", "dm-manifest.json": json.dumps(manifest)})

@@ -673,7 +673,7 @@ def _log_device_connection(
 
 
 # Legacy fallback — only used when DB is unreachable
-_DEVICE_TYPE_FALLBACK = {"matisse", "libreoffice", "mirai-libreoffice"}
+_DEVICE_TYPE_FALLBACK = {"matisse", "pablo", "libreoffice", "mirai-libreoffice"}
 
 
 def _resolve_device(device: str, cur) -> tuple[str | None, str | None, int | None, str]:
@@ -4973,7 +4973,8 @@ _catalog_templates = _Jinja2Templates(
 )
 
 # Download extensions: .crx triggers Chrome auto-install block, use .zip instead
-_DEVICE_TYPE_EXT = {"libreoffice": "oxt", "firefox": "xpi", "chrome": "zip", "edge": "zip", "matisse": "xpi"}
+_DEVICE_TYPE_EXT = {"libreoffice": "oxt", "firefox": "xpi", "chrome": "zip", "edge": "zip", "matisse": "xpi",
+                    "pablo": "xpi"}
 # Extensions que /catalog/<slug>/download/<filename> sait retirer pour retrouver
 # la version. Source unique : catalog_download_file la consomme pour parser,
 # _build_update_directive pour construire une URL épinglée qu'elle saura parser.

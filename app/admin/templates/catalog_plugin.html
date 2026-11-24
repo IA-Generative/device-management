@@ -1102,7 +1102,7 @@ function nvAnalyze() {
       ];
       if (data.version) checks.push('Version : ' + data.version + ' (' + data.source + ')');
       if (data.device_type) {
-        const labels = {libreoffice:'LibreOffice', matisse:'Thunderbird (Matisse)', firefox:'Firefox', chrome:'Chrome'};
+        const labels = {libreoffice:'LibreOffice', matisse:'Thunderbird (Matisse)', pablo:'Thunderbird 31 (Pablo)', firefox:'Firefox', chrome:'Chrome'};
         checks.push('Type : ' + (labels[data.device_type] || data.device_type));
       }
       box.innerHTML = '<div class="dm-flash dm-flash--success" style="margin-bottom:0;">' +
@@ -1120,7 +1120,7 @@ function nvAnalyze() {
         if (rn) rn.value = data.release_notes;
       }
       if (data.device_type) {
-        const labels = {libreoffice:'LibreOffice', matisse:'Thunderbird', firefox:'Firefox', chrome:'Chrome'};
+        const labels = {libreoffice:'LibreOffice', matisse:'Thunderbird', pablo:'Thunderbird 31', firefox:'Firefox', chrome:'Chrome'};
         document.getElementById('nv-detected-type').textContent = labels[data.device_type] || data.device_type;
       }
       info.style.display = 'block';
