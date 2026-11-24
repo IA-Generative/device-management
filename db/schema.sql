@@ -251,8 +251,9 @@ CREATE TABLE IF NOT EXISTS artifacts (
     is_active BOOLEAN DEFAULT true,
     released_at TIMESTAMPTZ DEFAULT now(),
     -- Liste de DM que porte le paquet, relevée à l'envoi (issue #133).
-    bootstrap_info JSONB,
-    UNIQUE (device_type, platform_variant, version)
+    bootstrap_info JSONB
+    -- Unicité : (plugin_id, device_type, platform_variant, version), posée plus bas
+    -- avec la colonne plugin_id (issue #62).
 );
 ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS bootstrap_info JSONB;
 -- Enveloppe signée du paquet servi et provenance du paquet reçu (ADR-0006).
@@ -817,3 +818,9 @@ DO $$ BEGIN
   END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_artifacts_plugin ON artifacts (plugin_id);
+-- Le plugin dans la clé (issue #62) : deux plugins de même type publient chacun
+-- leur artefact pour un même numéro. Nouvel index d'abord, ancienne contrainte
+-- ensuite (alembic 015).
+CREATE UNIQUE INDEX IF NOT EXISTS artifacts_plugin_number_key
+    ON artifacts (plugin_id, device_type, platform_variant, version);
+ALTER TABLE artifacts DROP CONSTRAINT IF EXISTS artifacts_device_type_platform_variant_version_key;
