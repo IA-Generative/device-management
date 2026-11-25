@@ -21,7 +21,7 @@ jobs:
   # Sans GitHub App, la PR de release est ouverte par GITHUB_TOKEN et ne déclenche pas la
   # CI exigée : la fermer puis la rouvrir à la main la relance.
   release:
-    uses: dnum-mi/fabnum-cicd/.github/workflows/release-app.yml@v0.25.3
+    uses: dnum-mi/fabnum-cicd/.github/workflows/release-app.yml@v0.25.5
     permissions:
       contents: write
       issues: write
@@ -30,7 +30,7 @@ jobs:
   build:
     needs: [release]
     if: ${{ needs.release.outputs.release-created == 'true' }}
-    uses: dnum-mi/fabnum-cicd/.github/workflows/build-docker.yml@v0.25.3
+    uses: dnum-mi/fabnum-cicd/.github/workflows/build-docker.yml@v0.25.5
     permissions:
       contents: read
       packages: write
@@ -52,7 +52,7 @@ jobs:
 
   attest:
     needs: [build]
-    uses: dnum-mi/fabnum-cicd/.github/workflows/attest-docker.yml@v0.25.3
+    uses: dnum-mi/fabnum-cicd/.github/workflows/attest-docker.yml@v0.25.5
     permissions:
       packages: write
       id-token: write
