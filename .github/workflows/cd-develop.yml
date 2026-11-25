@@ -36,7 +36,7 @@ jobs:
 
   build:
     needs: [infos]
-    uses: dnum-mi/fabnum-cicd/.github/workflows/build-docker.yml@v0.25.3
+    uses: dnum-mi/fabnum-cicd/.github/workflows/build-docker.yml@v0.25.5
     permissions:
       contents: read
       packages: write
@@ -58,7 +58,7 @@ jobs:
   # Les défauts d'attest-docker sont à `false` : un appel qui n'active rien n'atteste rien.
   attest:
     needs: [build]
-    uses: dnum-mi/fabnum-cicd/.github/workflows/attest-docker.yml@v0.25.3
+    uses: dnum-mi/fabnum-cicd/.github/workflows/attest-docker.yml@v0.25.5
     permissions:
       packages: write
       id-token: write
