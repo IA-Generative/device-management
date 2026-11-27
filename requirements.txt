@@ -14,7 +14,7 @@ jinja2>=3.1.4,<4.0
 python-multipart>=0.0.9,<0.1
 aiofiles>=25.1,<25.2
 slowapi>=0.1.9,<0.2
-httpx==0.28.1
+httpx==0.29.0
 # Relais d'outils (/tools/v1) : validation des arguments contre le schéma de l'outil.
 jsonschema>=4.23,<5
 prometheus-client>=0.20,<1.0  # métriques proxy LLM (histogrammes latence /llm/v1)
